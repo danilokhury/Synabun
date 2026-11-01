@@ -12,9 +12,13 @@
 
 import { findModel, hiddenModelId } from '../assistant-catalog.js';
 import { modelEfforts } from '../effort-levels.js';
-import { providerLabel, remoteBrainLimited } from '../remote-policy.js';
+import { providerLabel as remoteProviderLabel, remoteBrainLimited } from '../remote-policy.js';
 
-export const BRAIN_PROVIDERS = Object.freeze(['claude-code', 'codex', 'opencode']);
+// Every provider the Assistant can run on: Antigravity too (lib/assistant-brains/antigravity.js). Like Codex and
+// OpenCode it holds a WhatsApp conversation read-only (lib/remote-policy.js remoteBrainLimited).
+export const BRAIN_PROVIDERS = Object.freeze(['claude-code', 'codex', 'opencode', 'antigravity']);
+// The provider's name in what the owner reads (remote-policy.js names the first three).
+const providerLabel = (provider) => (provider === 'antigravity' ? 'Antigravity' : remoteProviderLabel(provider));
 const EFFORT_RE = /^[A-Za-z0-9][\w.-]{0,39}$/;
 const MODEL_MAX = 200;
 
@@ -55,7 +59,7 @@ function refusal(message, { code = 'CONFIG_INVALID', status = 400 } = {}) {
  */
 export function checkBrainChoice(choice, catalog) {
   const clean = cleanBrainChoice(choice);
-  if (clean === undefined) return refusal('brain must be null (same as the Assistant) or { provider, model, effort } with a provider of claude-code, codex or opencode');
+  if (clean === undefined) return refusal('brain must be null (same as the Assistant) or { provider, model, effort } with a provider of claude-code, codex, opencode or antigravity');
   if (clean === null) return { ok: true, brain: null };
   if (!catalog || typeof catalog !== 'object') {
     return refusal('The model list is not available right now, so this model could not be checked. Try again in a few seconds.', { code: 'CATALOG_UNAVAILABLE', status: 503 });

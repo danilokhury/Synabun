@@ -3058,7 +3058,7 @@ function isWhiteboardActive() {
 }
 
 // A key pressed inside a side panel is the panel's: registerSidepanel marks every panel root
-// (Claude, Codex, OpenCode, Assistant) with data-sidepanel-provider.
+// (Claude, Codex, OpenCode, Antigravity, Assistant) with data-sidepanel-provider.
 export function isSidepanelKeyTarget(el) {
   return !!el?.closest?.('[data-sidepanel-provider]');
 }

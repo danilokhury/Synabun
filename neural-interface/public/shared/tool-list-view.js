@@ -45,7 +45,7 @@ function groupWord(group, field, translate) {
   return group[field];
 }
 
-export const strictToolHost = provider => provider === 'opencode' || provider === 'gemini';
+export const strictToolHost = provider => provider === 'opencode' || provider === 'antigravity';
 export const taskToolHost = provider => strictToolHost(provider) || provider === 'claude-code' || provider === 'codex';
 
 /** Hidden-input encoding: inheritance differs from an explicit empty group list. */
@@ -87,7 +87,7 @@ export function toolListView(catalog, tools, { inheritLabel = null, usesBrowser,
     });
     if (options.length) entries.push({ group: word(section), options });
   }
-  if (includeServers && provider !== 'gemini' && catalog?.externalServersVersion >= 2) {
+  if (includeServers && provider !== 'antigravity' && catalog?.externalServersVersion >= 2) {
     const wildcard = refs.includes('mcp:*');
     const rows = (catalog.servers || []).filter(row => row.selectable !== false);
     // A saved unavailable ref stays visible and round-trips; loading a catalog never silently clears it.

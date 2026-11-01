@@ -2,6 +2,7 @@ import { on } from './state.js';
 import { attachClaudeAutomation, detachClaudeAutomation, handleClaudeAutomationEvent } from './ui-claude-panel.js';
 import { attachCodexAutomation, detachCodexAutomation, handleCodexAutomationEvent } from './ui-codex-panel.js';
 import { attachOpenCodeAutomation, detachOpenCodeAutomation } from './ui-opencode-panel-v2.js';
+import { attachAntigravityAutomation, detachAntigravityAutomation, handleAntigravityAutomationEvent } from './ui-antigravity-panel.js';
 import { nativeLoopWindowId } from './ui-native-window-id.js';
 import {
   isNewerRunDescriptor,
@@ -161,6 +162,7 @@ async function attach(run, focus) {
   }
   if (provider === 'codex') return attachCodexAutomation(run, options);
   if (provider === 'opencode') return attachOpenCodeAutomation(run, options);
+  if (provider === 'antigravity') return attachAntigravityAutomation(run, options);
   return { ok: false, reason: 'unsupported_provider' };
 }
 
@@ -169,6 +171,7 @@ async function detachProviderRun(runId, provider) {
     if (provider === 'claude-code' || provider === 'claude') return await detachClaudeAutomation(runId);
     if (provider === 'codex') return await detachCodexAutomation(runId);
     if (provider === 'opencode') return await detachOpenCodeAutomation(runId);
+    if (provider === 'antigravity') return await detachAntigravityAutomation(runId);
   } catch {}
   return false;
 }
@@ -189,6 +192,7 @@ function deliverProviderEvent(message) {
       return handleClaudeAutomationEvent(run.runId, payload);
     }
     if (payload.provider === 'codex') return handleCodexAutomationEvent(run.runId, payload);
+    if (payload.provider === 'antigravity') return handleAntigravityAutomationEvent(run.runId, payload);
   } catch {}
   return false;
 }

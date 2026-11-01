@@ -39,6 +39,7 @@
 import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { acpCall, acpToolPaths } from './antigravity/tool-call.js';
 
 export const WORKER_GUARD_MODES = Object.freeze(['enforce', 'warn', 'off']);
 export const WORKER_GUARD_DEFAULT = 'enforce';
@@ -46,7 +47,7 @@ export const WORKER_CONFINEMENT = 'worker';
 /** The capabilities the guard applies to (never 'full'). */
 export const GUARDED_CAPABILITIES = Object.freeze(['read-only', 'workspace']);
 /** Folders under the home a worker must never write into (documented; the rule itself is "outside the writable roots"). */
-export const PROTECTED_HOME_DIRS = Object.freeze(['.claude', '.codex', '.agents', '.config/opencode', '.synabun', '.local/share/opencode', '.ssh', '.gnupg', '.aws', '.config']);
+export const PROTECTED_HOME_DIRS = Object.freeze(['.claude', '.codex', '.agents', '.config/opencode', '.synabun', '.local/share/opencode', '.gemini', '.ssh', '.gnupg', '.aws', '.config']);
 
 export function normalizeWorkerGuardMode(value) {
   const text = String(value ?? '').trim().toLowerCase();
@@ -1158,6 +1159,81 @@ export function openCodePermissionDecision(request, confinement, { toolName = nu
       return refusal('write-outside', `${toolName || 'An unidentified tool'} requested access to ${place || raw || 'a folder outside the working directory'} (capability ${confinement.capability}): only read, grep, glob and list may read outside this run's workspace; the shell and edit tools stay inside ${rootsText(confinement)}.`, place || undefined);
     }
     return null; // every other ask (webfetch, a tool rule the user set) keeps today's answer
+  } catch (err) {
+    return refusal('check-failed', `The request could not be checked (${err?.message || err}), so it is refused.`);
+  }
+}
+
+// The ACP tool kinds that change files (session/request_permission's toolCall.kind).
+const ACP_WRITE_KINDS = new Set(['edit', 'delete', 'move']);
+// Preserve the public import while using Antigravity's canonical path reader.
+export { acpToolPaths };
+
+/**
+ * An ACP permission request (session/request_permission: its toolCall { kind, title, locations, rawInput }) under
+ * a confinement, the way Antigravity's `agy acp` asks before an edit, a command or work outside the workspace:
+ * null when it may go ahead, else a refusal. `execute` is read through the shell heuristic, `edit` / `delete` /
+ * `move` by every path the call names (all of them must be writable; read-only refuses them all), `read` /
+ * `search` pass unless they reach one of SynaBun's protected home folders, `fetch` passes unless it calls one of
+ * SynaBun's own local ports, and anything else (an MCP tool) goes through workerToolDecision by its title.
+ */
+export function acpPermissionDecision(rawCall, confinement) {
+  if (!confinement) return null;
+  try {
+    // Either shape Antigravity sends (a permission request's toolCall, a hook payload's { name, args }), read as one
+    // (lib/antigravity/tool-call.js): its kind from its name when it has none, an MCP call as its server and tool.
+    const call = rawCall?.args && 'mcp' in rawCall ? rawCall : acpCall(rawCall);
+    const toolCall = { ...call, rawInput: call.args };
+    // An MCP call is the tool it calls (agy reports it as kind `execute` with no command line).
+    if (call.mcp) return workerToolDecision(`mcp__${call.mcp.server}__${call.mcp.tool}`, call.mcp.args, confinement);
+    const kind = String(call.kind || 'other').toLowerCase();
+    const input = call.args;
+    const label = String(call.title || call.name || kind).slice(0, 120);
+    if (kind === 'execute') {
+      const command = typeof input.command === 'string' ? input.command
+        : Array.isArray(input.command) ? input.command.join(' ')
+          : typeof input.CommandLine === 'string' ? input.CommandLine
+            : typeof input.cmd === 'string' ? input.cmd : '';
+      if (!command) return refusal('unknown-command', `${label} names no command SynaBun could read, so it is refused; this run writes inside ${rootsText(confinement)} only.`);
+      return workerShellDecision(command, confinement);
+    }
+    if (ACP_WRITE_KINDS.has(kind)) {
+      if (confinement.capability === 'read-only') return refusal('read-only', `This run has capability read-only: ${label} (${kind}) is not available. Report what you found instead of changing files.`);
+      const paths = acpToolPaths(toolCall);
+      if (!paths.length) return refusal('unknown-path', `${label} (${kind}) names no path SynaBun could read; this run writes inside ${rootsText(confinement)} only.`);
+      for (const raw of paths) {
+        const place = placeOf(raw, { cwd: confinement.cwd, home: confinement.home });
+        if (!place) return refusal('unknown-path', `${label} names a path SynaBun could not read ("${String(raw).slice(0, 200)}"); this run writes inside ${rootsText(confinement)} only.`);
+        if (!mayWrite(place, confinement)) return refusal('write-outside', `${label} (${kind}) to ${place} is outside this run's workspace: this run writes inside ${rootsText(confinement)} only.`, place);
+      }
+      return null;
+    }
+    if (kind === 'read' || kind === 'search') {
+      for (const raw of acpToolPaths(toolCall)) {
+        const place = placeOf(raw, { cwd: confinement.cwd, home: confinement.home });
+        if (place && isProtectedPlace(place, confinement)) {
+          return refusal('protected-path', `${label} reaches ${place}, one of SynaBun's protected home folders (its data home or a runtime's credential store): a worker does not read there, whatever its capability.`, place);
+        }
+      }
+      return null;
+    }
+    if (kind === 'fetch') {
+      const url = typeof input.url === 'string' ? input.url : typeof input.Url === 'string' ? input.Url : '';
+      if (url) {
+        let parsed = null;
+        try { parsed = new URL(url); } catch { /* not a URL: nothing to compare */ }
+        if (parsed && isLoopbackHost(parsed.hostname)) {
+          const port = Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80));
+          const kindOfPort = controlPortOf(port, confinement);
+          if (kindOfPort) return refusal('control-port', `${label}: ${controlPortText(kindOfPort, parsed.hostname, port, confinement)}; a worker does not call it.`);
+        }
+      }
+      return null;
+    }
+    if (kind === 'think' || kind === 'switch_mode') return null;
+    // MCP and other tools: by the name the call carries ("mcp__server__tool" when the agent says so).
+    const name = typeof input.toolName === 'string' ? input.toolName : typeof toolCall?.title === 'string' ? toolCall.title : '';
+    return name ? workerToolDecision(name, input, confinement) : null;
   } catch (err) {
     return refusal('check-failed', `The request could not be checked (${err?.message || err}), so it is refused.`);
   }

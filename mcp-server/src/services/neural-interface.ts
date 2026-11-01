@@ -1406,7 +1406,8 @@ export async function skillsV2(method: 'GET' | 'POST' | 'PATCH', path: string, b
 // which owns dispatch state, rails and authorization. requestOnce already
 // sends X-Synabun-Terminal (the assistant pin) and X-Synabun-Role.
 
-export type AssistantProvider = 'claude-code' | 'codex' | 'opencode';
+/** A worker provider (each one can be the Assistant's brain too; 'antigravity' runs both over ACP). */
+export type AssistantProvider = 'claude-code' | 'codex' | 'opencode' | 'antigravity';
 
 export type AssistantDispatchBody = {
   /** Optional when routeId names an approved route (the server applies it). */

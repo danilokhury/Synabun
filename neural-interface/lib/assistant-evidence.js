@@ -12,9 +12,15 @@
  *   Codex     item.completed: command_execution, mcp_tool_call, file_change, error
  *   OpenCode  message.part.updated tool parts, keyed by callID, last write wins,
  *             counted once completed or errored
+ *   Antigravity  ACP tool_call / tool_call_update, keyed by toolCallId (an update
+ *             carries only what changed, so it is merged into the call), counted
+ *             once completed or failed: execute → a command (rawInput.command or
+ *             Antigravity's CommandLine), edit / delete / move → edited files,
+ *             any other kind that can show success or failure → a result
  */
 
 import { isTestOrBuildCommand } from '../../hooks/claude-code/shared.mjs';
+import { acpMcpTarget } from './antigravity/tool-call.js';
 
 const MAX_KEPT = 24;          // commands / results kept per turn
 const MAX_PENDING = 200;      // Claude tool uses waiting for their result; OpenCode parts
@@ -32,6 +38,11 @@ const MEMORY_TOOL = /(?:^|__)Syna[Bb]un[._]+(?:remember|reflect|recall|memories|
 const CLAUDE_EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 const OPENCODE_EDIT_TOOLS = new Set(['edit', 'write', 'patch', 'multiedit']);
 const OPENCODE_QUIET = /^(?:read|grep|glob|list|ls|todo\w*)$/i;
+// ACP tool kinds: the ones that change files, and the ones whose result says nothing about success.
+const ACP_EDIT_KINDS = new Set(['edit', 'delete', 'move']);
+const ACP_QUIET_KINDS = new Set(['read', 'search', 'think', 'switch_mode']);
+// Path fields of an ACP call's raw input (lib/worker-confinement.js acpToolPaths reads the same, Antigravity's included).
+const ACP_PATH_KEYS = ['path', 'file_path', 'filePath', 'TargetFile', 'AbsolutePath', 'destination', 'newPath', 'new_path'];
 
 function clipLine(value, max) {
   const s = String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -176,6 +187,69 @@ function recordOpenCode(acc, eventType, event) {
   if (acc.parts.size > MAX_PENDING) acc.parts.delete(acc.parts.keys().next().value);
 }
 
+// ── Antigravity (ACP) ───────────────────────────────────────────────────────
+/** The command an ACP execute call runs (Antigravity's run_command names it CommandLine), else ''. */
+export function acpCommandOf(call = {}) {
+  const input = call?.rawInput && typeof call.rawInput === 'object' ? call.rawInput : {};
+  if (typeof input.command === 'string') return input.command;
+  if (Array.isArray(input.command)) return input.command.map(String).join(' ');
+  if (typeof input.CommandLine === 'string') return input.CommandLine;
+  if (typeof input.cmd === 'string') return input.cmd;
+  return '';
+}
+/** The text an ACP call produced: its content blocks' text, else a text raw output. */
+function acpOutput(call) {
+  const blocks = Array.isArray(call?.content) ? call.content : [];
+  const text = blocks.map((block) => (block?.type === 'content' && block.content?.type === 'text' ? block.content.text || '' : '')).filter(Boolean).join('\n');
+  if (text) return text;
+  const raw = call?.rawOutput;
+  if (typeof raw === 'string') return raw;
+  if (raw && typeof raw === 'object') {
+    const joined = [raw.output, raw.stdout, raw.stderr, raw.error].filter((v) => typeof v === 'string' && v).join('\n');
+    if (joined) return joined;
+  }
+  return '';
+}
+/** A command's exit from what the call reports: a failed call is an error; a completed one only by an exit code it names. */
+function acpExit(call) {
+  if (call.status === 'failed') return 'error';
+  const raw = call.rawOutput && typeof call.rawOutput === 'object' ? call.rawOutput : {};
+  const code = [raw.exitCode, raw.exit_code, raw.ExitCode, raw.code].find((v) => typeof v === 'number');
+  return typeof code === 'number' ? (code === 0 ? 'ok' : 'error') : 'unknown';
+}
+function acpPaths(call) {
+  const out = (Array.isArray(call?.locations) ? call.locations : []).map((l) => l?.path).filter((p) => typeof p === 'string' && p);
+  const input = call?.rawInput && typeof call.rawInput === 'object' ? call.rawInput : {};
+  for (const key of ACP_PATH_KEYS) if (typeof input[key] === 'string' && input[key]) out.push(input[key]);
+  return out;
+}
+function recordAntigravity(acc, eventType, update) {
+  if ((eventType !== 'tool_call' && eventType !== 'tool_call_update') || !update || typeof update !== 'object') return;
+  const key = String(update.toolCallId || '');
+  if (!key) return;
+  if (!acc.acpCalls) acc.acpCalls = new Map();
+  // An update carries only what changed: it is merged into the call.
+  const known = acc.acpCalls.get(key);
+  const call = { ...(known || { order: ++acc.seq }) };
+  for (const [field, value] of Object.entries(update)) if (value !== undefined && value !== null && field !== 'sessionUpdate' && field !== 'order') call[field] = value;
+  acc.acpCalls.set(key, call);
+  if (acc.acpCalls.size > MAX_PENDING) acc.acpCalls.delete(acc.acpCalls.keys().next().value);
+  // An MCP call is the tool it calls, never a command (agy reports it as kind `execute` with no command line).
+  const mcp = acpMcpTarget(call.name || '', call.rawInput) || (call.rawInput && typeof call.rawInput === 'object' && call.rawInput.ServerName && call.rawInput.ToolName ? { server: String(call.rawInput.ServerName), tool: String(call.rawInput.ToolName) } : null);
+  const kind = mcp ? 'mcp' : String(call.kind || 'other');
+  if (ACP_EDIT_KINDS.has(kind)) for (const path of acpPaths(call)) addFile(acc, path);
+  if (call.status !== 'completed' && call.status !== 'failed') return;
+  const failed = call.status === 'failed';
+  const name = mcp ? `mcp__${mcp.server}__${mcp.tool}` : String(call.title || call.name || kind);
+  let record = null;
+  if (kind === 'execute') record = { kind: 'command', entry: { command: clipLine(acpCommandOf(call) || name, COMMAND_CLIP), exit: acpExit(call), output_tail: tailText(acpOutput(call)) } };
+  else if (ACP_EDIT_KINDS.has(kind)) { if (failed) record = { kind: 'result', entry: { tool: name, is_error: true, tail: tailText(acpOutput(call) || `${kind} failed: ${acpPaths(call).join(', ')}`) } }; }
+  else if (!ACP_QUIET_KINDS.has(kind) && !quietTool(name)) record = { kind: 'result', entry: { tool: name, is_error: failed, tail: tailText(acpOutput(call)) } };
+  if (!record) return;
+  acc.parts.set(`acp:${key}`, { order: call.order, ...record });
+  if (acc.parts.size > MAX_PENDING) acc.parts.delete(acc.parts.keys().next().value);
+}
+
 /** Fold one provider-event payload ({ provider, eventType?, event }) into the turn's evidence. */
 export function recordProviderEvent(acc, payload = {}) {
   if (!acc || !payload || typeof payload !== 'object') return acc;
@@ -184,6 +258,7 @@ export function recordProviderEvent(acc, payload = {}) {
     if (event.type === 'assistant' || event.type === 'user') recordClaude(acc, event);
   } else if (payload.provider === 'codex') recordCodex(acc, event);
   else if (payload.provider === 'opencode') recordOpenCode(acc, payload.eventType || event.type, event);
+  else if (payload.provider === 'antigravity') recordAntigravity(acc, payload.eventType || event.sessionUpdate, event);
   return acc;
 }
 
@@ -202,6 +277,11 @@ export function evidenceSnapshot(acc) {
   for (const use of acc.pending.values()) {
     if (use.name !== 'Bash') continue;
     commands.push({ order: use.order, command: clipLine(use.input.command, COMMAND_CLIP), exit: use.input.run_in_background ? 'background' : 'interrupted', output_tail: '' });
+  }
+  // The same for an ACP command that never completed nor failed.
+  for (const call of acc.acpCalls?.values?.() || []) {
+    if (call.kind !== 'execute' || call.status === 'completed' || call.status === 'failed') continue;
+    commands.push({ order: call.order, command: clipLine(acpCommandOf(call) || call.title || 'command', COMMAND_CLIP), exit: 'interrupted', output_tail: '' });
   }
   commands.sort((a, b) => a.order - b.order);
   results.sort((a, b) => a.order - b.order);

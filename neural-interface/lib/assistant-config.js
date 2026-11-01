@@ -17,7 +17,9 @@ import { normalizeUserContext, USER_CONTEXT_DEFAULTS } from './assistant-user-co
 
 export const ROUTE_MODES = ['always-ask', 'ask-unsure', 'never'];
 export const PREFERENCE_KINDS = ['direct', 'dispatch'];
-export const ROUTE_PROVIDERS = ['claude-code', 'codex', 'opencode'];
+export const ROUTE_PROVIDERS = ['claude-code', 'codex', 'opencode', 'antigravity'];
+/** The route providers whose targets name an account (OpenCode has none of its own; Antigravity signs in with Google in its CLI). */
+export const ROUTE_ACCOUNT_PROVIDERS = ['claude-code', 'codex'];
 
 export const DEFAULT_ROUTING = Object.freeze({
   defaultMode: 'ask-unsure',
@@ -51,13 +53,14 @@ function routingError(field, message) {
 function cleanTarget(field, target) {
   if (target === null) return null;
   if (!target || typeof target !== 'object') throw routingError(field, `routing.${field} must be an object or null`);
-  const kind = PREFERENCE_KINDS.includes(target.kind) ? target.kind : 'dispatch';
   const provider = String(target.provider || '').trim();
   if (!ROUTE_PROVIDERS.includes(provider)) throw routingError(`${field}.provider`, `routing.${field}.provider must be one of ${ROUTE_PROVIDERS.join(', ')}`);
+  // Every provider can be the brain now (Antigravity included), so a route keeps the kind it was saved with.
+  const kind = PREFERENCE_KINDS.includes(target.kind) ? target.kind : 'dispatch';
   const out = { kind, provider, model: target.model ? String(target.model).slice(0, 200) : null, effort: target.effort ? String(target.effort).slice(0, 40) : null };
   if (target.accountId != null && target.accountId !== '') {
     if (typeof target.accountId !== 'string' || !/^[a-z0-9-]{1,64}$/.test(target.accountId)) throw routingError(`${field}.accountId`, 'Invalid route account id');
-    if (provider !== 'opencode') out.accountId = target.accountId;
+    if (ROUTE_ACCOUNT_PROVIDERS.includes(provider)) out.accountId = target.accountId;
   }
   if (target.label) out.label = String(target.label).slice(0, 120);
   if (target.at) out.at = String(target.at).slice(0, 40);

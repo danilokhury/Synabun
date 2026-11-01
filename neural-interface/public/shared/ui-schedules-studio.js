@@ -13,6 +13,7 @@ import { KEYS } from './constants.js';
 import { isGuest, hasPermission, showGuestToast } from './ui-sync.js';
 import { registerLaunchPrefetch } from './launch-prefetch.js';
 import { sendToPanel } from './ui-claude-panel.js';
+import { openAntigravityWithPrompt } from './ui-antigravity-panel.js';
 import { getProviderMeta } from './provider-icons.js';
 import {
   getNativeLoopRouterClaimToken,
@@ -29,6 +30,9 @@ import {
   getModelsForProfile,
   formatModelOptionLabel,
   isDynamicModelProfile,
+  migrateLaunchRecords,
+  migrateProviderId,
+  migrateProviderModel,
   modelSelectorValue,
   modelMatchesSelector,
   normalizeEffortForProfile,
@@ -143,9 +147,9 @@ let _promptBackdrop = null;
 let _promptKeyHandler = null;
 const _modelLoadRequests = new Set();
 
-let _launchProfile = storage.getItem('as-launch-profile') || 'claude-code';
+let _launchProfile = migrateProviderId(storage.getItem('as-launch-profile') || 'claude-code');
 const _storedLaunchSelection = normalizeAutomationSelection(
-  _launchProfile, storage.getItem('as-launch-model'), storage.getItem('as-launch-context-mode'),
+  _launchProfile, migrateProviderModel(_launchProfile, storage.getItem('as-launch-model')), storage.getItem('as-launch-context-mode'),
 );
 let _launchModel = _storedLaunchSelection.model;
 let _launchContextMode = _storedLaunchSelection.contextMode || 'default';
@@ -583,16 +587,17 @@ async function loadData() {
   ]);
   if (seq !== _loadSeq) return; // a newer load is under way: it finishes for both
   const failed = [];
+  // A record still saved for the Gemini CLI reads as Antigravity's (migrateLaunchRecords).
   if (schedules.status === 'fulfilled' && Array.isArray(schedules.value)) {
-    _schedules = schedules.value;
+    _schedules = migrateLaunchRecords(schedules.value);
     _loaded.schedules = true;
   } else failed.push(['schedules', failureReason(schedules)]);
   if (templates.status === 'fulfilled' && Array.isArray(templates.value)) {
-    _templates = templates.value;
+    _templates = migrateLaunchRecords(templates.value);
     _loaded.templates = true;
   } else failed.push(['automations', failureReason(templates)]);
   if (groups.status === 'fulfilled' && Array.isArray(groups.value)) {
-    _groups = groups.value;
+    _groups = migrateLaunchRecords(groups.value);
     _loaded.groups = true;
     if (groupIdOf(_scope) && !getGroup(groupIdOf(_scope))) setScope('all', { keepEditors: true });
   } else failed.push(['groups', failureReason(groups)]);
@@ -633,7 +638,7 @@ async function loadTimers() {
   const failed = [];
   if (timers.status === 'fulfilled' && timers.value && typeof timers.value === 'object') _scheduleTimerData = timers.value;
   else failed.push(failureReason(timers));
-  if (quick.status === 'fulfilled' && Array.isArray(quick.value)) _quickTimers = quick.value;
+  if (quick.status === 'fulfilled' && Array.isArray(quick.value)) _quickTimers = migrateLaunchRecords(quick.value);
   else failed.push(failureReason(quick));
   _timersLoaded = true;
   _timersError = failed.length ? t('schedules.load.timersFailed', { reasons: [...new Set(failed)].join('; ') }) : null;
@@ -2880,6 +2885,7 @@ function openPromptScheduleModal() {
   document.body.appendChild(_promptBackdrop);
 
   const claudeMeta = getProviderMeta('claude-code');
+  const antigravityMeta = getProviderMeta('antigravity');
   const opencodeMeta = getProviderMeta('opencode');
   const codexMeta = getProviderMeta('codex');
   _promptModal = document.createElement('div');
@@ -2904,6 +2910,14 @@ function openPromptScheduleModal() {
         <span class="sched-prompt-tile-body">
           <span class="sched-prompt-tile-title">${claudeMeta.label}</span>
           <span class="sched-prompt-tile-sub">Anthropic</span>
+        </span>
+        <span class="sched-prompt-pill sched-prompt-pill--active">${te('schedules.prompt.ready')}</span>
+      </button>
+      <button class="sched-prompt-tile" style="--provider-color:${antigravityMeta.color};" data-action="prompt-modal-pick" data-runtime="antigravity">
+        <span class="sched-prompt-tile-logo" aria-hidden="true">${antigravityMeta.icon}</span>
+        <span class="sched-prompt-tile-body">
+          <span class="sched-prompt-tile-title">${antigravityMeta.label}</span>
+          <span class="sched-prompt-tile-sub">Google</span>
         </span>
         <span class="sched-prompt-pill sched-prompt-pill--active">${te('schedules.prompt.ready')}</span>
       </button>
@@ -2963,7 +2977,7 @@ function closePromptScheduleModal() {
 }
 
 async function handlePromptPick(runtime, triggerEl = null) {
-  if (runtime !== 'claude-code') {
+  if (runtime !== 'claude-code' && runtime !== 'antigravity') {
     showToast(t('schedules.toast.comingSoon'));
     return;
   }
@@ -2972,12 +2986,29 @@ async function handlePromptPick(runtime, triggerEl = null) {
     triggerEl.setAttribute('aria-busy', 'true');
   }
   try {
-    await sendToPanel('/synabun schedule', { newTab: true, tabLabel: t('schedules.prompt.tabLabel'), autoSubmit: true });
+    if (runtime === 'antigravity') {
+      // The Antigravity panel reads `/synabun …` as the bundled skill only on a server whose panel bridge says so
+      // (lib/antigravity/panel-bridge.js 'synabun-command'); an older one would send the words as they are.
+      if (!(await antigravityTakesSynabunCommands())) { showToast(t('schedules.toast.restartForAntigravity')); return; }
+      await openAntigravityWithPrompt('/synabun schedule', { newTab: true, send: true });
+    } else {
+      await sendToPanel('/synabun schedule', { newTab: true, tabLabel: t('schedules.prompt.tabLabel'), autoSubmit: true });
+    }
   } catch (err) {
-    showToast(t('schedules.toast.panelFailed', { error: err.message }));
+    showToast(t(runtime === 'antigravity' ? 'schedules.toast.antigravityPanelFailed' : 'schedules.toast.panelFailed', { error: err.message }));
   } finally {
     closePromptScheduleModal();
   }
+}
+
+/** Whether this server's Antigravity panel runs `/synabun …` (GET /api/antigravity/panel lists 'synabun-command'). */
+async function antigravityTakesSynabunCommands() {
+  try {
+    const res = await fetch('/api/antigravity/panel');
+    if (!res.ok) return false;
+    const body = await res.json();
+    return Array.isArray(body?.capabilities) && body.capabilities.includes('synabun-command');
+  } catch { return false; }
 }
 
 // ── Timers: writes ──
@@ -3166,7 +3197,7 @@ function setupSync() {
     refresh();
   });
   on('sync:schedule-group:reordered', (data) => {
-    if (Array.isArray(data?.groups)) _groups = data.groups;
+    if (Array.isArray(data?.groups)) _groups = migrateLaunchRecords(data.groups);
     refresh();
   });
   on('sync:quick-timer:set', (data) => {

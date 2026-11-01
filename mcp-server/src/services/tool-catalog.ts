@@ -259,7 +259,7 @@ export const DEFAULT_TOOLS: readonly string[] = Object.freeze(['git', 'image', '
 export type ToolListEffect = 'strict' | 'focus';
 export const HOST_EFFECT: Readonly<Record<string, ToolListEffect>> = Object.freeze({
   opencode: 'strict',
-  gemini: 'strict',
+  antigravity: 'strict',
   'claude-code': 'focus',
   codex: 'focus',
 });

@@ -18,7 +18,7 @@
 // Health is a list of codes with a severity (err, warn, info, off, ok), never a colour alone: the view writes the
 // words (i18n `skillsStudio.health.*`). No DOM and no imports.
 
-export const RUNTIMES = Object.freeze(['claude', 'codex', 'opencode']);
+export const RUNTIMES = Object.freeze(['claude', 'codex', 'opencode', 'antigravity']);
 export const SORTS = Object.freeze(['attention', 'name', 'updated', 'kind', 'source']);
 export const KINDS = Object.freeze(['skill', 'agent', 'command']);
 export const SOURCES = Object.freeze(['mine', 'project', 'synabun', 'plugin', 'account', 'system', 'shared', 'library']);
@@ -322,6 +322,10 @@ function finishRow(row) {
   row.label = revealHidden(row.name || row.folderName || '');
   row.shownDescription = revealHidden(row.description || '');
   row.runtimes = runtimeStates(row);
+  // A runtime that lists two copies of this very row (SynaBun installed one library skill into ~/.claude/skills and
+  // ~/.config/opencode/skills, both read by OpenCode) has no other skill to confuse it with: no "duplicate".
+  const own = new Set(row.entries.map((e) => e.id));
+  row.collisions = row.collisions.filter((c) => !(Array.isArray(c.with) && c.with.length && c.with.every((id) => own.has(id))));
   row.health = healthOf(row);
   row.attention = row.health.reduce((n, h) => n + (ATTENTION[h.code] || 0) * (h.code === 'invalid' || h.code === 'warnings' ? Math.max(1, Math.min(9, num(h.count))) : 1), 0);
   row.needsAttention = row.attention > 0;
@@ -338,7 +342,7 @@ export function healthMatches(row, health) {
     case 'invalid': return codes.has('invalid') || codes.has('not-text');
     case 'warnings': return codes.has('warnings');
     case 'update': return codes.has('update');
-    case 'duplicates': return codes.has('shadowed') || codes.has('twice') || codes.has('same-description');
+    case 'duplicates': return codes.has('shadowed') || codes.has('twice') || codes.has('same-description') || codes.has('duplicate-record');
     case 'drafts': return codes.has('draft');
     case 'readonly': return codes.has('readonly');
     case 'ok': return codes.has('ok');

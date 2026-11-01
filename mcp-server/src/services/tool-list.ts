@@ -72,7 +72,7 @@ export interface ResolveToolListContext {
   source: ToolListSource;
   usesBrowser?: boolean | null;
   taskClass?: string | null;
-  /** claude-code, codex, opencode, gemini: decides the effect. */
+  /** claude-code, codex, opencode, antigravity: decides the effect. */
   provider?: string | null;
   /** launch: the record's own list, already converted (§3.10). */
   stored?: readonly string[] | null;

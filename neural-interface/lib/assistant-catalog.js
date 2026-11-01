@@ -5,8 +5,9 @@ import { toolCatalogView } from '../../mcp-server/dist/services/tool-catalog.js'
 // ═══════════════════════════════════════════
 //
 // One normalized view of every model the assistant can route to: Claude Code
-// (CLI model list), Codex (app-server model/list) and OpenCode (the shared
-// serve's /provider, connected providers only). Claude and Codex rows are
+// (CLI model list), Codex (app-server model/list), OpenCode (the shared
+// serve's /provider, connected providers only) and Antigravity (what an ACP
+// session of its own CLI offers; a brain and a worker, unpriced). Claude and Codex rows are
 // priced from the one list-price table (assistant-pricing.js), the same one
 // the usage ledger prices tokens with; OpenCode rows carry the price the serve
 // reports. A Codex row keeps `price: null` (plan billing: routing treats it as
@@ -20,7 +21,7 @@ import { toolCatalogView } from '../../mcp-server/dist/services/tool-catalog.js'
 //
 // Which models exist is never decided here. Each provider's rows are the list
 // its own model selector reads (/api/claude/models, /api/codex/models,
-// /api/opencode/providers/full); the static tables (prices, tier hints, the 1M
+// /api/opencode/providers/full, /api/antigravity/models); the static tables (prices, tier hints, the 1M
 // rule) only describe a row. A model the provider lists and no table knows is
 // offered with what is unknown left unknown; a model only a table knows is
 // never offered. `sources` says how each provider's list was obtained.
@@ -28,8 +29,12 @@ import { toolCatalogView } from '../../mcp-server/dist/services/tool-catalog.js'
 import { sortEfforts, variantNames } from './effort-levels.js';
 import { listPrice } from './assistant-pricing.js';
 
-export const CATALOG_PROVIDERS = ['claude-code', 'codex', 'opencode'];
+export const CATALOG_PROVIDERS = ['claude-code', 'codex', 'opencode', 'antigravity'];
+/** The providers an Assistant brain can run on (every provider of the catalog: each is a worker too). */
+export const BRAIN_PROVIDERS = Object.freeze(['claude-code', 'codex', 'opencode', 'antigravity']);
 export const TIERS = ['small', 'medium', 'large'];
+/** The thinking levels Antigravity accepts, for a model whose row names none of its own. */
+export const ANTIGRAVITY_EFFORTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 
 const SMALL_HINTS = /(haiku|mini|nano|flash|lite|luna|small|tiny|\bair\b|[:\-_ ](1|2|3|4|7|8|9|12|14|20|24|27|30|32)b\b)/i;
 const LARGE_HINTS = /(opus|fable|astra|ultra|\bpro\b|-pro\b|large|[:\-_ ](1\d\d|[2-9]\d\d)b\b|-sol\b)/i;
@@ -151,7 +156,8 @@ export function withClaudeContextVariants(rows) {
 
 /** Tier guess: name hints first, then output-price bands. */
 export function guessTier(row = {}) {
-  const name = `${row.id || ''} ${row.label || ''} ${row.upstream || ''}`;
+  // "Gemini" holds the small hint "mini": the family's name says nothing of its size (gemini-2.5-pro is not small).
+  const name = `${row.id || ''} ${row.label || ''} ${row.upstream || ''}`.replace(/gemini/gi, ' ');
   if (SMALL_HINTS.test(name)) return 'small';
   if (LARGE_HINTS.test(name)) return 'large';
   if (MEDIUM_HINTS.test(name)) return 'medium';
@@ -324,6 +330,43 @@ export function normalizeCodexRows(rows, { priceOf = null } = {}) {
   });
 }
 
+/**
+ * Antigravity's own model list (GET /api/antigravity/models: { id, label, description?, default?, efforts? }) →
+ * rows. Antigravity is billed by its Google sign-in and reports tokens, not prices: `price` stays null and its
+ * runs are unpriced. A row without levels of its own takes the five Antigravity accepts. The tier is guessed from
+ * the name like every provider's (guessTier). `via: 'acp'` (the list an ACP session offered, lib/antigravity/
+ * catalog.js): SynaBun hands such a model images as ACP image blocks, which agy passes on (measured on agy 1.4.12
+ * with Gemini 3.8 Flash and 4 Argon), so it can see; a list `agy models` gave says nothing about that. Outputs and the
+ * context window stay unknown.
+ */
+export function normalizeAntigravityRows(rows, { via = null } = {}) {
+  const sees = via === 'acp';
+  const seen = new Set();
+  const out = [];
+  for (const raw of arr(rows)) {
+    const m = typeof raw === 'string' ? { id: raw } : raw;
+    const id = typeof m?.id === 'string' ? m.id.trim() : '';
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const own = sortEfforts(arr(m.efforts));
+    const row = {
+      provider: 'antigravity', id, upstream: id, label: String(m.label || m.name || id), family: null,
+      tier: null, vision: sees ? true : null, visionSource: sees ? 'acp' : 'unknown',
+      outputs: { image: null, video: null }, outputsSource: 'unknown',
+      reasoning: null, toolcall: null, contextWindow: null,
+      price: null,
+      efforts: own.length ? own : [...ANTIGRAVITY_EFFORTS], defaultEffort: null,
+      isDefault: m.default === true || m.isDefault === true,
+      status: 'active',
+      description: m.description ? String(m.description) : null,
+    };
+    row.tier = guessTier(row);
+    row.tierSource = 'guess';
+    out.push(row);
+  }
+  return out;
+}
+
 /** The ids the user hid for `provider` (catalog.hidden, else the older opencodeHidden). */
 function hiddenList(catalog, provider) {
   const map = catalog?.hidden;
@@ -492,9 +535,10 @@ function ctxText(ctx) {
 
 /** One routing-sheet line: `id · tier · $in/$out · vision · image-out · video-out · ctx · efforts`. */
 export function formatModelLine(row) {
-  // Only Codex bills a plan; any other row without a price is a model no table prices yet.
+  // Only Codex bills a plan; Antigravity reports tokens, never prices; any other row without a price is a
+  // model no table prices yet.
   const planBilled = row.provider === 'codex' || !!row.listPrice;
-  const parts = [row.id, row.tier || '?', row.price || planBilled ? priceText(row.price, row.listPrice) : 'price unknown'];
+  const parts = [row.id, row.tier || '?', row.price || planBilled ? priceText(row.price, row.listPrice) : row.provider === 'antigravity' ? 'unpriced' : 'price unknown'];
   if (row.vision) parts.push('vision');
   if (rowMakes(row, 'image')) parts.push('image-out');
   if (rowMakes(row, 'video')) parts.push('video-out');
@@ -558,7 +602,8 @@ export function selectSheetModels(catalog, { brain = {}, preferences = {}, max =
         else if (current.id === 'default' && row.upstream === current.upstream) families.set(family, row);
       }
       for (const row of families.values()) add(row);
-    } else if (provider === 'codex') {
+    } else if (provider === 'codex' || provider === 'antigravity') {
+      // Short lists, and Antigravity's rows carry no tier or price to sample by.
       for (const row of rows) add(row);
     } else {
       const upstream = brain?.provider === 'opencode' && brain?.model ? String(brain.model).split('/')[0] : null;
@@ -659,11 +704,27 @@ export function createAssistantCatalog({
     return JSON.stringify(arr(rows).map((row) => [row.id, row.label, row.upstream || '', row.status || '', row.contextWindow || 0, arr(row.efforts).join(',')]));
   }
 
+  /**
+   * Antigravity's answer: its endpoint says itself how the list was obtained ('live', 'stale': its own last
+   * list while the CLI does not answer, 'unavailable'). No answer, a refusal or an unavailable list: no rows.
+   */
+  function antigravityList(payload) {
+    if (!payload || typeof payload !== 'object' || payload.ok === false) return { list: [], state: 'unavailable' };
+    const said = String(payload.source || '').toLowerCase();
+    // Whether Antigravity is signed in, and on which plan, as its last listing said (null: not known).
+    const signIn = { signedIn: payload.signedIn === true ? true : payload.signedIn === false || payload.authRequired === true ? false : null, tier: typeof payload.tier === 'string' ? payload.tier : null };
+    if (said === 'unavailable') return { list: [], state: 'unavailable', via: null, ...signIn };
+    const list = pickArray(payload, ['models']);
+    return { list, state: said === 'stale' ? 'stale' : list.length || said === 'live' ? 'live' : 'unavailable', via: typeof payload.via === 'string' ? payload.via : null, ...signIn };
+  }
+
   async function build({ deep = false } = {}) {
     // `deep` also drops the providers' own discovery caches (a CLI or app-server round trip).
     const fresh = deep ? '?refresh=1' : '';
-    const [claudeModels, codexModels, opencodeProviders, projects] = await Promise.all([
+    const [claudeModels, codexModels, opencodeProviders, antigravityModels, projects] = await Promise.all([
       fetchJson(`/api/claude/models${fresh}`), fetchJson(`/api/codex/models${fresh}`), fetchJson('/api/opencode/providers/full'),
+      // A provider that does not answer is unavailable for this build, never a failed build.
+      Promise.resolve().then(() => fetchJson(`/api/antigravity/models${fresh}`)).catch(() => null),
       fetchJson('/api/projects'),
     ]);
     const filter = (() => { try { return readFilter() || {}; } catch { return {}; } })();
@@ -680,17 +741,20 @@ export function createAssistantCatalog({
     })();
     const claude = settle('claude-code', claudeModels);
     const codex = settle('codex', codexModels);
+    const antigravity = antigravityList(antigravityModels);
     // OpenCode is read from its serve on every build; while it is down its models are unknown, not remembered.
     const sources = {
       'claude-code': claude.state,
       codex: codex.state,
       opencode: opencodeProviders && opencodeProviders.ok !== false ? 'live' : 'unavailable',
+      antigravity: antigravity.state,
     };
     for (const p of ['claude-code', 'codex']) if (sources[p] !== 'live') log('catalog:source', `${p}: ${sources[p]}`);
     const all = {
       'claude-code': withClaudeContextVariants(normalizeClaudeRows(claude.list, { pricing: claudePricing })),
       codex: normalizeCodexRows(codex.list, { priceOf: codexPrice }),
       opencode: parseOpenCodeProviders(opencodeProviders, { filter: filter.opencode || null }),
+      antigravity: normalizeAntigravityRows(antigravity.list, { via: antigravity.via }),
     };
     // A hidden alias hides the model it named when it was hidden. With the rows at hand the
     // store settles that: an alias that moved on is shown again and its old model stays hidden.
@@ -744,6 +808,9 @@ export function createAssistantCatalog({
         { id: 'claude-code', brain: true, efforts: providerEfforts(models['claude-code']), permissionPolicies: ['auto', 'ask'] },
         { id: 'codex', brain: true, efforts: providerEfforts(models.codex), permissionPolicies: ['auto', 'restricted'] },
         { id: 'opencode', brain: true, efforts: providerEfforts(models.opencode), permissionPolicies: ['auto', 'ask'] },
+        // A brain and a worker. No accounts (Antigravity signs in with Google in its own CLI: `signedIn` and `tier`
+        // say what its last model listing found) and unpriced (tokens, not prices).
+        { id: 'antigravity', brain: true, efforts: providerEfforts(models.antigravity), permissionPolicies: ['auto', 'ask'], accounts: false, priced: false, signedIn: antigravity.signedIn, tier: antigravity.tier },
       ],
     };
   }

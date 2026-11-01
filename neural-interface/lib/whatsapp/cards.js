@@ -49,7 +49,7 @@
 
 import { CONTROL_KINDS, buildControlResponse, describeToolInput, normalizeAnswers, normalizeControlRequest } from '../../public/shared/assistant/asst-control.js';
 import { buildRouteResponse, normalizeRouteRequest, routeOptions } from '../../public/shared/assistant/asst-route.js';
-import { isComputerTool, isDeniedRemoteTool } from '../remote-policy.js';
+import { isComputerTool, isDeniedRemoteTool, providerLabel } from '../remote-policy.js';
 
 // Codes a person can read out loud: no 0/O, 1/I/L, 2/Z, 5/S, 8/B.
 const TAG_ALPHABET = 'ACDEFGHJKMNPQRTUVWXY34679';
@@ -266,9 +266,10 @@ function choiceName(choice) {
   const strip = (value) => clean(value).replace(/^do it here with /i, '');
   return strip(choice.label) || strip(choice.title) || 'that model';
 }
-function routePhrase(choice, { it = 'it', other = false } = {}) {
-  if (choice.here) return `do ${it} here with ${choiceName(choice)}`;
-  return other ? `use ${choiceName(choice)}` : `hand ${it} to ${choiceName(choice)}`;
+/** A choice that runs in this conversation: "here" on its model, or on another model of its provider. */
+const runsHere = (choice) => !!choice?.here || choice?.kind === 'direct';
+function routePhrase(choice, { it = 'it' } = {}) {
+  return runsHere(choice) ? `do ${it} here with ${choiceName(choice)}` : `hand ${it} to ${choiceName(choice)}`;
 }
 
 /**
@@ -294,7 +295,9 @@ export function renderCard(card, { formatPlan = (text) => text } = {}) {
       lines.push(`I can't take that choice from the phone (${card.desktopOnly}): pick it in SynaBun on your computer, or say no and I'll drop it.`);
       return lines.join('\n');
     }
-    if (others.length) lines.push(`I could also ${joinOr(others.slice(0, 4).map((choice) => routePhrase(choice, { other: true })))}: just name it.${mac ? ' Then I ask about the Mac separately.' : ''}`);
+    // The other choices, the ones done here first, then the workers: "do it here with …, hand it to … or hand it to …".
+    const rest = [...others.filter(runsHere), ...others.filter((choice) => !runsHere(choice))].slice(0, 4);
+    if (rest.length) lines.push(`I could also ${joinOr(rest.map((choice) => routePhrase(choice)))}: just name it.${mac ? ' Then I ask about the Mac separately.' : ''}`);
     return `${lines.join('\n')}${tagHint(card)}`;
   }
   if (card.kind === CONTROL_KINDS.CLARIFY) {
@@ -328,7 +331,8 @@ export function renderCard(card, { formatPlan = (text) => text } = {}) {
     if (card.desktopOnly) return `I'd need to control your Mac for this, and I can't take a yes for that from the phone (${card.desktopOnly}): answer in SynaBun on your computer, or say no and I'll skip it.`;
     return `${COMPUTER_ASK_TEXT}${tagHint(card)}`;
   }
-  const worker = card.source === 'dispatch' ? `One of the agents${card.provider && card.provider !== 'claude-code' ? ` (${card.provider})` : ''}` : null;
+  // The worker's provider by its name ("Codex", "Antigravity"), not its id; Claude Code's is the default and goes unsaid.
+  const worker = card.source === 'dispatch' ? `One of the agents${card.provider && card.provider !== 'claude-code' ? ` (${providerLabel(card.provider)})` : ''}` : null;
   const lines = [worker ? `${worker} needs your OK to run this:` : 'I need your OK to run this:', ...toolLines(card)];
   if (n.message && n.message !== n.detail) lines.push(clip(n.message, 200));
   if (card.desktopOnly) lines.push(`I can't take a yes for this one from the phone (${card.desktopOnly}): approve it in SynaBun on your computer, or say no and I'll skip it.`);
@@ -426,12 +430,21 @@ function matchRouteChoice(card, text) {
   said = said.replace(PICK_LEAD, '').replace(/^the /, '');
   for (let i = 0; i < 3; i += 1) said = said.replace(/ (?:please|instead|then|thanks|model)$/, '');
   if (said.length < 2) return null;
+  // "Here" names the option on the Assistant's own model (else the first done here); "dispatch" / "a worker"
+  // names the first worker option, the one the card suggests for the worker side.
+  const firstHere = card.routeChoices.find((choice) => choice.here) || card.routeChoices.find(runsHere) || null;
+  const firstWorker = card.routeChoices.find((choice) => !runsHere(choice)) || null;
   const names = (choice) => {
     const list = [choice.label, choiceName(choice), choice.model, choice.title, String(choice.model || '').split('/').pop()].map(plain).filter(Boolean);
-    if (choice.here) list.push('here', 'do it here', 'do it yourself', 'yourself', 'you do it', `here with ${plain(choice.label)}`);
+    if (choice === firstHere) list.push('here', 'do it here', 'do it yourself', 'yourself', 'you do it', `here with ${plain(choice.label)}`);
+    if (choice === firstWorker) list.push('dispatch', 'dispatch it', 'a worker', 'worker', 'hand it off', 'delegate', 'delegate it');
     return [...new Set(list)];
   };
-  const hits = card.routeChoices.filter((choice) => names(choice).some((name) => name === said || (said.length >= 3 && name.startsWith(`${said} `))));
+  // A whole name first: "do it here" is the "here" option even when another option's label starts with it
+  // ("Do it here with Haiku 4.5"); only then the start of a name ("sonnet" for "Sonnet 5").
+  const exact = card.routeChoices.filter((choice) => names(choice).includes(said));
+  if (exact.length) return exact.length === 1 ? exact[0] : null;
+  const hits = card.routeChoices.filter((choice) => names(choice).some((name) => said.length >= 3 && name.startsWith(`${said} `)));
   return hits.length === 1 ? hits[0] : null;
 }
 
@@ -472,7 +485,7 @@ export function answerCard(card, reply, { quoted = false } = {}) {
     if (!tag.ok) return needTag();
     if (card.desktopOnly || !choice) return { action: 'desktop', message: 'I can\'t take that choice from the phone: pick it in SynaBun on your computer, or say no and I\'ll drop it.' };
     const onMac = routeControlsMac(card) && choice.id === card.routeChoices[0].id;
-    return respond(card, buildRouteResponse(card.route, { optionId: choice.id, remember: false }), onMac ? `doing it on your Mac, here with ${choiceName(choice)}. Esc on the Mac stops me` : choice.here ? `doing it here with ${choiceName(choice)}` : `handing it to ${choiceName(choice)}`);
+    return respond(card, buildRouteResponse(card.route, { optionId: choice.id, remember: false }), onMac ? `doing it on your Mac, here with ${choiceName(choice)}. Esc on the Mac stops me` : runsHere(choice) ? `doing it here with ${choiceName(choice)}` : `handing it to ${choiceName(choice)}`);
   }
   if (stop || parsed.type === 'no' || (numbers.length === 1 && numbers[0] === 2)) return deny(card, parsed.rest);
   const yes = parsed.type === 'yes' || (numbers.length === 1 && numbers[0] === 1 && !parsed.rest);

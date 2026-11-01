@@ -282,7 +282,7 @@ const _snapshotsReady = fetchBlobNamespace('claude-snapshots')
 const EFFORT_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh', 'max'];
 const EFFORT_LABELS = { off: 'Think', low: 'lo', medium: 'med', high: 'hi', xhigh: 'xhi', max: 'max' };
 const EFFORT_TITLES = {
-  off: 'Effort: model default (thinking not shown; /session can turn thinking off)',
+  off: 'Thinking off',
   low: 'Thinking: low',
   medium: 'Thinking: medium',
   high: 'Thinking: high',
@@ -2800,6 +2800,13 @@ function _effortLevelsForModel() {
   const advertised = model?.effortLevels;
   if (!Array.isArray(advertised)) return EFFORT_LEVELS;
   return ['off', ...advertised.filter(id => id !== 'off')];
+}
+
+// Whether the tab's model (the selector's, for the active tab) has effort levels.
+function _modelSupportsEffort(tab) {
+  if (tab === activeTab()) return _effortLevelsForModel().length > 1;
+  const model = tab?.model ? _models.find(m => m.id === tab.model) : null;
+  return !Array.isArray(model?.effortLevels) || model.effortLevels.some(id => id !== 'off');
 }
 
 // Some models have no thinking at all (Haiku). Disable the toggle and force 'off'
@@ -7558,6 +7565,9 @@ function _applySessionOptions(tab, msg) {
   if (hasCapability(tab, 'tool_policy')) msg.toolPolicy = tab.toolPolicy || 'full';
   // The tab's session settings (/session): the bridge validates them again.
   if (hasCapability(tab, 'session_settings')) msg.session = normalizeSession(tab.session);
+  // Think off on a model with effort levels is a pick of its own: sent as 'off'
+  // so the bridge disables thinking, or the user's settings' effortLevel applies.
+  if (!msg.effort && hasCapability(tab, 'effort_off') && _modelSupportsEffort(tab)) msg.effort = 'off';
   // The Claude account this tab runs under (the default account sends nothing).
   if (hasCapability(tab, 'accounts')) msg.accountId = tab.accountId || 'default';
   // A name typed before the first message becomes the new session's title.

@@ -28,11 +28,13 @@ export async function handleMoreLogin(args: { action: string; envId?: string; na
   switch (args.action) {
     case 'status': {
       const r = await ni.moreloginStatus();
-      if (r.error) return text(`MoreLogin unreachable: ${r.error}`);
-      if (!r.installed) return text('MoreLogin is not installed. Install it from https://www.morelogin.com.');
-      if (!r.running) return text(`MoreLogin is installed but its local API is not running on port ${r.port}. Open the MoreLogin app and enable Settings → API & MCP.`);
       const def = r.isDefault && r.defaultEnvId ? `default AI browser = env ${r.defaultEnvId}` : 'no MoreLogin default set';
-      return text(`MoreLogin running on port ${r.port}. ${r.profileCount} profile(s). ${def}.`);
+      // An API that answered with an error is running: say what it rejected, never "unreachable".
+      if (r.running && r.apiError) return text(`MoreLogin running on port ${r.port}, API rejected: ${r.apiError}. ${r.profileCount || 0} profile(s). ${def}.`);
+      if (r.running) return text(`MoreLogin running on port ${r.port}. ${r.profileCount} profile(s). ${def}.`);
+      if (!r.installed && r.port == null && r.error) return text(`MoreLogin unreachable: ${r.error}`);
+      if (!r.installed) return text('MoreLogin is not installed (no app in a known folder and nothing answers on its port). Install it from https://www.morelogin.com, or set MORELOGIN_APP_PATH to a MoreLogin.exe in a custom folder.');
+      return text(`MoreLogin is installed but its local API is not running on port ${r.port}. Open the MoreLogin app and enable Settings → API & MCP.${r.error ? ` (${r.error})` : ''}`);
     }
     case 'list': {
       const r = await ni.moreloginProfiles();

@@ -3,7 +3,10 @@
 // ═══════════════════════════════════════════
 //
 // A session with a budget (assistant-budget.js) divides what is left across
-// three buckets, one per provider: claude-code, codex, opencode. A provider's
+// the buckets of the providers it can meter: claude-code, codex, opencode. A
+// provider that reports no price (antigravity: tokens only) has a bucket that
+// never takes a share: under a budget its runs are refused, under No limit
+// they run and only their spend (none) is shown. A provider's
 // runs draw from its share; the Assistant's own turns (brain turns, direct and
 // continuation routes) draw from the share of the brain's provider, which
 // keeps a reserve for them that the workers on that provider cannot spend.
@@ -22,8 +25,16 @@
 import { listedCount, priceText, providerAllHidden, providerEmpty, rowIsHidden, findModel, defaultModelRow } from './assistant-catalog.js';
 import { BUDGET_WARN_RATIO, floorCents, roundUsd } from './assistant-budget.js';
 
-export const BUDGET_PROVIDERS = Object.freeze(['claude-code', 'codex', 'opencode']);
-export const PROVIDER_LABELS = Object.freeze({ 'claude-code': 'Claude Code', codex: 'Codex', opencode: 'OpenCode' });
+export const BUDGET_PROVIDERS = Object.freeze(['claude-code', 'codex', 'opencode', 'antigravity']);
+export const PROVIDER_LABELS = Object.freeze({ 'claude-code': 'Claude Code', codex: 'Codex', opencode: 'OpenCode', antigravity: 'Antigravity' });
+/**
+ * Providers whose spend no budget can hold: they report tokens, never prices (Antigravity is billed by its Google
+ * sign-in). Under a budget they take no share, never cover work and their runs are refused (BUDGET_UNPRICED).
+ */
+export const UNPRICED_PROVIDERS = Object.freeze(['antigravity']);
+export const isUnpricedProvider = (provider) => UNPRICED_PROVIDERS.includes(provider);
+/** Why a budget cannot hold an unpriced provider's runs, in one phrase. */
+export const UNPRICED_PROVIDER_REASON = 'Antigravity reports tokens, not prices';
 
 // The brain's reserve inside its provider's share: 10 % of what is left, at least $0.50 (never more than is left).
 export const BRAIN_FLOOR_RATIO = 0.1;
@@ -48,6 +59,8 @@ const arr = (value) => (Array.isArray(value) ? value : []);
 const num = (value, fallback = 0) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
 const r8 = (value) => Number((Number(value) || 0).toFixed(8));
 const isProvider = (value) => BUDGET_PROVIDERS.includes(value);
+/** Can the provider take a share? Not when it is ineligible, nor ever when it reports no prices (whatever `eligible` says). */
+const canTake = (eligible, provider) => !isUnpricedProvider(provider) && eligible?.[provider]?.eligible !== false;
 
 // ── buckets ───────────────────────────────────────────────────────────────
 
@@ -56,14 +69,15 @@ const isProvider = (value) => BUDGET_PROVIDERS.includes(value);
  *   no_models   the user disabled every model, or the provider answered with none connected
  *   signed_out  every account of the provider is signed out
  *   limited     every signed-in account is out of subscription usage
+ *   unpriced    the provider reports no prices (UNPRICED_PROVIDERS): a budget cannot hold its spend
  * A provider whose model list is merely unavailable stays eligible (routing is lenient there too). The
  * brain's provider is always eligible (its turns are paid from it); `reason` then says what else is wrong.
  */
 export function bucketEligibility({ catalog = null, accounts = null, brainProvider = null } = {}) {
   const out = {};
   for (const provider of BUDGET_PROVIDERS) {
-    let reason = null;
-    if (catalog) {
+    let reason = isUnpricedProvider(provider) ? 'unpriced' : null;
+    if (!reason && catalog) {
       if (providerEmpty(catalog, provider) || providerAllHidden(catalog, provider)) reason = 'no_models';
       else if (listedCount(catalog, provider) > 0 || arr(catalog.models?.[provider]).length) {
         const usable = arr(catalog.models?.[provider]).filter((row) => !rowIsHidden(catalog, { ...row, provider: row.provider || provider }) && row.status !== 'unavailable');
@@ -115,11 +129,13 @@ export function priceLabel(row, price) {
 }
 /**
  * How the work is paid for: 'free' (a free model), 'api' (an API key, or OpenCode's own providers), 'plan'
- * (a Claude / ChatGPT subscription). `account`: the account row the work would run under, when known.
+ * (a Claude / ChatGPT subscription, or Antigravity's Google sign-in, which reports no price at all).
+ * `account`: the account row the work would run under, when known.
  */
 export function billingOf(provider, price, account = null) {
   if (isFreePrice(price)) return 'free';
   if (provider === 'opencode') return 'api';
+  if (provider === 'antigravity') return 'plan';
   if (account?.mode === 'apiKey') return 'api';
   return 'plan';
 }
@@ -149,7 +165,7 @@ export function fallbackWeights({
   const weights = Object.fromEntries(BUDGET_PROVIDERS.map((p) => [p, 0]));
   const brainProvider = isProvider(brain?.provider) ? brain.provider : null;
   const price = (provider, model) => priceIndex(listPriceOf(rowOf(catalog, provider, model), { pricing, provider, model }));
-  const add = (provider, model, weight) => { if (isProvider(provider) && eligible[provider]?.eligible !== false) weights[provider] += weight * price(provider, model); };
+  const add = (provider, model, weight) => { if (isProvider(provider) && canTake(eligible, provider)) weights[provider] += weight * price(provider, model); };
   const prefs = routing?.preferences && typeof routing.preferences === 'object' ? routing.preferences : {};
   for (const taskClass of classes) {
     // Chat always runs here, on the brain, whatever its saved route says (assistant-router.js evaluateRoute).
@@ -161,8 +177,8 @@ export function fallbackWeights({
   if (task?.provider) add(task.provider, task.model || null, 3 * classWeight(task.taskClass));
   if (brainProvider) add(brainProvider, brain?.model || null, 2);
   for (const run of arr(liveRuns)) add(run?.provider, run?.model || null, classWeight(run?.taskClass));
-  for (const provider of arr(needs)) if (isProvider(provider) && eligible[provider]?.eligible !== false && weights[provider] <= 0) weights[provider] = Math.max(weights[provider], price(provider, null) > 0 ? 1 : 0);
-  const pool = BUDGET_PROVIDERS.filter((p) => eligible[p]?.eligible !== false);
+  for (const provider of arr(needs)) if (isProvider(provider) && canTake(eligible, provider) && weights[provider] <= 0) weights[provider] = Math.max(weights[provider], price(provider, null) > 0 ? 1 : 0);
+  const pool = BUDGET_PROVIDERS.filter((p) => canTake(eligible, p));
   if (pool.length && pool.every((p) => !(weights[p] > 0))) for (const p of pool) weights[p] = 1;
   return weights;
 }
@@ -201,7 +217,7 @@ export function jevWeights(judgment, eligible = {}) {
   if (!scores || typeof scores !== 'object') return null;
   const out = Object.fromEntries(BUDGET_PROVIDERS.map((p) => [p, 0]));
   for (const provider of BUDGET_PROVIDERS) {
-    if (eligible[provider]?.eligible === false) continue;
+    if (!canTake(eligible, provider)) continue;
     const share = shareFromScore(scores[provider]);
     if (share === null) return null;
     out[provider] = Math.max(0, share);
@@ -239,7 +255,7 @@ export function apportion(total, parts) {
  */
 export function divideLeft({ leftUsd = 0, weights = {}, eligible = {}, brainProvider = null } = {}) {
   const leftCents = floorCents(leftUsd);
-  const pool = BUDGET_PROVIDERS.filter((p) => eligible[p]?.eligible !== false);
+  const pool = BUDGET_PROVIDERS.filter((p) => canTake(eligible, p));
   const zero = Object.fromEntries(BUDGET_PROVIDERS.map((p) => [p, 0]));
   if (!leftCents || !pool.length) return { allocCents: zero, leftCents, brainFloorCents: 0, floorsCents: { ...zero } };
   const parts = Object.fromEntries(pool.map((p) => [p, Math.max(0, num(weights[p]))]));
@@ -298,6 +314,11 @@ export function coverageOf({ amountUsd = 0, split = null, spend = null, brainPro
   const providers = {};
   for (const provider of BUDGET_PROVIDERS) {
     const used = providerSpendOf(spend, provider);
+    // An unpriced provider can spend nothing a budget could hold, split or not.
+    if (isUnpricedProvider(provider)) {
+      providers[provider] = { ...used, shareUsd: split ? 0 : null, leftUsd: 0, workerLeftUsd: 0, eligible: false };
+      continue;
+    }
     const eligible = split ? split.eligible?.[provider]?.eligible !== false : true;
     if (!split) {
       providers[provider] = { ...used, shareUsd: null, leftUsd, workerLeftUsd: leftUsd, eligible };
@@ -327,16 +348,22 @@ export function coverageOf({ amountUsd = 0, split = null, spend = null, brainPro
 export function coversWork(coverage, { provider, forBrain = false, free = false, minUsd = MIN_SPEND_USD } = {}) {
   if (!coverage) return true;
   if (coverage.leftUsd < minUsd) return false;
+  // A budget cannot hold what is never priced.
+  if (isUnpricedProvider(provider)) return false;
   if (free) return true;
   const row = coverage.providers?.[provider];
   if (!row) return false;
   return (forBrain ? row.leftUsd : row.workerLeftUsd) >= minUsd;
 }
 
-/** The providers whose share is used up for workers (or ineligible), in BUDGET_PROVIDERS order. */
+/**
+ * The providers whose share is used up for workers (or ineligible), in BUDGET_PROVIDERS order. An unpriced
+ * provider is never among them: it has no share to run out of (its runs are refused under a budget for that).
+ */
 export function dryProviders(coverage, { minUsd = MIN_SPEND_USD } = {}) {
-  if (!coverage?.hasSplit) return coverage && coverage.leftUsd < minUsd ? [...BUDGET_PROVIDERS] : [];
-  return BUDGET_PROVIDERS.filter((p) => !coverage.providers[p] || coverage.providers[p].workerLeftUsd < minUsd);
+  const metered = BUDGET_PROVIDERS.filter((p) => !isUnpricedProvider(p));
+  if (!coverage?.hasSplit) return coverage && coverage.leftUsd < minUsd ? metered : [];
+  return metered.filter((p) => !coverage.providers[p] || coverage.providers[p].workerLeftUsd < minUsd);
 }
 
 // ── the view (API, live packet, agent_usage) ──────────────────────────────
@@ -380,7 +407,7 @@ export function budgetView({ sessionId = null, setting = null, coverage = null, 
     const judged = split?.jev?.scores?.[provider] || null;
     return {
       provider, label: PROVIDER_LABELS[provider],
-      eligible: row.eligible, reason: split?.eligible?.[provider]?.reason || null,
+      eligible: row.eligible, reason: split?.eligible?.[provider]?.reason || (isUnpricedProvider(provider) ? 'unpriced' : null),
       isBrain: provider === (cov.brainProvider || split?.brainProvider || null),
       shareUsd: row.shareUsd === null ? null : roundUsd(row.shareUsd),
       spentUsd: roundUsd(row.spentUsd), brainSpentUsd: roundUsd(row.brainUsd), runsSpentUsd: roundUsd(row.runsUsd),

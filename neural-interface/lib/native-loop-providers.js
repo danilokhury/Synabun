@@ -21,7 +21,13 @@ import { CODEX_BROWSER_POLICY_UNTRUSTED_NOTE, codexBrowserPolicyHook } from './a
 import { codexWindowsSandbox, codexWindowsSandboxConfig } from './agent-sandbox-elevation.js';
 import { DRAFT_DISALLOWED_TOOLS, DRAFT_TOOLS, codexDraftOptions, draftOpenCodeDecision, draftPreToolUseHook, draftToolDecision, openCodeDraftConfig, resolveDraftConfinement } from './skills/draft-confinement.js';
 import { EVAL_CONFINEMENT, codexEvalOptions, evalClaudeOptions, evalGitSafetyEnv, evalOpenCodeDecision, evalPreToolUseHook, evalToolDecision, openCodeEvalConfig, openCodeEvalEnv, placeOpenCodeEvalSkill, resolveEvalConfinement } from './skills/eval-confinement.js';
-import { WORKER_GUARD_DEFAULT, codexSandboxFor, confinementEvent, openCodeCodeModeDecision, openCodeCodeModeNote, openCodePermissionDecision, openCodePermissionsFor, resolveWorkerConfinement, workerShellDecision, workerToolDecision } from './worker-confinement.js';
+import { WORKER_GUARD_DEFAULT, acpPermissionDecision, codexSandboxFor, confinementEvent, openCodeCodeModeDecision, openCodeCodeModeNote, openCodePermissionDecision, openCodePermissionsFor, resolveWorkerConfinement, workerShellDecision, workerToolDecision } from './worker-confinement.js';
+import { createAcpConnection } from './antigravity/acp-connection.js';
+import { acpTurnUsage } from './antigravity/usage.js';
+import { assertSafeAntigravityProject, antigravityHomeReadPolicy, antigravityHomeSettings, policyHookCommand, prepareAntigravityHome, toAntigravityMcpEntry, userAntigravityMcpServers, userAntigravitySettings, userGeminiDir } from './antigravity/home.js';
+import { acpCall, acpPolicyInput, acpReadOnlyKind, acpToolName, acpToolPaths, acpWebTool } from './antigravity/tool-call.js';
+import { splitAntigravityModel } from './antigravity/catalog.js';
+import { fileURLToPath } from 'node:url';
 
 function nativeToolSelection(options, provider) { return resolveStoredTools(options, { source: options.runMode === 'task' ? 'dispatch' : 'launch', provider, defaultTools: options.runMode === 'task' ? undefined : readDefaultTools(memoryConfig.dataHome) }); }
 
@@ -1535,6 +1541,372 @@ export async function createOpenCodeNativeLoopAdapter(options = {}) {
       settleActiveTurn(asAbortError('disposed'));
       try { unsubscribe(); } catch {}
       await settleWithin(release());
+    },
+  };
+}
+
+// ── Antigravity (Google's `agy` CLI, over ACP) ──────────────────────────────
+//
+// One `agy acp` process and one ACP session per run (lib/antigravity/acp-connection.js), every turn a session/prompt,
+// in the run's own Antigravity home (`--gemini-dir`, lib/antigravity/home.js): its MCP servers are exactly SynaBun's
+// and the external servers its tool list names, and its PreToolUse hook asks SynaBun about every call before it runs
+// (lib/antigravity/policy.js → antigravityRunPolicy: the browser policy, the run's MCP scope, the worker's
+// confinement). A refusal reaches the model with its reason ("tool call denied by pre-tool hook: …") and the turn goes
+// on; an ACP permission refusal would end the turn without one. Approvals stay with ACP's session/request_permission:
+// the Assistant's broker answers them under 'ask', else they are allowed once. Never "always": Antigravity would save
+// it for later sessions. The model and thinking level are the session's own config options (set only to a value the
+// session offers). The home keeps the conversation, so a run resumes after a restart (session/resume, no replay).
+// SynaBun's MCP child gets the run's pins from the agent's environment, which agy's MCP children inherit.
+
+/** The hook script every SynaBun home runs before a tool call. */
+export const ANTIGRAVITY_POLICY_HOOK = fileURLToPath(new URL('./antigravity/policy-hook.mjs', import.meta.url));
+
+/** The ACP permission option for an answer: explicit kinds only, never allow-always. */
+export function acpPermissionOption(options, wanted) {
+  const list = Array.isArray(options) ? options.filter((option) => option && typeof option.optionId === 'string') : [];
+  for (const kind of wanted) {
+    if (kind === 'allow_always') continue;
+    const found = list.find((option) => option.kind === kind);
+    if (found) return found.optionId;
+  }
+  return null;
+}
+
+/** The last JSON object in a reply (an output schema's answer, which ACP has no channel for), or null. */
+export function lastJsonObject(text) {
+  const source = String(text || '');
+  const fenced = [...source.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)].map((m) => m[1]).reverse();
+  for (const candidate of [...fenced, source]) {
+    const trimmed = candidate.trim();
+    for (let start = trimmed.lastIndexOf('{'); start >= 0; start = trimmed.lastIndexOf('{', start - 1)) {
+      const end = trimmed.lastIndexOf('}');
+      if (end <= start) continue;
+      try {
+        const value = JSON.parse(trimmed.slice(start, end + 1));
+        if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+      } catch { /* try an earlier brace */ }
+    }
+  }
+  return null;
+}
+
+/**
+ * One Antigravity run's policy for one tool call (acpCall's shape): what its hook answers, and what a permission
+ * request is checked against again. { decision: 'deny', reason, event? } | { decision: 'ask' | 'allow', event? }.
+ *   - MCP tool schemas in the run's home may be read; home configuration is refused;
+ *   - the browser policy (lib/browser-tool-policy.js: Antigravity's own web search, URL reading and browser, a shell
+ *     that starts a browser or browser code, another server's browser tools);
+ *   - the run's MCP scope (`allowedServers`: SynaBun and the external servers its tool list names;
+ *     enabled project MCP servers are refused before agy starts);
+ *   - the worker's confinement (lib/worker-confinement.js acpPermissionDecision; warn mode reports and allows);
+ *   - then the approval: 'ask' for anything but a read under the 'ask' policy, else 'allow'.
+ */
+export function antigravityRunPolicy(call, { homeDir = null, cwd = null, allowedServers = null, guard = null, askMode = false, policyRoots = [] } = {}) {
+  if (!call || (!call.name && !call.title && (!call.kind || call.kind === 'other'))) return { decision: 'deny', reason: 'SynaBun received no valid tool call, so it is refused.' };
+  const approval = () => (askMode && !acpReadOnlyKind(call.kind) ? 'ask' : 'allow');
+  const name = acpToolName(call);
+  const input = acpPolicyInput(call);
+  const browser = browserToolDenial(acpWebTool(call) && !name.startsWith('mcp__') ? (call.name || 'search_web') : name, input, { host: 'antigravity', cwd, roots: policyRoots });
+  if (browser) return { decision: 'deny', reason: browser, event: { type: 'synabun.browser_policy', action: 'refused', tool: name, reason: browser } };
+  if (call.mcp && allowedServers && !allowedServers.has(call.mcp.server)) {
+    const reason = `SynaBun: the MCP server ${call.mcp.server} is not one of this run's servers (${[...allowedServers].join(', ') || 'none'}), so ${call.mcp.tool} is refused. Use the tools this run was given.`;
+    return { decision: 'deny', reason, event: { type: 'synabun.mcp_scope', action: 'refused', server: call.mcp.server, tool: call.mcp.tool, reason } };
+  }
+  const homeRead = antigravityHomeReadPolicy(call, { homeDir, cwd });
+  if (homeRead) return homeRead;
+  if (guard) {
+    const decision = acpPermissionDecision(call, guard);
+    if (decision) {
+      const event = confinementEvent(decision, { tool: call.title || name, confinement: guard, provider: 'antigravity' });
+      if (guard.enforced) return { decision: 'deny', reason: decision.reason, event };
+      return { decision: approval(), event };
+    }
+  }
+  return { decision: approval() };
+}
+
+/** The MCP servers of a run's home: SynaBun's own entry, then the external servers its tool list names. */
+function antigravityRunServers({ tools, synabunMcpEntry, userGemini, onNote }) {
+  const servers = {};
+  let inventory = null;
+  let names = [];
+  try {
+    inventory = externalServerInventory({ provider: 'antigravity', antigravityConfigPath: join(userGemini, 'config', 'mcp_config.json'), dataHome: memoryConfig.dataHome });
+    names = selectExternalServers(tools.items, inventory).names;
+  } catch (error) {
+    if (error?.code === 'TOOLS_INVALID') throw error;
+    onNote?.(`Antigravity: the external MCP servers could not be read (${error?.message || error}); this run has SynaBun's tools only.`);
+  }
+  const own = synabunMcpEntry || userAntigravityMcpServers(userGemini).SynaBun || null;
+  if (own) servers.SynaBun = toAntigravityMcpEntry(own);
+  for (const name of names) {
+    const definition = inventory?.definitionFor(name);
+    if (definition && name !== 'SynaBun') servers[name] = toAntigravityMcpEntry(definition);
+  }
+  return servers;
+}
+
+export async function createAntigravityNativeLoopAdapter(options = {}) {
+  const {
+    runId, cwd, model = null, effort = null, launch = null,
+    onIdentity = () => {}, onEvent = () => {}, onProcess = null, onNote = null,
+    permissionPolicy: rawPolicy = 'auto', permissionBroker = null,
+    capability: rawCapability = 'full', outputSchema = null, runMode = 'loop',
+    browserSessionId = null, browserTabId = null, desktopGrantProvider = null,
+    extraEnv = {}, unsetEnv = [], resumeSessionId = null,
+    confinement = null,
+    guardMode = WORKER_GUARD_DEFAULT, scratchDir = null, serverPort = null, localPortRange = null,
+    connect = createAcpConnection,
+    // The run's Antigravity home (lib/antigravity/home.js). null: agy runs in the user's own ~/.gemini, with every
+    // server of theirs and no hook (an older server's wiring, a test of the bare protocol).
+    homeDir = null, synabunMcpEntry = null, userGemini = userGeminiDir(),
+    // The hook's way back (lib/antigravity/policy.js): the registry, the loopback address of POST /api/antigravity/policy.
+    policy = null, policyUrl = null, policyHookScript = ANTIGRAVITY_POLICY_HOOK, policyRoots = [],
+    // ACP counts tokens per session: what the session had counted when the run was suspended (a resume books only
+    // what follows), and where each turn's count is kept for the next resume.
+    sessionUsageBase = null, onSessionUsage = null,
+  } = options;
+  if (!launch?.command) {
+    const error = new Error('The Antigravity CLI (agy) is not installed or could not be resolved.');
+    error.code = 'CLI_MISSING';
+    throw error;
+  }
+  // Skill drafting and evaluation runs hold their own confinement; Antigravity has no setup for one, and a confined
+  // run never starts unconfined.
+  if (confinement) throw confinementUnsupportedError('Antigravity', 'skill drafting and evaluation run on Claude Code, Codex and OpenCode', confinement?.kind === EVAL_CONFINEMENT ? 'an evaluation folder' : 'a drafting folder');
+  assertSafeAntigravityProject(cwd);
+  const permissionPolicy = normalizePermissionPolicy(rawPolicy);
+  const capability = normalizeCapability(rawCapability);
+  const guard = workerGuardFor({ capability, cwd, guardMode, scratchDir, confinement: null, serverPort, localPortRange });
+  const askMode = permissionPolicy === 'ask' && typeof permissionBroker?.request === 'function';
+  const tools = nativeToolSelection(options, 'antigravity');
+
+  // The run's home: its servers, its hook, its settings, the user's rules and skills.
+  let allowedServers = null;
+  let hookCommand = null;
+  if (homeDir) {
+    const servers = antigravityRunServers({ tools, synabunMcpEntry, userGemini, onNote });
+    allowedServers = new Set(Object.keys(servers));
+    if (typeof policy?.register === 'function' && policyUrl) hookCommand = policyHookCommand({ script: policyHookScript });
+    else onNote?.('Antigravity: SynaBun\'s tool-call hook is not available in this server, so the browser policy and the run\'s MCP scope are checked only when Antigravity asks for approval.');
+    prepareAntigravityHome({ dir: homeDir, mcpServers: servers, hookCommand, settings: antigravityHomeSettings({ userSettings: userAntigravitySettings(userGemini) }), userGemini });
+  }
+  const policyOptions = { homeDir, cwd, allowedServers, guard, askMode, policyRoots };
+
+  const pins = stringEnv({
+    SYNABUN_TERMINAL_SESSION: runId,
+    SYNABUN_PROJECT: cwd ? memoryProject(cwd) : 'global',
+    SYNABUN_BROWSER_SESSION: browserSessionId,
+    SYNABUN_BROWSER_TAB: browserTabId,
+    SYNABUN_TOOLS: runtimeToolsValue(tools.items.includes('all') ? tools.items : [...tools.groups, ...tools.servers]),
+    SYNABUN_DESKTOP_GRANT: typeof desktopGrantProvider === 'function' ? desktopGrantProvider() || undefined : undefined,
+  });
+  const inherited = { ...process.env };
+  for (const key of ['SYNABUN_PROFILE', 'SYNABUN_RUNTIME_PROFILE_PATH', 'SYNABUN_TOOLS', 'SYNABUN_TOOLS_PATH', 'SYNABUN_TOOL_CATALOG_MODE', 'SYNABUN_ROLE', 'SYNABUN_AGY_POLICY_URL', 'SYNABUN_AGY_POLICY_TOKEN']) delete inherited[key];
+  for (const key of Array.isArray(unsetEnv) ? unsetEnv : []) delete inherited[key];
+  delete inherited.SYNABUN_BRAIN_TOKEN;
+  for (const key of LIVE_DATA_ENV) delete inherited[key];
+
+  let alive = true;
+  let sessionId = null;
+  let providerTurn = Number(options.providerTurnBase) || 0;
+  let activeTurn = null;            // { iteration, providerTurn, text, controller }
+  let lastSessionUsage = sessionUsageBase && typeof sessionUsageBase === 'object' ? sessionUsageBase : null;
+  const openPermissions = new Set(); // resolvers of permission answers still waiting
+  const startedAt = Date.now();
+
+  const emit = (eventType, event, extra = {}) => {
+    try { onEvent({ provider: 'antigravity', runId, eventType, event, ...extra }); } catch { /* observers never break a run */ }
+  };
+  const turnMeta = () => (activeTurn ? { iteration: activeTurn.iteration, providerTurn: activeTurn.providerTurn } : {});
+  // The hook's question (and, without a hook, the permission request's): the answer, its event in the run's events.
+  const checkCall = (call) => {
+    const answer = antigravityRunPolicy(call, policyOptions);
+    if (answer.event) emit(answer.event.type, answer.event, turnMeta());
+    return answer;
+  };
+  const registration = hookCommand ? policy.register((call) => (alive ? checkCall(call) : { decision: 'deny', reason: 'This run has ended.' }), { label: `run ${runId}` }) : null;
+  const env = stringEnv({
+    ...inherited, ...pins, ...stringEnv(extraEnv),
+    ...(registration ? { SYNABUN_AGY_POLICY_URL: policyUrl, SYNABUN_AGY_POLICY_TOKEN: registration.token } : {}),
+  });
+
+  const decidePermission = async (params, signal) => {
+    const call = acpCall(params);
+    const options = params?.options || [];
+    const allowOnce = () => ({ outcome: { outcome: 'selected', optionId: acpPermissionOption(options, ['allow_once']) } });
+    const rejectOnce = () => ({ outcome: { outcome: 'selected', optionId: acpPermissionOption(options, ['reject_once', 'reject_always']) } });
+    const settle = (answer) => (answer.outcome.optionId ? answer : { outcome: { outcome: 'cancelled' } });
+    if (!alive) return { outcome: { outcome: 'cancelled' } };
+    // With the hook the call was checked before Antigravity asked: checked again here without reporting it twice
+    // (a refusal here ends the turn, which only a call the hook never saw can earn).
+    const verdict = registration ? antigravityRunPolicy(call, policyOptions) : checkCall(call);
+    if (verdict.decision === 'deny') return settle(rejectOnce());
+    if (askMode && !acpReadOnlyKind(call.kind)) {
+      try {
+        // Allowed once whatever the answer said about "always": Antigravity would save an "always" for every later
+        // session of the user's, outside this run (the dispatcher drops it for Antigravity too).
+        const reply = await permissionBroker.request({ runId, provider: 'antigravity', signal, kind: 'tool', toolName: call.mcp ? `${call.mcp.server}_${call.mcp.tool}` : (call.title || call.name || call.kind || 'tool'), input: params?.toolCall || {} });
+        if (reply?.behavior === 'allow') return settle(allowOnce());
+        return settle(rejectOnce());
+      } catch {
+        return settle(rejectOnce());
+      }
+    }
+    return settle(allowOnce());
+  };
+
+  const conn = connect({
+    command: launch.command,
+    args: launch.args || [],
+    acpArgs: homeDir ? ['--gemini-dir', homeDir] : [],
+    cwd: cwd || undefined,
+    env,
+    clientInfo: { name: 'synabun', title: 'SynaBun', version: '0' },
+    onUpdate: (params) => {
+      if (!params || params.sessionId !== sessionId || !params.update) return;
+      const update = params.update;
+      if (activeTurn && update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') activeTurn.text += update.content.text || '';
+      emit(update.sessionUpdate || 'session/update', update, turnMeta());
+    },
+    onPermission: (params, { signal } = {}) => new Promise((resolve) => {
+      const done = (answer) => { openPermissions.delete(done); resolve(answer); };
+      openPermissions.add(done);
+      decidePermission(params, signal).then(done, () => done({ outcome: { outcome: 'cancelled' } }));
+    }),
+    onExit: (info) => {
+      alive = false;
+      for (const done of [...openPermissions]) done({ outcome: { outcome: 'cancelled' } });
+      if (info?.error || (info?.code && info.code !== 0)) emit('synabun.provider_exit', { type: 'synabun.provider_exit', code: info.code, signal: info.signal, error: info.error || null });
+    },
+  });
+  try { onProcess?.({ pid: conn.pid, startedAt, home: homeDir || null }); } catch { /* informational */ }
+
+  const fail = async (error) => {
+    alive = false;
+    registration?.dispose();
+    try { await conn.close(); } catch { /* gone */ }
+    throw error;
+  };
+  let session;
+  try {
+    const init = await conn.initialize();
+    if (resumeSessionId) {
+      // session/resume picks the conversation up without replaying it; an agent without it replays (session/load),
+      // which onUpdate drops (sessionId is set only once the load answered).
+      const caps = init?.agentCapabilities?.sessionCapabilities || {};
+      const method = caps.resume ? 'session/resume' : 'session/load';
+      session = await conn.request(method, { sessionId: String(resumeSessionId), cwd, mcpServers: [] });
+      sessionId = String(session?.sessionId || resumeSessionId);
+    } else {
+      session = await conn.request('session/new', { cwd, mcpServers: [] });
+      sessionId = session.sessionId;
+    }
+  } catch (error) {
+    const message = Number(error?.code) === -32000
+      ? 'Antigravity is not signed in: open the Antigravity panel (or run `agy` in a terminal) and sign in, then try again.'
+      : providerErrorMessage(error, resumeSessionId ? 'Antigravity could not resume the run\'s session' : 'Antigravity could not start a session');
+    return fail(Object.assign(new Error(message), { code: Number(error?.code) === -32000 ? 'AUTH_REQUIRED' : (error?.code || 'START_FAILED') }));
+  }
+  onIdentity({ providerSessionId: sessionId, ...(homeDir ? { antigravityHome: homeDir } : {}) });
+
+  // The model and the thinking level, as the session's own config options name them. A model id with its level
+  // (gemini-4-argon-high, as `agy models` and ACP's model list spell it) is that model at that level.
+  let configOptions = Array.isArray(session?.configOptions) ? session.configOptions : [];
+  const offered = (category) => {
+    const option = configOptions.find((o) => o?.category === category);
+    const accepted = [];
+    for (const entry of option?.options || []) for (const v of Array.isArray(entry?.options) ? entry.options : [entry]) if (v && v.value !== undefined) accepted.push(String(v.value));
+    return { option, accepted };
+  };
+  const setOption = async (category, value, label) => {
+    if (!value) return;
+    const { option, accepted } = offered(category);
+    if (!option) {
+      if (category === 'model') {
+        try { await conn.request('session/set_model', { sessionId, modelId: String(value) }); } catch (error) { onNote?.(`Antigravity kept its default model: ${providerErrorMessage(error, 'set_model failed')}`); }
+      }
+      return;
+    }
+    if (!accepted.includes(String(value))) {
+      if (category === 'model') throw Object.assign(new Error(`Antigravity does not offer the model ${value} (it offers ${accepted.join(', ') || 'none'}).`), { code: 'MODEL_UNAVAILABLE' });
+      onNote?.(`Antigravity has no ${label} "${value}" for this model; it keeps ${option.currentValue}.`);
+      return;
+    }
+    if (String(option.currentValue) === String(value)) return;
+    const answer = await conn.request('session/set_config_option', { sessionId, configId: option.id, value: String(value) });
+    if (Array.isArray(answer?.configOptions)) configOptions = answer.configOptions;
+  };
+  const wanted = splitAntigravityModel(model, offered('model').accepted);
+  const level = effort && !['off', 'default', 'auto', 'none'].includes(String(effort).toLowerCase()) ? String(effort) : wanted.effort;
+  try {
+    await setOption('model', wanted.model, 'model');
+    await setOption('thought_level', level, 'thinking level');
+  } catch (error) {
+    return fail(error);
+  }
+  const optionValue = (category) => configOptions.find((o) => o?.category === category)?.currentValue ?? null;
+
+  return {
+    identity: () => ({ providerSessionId: sessionId, ...(homeDir ? { antigravityHome: homeDir } : {}) }),
+    isAlive: () => alive && conn.running,
+    processInfo: () => ({ pid: conn.pid, startedAt, home: homeDir || null }),
+    describe: () => ({
+      provider: 'antigravity', permissionPolicy, capability, askMode, model: optionValue('model'), effort: optionValue('thought_level'),
+      ...(homeDir ? { home: homeDir, servers: [...(allowedServers || [])], hook: !!registration } : {}),
+      ...(guard ? { guard: { mode: guard.mode, capability: guard.capability, writable: [...guard.writable] } } : {}),
+    }),
+    async runTurn(prompt, meta = {}) {
+      if (!alive || !conn.running) throw new Error('Antigravity native loop is closed');
+      if (activeTurn) throw new Error('Antigravity native loop already has an active turn');
+      providerTurn += 1;
+      const turn = { iteration: meta.iteration, providerTurn, text: '', cancelled: false };
+      activeTurn = turn;
+      emit('synabun.user_prompt', { type: 'synabun.user_prompt', text: String(prompt || '') }, { iteration: meta.iteration, providerTurn });
+      const schema = meta.outputSchema || outputSchema;
+      const body = schema && typeof schema === 'object'
+        ? `${String(prompt || '')}\n\nEnd your reply with one JSON object (in a \`\`\`json block) that matches this JSON Schema:\n${JSON.stringify(schema)}`
+        : String(prompt || '');
+      try {
+        const answer = await conn.request('session/prompt', { sessionId, prompt: [{ type: 'text', text: body }] }, { timeoutMs: 0 });
+        // The turn's own tokens, whatever its end (a stopped turn spent them too).
+        const usage = acpTurnUsage(answer?.usage, lastSessionUsage);
+        if (answer?.usage) {
+          lastSessionUsage = answer.usage;
+          try { onSessionUsage?.(answer.usage); } catch { /* bookkeeping */ }
+        }
+        if (answer?.stopReason === 'cancelled' || turn.cancelled) throw Object.assign(asAbortError('aborted'), { usage, sessionUsage: answer?.usage || null, providerSessionId: sessionId });
+        const text = turn.text;
+        const result = { providerSessionId: sessionId, text, usage, sessionUsage: answer?.usage || null, stopReason: answer?.stopReason || 'end_turn', result: { text, usage } };
+        if (answer?.stopReason === 'refusal') result.refused = true;
+        if (schema && typeof schema === 'object') {
+          const structured = lastJsonObject(text);
+          if (structured) result.structured = structured;
+        }
+        return result;
+      } catch (error) {
+        if (error?.name === 'AbortError') throw error;
+        if (!alive || !conn.running) throw new Error(`Antigravity stopped during the turn${conn.stderrTail() ? `: ${conn.stderrTail().slice(-400)}` : ''}`);
+        throw new Error(providerErrorMessage(error, 'Antigravity turn failed'));
+      } finally {
+        if (activeTurn === turn) activeTurn = null;
+      }
+    },
+    async abort() {
+      if (activeTurn) activeTurn.cancelled = true;
+      for (const done of [...openPermissions]) done({ outcome: { outcome: 'cancelled' } });
+      try { if (sessionId && conn.running) await settleWithin(conn.notify('session/cancel', { sessionId })); } catch {}
+      return true;
+    },
+    // The process is the run's own: it always ends with the run. Its conversation stays in the run's home, where a
+    // resume after a restart finds it (the dispatcher's prune removes the home once the run is gone).
+    async dispose() {
+      const wasAlive = alive;
+      alive = false;
+      for (const done of [...openPermissions]) done({ outcome: { outcome: 'cancelled' } });
+      if (wasAlive && activeTurn && sessionId && conn.running) { try { await settleWithin(conn.notify('session/cancel', { sessionId })); } catch {} }
+      await settleWithin(conn.close(), 3000);
+      registration?.dispose();
     },
   };
 }

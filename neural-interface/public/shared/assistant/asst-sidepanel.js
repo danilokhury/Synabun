@@ -22,7 +22,7 @@ import { getProviderMeta } from '../provider-icons.js';
 import { showGuestToast } from '../ui-sync.js';
 import { registerSidepanel, setSidepanelVisible, syncSidepanelLayout, focusSidepanel } from '../ui-sidepanel-windows.js';
 import {
-  assistantBlocked, assistantOwnerOf, fetchLiveAssistantSessions, noteAssistantFocus, openAssistant, registerAssistantHost,
+  assistantBlocked, assistantOwnerOf, noteAssistantFocus, openAssistant, readLiveAssistantSessions, registerAssistantHost,
 } from '../ui-assistant.js';
 import { mountAssistant } from './asst-panel.js';
 import { openModelsManager } from './asst-route.js';
@@ -57,6 +57,11 @@ let _renaming = false;
 const _tabs = [];   // { sessionId, viewport, toolbar, ctl, pill, label, userRenamed, status, brain }
 let _activeIdx = -1;
 let _tourPresenting = false;
+// The saved tabs ({ activeIdx, tabs }) while the session list could not be read (a server that is
+// starting answers before its Assistant routes exist): they stay saved and are asked about again.
+let _unrestored = null;
+let _restoring = null; // that restore under way: a session start waits for it
+const RESTORE_RETRY_MS = [500, 1000, 2000, 4000, 8000, 15_000];
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -94,11 +99,13 @@ function conversationOf(tab) {
 
 function saveTabs() {
   try {
-    if (!_tabs.length) { storage.removeItem(KEYS.ASSISTANT_PANEL_TABS); return; }
+    // Saved tabs not restored yet stay saved (their names with them), after the open ones.
+    const waiting = (_unrestored?.tabs || []).filter(entry => !findTab(entry.sessionId));
+    if (!_tabs.length) { if (!waiting.length) storage.removeItem(KEYS.ASSISTANT_PANEL_TABS); return; }
     storage.setItem(KEYS.ASSISTANT_PANEL_TABS, JSON.stringify({
       v: 1,
       activeIdx: Math.max(0, _activeIdx),
-      tabs: _tabs.map(tab => ({ sessionId: tab.sessionId, label: tab.userRenamed ? tab.label : '', userRenamed: !!tab.userRenamed })),
+      tabs: [..._tabs.map(tab => ({ sessionId: tab.sessionId, label: tab.userRenamed ? tab.label : '', userRenamed: !!tab.userRenamed })), ...waiting],
     }));
   } catch { /* storage unavailable */ }
 }
@@ -416,6 +423,16 @@ async function startSession(prompt = '') {
   _startError = '';
   renderPlaceholder('starting');
   try {
+    // The saved tabs come back before a new session is made: the restore under way (the server is
+    // starting), or once more for the ones it could not ask about.
+    if (!_restoring && _unrestored) startRestore(_unrestored, []);
+    if (_restoring) await _restoring.catch(() => { /* a new session, then */ });
+    if (_tabs.length) {
+      const tab = activeTab() || _tabs[0];
+      switchTo(_tabs.indexOf(tab));
+      if (prompt) { tab.ctl?.insertText?.(prompt); tab.ctl?.focus?.(); } // a conversation's draft, never sent for them
+      return;
+    }
     const res = await openAssistant(prompt ? { host: HOST_ID, prompt } : { host: HOST_ID });
     if (!_tabs.length) renderPlaceholder(res ? null : 'failed');
   } finally {
@@ -635,7 +652,7 @@ export function beginAssistantTour({ onPreviewSend = () => {} } = {}) {
   const wasVisible = _visible;
   const previousPanel = state.lastActivePanel;
   const previousSidepanel = state.lastActiveSidepanel;
-  const peers = ['#topright-claude-panel-btn', '#topright-codex-panel-btn', '#topright-opencode-panel-btn']
+  const peers = ['#topright-claude-panel-btn', '#topright-codex-panel-btn', '#topright-opencode-panel-btn', '#topright-antigravity-panel-btn']
     .map(s => document.querySelector(s)).filter(b => b?.classList.contains('active'));
   _tourPresenting = true;
   const tab = activeTab();
@@ -731,7 +748,30 @@ export async function initAssistantPanel() {
 
   const saved = readSavedTabs();
   if (!saved?.tabs.length) return;
-  const live = await fetchLiveAssistantSessions();
+  await startRestore(saved, RESTORE_RETRY_MS);
+}
+
+function startRestore(saved, retries) {
+  _restoring = restoreSavedTabs(saved, retries).finally(() => { _restoring = null; });
+  return _restoring;
+}
+
+/**
+ * The saved tabs come back (hidden, as pills) for the sessions the server still has open. A list
+ * that cannot be read restores nothing and forgets nothing: the tabs stay saved, names included
+ * (saveTabs), the list is asked again after each wait of `retries`, then at the next session start.
+ */
+async function restoreSavedTabs(saved, retries) {
+  _unrestored = saved;
+  let live = await readLiveAssistantSessions();
+  for (const wait of retries) {
+    if (live || assistantBlocked()) break;
+    await new Promise(done => setTimeout(done, wait));
+    live = await readLiveAssistantSessions();
+  }
+  if (!live) return;
+  _unrestored = null;
+  const hadTabs = _tabs.length > 0; // one opened meanwhile stays the one showing
   for (const entry of saved.tabs) {
     const meta = live.get(entry.sessionId);
     if (!meta) continue;
@@ -746,8 +786,12 @@ export async function initAssistantPanel() {
       restoring: true,
     });
   }
-  if (_tabs.length) {
-    _activeIdx = Math.min(Math.max(0, saved.activeIdx), _tabs.length - 1);
+  if (_tabs.length && !hadTabs) {
+    // The tab that was showing, by its session: a saved tab before it that did not come back (a draft,
+    // an ended session) must not hand the header to its neighbour.
+    const shownId = saved.tabs[saved.activeIdx]?.sessionId;
+    const shown = _tabs.findIndex(tab => tab.sessionId === shownId);
+    _activeIdx = shown >= 0 ? shown : Math.min(Math.max(0, saved.activeIdx), _tabs.length - 1);
     markActive();
     renderHeader();
     renderPills();

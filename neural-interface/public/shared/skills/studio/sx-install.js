@@ -39,9 +39,20 @@ export function installedRuntimesOf(source) {
 export function alsoInstallTargets({ skill = null, row = null, targets = [], assistants = null, installed = null } = {}) {
   if (!skill || row?.source === 'synabun' || !list(skill.installations).length) return [];
   const wanted = Array.isArray(assistants) && assistants.length ? assistants : [];
+  const scope = alsoInstallScope(skill);
   return SIMPLE_RUNTIMES.filter((r) => wanted.includes(r) && !(Array.isArray(installed) && !installed.includes(r)))
-    .map((r) => list(targets).find((t) => t.key === keyIn(r, 'user')) || null)
+    .map((r) => list(targets).find((t) => t.key === keyIn(r, scope)) || null)
     .filter((t) => t && !t.off && !['installed', 'outdated', 'present'].includes(targetState(t, { skill, row }).state));
+}
+
+/**
+ * The scope "Also install for …" adds to: the one project every installation is in (a skill installed for one
+ * project only is never offered to every project), else the owner's ('user').
+ */
+export function alsoInstallScope(skill) {
+  const installs = list(skill?.installations);
+  const projects = new Set(installs.map((i) => (i?.scope === 'project' && i.projectPath ? i.projectPath : '')));
+  return projects.size === 1 && !projects.has('') ? `project:${[...projects][0]}` : 'user';
 }
 
 /**
@@ -58,7 +69,11 @@ export function alsoInstallRevision(skill) {
   return [...count.entries()].sort((a, b) => b[1] - a[1] || rank(b[0]) - rank(a[0]) || held.indexOf(a[0]) - held.indexOf(b[0]))[0][0];
 }
 export const BUTTON_CODES = Object.freeze(['install', 'update', 'installed', 'checking', 'installing', 'nothing', 'blocked']);
-export const SIMPLE_RUNTIMES = Object.freeze(['claude', 'codex', 'opencode']);
+export const SIMPLE_RUNTIMES = Object.freeze(['claude', 'codex', 'opencode', 'antigravity']);
+// The runtimes with a project folder of their own. Antigravity has none: in a project it reads .agents/skills, the
+// Codex tile's folder, so a project scope shows no Antigravity tile (the plan says Antigravity reads that folder).
+const PROJECT_RUNTIMES = new Set(['claude', 'codex', 'opencode']);
+const inProject = (scope) => String(scope || '').startsWith('project:');
 const APPROVED_STATES = ['approved', 'partial', 'publish_failed'];
 
 const list = (v) => (Array.isArray(v) ? v : []);
@@ -132,7 +147,7 @@ export const keyIn = (runtime, scope) => (scope && scope.startsWith('project:') 
  * @param {{ targets: object[], checked: Set<string>, scope: string, skill?: object|null, row?: object|null, revisionId?: string|null }} o
  */
 export function simplePicker({ targets = [], checked = new Set(), scope = 'user', skill = null, row = null, revisionId = null, installed = null } = {}) {
-  const tiles = SIMPLE_RUNTIMES.map((runtime) => {
+  const tiles = SIMPLE_RUNTIMES.filter((runtime) => !inProject(scope) || PROJECT_RUNTIMES.has(runtime)).map((runtime) => {
     const key = keyIn(runtime, scope);
     const target = list(targets).find((t) => t.key === key) || null;
     const st = target ? targetState(target, { skill, row, revisionId }) : { state: 'none', path: null };
@@ -159,6 +174,8 @@ export function moveScope(checked, from, to) {
   const next = new Set();
   for (const key of checked || []) {
     const runtime = SIMPLE_RUNTIMES.find((r) => key === keyIn(r, from));
+    // A runtime with no folder of its own in the new scope (Antigravity in a project) is not ticked there.
+    if (runtime && inProject(to) && !PROJECT_RUNTIMES.has(runtime)) continue;
     next.add(runtime ? keyIn(runtime, to) : key);
   }
   return next;

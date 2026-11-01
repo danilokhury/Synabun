@@ -2,7 +2,7 @@
 // SynaBun Neural Interface — how a dispatched worker's tab ends: the page side
 // ═══════════════════════════════════════════
 //
-// What the three provider sidepanels (Claude Code, Codex, OpenCode) share for
+// What the four provider sidepanels (Claude Code, Codex, OpenCode, Antigravity) share for
 // the end of a worker the Assistant dispatched: following the run until it
 // has something to show, asking the dispatcher how it went (GET
 // /api/assistant/runs/:runId, then its `assistant:dispatch` events), the card

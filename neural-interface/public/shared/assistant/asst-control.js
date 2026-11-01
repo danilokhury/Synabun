@@ -10,6 +10,8 @@
 //   Claude   → cp/cp-permissions.js   { behavior, always, updatedInput, updatedPermissions, message, planDecision }
 //   Codex    → cdx/cdx-requests.js    result:{ decision } | result:{ permissions, scope } | result:{ answers } | result:{ action, content }
 //   OpenCode → ocp-v2/ocp-v2-render.js reply:'once'|'always'|'reject' | answers:[[label]]
+//   Antigravity (a dispatched worker's ACP session/request_permission, relayed by the broker as
+//   { toolName, input: <the ACP toolCall> }) → { behavior } once or deny, never "always"
 // Every response additionally carries `behavior`, `provider` and `kind` so the
 // server-side envelope translator can route without re-deriving them; Codex
 // replies repeat `answers` / `content` and OpenCode replies repeat `always` at
@@ -192,6 +194,9 @@ export function describeToolInput(toolName, input = {}) {
 function inferProvider(req, packet) {
   const explicit = normalizeProvider(packet?.provider ?? req?.provider);
   if (explicit) return explicit;
+  // An ACP permission request (Antigravity): a tool call with its id, options of allow_* / reject_* kinds.
+  if (req?.brain_native?.toolCall?.toolCallId || req?.toolCall?.toolCallId) return 'antigravity';
+  if (Array.isArray(req?.options) && req.options.some(o => typeof o?.optionId === 'string' && /^(allow|reject)_(once|always)$/.test(String(o?.kind || '')))) return 'antigravity';
   if (typeof req?.method === 'string' && req.method.includes('/')) return 'codex';
   if (typeof req?.brain_native?.method === 'string' && req.brain_native.method.includes('/')) return 'codex';
   if (req?.subtype === 'can_use_tool' || req?.subtype === 'permission_request' || req?.tool_name) return 'claude-code';
@@ -296,7 +301,47 @@ export function normalizeControlRequest(packet, { origin = null } = {}) {
   if (firstStr(req.tool_name, req.toolName) === 'ExitPlanMode') return normalizeClaude(req, base);
   if (provider === 'codex') return normalizeCodex(req, base);
   if (provider === 'opencode') return normalizeOpenCode(req, base);
+  if (provider === 'antigravity') return normalizeAntigravity(req, base);
   return normalizeClaude(req, base);
+}
+
+// The path-like fields of an Antigravity tool call's arguments (lib/worker-confinement.js reads the same ones).
+const ACP_PATH_KEYS = ['path', 'file_path', 'filePath', 'Path', 'AbsolutePath', 'TargetFile', 'DirectoryPath', 'SearchPath'];
+
+/**
+ * An Antigravity worker's permission request: the broker relays the ACP tool call
+ * ({ toolCallId, title, kind, status, locations, rawInput }) as `input`. The card shows
+ * the call's own arguments, and its command (execute) or the paths it touches as the detail.
+ */
+function normalizeAntigravity(req, base) {
+  // A worker's relay sends the ACP tool call as `input`; the brain sends the call's arguments as `input` and the
+  // call itself as `brain_native.toolCall`. Either way: the call, then its arguments.
+  const given = obj(req.input) || {};
+  const looksLikeCall = given.rawInput !== undefined || given.toolCallId !== undefined || Array.isArray(given.locations);
+  const call = obj(req.brain_native?.toolCall) || obj(req.toolCall) || (looksLikeCall ? given : {});
+  const args = obj(call.rawInput) || (looksLikeCall ? {} : given);
+  const kind = str(call.kind) || 'other';
+  // An MCP call names its server and tool in its arguments ({ ServerName, ToolName, Arguments }).
+  const mcpServer = firstStr(args.ServerName, args.serverName);
+  const mcpTool = firstStr(args.ToolName, args.toolName);
+  const mcpArgs = obj(args.Arguments) || obj(args.arguments);
+  const command = Array.isArray(args.command) ? args.command.map(str).join(' ') : firstStr(args.command, args.CommandLine, args.cmd);
+  const paths = [...new Set([
+    ...(Array.isArray(call.locations) ? call.locations : []).map(location => str(location?.path)),
+    ...ACP_PATH_KEYS.map(key => (typeof args[key] === 'string' ? str(args[key]) : '')),
+  ].filter(Boolean))];
+  let mcpDetail = '';
+  if (mcpServer && mcpTool && mcpArgs) { try { mcpDetail = JSON.stringify(mcpArgs).slice(0, 400); } catch { mcpDetail = ''; } }
+  const detail = mcpServer && mcpTool ? (mcpDetail || `${mcpServer} · ${mcpTool}`)
+    : kind === 'execute' && command ? command : paths.length ? paths.join('\n') : str(call.title);
+  return {
+    ...base,
+    kind: CONTROL_KINDS.PERMISSION,
+    toolName: (mcpServer && mcpTool ? `${mcpServer}_${mcpTool}` : '') || firstStr(req.toolName, req.tool_name, call.title, kind) || 'tool',
+    title: 'Permission required',
+    detail,
+    input: mcpServer && mcpTool && mcpArgs ? mcpArgs : args,
+  };
 }
 
 function normalizeClaude(req, base) {
@@ -543,6 +588,8 @@ export function buildControlResponse(normalized, decision = {}) {
   if (normalized.kind === CONTROL_KINDS.PLAN) return buildClaude(normalized, decision, base, allow, always);
   if (normalized.provider === 'codex') return buildCodex(normalized, decision, base, allow, always);
   if (normalized.provider === 'opencode') return buildOpenCode(normalized, decision, base, allow, always);
+  // Antigravity: allowed once or denied; an "always" is never sent (see controlActions).
+  if (normalized.provider === 'antigravity') return buildClaude(normalized, decision, base, allow, false);
   return buildClaude(normalized, decision, base, allow, always);
 }
 
@@ -651,6 +698,7 @@ export function controlActions(normalized) {
     ];
   }
   const actions = [];
+  // Never for Antigravity: its "always" option is saved by Antigravity for later sessions too, beyond this run.
   const canAlways = n.provider === 'claude-code'
     || n.provider === 'opencode'
     || (n.provider === 'codex' && (n.method === 'item/permissions/requestApproval'

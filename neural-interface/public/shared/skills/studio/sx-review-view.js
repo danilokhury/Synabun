@@ -51,7 +51,7 @@ function destinationHTML(ctx, card, dest) {
   // One tile per runtime, as Publish shows them: where this card's install goes (Codex and OpenCode are first-class).
   if (dest.targets.length) {
     const picked = (rt) => [...dest.keys].some((k) => String(k).startsWith(`${rt}:`));
-    lines.push(html`<li class="sx-dest-tiles" role="group" aria-label="${t('skillsStudio.review.destTilesLabel')}">${['claude', 'codex', 'opencode'].map((rt) => html`<span class="sx-dest-tile${picked(rt) ? ' is-on' : ''}" title="${picked(rt) ? t('skillsStudio.review.destTileOn', { runtime: t(`skillsStudio.runtime.${rt}`) }) : t('skillsStudio.review.destTileOff', { runtime: t(`skillsStudio.runtime.${rt}`) })}">${picked(rt) ? ICONS.ok : ''}<span>${t(`skillsStudio.runtime.${rt}`)}</span></span>`)}</li>`);
+    lines.push(html`<li class="sx-dest-tiles" role="group" aria-label="${t('skillsStudio.review.destTilesLabel')}">${['claude', 'codex', 'opencode', 'antigravity'].map((rt) => html`<span class="sx-dest-tile${picked(rt) ? ' is-on' : ''}" title="${picked(rt) ? t('skillsStudio.review.destTileOn', { runtime: t(`skillsStudio.runtime.${rt}`) }) : t('skillsStudio.review.destTileOff', { runtime: t(`skillsStudio.runtime.${rt}`) })}">${picked(rt) ? ICONS.ok : ''}<span>${t(`skillsStudio.runtime.${rt}`)}</span></span>`)}</li>`);
   }
   return html`${lines}`;
 }

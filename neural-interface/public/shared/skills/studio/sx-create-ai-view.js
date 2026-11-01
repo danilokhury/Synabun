@@ -25,7 +25,7 @@ import {
 
 const PROMPT_KEY = 'skills-studio-create-prompt';
 const SCAN_COUNTED = ['blocked', 'incomplete', 'review', 'findings'];
-const PROVIDER_RUNTIME = new Map([['claude-code', 'claude'], ['codex', 'codex'], ['opencode', 'opencode']]);
+const PROVIDER_RUNTIME = new Map([['claude-code', 'claude'], ['codex', 'codex'], ['opencode', 'opencode'], ['antigravity', 'antigravity']]);
 
 // What the box keeps between drawings of the place (the form itself is kept in storage).
 const AI = {

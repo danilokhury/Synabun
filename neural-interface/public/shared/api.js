@@ -881,15 +881,15 @@ export async function fetchOpencodeSessions({ project, limit, offset, search } =
   return jsonFetch(`/api/opencode/sessions?${params}`);
 }
 
-// ─── Gemini CLI Sessions (Resume) ─────
+// ─── Antigravity CLI Sessions (Resume) ─────
 
-export async function fetchGeminiSessions({ project, limit, offset, search } = {}) {
+export async function fetchAntigravitySessions({ project, limit, offset, search } = {}) {
   const params = new URLSearchParams();
   if (project) params.set('project', project);
   if (limit) params.set('limit', String(limit));
   if (offset) params.set('offset', String(offset));
   if (search) params.set('search', search);
-  return jsonFetch(`/api/gemini/sessions?${params}`);
+  return jsonFetch(`/api/antigravity/sessions?${params}`);
 }
 
 // ─── Hybrid session content search (FTS5 + semantic for Claude) ─────
@@ -1143,7 +1143,7 @@ export async function fetchRulesStatus() {
   }
 }
 
-/** The rendered text for a host (claude, codex, opencode, gemini, cursor) or the copy-only `coexistence` snippet. */
+/** The rendered text for a host (claude, codex, opencode, antigravity, cursor) or the copy-only `coexistence` snippet. */
 export async function fetchRulesText(host) {
   return jsonFetch(`/api/setup/rules/${encodeURIComponent(host)}/text`);
 }

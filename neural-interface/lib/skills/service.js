@@ -50,7 +50,7 @@ export const SERVICE_CAPABILITIES = Object.freeze([
   'evals', 'usage', 'health', 'discover', 'packages', 'external-scanner-status',
 ]);
 
-export const ASSISTANT_RUNTIMES = Object.freeze(['claude', 'codex', 'opencode']);
+export const ASSISTANT_RUNTIMES = Object.freeze(['claude', 'codex', 'opencode', 'antigravity']);
 
 export class ServiceError extends PathConfineError {
   constructor(status, message, code, extra = {}) {
@@ -68,7 +68,7 @@ export class ServiceError extends PathConfineError {
  * @param {string|null} [o.bundledDir] PACKAGE_ROOT/skills
  * @param {string} [o.appVersion]
  * @param {(event) => void} [o.broadcast]
- * @param {() => ({ claude?: boolean, codex?: boolean, opencode?: boolean }|null)} [o.installedRuntimes] which CLIs are
+ * @param {() => ({ claude?: boolean, codex?: boolean, opencode?: boolean, antigravity?: boolean }|null)} [o.installedRuntimes] which CLIs are
  *   installed on this computer (server.js: the CLI resolver); null when not known
  * @param {object} [o.runtimeChecks] lib/skills/runtime-checks.js (the owner's enable)
  */
@@ -116,11 +116,13 @@ export function createSkillsService({ dataDir, roots, catalog, library, deployer
     const used = usedRuntimes();
     const detected = ASSISTANT_RUNTIMES.filter((r) => (installed ? installed[r] !== false : true) && used[r]);
     const fallback = detected.length ? detected : ['claude'];
-    return { chosen: config.assistants, detected: fallback, effective: config.assistants && config.assistants.length ? config.assistants : fallback, installed: installed ? ASSISTANT_RUNTIMES.filter((r) => installed[r] === true) : null };
+    // `installed` leaves out only a runtime the host says is missing (false): one it says nothing of (a host from before
+    // Antigravity) is never called "not installed".
+    return { chosen: config.assistants, detected: fallback, effective: config.assistants && config.assistants.length ? config.assistants : fallback, installed: installed ? ASSISTANT_RUNTIMES.filter((r) => installed[r] !== false) : null };
   }
   /** Which runtimes have a home on this computer (their skills folder or its parent exists), from the roots. */
   function usedRuntimes() {
-    const out = { claude: false, codex: false, opencode: false };
+    const out = { claude: false, codex: false, opencode: false, antigravity: false };
     let list = [];
     try { list = roots.listRoots(); } catch { list = []; }
     for (const r of list) {
@@ -181,7 +183,7 @@ export function createSkillsService({ dataDir, roots, catalog, library, deployer
     const binaryHead = head ? !isEditableText(head.bytes) : false;
     const base = lintText({ type: 'skill', text, folderName, binary: binaryHead }).lint;
     const sidecar = readSidecar(files);
-    const ids = Array.isArray(profiles) && profiles.length ? profiles.filter((p) => getProfile(p)) : ['portable-six-field', 'claude-code', 'codex-native', 'opencode-native'];
+    const ids = Array.isArray(profiles) && profiles.length ? profiles.filter((p) => getProfile(p)) : ['portable-six-field', 'claude-code', 'codex-native', 'opencode-native', 'antigravity-native'];
     const byProfile = {};
     for (const id of ids) {
       const lint = lintForProfile(id, { parsed, folderName, files: files.map((f) => ({ path: f.path, size: f.bytes.length })), sidecar });
@@ -281,6 +283,11 @@ export function createSkillsService({ dataDir, roots, catalog, library, deployer
     const entry = await catalog.find(artifactId);
     if (!entry) throw new ServiceError(404, 'There is no such entry in the catalog.', 'artifact_not_found');
     if (entry.kind !== 'skill') throw new ServiceError(400, 'Only a skill folder becomes a library skill.', 'not_a_skill');
+    // A folder SynaBun installed a library skill into is that skill already: adopting it again would make a second
+    // library skill of the same bytes (two Library rows, each flagged "same description" against the other).
+    const installed = deployer.activeAt(entry.path) || (entry.realPath && entry.realPath !== entry.path ? deployer.activeAt(entry.realPath) : null);
+    const owner = installed ? library.readSkill(installed.skillId) : null;
+    if (owner) return { skill: skillSummary(library.getSkill(owner.skillId)), revision: null, created: false, unchanged: true, installed: true, excluded: [] };
     const { files, dirs, excluded } = collectFolder(entry.realPath);
     const existing = library.findSkill((s) => s.origin?.kind === 'adopted' && s.origin?.artifactId === artifactId);
     const source = { kind: 'adopted', path: entry.path, rootId: entry.rootId, artifactId, name: entry.folderName };
@@ -475,7 +482,7 @@ export function createSkillsService({ dataDir, roots, catalog, library, deployer
    * backup, and the answer says what changed (lib/skills/runtime-checks.js enable).
    */
   function enableEligibility({ runtime, name, skillMd, accountId = 'default', projectPath = null, confirmDenyAll = false }) {
-    if (!['claude', 'codex', 'opencode'].includes(runtime)) throw new ServiceError(400, 'runtime is claude, codex or opencode.', 'invalid_target');
+    if (!['claude', 'codex', 'opencode', 'antigravity'].includes(runtime)) throw new ServiceError(400, 'runtime is claude, codex, opencode or antigravity.', 'invalid_target');
     if (typeof name !== 'string' || !isPlainName(name)) throw new ServiceError(400, 'name is a skill\'s folder name.', 'invalid_name');
     if (typeof skillMd !== 'string' || !skillMd || !/[\\/]SKILL\.md$/.test(skillMd)) throw new ServiceError(400, 'skillMd is the path of the skill\'s SKILL.md.', 'invalid_path');
     // Only a skill at a place SynaBun installs to (one of its install roots, or a folder a runtime reads): never an
@@ -492,7 +499,8 @@ export function createSkillsService({ dataDir, roots, catalog, library, deployer
   /** The legacy chips' view of one bundled skill: what each runtime has of it (native folder, old bridge, neither). */
   function legacyTargetStates(name) {
     const out = {};
-    for (const runtime of ['claude', 'codex', 'opencode']) {
+    // Antigravity installs to ~/.gemini/config/skills (lib/skills/roots.js), like the others to their own folders.
+    for (const runtime of ['claude', 'codex', 'opencode', 'antigravity']) {
       const root = roots.installRoot({ runtime, scope: 'user', accountId: 'default' });
       const native = root ? deployer.activeAt(join(root.path, name)) : null;
       let nativeState = 'absent';

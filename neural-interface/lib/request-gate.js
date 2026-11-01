@@ -96,6 +96,9 @@ export const ADMIN_ONLY_PREFIXES = Object.freeze([
   '/api/project-files',
   '/api/browse-folder',
   '/api/codex/plans',
+  // Antigravity's own conversations and models: each uncached answer starts the owner's `agy` (its side panel
+  // socket is refused to guests too).
+  '/api/antigravity',
   '/api/sidepanel',
   '/api/sidepanel-runs',
   '/api/loop',

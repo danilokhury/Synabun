@@ -244,7 +244,11 @@ export const RELAY_NAMES = Object.freeze([
 /** Proxy / tunnel apps found by their bundle (their helpers carry other names). */
 const RELAY_BUNDLE_RE = /\/(?:charles|proxyman|surge(?: mac)?|clashx[^/]*|clash verge|clash for windows|clash nyanpasu|flclash|shadowrocket|shadowsocksx[^/]*|v2rayu|v2rayx|qv2ray|v2rayn|stash|quantumult x|loon|proxifier|mitmproxy|ngrok|tailscale|cloudflare warp)\.app\//i;
 /** The agents whose process trees never hold the owner's authority (argv[0]'s name). */
-export const AGENT_NAMES = Object.freeze(['claude', 'codex', 'opencode', 'gemini', 'cursor-agent', 'aider', 'goose', 'qwen', 'crush']);
+// Antigravity's CLI runs as `antigravity` (the kernel's name for the binary Homebrew links as `agy`). Gemini CLI stays on
+// the list though SynaBun no longer drives it: an agent the user still runs never holds the owner's authority either.
+export const AGENT_NAMES = Object.freeze(['claude', 'codex', 'opencode', 'agy', 'antigravity', 'gemini', 'cursor-agent', 'aider', 'goose', 'qwen', 'crush']);
+/** The agent backend of the Antigravity app and IDE (a `language_server` inside their bundles: Codeium's name, so only by its place). */
+const ANTIGRAVITY_SERVER_RE = /\/antigravity(?: ide)?\.app\/contents\/resources\/(?:app\/extensions\/[^/]+\/)?bin\/language_server/i;
 /** Browsers the owner browses with (their bundle or their network process): never taken for a relay because they
  *  happen to hold a listening socket; an automation flag on them is still refused. */
 const BROWSER_BUNDLE_RE = /\/(?:safari|google chrome(?: beta| dev| canary)?|chromium|firefox(?: developer edition| nightly)?|arc|brave browser(?: beta| nightly)?|microsoft edge(?: beta| dev| canary)?|opera(?: gx)?|vivaldi|orion|zen(?: browser)?|thorium|comet|dia|sigmaos|yandex|duckduckgo|sidekick|wavebox|island)\.app\/|\/synabun\.app\/contents\/(?:macos\/synabun(?:\s|$)|frameworks\/synabun helper)/i;
@@ -275,10 +279,12 @@ export function processKinds({ ucomm = '', comm = '', args = '' } = {}) {
   else if (/(?:^|\s)-juggler(?:-pipe)?(?:\s|$)/.test(la) || /(?:^|\s)--?marionette(?:\s|$)/.test(la)) automation = 'Firefox automation';
 
   let agent = has(AGENT_NAMES);
+  if (agent === 'agy') agent = 'antigravity';
   if (!agent) {
     if (/\/claude\/versions\/[^/\s]+(?:\s|$)/.test(la) || /@anthropic-ai\/claude-code\/cli\.m?js(?:\s|$)/.test(la) || /@anthropic-ai\/claude-agent-sdk[^/\s]*\/claude(?:\s|$)/.test(la)) agent = 'claude';
     else if (/@openai\/codex\/bin\/codex(?:\.js)?(?:\s|$)/.test(la) || /(?:^|\s|\/)codex\s+(?:app-server|exec|mcp(?:-server)?|proto)\b/.test(la)) agent = 'codex';
     else if (/(?:^|\s|\/)opencode\s+serve\b/.test(la)) agent = 'opencode';
+    else if (/(?:^|\s|\/)(?:agy|antigravity)\s+acp\b/.test(la) || ANTIGRAVITY_SERVER_RE.test(c || a)) agent = 'antigravity';
     else if (/@google\/gemini-cli\//.test(la)) agent = 'gemini';
   }
 
@@ -402,6 +408,27 @@ export function isSynabunMcpServer(proc, { roots = [], cwd = null, realpath = nu
   return typeof real === 'string' && targets.has(real);
 }
 
+// ── Processes SynaBun starts for an agent ────────────────────────────────────
+//
+// A command an agent runs through SynaBun (the Antigravity panel's client terminals, lib/antigravity/acp-client-host.js)
+// is a child of this server, not of the agent, so no agent is in its process tree by name. Its pid is registered here
+// while it runs, and a chain that passes through one is an agent's tree. Like the name rule, a command that detaches
+// from its parent (and so from the chain) is not seen.
+const AGENT_PROCESSES = new Map(); // pid -> label
+
+/** A process SynaBun started on an agent's behalf: its tree never holds the owner's authority while it runs. */
+export function registerAgentProcess(pid, label = 'agent command') {
+  if (Number.isInteger(pid) && pid > 1) AGENT_PROCESSES.set(pid, String(label || 'agent command').slice(0, 80));
+}
+/** That process ended (its pid can be reused). */
+export function forgetAgentProcess(pid) {
+  AGENT_PROCESSES.delete(pid);
+}
+/** The registered processes (for tests and diagnostics). */
+export function agentProcesses() {
+  return new Map(AGENT_PROCESSES);
+}
+
 /**
  * Whether the process at the client end of a connection, and its parents, may hold the owner's authority.
  * @param {Array<{pid:number, ppid:number, ucomm:string, comm:string, args:string}>} chain the peer first, then its
@@ -409,9 +436,10 @@ export function isSynabunMcpServer(proc, { roots = [], cwd = null, realpath = nu
  * @param {{ selfPid:number, listening:Set<number>, synabunMcp?:number }} o `synabunMcp`: the peer's pid when it is
  *   SynaBun's own MCP server over HTTP (isSynabunMcpServer): not refused as a relay, refused like an agent's tree
  *   (kind 'synabun-mcp': lib/owner-authority.js takes its pinned calls as an agent's own)
+ *   `agentPids`: processes SynaBun started for an agent (registerAgentProcess), refused like an agent's tree
  * @returns {{ self:boolean, refuse: null | { why:string, kind:string, pid:number, name:string } }}
  */
-export function classifyPeerChain(chain, { selfPid = process.pid, listening = new Set(), synabunMcp = 0 } = {}) {
+export function classifyPeerChain(chain, { selfPid = process.pid, listening = new Set(), synabunMcp = 0, agentPids = AGENT_PROCESSES } = {}) {
   const list = Array.isArray(chain) ? chain : [];
   if (!list.length) return { self: false, refuse: null };
   if (list[0].pid === selfPid) return { self: true, refuse: null };
@@ -425,6 +453,8 @@ export function classifyPeerChain(chain, { selfPid = process.pid, listening = ne
     const k = i === 0 ? peerKinds : processKinds(p);
     if (k.automation) return refuse(p, 'automation-browser', `a browser started for automation (${k.automation})`);
     if (k.agent) return refuse(p, 'agent', `an AI agent's process tree (${k.agent})`);
+    const startedFor = agentPids?.get?.(p.pid);
+    if (startedFor) return refuse(p, 'agent', `an AI agent's process tree (${startedFor}, started by SynaBun)`);
     if (k.synabun) return refuse(p, 'synabun-instance', 'another SynaBun server');
     if (k.remoteLogin) return refuse(p, 'remote-login', 'a remote login session (sshd)');
     // SynaBun's own MCP server over HTTP relays for its MCP clients by design: not refused as a relay or a listener

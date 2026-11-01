@@ -22,6 +22,10 @@
 // refuses, and plan mode auto-allows what it allows.
 
 import { REPLY_TOOLS } from './assistant-route-gate.js';
+import { acpToolKind } from './antigravity/tool-call.js';
+
+// Antigravity's own tools that change files (by their kind, lib/antigravity/tool-call.js).
+const ACP_CHANGE_KINDS = new Set(['edit', 'delete', 'move']);
 import { codexMcpToolApproval } from '../public/shared/cdx/cdx-protocol.js';
 
 // ── the read-only classifier ─────────────────────────────────────────────────
@@ -218,6 +222,14 @@ export function readOnlyToolDecision(toolName, input = {}, { host = null } = {})
   const tool = String(toolName || '');
   if (host === 'claude') return claudeReadOnlyHookDecision(tool, input);
   if (host === 'codex') return /^mcp__/.test(tool) && !isReadOnlyMcpTool(tool, input) ? 'deny' : null;
+  // Antigravity: reads and searches run, a command only when it only reads, an MCP tool only when it only reads;
+  // a change, the web and any tool SynaBun cannot read are refused (fail closed).
+  if (host === 'antigravity') {
+    if (/^mcp__/.test(tool)) return isReadOnlyMcpTool(tool, input) ? null : 'deny';
+    const kind = acpToolKind({ name: tool });
+    if (kind === 'execute') return isReadOnlyShellCommand(input?.command) ? null : 'deny';
+    return kind === 'read' || kind === 'search' || kind === 'think' ? null : 'deny';
+  }
   if (host !== 'opencode') return null;
   const kind = tool.toLowerCase();
   if (kind === 'bash') return isReadOnlyShellCommand(input?.command) ? null : 'deny';
@@ -305,6 +317,7 @@ const PRESENT_PLAN = {
   claude: 'present the plan with ExitPlanMode',
   codex: 'present the plan in a <proposed_plan> block',
   opencode: 'present the plan in a <proposed_plan> block',
+  antigravity: 'present the plan in a <proposed_plan> block',
 };
 /** What the model reads when plan mode refused a code change. `host`: claude / codex / opencode. */
 export function planDenyMessage(tool, { host = null } = {}) {
@@ -349,6 +362,8 @@ export function planToolDecision(toolName, input = {}, { host = null } = {}) {
   const tool = String(toolName || '');
   if (host === 'claude') return claudePlanHookDecision(tool);
   if (host === 'codex') return CODEX_EDIT_TOOLS.has(tool) || (/^mcp__/.test(tool) && isFileWritingMcpTool(tool)) ? 'deny' : null;
+  // Antigravity (its hook, lib/antigravity/policy.js): an MCP call as mcp__<server>__<tool>, else its own tool word.
+  if (host === 'antigravity') return /^mcp__/.test(tool) ? (isFileWritingMcpTool(tool) ? 'deny' : null) : (ACP_CHANGE_KINDS.has(acpToolKind({ name: tool })) ? 'deny' : null);
   if (host !== 'opencode') return null;
   const kind = tool.toLowerCase();
   if (OPENCODE_EDIT_KINDS.test(kind)) return 'deny';

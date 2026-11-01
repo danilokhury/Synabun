@@ -81,7 +81,12 @@ export function lintArtifact({ type, parsed, folderName = '', knownNames = [] })
       if (typeof desc !== 'string') add('description-type', 'error', `"description" must be text; it is ${kindOf(desc)}.`, lineOf('description'));
       else if (!desc.trim()) add('description-empty', 'error', '"description" is empty.', lineOf('description'));
       else {
-        if (desc.length > DESCRIPTION_MAX) add('description-length', 'error', `"description" is ${desc.length} characters; the limit is ${DESCRIPTION_MAX}.`, lineOf('description'));
+        // The 1024-character limit is the skill format's (Claude Code, Codex and the portable format refuse a longer
+        // SKILL.md). An agent or a command has none: a long description only costs context, which is no error.
+        if (desc.length > DESCRIPTION_MAX) {
+          if (type === 'skill') add('description-length', 'error', `"description" is ${desc.length} characters; the limit is ${DESCRIPTION_MAX}.`, lineOf('description'));
+          else add('description-length', 'info', `"description" is ${desc.length} characters: every session carries it, so a shorter one leaves more room.`, lineOf('description'));
+        }
         const hidden = findHiddenChars(desc);
         if (hidden.length) add('description-hidden-chars', 'error', `"description" holds characters nobody can see: ${hidden.slice(0, 5).map((h) => h.label).join(', ')}${hidden.length > 5 ? '…' : ''}.`, lineOf('description'));
       }
@@ -99,6 +104,9 @@ export function lintArtifact({ type, parsed, folderName = '', knownNames = [] })
       if (has(key) && typeof data[key] !== 'boolean') add(`${key}-type`, 'error', `"${key}" must be true or false; it is ${kindOf(data[key])}.`, lineOf(key));
     }
     for (const key of STRING_KEYS) {
+      // `argument-hint: [message]` is the form Claude Code's own documentation writes: YAML reads the brackets as a
+      // list of text and Claude Code shows it as written. Only another kind of value is an error.
+      if (key === 'argument-hint' && Array.isArray(data[key]) && data[key].every((v) => typeof v === 'string' || typeof v === 'number')) continue;
       if (has(key) && data[key] !== null && typeof data[key] !== 'string') add(`${key}-type`, 'error', `"${key}" must be text; it is ${kindOf(data[key])}.`, lineOf(key));
     }
     for (const key of TOOL_KEYS) {

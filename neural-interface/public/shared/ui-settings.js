@@ -20,7 +20,7 @@ import { createTunnelCard, drawInto, mcpKeyNeededText, readTunnel } from './ui-t
 import { remoteMcpAddress } from './tunnel-view.js';
 import { recheckCliStatus, getCliStatus, addCliToPath } from './cli-status.js';
 import { cliInstallText, setCliInstallTranslator } from './cli-install-view.js';
-import { dropdownHTML, wireDropdowns } from './cc-dropdown.js';
+import { dropdownHTML, wireDropdowns, setDropdownItems, setDropdownValue } from './cc-dropdown.js';
 setCliInstallTranslator((key, params) => kit.tx(`cliInstall.${key}`, params));
 import { setGitBashTranslator } from './git-bash-view.js';
 import { gitBashRowHtml, wireGitBashRow } from './ui-git-bash.js';
@@ -98,7 +98,8 @@ const TAB_ICONS = {
 const COPY_ICON = '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
 const CHEVRON_ICON = '<svg class="cc-section-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>';
 const ANTHROPIC_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><path d="M4.709 15.955l4.72-2.647.08-.23-.08-.128H9.2l-.79-.048-2.698-.073-2.339-.097-2.266-.122-.571-.121L0 11.784l.055-.352.48-.321.686.06 1.52.103 2.278.158 1.652.097 2.449.255h.389l.055-.157-.134-.098-.103-.097-2.358-1.596-2.552-1.688-1.336-.972-.724-.491-.364-.462-.158-1.008.656-.722.881.06.225.061.893.686 1.908 1.476 2.491 1.833.365.304.145-.103.019-.073-.164-.274-1.355-2.446-1.446-2.49-.644-1.032-.17-.619a2.97 2.97 0 01-.104-.729L6.283.134 6.696 0l.996.134.42.364.62 1.414 1.002 2.229 1.555 3.03.456.898.243.832.091.255h.158V9.01l.128-1.706.237-2.095.23-2.695.08-.76.376-.91.747-.492.584.28.48.685-.067.444-.286 1.851-.559 2.903-.364 1.942h.212l.243-.242.985-1.306 1.652-2.064.73-.82.85-.904.547-.431h1.033l.76 1.129-.34 1.166-1.064 1.347-.881 1.142-1.264 1.7-.79 1.36.073.11.188-.02 2.856-.606 1.543-.28 1.841-.315.833.388.091.395-.328.807-1.969.486-2.309.462-3.439.813-.042.03.049.061 1.549.146.662.036h1.622l3.02.225.79.522.474.638-.079.485-1.215.62-1.64-.389-3.829-.91-1.312-.329h-.182v.11l1.093 1.068 2.006 1.81 2.509 2.33.127.578-.322.455-.34-.049-2.205-1.657-.851-.747-1.926-1.62h-.128v.17l.444.649 2.345 3.521.122 1.08-.17.353-.608.213-.668-.122-1.374-1.925-1.415-2.167-1.143-1.943-.14.08-.674 7.254-.316.37-.729.28-.607-.461-.322-.747.322-1.476.389-1.924.315-1.53.286-1.9.17-.632-.012-.042-.14.018-1.434 1.967-2.18 2.945-1.726 1.845-.414.164-.717-.37.067-.662.401-.589 2.388-3.036 1.44-1.882.93-1.086-.006-.158h-.055L4.132 18.56l-1.13.146-.487-.456.061-.746.231-.243 1.908-1.312-.006.006z" fill="currentColor"/></svg>';
-const GEMINI_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z" fill="currentColor"/></svg>';
+// A line drawing: its paths carry fill="none" themselves, because `.cli-path-icon svg` fills every icon it holds.
+const ANTIGRAVITY_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 20 12 4l7.5 16" fill="none"/><path d="M8.2 20a3.8 3.8 0 0 1 7.6 0" fill="none"/></svg>';
 const OPENAI_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><path d="M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z" fill="currentColor"/></svg>';
 const OPENCODE_ICON = '<svg viewBox="0 0 24 30" class="cc-provider-icon" fill="currentColor"><path d="M18 6H6V24H18V6ZM24 30H0V0H24V30Z"/></svg>';
 const BROWSER_ICON = '<svg viewBox="0 0 24 24" class="cc-provider-icon"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/><ellipse cx="12" cy="12" rx="4" ry="10" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="2" y1="12" x2="22" y2="12" stroke="currentColor" stroke-width="1.5"/><path d="M4.5 7h15M4.5 17h15" fill="none" stroke="currentColor" stroke-width="1"/></svg>';
@@ -531,19 +532,27 @@ function buildNavHTML(activeId) {
   return html;
 }
 
-/** The nav rail's stand-in on a narrow panel: one labelled select that lists every page. */
+/** The nav rail's stand-in on a narrow panel: one labelled dropdown that lists every page. */
 function buildPagePickerHTML(activeId) {
   const groups = SETTINGS_GROUPS.map(group => {
     const options = SETTINGS_PAGES.filter(p => p.group === group.id).map(page => {
       const keys = pageKeys(page);
-      return `<option value="${page.id}"${page.id === activeId ? ' selected' : ''}>${kit.te(keys.navLabel)} — ${kit.te(keys.navHelp)}</option>`;
-    }).join('');
-    return options ? `<optgroup label="${kit.te(group.labelKey)}">${options}</optgroup>` : '';
-  }).join('');
+      return { value: page.id, label: `${kit.tx(keys.navLabel)} — ${kit.tx(keys.navHelp)}`, selected: page.id === activeId };
+    });
+    return options.length ? { group: kit.tx(group.labelKey), options } : null;
+  }).filter(Boolean);
+  // dropdownHTML escapes the labels itself.
   return `<div class="stg-page-picker">
-        <label for="stg-page-select">${kit.te('settings.redesign.common.allPages')}</label>
-        <select id="stg-page-select">${groups}</select>
+        <label id="stg-page-select-label" for="stg-page-select-trigger">${kit.te('settings.redesign.common.allPages')}</label>
+        ${dropdownHTML('stg-page-select', groups, { classes: 'stg-page-dropdown', labelledBy: 'stg-page-select-label' })}
       </div>`;
+}
+
+/** A settings field whose control is a styled dropdown: the id stays on its hidden input, the label and help point at its button. */
+function dropdownField(invId, id, entries, { classes = '' } = {}) {
+  const control = dropdownHTML(id, entries, { classes, labelledBy: `${id}-label` })
+    .replace('role="combobox"', `role="combobox" aria-describedby="${id}-help"`);
+  return kit.field(invId, control, { forId: id }).replace(`<label for="${id}">`, `<label id="${id}-label" for="${id}-trigger">`);
 }
 
 /** The search field above the page list, and the results list that takes the list's place while it holds a query. */
@@ -815,9 +824,9 @@ function buildBrowserTab() {
           ${kit.field('BRW011', dd('BRW011', 'bc-connectMode', 'connect', ['mirror', 'attach', 'morelogin']))}
           ${kit.field('BRW012', dd('BRW012', 'bc-attachSeed', 'seed', ['real', 'fresh']), { attrs: 'id="bc-attachSeed-row" style="display:none"' })}
           <div class="stg-field bc-card-row" id="bc-morelogin-row" ${kit.inv('BRW013')} style="display:none">
-            <label for="bc-morelogin-env-id">${kit.L('BRW013')}</label>
+            <label id="bc-morelogin-env-id-label" for="bc-morelogin-env-id-trigger">${kit.L('BRW013')}</label>
             <div class="browser-cfg-input-row">
-              <select class="browser-cfg-input" id="bc-morelogin-env-id" style="flex:1" aria-describedby="bc-morelogin-env-id-help"></select>
+              ${dropdownHTML('bc-morelogin-env-id', [{ value: '', label: kit.tx('settings.redesign.browser.loadingProfiles') }], { classes: 'bc-ml-dropdown', labelledBy: 'bc-morelogin-env-id-label', attrs: 'style="flex:1;min-width:0"' }).replace('role="combobox"', 'role="combobox" aria-describedby="bc-morelogin-env-id-help"')}
               <button type="button" class="cli-detect-btn" id="bc-morelogin-refresh" ${kit.inv('BRW014')} title="${kit.H('BRW014')}">${REFRESH}${kit.L('BRW014')}</button>
             </div>
             <div class="stg-help" id="bc-morelogin-env-id-help">${kit.H('BRW013')}</div>
@@ -965,7 +974,7 @@ function buildSetupTab(setupStatus) {
   // primary,remove,view,copy,text}, and the header badge (#setup-<id> .gfx-group-title .setup-status-badge).
   const providers = [
     { id: 'claude',   name: 'Claude',   icon: ANTHROPIC_ICON, file: '~/.claude.json',                 ids: { toggle: 'SET004', cli: 'SET005',                      primary: 'SET006', remove: 'SET007', view: 'SET008', copy: 'SET009' } },
-    { id: 'gemini',   name: 'Gemini',   icon: GEMINI_ICON,    file: '~/.gemini/settings.json',        ids: { toggle: 'SET010',                    config: 'SET011', primary: 'SET012', remove: 'SET013', view: 'SET014', copy: 'SET015' } },
+    { id: 'antigravity', name: 'Antigravity', icon: ANTIGRAVITY_ICON, file: '~/.gemini/config/mcp_config.json', ids: { toggle: 'SET010',                    config: 'SET011', primary: 'SET012', remove: 'SET013', view: 'SET014', copy: 'SET015' } },
     { id: 'codex',    name: 'Codex',    icon: OPENAI_ICON,    file: '~/.codex/config.toml',           ids: { toggle: 'SET016', cli: 'SET017', config: 'SET018', primary: 'SET019', remove: 'SET020', view: 'SET021', copy: 'SET022' } },
     { id: 'opencode', name: 'OpenCode', icon: OPENCODE_ICON,  file: '~/.config/opencode/opencode.json', ids: { toggle: 'SET023',                    config: 'SET024', primary: 'SET025', remove: 'SET026', view: 'SET027', copy: 'SET028' } },
   ].map((p) => ({ ...p, on: setupStatus[p.id]?.connected || false }));
@@ -1105,7 +1114,7 @@ function buildTerminalTab(cliConfig) {
   const cliProfiles = [
     { id: 'claude-code', name: 'Claude Code', icon: ANTHROPIC_ICON, color: '#D4A27F', default: 'claude',   inv: 'CLI001' },
     { id: 'codex',       name: 'Codex',       icon: OPENAI_ICON,    color: '#74c7a5', default: 'codex',    inv: 'CLI003' },
-    { id: 'gemini',      name: 'Gemini',      icon: GEMINI_ICON,    color: '#669DF6', default: 'gemini',   inv: 'CLI004' },
+    { id: 'antigravity', name: 'Antigravity', icon: ANTIGRAVITY_ICON, color: '#669DF6', default: 'agy',    inv: 'CLI004' },
     { id: 'opencode',    name: 'OpenCode',    icon: OPENCODE_ICON,  color: '#E8E0DC', default: 'opencode', inv: 'CLI005' },
   ];
 
@@ -1128,7 +1137,7 @@ function buildTerminalTab(cliConfig) {
                     <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                     ${kit.L('CLI002')}
                   </button>
-                  ${p.id === 'gemini' ? '' : `<button type="button" class="cli-detect-btn" data-cli-add-path="${p.id}" hidden>${escapeHtml(cliInstallText('addPath'))}</button>`}
+                  <button type="button" class="cli-detect-btn" data-cli-add-path="${p.id}" hidden>${escapeHtml(cliInstallText('addPath'))}</button>
                   <span class="cli-path-status${isDefault ? '' : ' custom'}" id="cli-status-${p.id}" ${kit.inv('CLI007')}>${kit.te(isDefault ? 'settings.redesign.terminal.cliStatus.default' : 'settings.redesign.terminal.cliStatus.custom')}</span>
                 </div>
                 <div class="stg-help" id="cli-path-${p.id}-help">${kit.H(p.inv)}</div>
@@ -1141,7 +1150,7 @@ function buildTerminalTab(cliConfig) {
     { code: 'C:\\Users\\me\\.npm\\claude',  key: 'exWindows' },
     { code: '/opt/homebrew/bin/claude',     key: 'exUnix' },
     { code: 'wsl claude',                   key: 'exWsl' },
-    { code: 'wsl -d Ubuntu gemini',         key: 'exWslDistro' },
+    { code: 'wsl -d Ubuntu claude',         key: 'exWslDistro' },
   ];
 
   return `
@@ -1251,12 +1260,7 @@ function buildMcpTab() {
               </div>
               <div class="stg-mcp-form-grid" style="margin-top:10px">
                 ${kit.field('MCP012', input('stg-mcp-srv-name', { ph: m('ph.name') }), { forId: 'stg-mcp-srv-name' })}
-                ${kit.field('MCP013', `
-                  <select class="stg-input stg-input-sm" id="stg-mcp-srv-type" aria-describedby="stg-mcp-srv-type-help">
-                    <option value="stdio">${m('type.stdio')}</option>
-                    <option value="sse">${m('type.sse')}</option>
-                    <option value="http">${m('type.http')}</option>
-                  </select>`, { forId: 'stg-mcp-srv-type' })}
+                ${dropdownField('MCP013', 'stg-mcp-srv-type', ['stdio', 'sse', 'http'].map(t => ({ value: t, label: kit.tx(`settings.redesign.mcp.type.${t}`), selected: t === 'stdio' })))}
                 ${kit.field('MCP014', input('stg-mcp-srv-cmd', { ph: 'node' }), { forId: 'stg-mcp-srv-cmd', className: 'stg-mcp-field-wide stg-mcp-field-stdio', attrs: 'data-stg-shown-by="#stg-mcp-srv-type"' })}
                 ${kit.field('MCP015', `
                   <div class="stg-mcp-arg-chips" id="stg-mcp-arg-chips" ${kit.inv('MCP027')}>
@@ -1282,7 +1286,7 @@ function buildMcpTab() {
                 ${platform('claudeCode', true)}
                 ${platform('opencode', true)}
                 ${platform('codex', true)}
-                ${platform('gemini', false)}
+                ${platform('antigravity', false)}
               </div>
               <div class="stg-action-row stg-mcp-form-actions" style="margin-top:10px">
                 <button type="button" class="stg-action-btn compact" id="stg-mcp-srv-save" ${kit.inv('MCP020')} title="${kit.H('MCP020')}">${kit.L('MCP020')}</button>
@@ -1613,11 +1617,10 @@ function buildYoutubeTab(yt) {
             ${key('YT008', 'STEAM_API_KEY', 'xxxx', 'password')}
 
             ${kit.subhead(y('pipelineTitle'))}
-            ${kit.field('YT009', `
-              <select id="yt-upload-transport" class="stg-input" aria-describedby="yt-upload-transport-help">
-                <option value="browser"${p.uploadTransport !== 'api' ? ' selected' : ''}>${y('transport.browser')}</option>
-                <option value="api"${p.uploadTransport === 'api' ? ' selected' : ''}>${y('transport.api')}</option>
-              </select>`, { forId: 'yt-upload-transport' })}
+            ${dropdownField('YT009', 'yt-upload-transport', [
+              { value: 'browser', label: kit.tx('settings.redesign.youtube.transport.browser'), selected: p.uploadTransport !== 'api' },
+              { value: 'api', label: kit.tx('settings.redesign.youtube.transport.api'), selected: p.uploadTransport === 'api' },
+            ])}
             ${kit.field('YT010', `
               <div class="settings-key-row">
                 <input id="yt-quality" type="text" value="${esc(dl.quality || 'bestvideo[height<=1080]+bestaudio/best[height<=1080]')}" autocomplete="off" spellcheck="false" aria-describedby="yt-quality-help">
@@ -1671,13 +1674,17 @@ function buildSocialTab(toolCategories, toolPermissions) {
 
 function buildSkillsTab(ccSkills) {
   const skills = ccSkills || [];
+  // Antigravity reads ~/.gemini/config/skills: its chip shows once the server lists that target for the skills (an
+  // older server installs to Claude Code, Codex and OpenCode only, and would refuse the chip's request).
+  const antigravity = skills.some(s => s?.targetStates?.antigravity || (s?.installedTargets && Object.hasOwn(s.installedTargets, 'antigravity')));
   const targets = [
     { id: 'claude', label: kit.te('settings.redesign.product.claude') },
     { id: 'codex', label: kit.te('settings.redesign.product.codex') },
     { id: 'opencode', label: kit.te('settings.redesign.product.opencode') },
+    ...(antigravity ? [{ id: 'antigravity', label: kit.te('settings.redesign.product.antigravity') }] : []),
   ];
   const row = (skill) => {
-    const installed = skill.installedTargets || { claude: !!skill.installed, codex: false, opencode: false };
+    const installed = skill.installedTargets || { claude: !!skill.installed, codex: false, opencode: false, antigravity: false };
     const anyOn = targets.some(t => installed[t.id]);
     // What each runtime has of it: a native skill folder, an old bridge not moved yet, or a folder of that name
     // SynaBun did not install (settings/settings-skill-folders.js chipState).
@@ -2008,10 +2015,8 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
       { label: 'Claude Web', on: !!compat.web, note: compat.webNote },
       { label: 'Claude Cowork', on: !!compat.cowork },
     ];
-    const geminiItems = [
-      { label: 'Gemini CLI', on: false },
-      { label: 'Gemini Code Assist', on: false },
-      { label: 'Gemini Web', on: false },
+    const antigravityItems = [
+      { label: 'Antigravity CLI', on: false },
     ];
     const openaiItems = [
       { label: 'Codex CLI', on: compat.codex !== false },
@@ -2040,7 +2045,7 @@ function buildConnectionsTab(ccIntegrations, ccSkills, tunnelStatus, mcpKeyInfo,
     };
     return `<div class="cc-provider-badges" data-stg-nostatus onclick="event.stopPropagation()" ${kit.inv('AUT046')}>
       ${badge('anthropic', ANTHROPIC_ICON, 'compat.claude', anthropicItems, false)}
-      ${badge('google', GEMINI_ICON, 'compat.gemini', geminiItems, true)}
+      ${badge('google', ANTIGRAVITY_ICON, 'compat.antigravity', antigravityItems, true)}
       ${badge('openai', OPENAI_ICON, 'compat.openai', openaiItems, true)}
     </div>`;
   };
@@ -2494,6 +2499,7 @@ function buildMoreLoginTab() {
           <span class="settings-status-dot disconnected" id="ml-status-dot"></span>
           <span id="ml-status-line">${m('checking')}</span>
         </div>
+        <div class="stg-help" id="ml-path-hint" hidden style="margin:8px 0 0">${m('customPathHint')}</div>
         <div class="stg-help" style="margin:8px 0 12px">${kit.th('settings.redesign.morelogin.intro', {
           link: '<a href="https://www.morelogin.com" target="_blank" rel="noopener">morelogin.com</a>',
           path: `<strong>${m('apiPath')}</strong>`,
@@ -2570,7 +2576,10 @@ function wireMoreLoginTab(overlay) {
     const dot = $('ml-status-dot'), line = $('ml-status-line'), conn = $('ml-conn-status');
     if (!s.installed) { dot.className = 'settings-status-dot disconnected'; line.textContent = kit.tx('settings.redesign.morelogin.moreloginNotInstalled'); if (conn) conn.textContent = kit.tx('settings.redesign.morelogin.notInstalled'); }
     else if (!s.running) { dot.className = 'settings-status-dot disconnected'; line.textContent = kit.tx('settings.redesign.morelogin.installedApiNotRunningPort', { port: s.port }); if (conn) conn.textContent = kit.tx('settings.redesign.morelogin.appClosed'); }
+    else if (s.apiError) { dot.className = 'settings-status-dot disconnected'; line.textContent = kit.tx('settings.redesign.morelogin.runningApiRejected', { port: s.port, reason: String(s.apiError) }); if (conn) conn.textContent = kit.tx('settings.redesign.morelogin.apiError'); }
     else { dot.className = 'settings-status-dot connected'; line.textContent = kit.tx('settings.redesign.morelogin.connectedProfileSPort', { profileCount: s.profileCount, port: s.port }); if (conn) conn.textContent = kit.tx('settings.redesign.morelogin.connected'); }
+    const hint = $('ml-path-hint');
+    if (hint) hint.hidden = !!(s.installed && s.running);
     _defaultEnvId = s.defaultEnvId || null;
     const ds = $('ml-default-status');
     if (ds) ds.textContent = (s.isDefault && s.defaultEnvId) ? kit.tx('settings.redesign.morelogin.defaultAiBrowserSet') : kit.tx('settings.redesign.morelogin.noDefaultSet');
@@ -2616,6 +2625,11 @@ function wireMoreLoginTab(overlay) {
       if ($('ml-api-id') && !$('ml-api-id').value) $('ml-api-id').value = cfg.config.apiId || '';
     }
     const p = await jget('/api/morelogin/profiles');
+    if (p.ok === false && p.error) {
+      const list = $('ml-profile-list');
+      if (list) list.innerHTML = '<div class="settings-hint" role="status">' + escapeHtml(String(p.error)) + '</div>';
+      return;
+    }
     renderProfiles(p.envs || []);
   }
 
@@ -3063,7 +3077,7 @@ function activateSettingsTab(overlay, tabId = DEFAULT_SETTINGS_PAGE, { remember 
   nav.setAttribute('aria-current', 'page');
   body.classList.add('active');
   const picker = overlay.querySelector('#stg-page-select');
-  if (picker) picker.value = pageId;
+  if (picker) setDropdownValue(picker, pageId);
   if (changed) {
     const content = overlay.querySelector('.settings-content');
     if (content) content.scrollTop = 0;
@@ -3346,7 +3360,7 @@ async function openSettingsModalNow(options = {}) {
   let _bridgeResult = null;
   // The greeting (lib/greeting/): what its endpoint answered, as a reading (no answer is a reading too).
   let greetingReading = readGreetingStatus({ status: 0 });
-  let setupStatus = { claude: {}, gemini: {}, codex: {}, opencode: {}, paths: {} };
+  let setupStatus = { claude: {}, antigravity: {}, codex: {}, opencode: {}, paths: {} };
   let cliConfig = {};
   let toolPermissions = {};
   let toolCategories = [];
@@ -3497,7 +3511,7 @@ async function openSettingsModalNow(options = {}) {
 
   // ── Nav status dots (Judgments and WhatsApp update theirs as they wire) ──
   kit.setNavStatus(overlay, 'server', settings.storage === 'sqlite' ? 'connected' : 'disconnected');
-  kit.setNavStatus(overlay, 'setup', (setupStatus.claude?.connected || setupStatus.gemini?.connected || setupStatus.codex?.connected || setupStatus.opencode?.connected) ? 'connected' : 'disconnected');
+  kit.setNavStatus(overlay, 'setup', (setupStatus.claude?.connected || setupStatus.antigravity?.connected || setupStatus.codex?.connected || setupStatus.opencode?.connected) ? 'connected' : 'disconnected');
   kit.setNavStatus(overlay, 'discord', discordConfig.botToken ? 'connected' : 'disconnected');
   kit.setNavStatus(overlay, 'judgments', (typesafeConfig && typesafeConfig.enabled) ? 'connected' : 'disconnected');
 
@@ -4714,7 +4728,7 @@ async function openSettingsModalNow(options = {}) {
     // Must stay in sync with CLI_DEFAULTS in server.js and the cliProfiles
     // list that renders the inputs — opencode was previously missing here, so
     // its input rendered but its value was never sent to the server.
-    const cliDefaults = { 'claude-code': 'claude', 'codex': 'codex', 'gemini': 'gemini', 'opencode': 'opencode' };
+    const cliDefaults = { 'claude-code': 'claude', 'codex': 'codex', 'antigravity': 'agy', 'opencode': 'opencode' };
     const cliProfileIds = Object.keys(cliDefaults);
 
     const pathButtons = overlay.querySelectorAll('[data-cli-add-path]');
@@ -5407,8 +5421,8 @@ async function openSettingsModalNow(options = {}) {
     emit('skills:open', { place: 'library' });
   });
 
-  // Skill target chips — one skill can be installed independently into Claude / Codex / OpenCode
-  const runtimeLabels = { claude: 'Claude Code', codex: 'Codex CLI', opencode: 'OpenCode CLI' };
+  // Skill target chips — one skill can be installed independently into Claude / Codex / OpenCode / Antigravity
+  const runtimeLabels = { claude: 'Claude Code', codex: 'Codex CLI', opencode: 'OpenCode CLI', antigravity: 'Antigravity CLI' };
   overlay.querySelectorAll('.cc-skill-target[data-cc-skill]').forEach(chip => {
     chip.addEventListener('click', async () => {
       const skillName = chip.dataset.ccSkill;
@@ -5635,7 +5649,7 @@ async function openSettingsModalNow(options = {}) {
       const message = overlay.querySelector('#setup-rules-message');
       const legacyBox = overlay.querySelector('#setup-rules-legacy');
       const versionBadge = overlay.querySelector('#setup-rules-version');
-      const hostOf = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', gemini: 'Gemini' };
+      const hostOf = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', antigravity: 'Antigravity' };
 
       if (autoToggle && installAllBtn && legacyBox) {
         rulesRenderers.push(() => {
@@ -5708,26 +5722,26 @@ async function openSettingsModalNow(options = {}) {
         : { command: 'node', args: [paths.mcpIndexPath || '<path-to>/mcp-server/run.mjs'] };
     };
 
-    // ── Gemini ──
-    wireSetupMcpToggle('gemini', '/api/setup/gemini/mcp', '~/.gemini/settings.json');
-    // Config preview
+    // ── Antigravity ──
+    wireSetupMcpToggle('antigravity', '/api/setup/antigravity/mcp', '~/.gemini/config/mcp_config.json');
+    // Config preview (mcp_config.json: `disabled`, no `trust`)
     {
-      const preview = overlay.querySelector('#setup-gemini-config-preview');
+      const preview = overlay.querySelector('#setup-antigravity-config-preview');
       let cachedConfig = '';
       if (preview) {
-        fetch('/api/setup/gemini/mcp').then(r => r.json()).then(data => {
+        fetch('/api/setup/antigravity/mcp').then(r => r.json()).then(data => {
           if (data.ok && data.config) {
             cachedConfig = JSON.stringify(data.config, null, 2);
             preview.textContent = cachedConfig;
           } else if (data.ok) {
-            cachedConfig = JSON.stringify({ mcpServers: { SynaBun: { ...mcpLaunch(), env: { DOTENV_PATH: setupStatus.paths?.envPath || '<path-to>/synabun/.env' } } } }, null, 2);
+            cachedConfig = JSON.stringify({ mcpServers: { SynaBun: { ...mcpLaunch(), env: { DOTENV_PATH: setupStatus.paths?.envPath || '<path-to>/synabun/.env' }, disabled: false } } }, null, 2);
             preview.textContent = cachedConfig;
           } else { preview.textContent = kit.tx('settings.redesign.setup.couldNotLoadConfig'); }
         }).catch(() => { preview.textContent = kit.tx('settings.redesign.setup.failedToLoad'); });
       }
-      wireCopyBtn('setup-gemini-config-copy', () => cachedConfig, kit.tx('settings.redesign.setup.copyJsonConfig'));
+      wireCopyBtn('setup-antigravity-config-copy', () => cachedConfig, kit.tx('settings.redesign.setup.copyJsonConfig'));
     }
-    wireRulesControls('gemini', 'gemini');
+    wireRulesControls('antigravity', 'antigravity');
 
     // ── Codex ──
     wireSetupMcpToggle('codex', '/api/setup/codex/mcp', '~/.codex/config.toml');
@@ -6048,16 +6062,18 @@ async function openSettingsModalNow(options = {}) {
     let _moreloginDesiredEnvId = '';
     async function loadMoreLoginEnvs() {
       const sel = overlay.querySelector('#bc-morelogin-env-id');
+      // A placeholder choice (loading / error / not running) keeps its reason visible in the closed dropdown.
+      const only = (key) => setDropdownItems(sel, [{ value: '', label: kit.tx(key), selected: true }]);
       const statusEl = overlay.querySelector('#bc-morelogin-status-text');
       if (!sel) return;
       try {
         const r = await fetch('/api/browser/morelogin-envs');
         const d = await r.json();
-        if (!d || d.ok === false) { sel.innerHTML = '<option value="">' + kit.te('settings.redesign.browser.error') + '</option>'; if (statusEl) statusEl.textContent = (d && d.error) || kit.tx('settings.redesign.browser.failedToLoadMoreloginProfiles'); return; }
-        if (!d.installed) { sel.innerHTML = '<option value="">' + kit.te('settings.redesign.browser.moreloginNotInstalled') + '</option>'; if (statusEl) statusEl.textContent = kit.tx('settings.redesign.browser.moreloginDesktopAppIsNotInstalled'); return; }
-        if (!d.running) { sel.innerHTML = '<option value="">' + kit.te('settings.redesign.browser.startMorelogin') + '</option>'; if (statusEl) statusEl.textContent = kit.tx('settings.redesign.browser.moreloginNotRunningOpenTheApp', { port: d.port }); return; }
+        if (!d || d.ok === false) { only('settings.redesign.browser.error'); if (statusEl) statusEl.textContent = (d && d.error) || kit.tx('settings.redesign.browser.failedToLoadMoreloginProfiles'); return; }
+        if (!d.installed) { only('settings.redesign.browser.moreloginNotInstalled'); if (statusEl) statusEl.textContent = kit.tx('settings.redesign.browser.moreloginDesktopAppIsNotInstalled') + ' ' + kit.tx('settings.redesign.browser.moreloginCustomPathHint'); return; }
+        if (!d.running) { only('settings.redesign.browser.startMorelogin'); if (statusEl) statusEl.textContent = kit.tx('settings.redesign.browser.moreloginNotRunningOpenTheApp', { port: d.port }) + (d.error ? ' ' + String(d.error) : ''); return; }
         const envs = d.envs || [];
-        if (!envs.length) { sel.innerHTML = '<option value="">' + kit.te('settings.redesign.browser.noProfiles') + '</option>'; if (statusEl) statusEl.textContent = kit.tx('settings.redesign.browser.noMoreloginProfilesYetOneIs'); return; }
+        if (!envs.length) { only('settings.redesign.browser.noProfiles'); if (statusEl) statusEl.textContent = kit.tx('settings.redesign.browser.noMoreloginProfilesYetOneIs'); return; }
         const want = _moreloginDesiredEnvId || sel.value || '';
         // Show each env's proxy — without it there is no way to tell from SynaBun
         // whether a profile's traffic leaves the machine.
@@ -6066,8 +6082,9 @@ async function openSettingsModalNow(options = {}) {
           const where = [p.host, p.port].filter(Boolean).join(':');
           return ` · ${[p.type, where, p.country].filter(Boolean).join(' ')}`;
         };
-        sel.innerHTML = envs.map(e => `<option value="${escapeHtml(String(e.id))}">${escapeHtml(e.name)}${e.status ? ` (${escapeHtml(String(e.status))})` : ''}${escapeHtml(proxyLabel(e.proxy))}</option>`).join('');
-        if (want && envs.some(e => String(e.id) === String(want))) sel.value = String(want);
+        // dropdownHTML escapes the labels itself.
+        setDropdownItems(sel, envs.map(e => ({ value: String(e.id), label: `${e.name ?? ''}${e.status ? ` (${String(e.status)})` : ''}${proxyLabel(e.proxy)}` })));
+        if (want && envs.some(e => String(e.id) === String(want))) setDropdownValue(sel, String(want));
         if (statusEl) {
           let msg = kit.tx('settings.redesign.browser.profileSApiPort', { count: envs.length, port: d.port });
           // MoreLogin silently redirects a navigation it refuses to its stop page: a
@@ -6082,7 +6099,7 @@ async function openSettingsModalNow(options = {}) {
           statusEl.textContent = msg;
         }
       } catch {
-        sel.innerHTML = '<option value="">' + kit.te('settings.redesign.browser.error') + '</option>';
+        only('settings.redesign.browser.error');
         if (statusEl) statusEl.textContent = kit.tx('settings.redesign.browser.failedToReachMorelogin');
       }
     }
@@ -6130,6 +6147,7 @@ async function openSettingsModalNow(options = {}) {
         item.addEventListener('click', refreshAttachSeedRow);
       });
     }
+    { const mlRow = overlay.querySelector('#bc-morelogin-row'); if (mlRow) wireDropdowns(mlRow, { signal: panelLife.signal }); }
     overlay.querySelector('#bc-morelogin-refresh')?.addEventListener('click', (e) => { e.preventDefault(); loadMoreLoginEnvs(); });
     const attachSeedDd = overlay.querySelector('.bc-dropdown[data-for="bc-attachSeed"]');
     if (attachSeedDd) {
@@ -7270,7 +7288,7 @@ async function openSettingsModalNow(options = {}) {
 
   // Explore project
   function openExploreModal(projectPath, projectLabel) {
-    const EXPLORE_CLI_IDS = ['claude-code', 'codex', 'gemini'];
+    const EXPLORE_CLI_IDS = ['claude-code', 'codex', 'antigravity'];
     const CLI_OPTIONS = CLI_PROFILES
       .filter(p => EXPLORE_CLI_IDS.includes(p.id))
       .map(p => ({ id: p.id, label: p.label }));
@@ -7350,7 +7368,7 @@ async function openSettingsModalNow(options = {}) {
           selectedCli = cli;
           selectedModel = getExploreModels(cli)[0]?.id || '';
           renderModal();
-          if (cli === 'codex') {
+          if (cli === 'codex' || cli === 'antigravity') {
             ensureModelsForProfile(cli).then(() => {
               if (exploreOverlay.isConnected && selectedCli === cli) renderModal();
             });
@@ -8701,7 +8719,7 @@ async function openSettingsModalNow(options = {}) {
       claudeCode: { label: 'CC', title: 'Claude Code (~/.claude.json)' },
       opencode:   { label: 'OC', title: 'OpenCode' },
       codex:      { label: 'CX', title: 'Codex (~/.codex/config.toml)' },
-      gemini:     { label: 'GE', title: 'Gemini (~/.gemini/settings.json)' },
+      antigravity: { label: 'AG', title: 'Antigravity (~/.gemini/config/mcp_config.json)' },
     };
 
     async function renderInstalledAll() {
@@ -8972,13 +8990,18 @@ async function openSettingsModalNow(options = {}) {
     const platformsEl = overlay.querySelector('#stg-mcp-platforms');
     const feedbackEl = overlay.querySelector('#stg-mcp-sync-feedback');
 
+    // The type is a styled dropdown: filled from code it fires no change, so the form's transport follows here too.
+    function setServerType(type) {
+      if (typeEl) setDropdownValue(typeEl, type);
+      if (addForm) addForm.dataset.transport = typeEl?.value || type;
+    }
+
     function resetAddForm() {
       if (pasteZone) pasteZone.value = '';
       if (nameEl) nameEl.value = '';
       if (cmdEl) cmdEl.value = '';
       if (urlEl) urlEl.value = '';
-      if (typeEl) typeEl.value = 'stdio';
-      if (addForm) addForm.dataset.transport = 'stdio';
+      setServerType('stdio');
       // Clear arg chips
       if (argChips) argChips.querySelectorAll('.stg-mcp-arg-chip').forEach(c => c.remove());
       // Clear env + header rows
@@ -9062,10 +9085,7 @@ async function openSettingsModalNow(options = {}) {
     function populateAddForm(parsed) {
       if (!parsed) return;
       if (parsed.name && nameEl) nameEl.value = parsed.name;
-      if (parsed.type && typeEl) {
-        typeEl.value = parsed.type;
-        if (addForm) addForm.dataset.transport = parsed.type;
-      }
+      if (parsed.type) setServerType(parsed.type);
       if (parsed.command && cmdEl) cmdEl.value = parsed.command;
       if (parsed.url && urlEl) urlEl.value = parsed.url;
       if (parsed.args && parsed.args.length) {
@@ -9172,7 +9192,7 @@ async function openSettingsModalNow(options = {}) {
     function applyDetected(name, detected) {
       if (!detected) return;
       if (nameEl && name) nameEl.value = name;
-      if (typeEl) typeEl.value = detected.type || 'stdio';
+      setServerType(detected.type || 'stdio');
       if (cmdEl) cmdEl.value = detected.command || '';
       // Rebuild arg chips
       if (argChips && argInput) {
@@ -9550,6 +9570,11 @@ async function openSettingsModalNow(options = {}) {
   }
 
   // ── Shell behaviours: jump lists, keyboard disclosure, page picker ──
+  // The three styled dropdowns of the shell and the panes (page picker, MCP server type, YouTube upload transport).
+  for (const id of ['stg-page-select', 'stg-mcp-srv-type', 'yt-upload-transport']) {
+    const box = overlay.querySelector(`.cc-dropdown[data-for="${id}"]`)?.parentElement;
+    if (box) wireDropdowns(box, { signal: panelLife.signal });
+  }
   wireSettingsShell(overlay, { activate: (pageId) => activateSettingsTab(overlay, pageId) });
   // ── Search: the index is built from the strings of the active locale; what the panes load is read at query time ──
   // In another locale the English names are searched too (someone who learned the settings in English still finds

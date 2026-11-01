@@ -10,6 +10,8 @@
 // normalizeRouteRequest / routeOptions / buildRouteResponse / routeLineParts
 // are pure (node:test covers them); nothing touches `document` at import time.
 //
+// The card's Here / Dispatch switch reads the packet's `sides` / `defaults`
+// (routeCardSides; derived from the options' kinds for an older server).
 // Wire contract: answer = control_response { kind:'route', optionId, target?,
 // remember, decline? }; "Other…" sends optionId:'other' + target. Invalid
 // answers come back as { type:'error', code:'ROUTE_INVALID' } — the card stays
@@ -17,7 +19,6 @@
 // declined|cancelled) update the line in place by routeId.
 
 import { fetchClaudeAccounts, fetchCodexAccounts, getEffortLevelsForModel } from '../agent-runtime-options.js';
-import { getProviderMeta } from '../provider-icons.js';
 import { fetchManageCatalog, patchHiddenModels } from './asst-api.js';
 import { catalogModelRow, fmtModelPrice, hiddenModelFor, ICON_CARET, invalidateModelCatalog, openModelMenu } from './asst-brain-picker.js';
 // The Routes editor's model lists (where they come from, how they stay current): asst-route-models.js.
@@ -28,12 +29,17 @@ import { accountUsageText, autoAccountLabel } from '../account-usage.js';
 import {
   DEFAULT_ROUTE_MODE,
   fmtConfidence,
+  modelShortName,
   normalizeBrain,
   normalizeProvider,
   normalizeRouteMode,
+  providerLabel,
+  providerMeta,
   ROUTE_MODES,
   routeKindLabel,
   routeTargetLabel,
+  OPTIONAL_PROVIDERS,
+  UNPRICED_PROVIDERS,
 } from './asst-state.js';
 
 function str(v) { return v == null ? '' : String(v).trim(); }
@@ -109,8 +115,12 @@ function normalizeRouteOption(o) {
     model: str(src.model),
     effort: str(src.effort) || null,
     ...(Object.hasOwn(src, 'accountId') ? { accountId: src.accountId, accountChoice: src.accountChoice || null, account: obj(src.account), accountError: obj(src.accountError) } : {}),
+    // 'direct' on a worker ("here" on an account other than this conversation's): it runs on a worker.
+    accountKind: str(src.accountKind) || null,
     label: str(src.label),
     badge: str(src.badge) || null,
+    // Always ask: the user's saved route for the class (its side starts on it; the card still asks).
+    saved: src.saved === true,
     tier: str(src.tier) || null,
     vision: src.vision === true,
     price: priceOf(src.price),
@@ -121,6 +131,13 @@ function normalizeRouteOption(o) {
     disabled: src.disabled === true,
     disabledReason: str(src.disabledReason) || null,
   };
+}
+
+function normalizeRouteSides(sides) {
+  const src = obj(sides);
+  if (!src) return null;
+  const side = (s) => (obj(s) ? { available: s.available !== false, reason: str(s.reason) || null, code: str(s.code) || null } : null);
+  return { direct: side(src.direct), dispatch: side(src.dispatch) };
 }
 
 /** Normalize a route control packet (or its `request`) into the card model. */
@@ -162,6 +179,9 @@ export function normalizeRouteRequest(packet) {
     },
     options: arr(req.options).map(normalizeRouteOption).filter(Boolean),
     defaultOptionId: str(req.defaultOptionId) || null,
+    // The Here / Dispatch switch, as the router read it (null from a server older than the switch).
+    sides: normalizeRouteSides(req.sides),
+    defaults: obj(req.defaults) ? { direct: str(req.defaults.direct) || null, dispatch: str(req.defaults.dispatch) || null } : null,
     other: {
       allowed: other.allowed !== false,
       providers: arr(other.providers).map(String),
@@ -220,15 +240,25 @@ export function routeReasonLabels(n, t) {
   return arr(n?.reasons).map(r => reasonLabel(r, tr, n?.requires)).filter(Boolean);
 }
 
+/** The word for a route kind in the user's language: "here", "dispatch", "computer". */
+export function routeKindWord(kind, t = null) {
+  const key = str(kind).toLowerCase();
+  const word = key === 'direct' ? 'here' : key;
+  return ['here', 'dispatch', 'computer'].includes(word) ? tf(t)(`assistant.routes.kind.${word}`, routeKindLabel(key)) : routeKindLabel(key);
+}
+
 function badgeText(o, n, tr) {
   const pct = fmtConfidence(n?.confidence);
+  if (o.saved) return tr('assistant.routes.badge.saved', 'Saved route');
   switch (o.badge) {
     case 'suggested': return pct ? tr('assistant.routes.badge.suggestedPct', 'Suggested · {pct}', { pct }) : tr('assistant.routes.badge.suggested', 'Suggested');
     case 'remembered': return tr('assistant.routes.badge.remembered', 'Your choice');
-    case 'current': return tr('assistant.routes.badge.current', 'Current');
+    // On a worker, the model this conversation runs on is "the same model"; here it is the current one.
+    case 'current': return o.kind === 'dispatch' ? tr('assistant.routes.badge.sameModel', 'Same model') : tr('assistant.routes.badge.current', 'Current');
     case 'capable':
-      if (!n?.requires && n?.visionOnly) return tr('assistant.routes.badge.canSee', 'Can see');
-      return n?.requires === 'video' ? tr('assistant.routes.badge.makesVideo', 'Makes video') : tr('assistant.routes.badge.makesImages', 'Makes images');
+      if (n?.requires) return n.requires === 'video' ? tr('assistant.routes.badge.makesVideo', 'Makes video') : tr('assistant.routes.badge.makesImages', 'Makes images');
+      if (n?.visionOnly || n?.needsVision) return tr('assistant.routes.badge.canSee', 'Can see');
+      return tr('assistant.routes.badge.canRun', 'Can run it');
     case 'cheaper': return tr('assistant.routes.badge.cheaper', 'Cheaper');
     case 'stronger': return tr('assistant.routes.badge.stronger', 'Stronger');
     default: return o.badge ? humanizeClass(o.badge) : '';
@@ -272,24 +302,76 @@ export function routeOptions(n, { brainLabel = '', t = null } = {}) {
     if (!o.isHere && o.id !== 'here' && o.kind === 'direct' && brainProvider && o.provider === brainProvider
       && modelKey(o.model) === modelKey(n.brain?.model)) o.isHere = true;
   }
-  const rank = (o) => (o.id === defaultId ? -2 : (o.id === 'here' || o.isHere) ? -1 : (BADGE_RANK[o.badge] ?? 9));
+  // Only a direct option is "here": a "here" the account rule moved to a worker (kind "dispatch") is a worker row.
+  const hereRow = (o) => o.kind === 'direct' && (o.id === 'here' || !!o.isHere);
+  const rank = (o) => (o.id === defaultId ? -2 : hereRow(o) ? -1 : (BADGE_RANK[o.badge] ?? 9));
   kept.sort((a, b) => rank(a) - rank(b));
   if (!kept.some(o => o.id === defaultId && !o.disabled)) defaultId = kept.find(o => !o.disabled)?.id || null;
   const hereModel = brainLabel || routeTargetLabel(n.brain) || tr('assistant.routes.currentModel', 'the current model');
+  // The router labels every option done here "Do it here with <model>" (English): the title names the model once,
+  // in the user's language ("Do it here with Do it here with Sonnet 5" before).
+  const labelOf = (o) => str(o.label).replace(/^do it here with\s+/i, '');
   return kept.map((o, i) => {
-    const isHere = o.id === 'here' || !!o.isHere;
+    const isHere = hereRow(o);
     const label = routeTargetLabel(o);
     return {
       ...o,
       number: i + 1,
       here: isHere,
-      // "here" is the brain's own model: prefer its display label over a raw id.
-      title: isHere ? tr('assistant.routes.doHere', 'Do it here with {model}', { model: str(o.label) || hereModel }) : (label || o.id),
+      // "here" is the brain's own model: prefer its display label over a raw id. Another model of its
+      // provider (a continuation) is done here too, and says so the same way.
+      title: isHere ? tr('assistant.routes.doHere', 'Do it here with {model}', { model: labelOf(o) || hereModel })
+        : o.kind === 'direct' ? tr('assistant.routes.doHere', 'Do it here with {model}', { model: labelOf(o) || modelShortName(o.model) || o.id }) : (label || o.id),
       badgeText: badgeText(o, n, tr),
-      disabledReason: o.budget === 'share_used_up' ? routeBudgetReason({ provider: o.provider }, t) : o.disabledReason,
+      disabledReason: o.budget === 'share_used_up' || o.budget === 'unpriced' ? routeBudgetReason({ provider: o.provider, unpriced: o.budget === 'unpriced' }, t) : o.disabledReason,
       selected: o.id === defaultId,
     };
   });
+}
+
+export const ROUTE_SIDES = Object.freeze(['direct', 'dispatch']);
+
+/**
+ * The card's Here / Dispatch switch (pure): `options` (routeOptions) split by where they run, each
+ * side numbered from 1, with whether it can be chosen, why not, and the option it starts on.
+ * → { initial: 'direct' | 'dispatch', sides: { direct, dispatch } }, a side being
+ * { kind, options, available, reason, code, needsPick, defaultId }.
+ * The router says which side can run (n.sides) and where each starts (n.defaults); a card from a
+ * server older than the switch has neither, so both are read from the options: there, a card with
+ * no worker option still has a Dispatch side, empty, that asks for a model (`needsPick`: the model
+ * picker answers optionId "other" with a dispatch target, which every server takes).
+ */
+export function routeCardSides(n, options, { t = null } = {}) {
+  const tr = tf(t);
+  const server = n?.sides || null;
+  const side = (kind) => {
+    const list = arr(options).filter((o) => (o.kind === 'direct' ? 'direct' : 'dispatch') === kind).map((o, i) => ({ ...o, number: i + 1 }));
+    const usable = list.filter((o) => !o.disabled);
+    const said = server?.[kind] || null;
+    const out = { kind, options: list, available: usable.length > 0, reason: null, code: null, needsPick: false, defaultId: null };
+    out.defaultId = (usable.find((o) => o.id === n?.defaultOptionId) || usable.find((o) => o.id === n?.defaults?.[kind]) || usable.find((o) => o.selected) || usable[0])?.id || null;
+    if (out.available) return out;
+    if (kind === 'direct' && n?.dispatchOnly) {
+      return { ...out, code: 'worker_only', reason: tr('assistant.routes.side.workerOnly', '{taskClass} always runs on a worker.', { taskClass: n.taskClassLabel || humanizeClass(n.taskClass) }) };
+    }
+    if (kind === 'direct' && (said?.code === 'account_worker' || arr(options).some((o) => o.kind === 'dispatch' && o.accountKind === 'direct'))) {
+      return { ...out, code: 'account_worker', reason: tr('assistant.routes.side.accountWorker', "This conversation's account can't take it now, so it runs on a worker.") };
+    }
+    // A worker can still be picked by model (an older server sent none, or every one offered is blocked).
+    if (kind === 'dispatch' && n?.other?.allowed !== false) {
+      return { ...out, available: true, needsPick: true, code: list.length ? 'disabled' : 'none', reason: tr('assistant.routes.side.pickWorker', 'Pick a worker model to run it.') };
+    }
+    const blocked = list.find((o) => o.disabled);
+    return {
+      ...out, code: said?.code || (blocked ? 'disabled' : 'none'),
+      reason: blocked?.disabledReason || said?.reason || (kind === 'direct' ? tr('assistant.routes.side.noHere', 'Nothing in this conversation can run this task.') : tr('assistant.routes.side.noWorker', 'No worker model can run this task.')),
+    };
+  };
+  const sides = { direct: side('direct'), dispatch: side('dispatch') };
+  const chosen = arr(options).find((o) => o.selected && !o.disabled);
+  let initial = chosen ? (chosen.kind === 'direct' ? 'direct' : 'dispatch') : null;
+  if (!initial || !sides[initial].available) initial = sides.direct.available && sides.direct.defaultId ? 'direct' : 'dispatch';
+  return { initial, sides };
 }
 
 /** control_response payload for a route card. `decline:true` is the Cancel answer. */
@@ -369,11 +451,16 @@ export function routeCatalogRow(pref, catalog) {
   return pref.model ? catalogModelRow(pref.provider, pref.model, catalog) || aliasRow(pref.provider, pref.model, rows) : rows.find(m => m.isDefault) || null;
 }
 
-/** Budget messages are UI copy; never show the server's English disabledReason. */
-export function routeBudgetReason({ provider, dry } = {}, t) {
-  const tr = tf(t), names = { 'claude-code': 'Claude Code', codex: 'Codex', opencode: 'OpenCode' };
-  if (provider) return tr('assistant.routes.budgetProvider', "Budget: the {provider} share of this session's budget is used up.", { provider: names[provider] || provider });
-  const list = [...new Set(arr(dry))].map(id => names[id] || id);
+/**
+ * Budget messages are UI copy; never show the server's English disabledReason. `unpriced` (option.budget
+ * 'unpriced'): the provider reports tokens and no price, so a session with a budget cannot hold its spend.
+ */
+export function routeBudgetReason({ provider, dry, unpriced = false } = {}, t) {
+  const tr = tf(t);
+  if (provider && unpriced) return tr('assistant.routes.budgetUnpriced', 'Budget: {provider} reports tokens, not prices, so a session with a budget cannot run it. Pick another option, or switch the budget to No limit.', { provider: providerLabel(provider) });
+  if (provider) return tr('assistant.routes.budgetProvider', "Budget: the {provider} share of this session's budget is used up.", { provider: providerLabel(provider) });
+  // A provider that reports no prices (Antigravity) never had a share under a budget: it is not "used up".
+  const list = [...new Set(arr(dry))].filter(id => !UNPRICED_PROVIDERS.includes(id)).map(id => providerLabel(id));
   if (!list.length) return tr('assistant.routes.budgetSpent', "Budget: this session's budget is spent.");
   return tr(list.length === 1 ? 'assistant.routes.budgetDryOne' : 'assistant.routes.budgetDryMany',
     list.length === 1 ? 'Budget: the {list} share is used up.' : 'Budget: the {list} shares are used up.', { list: list.join(', ') });
@@ -415,7 +502,7 @@ export function routeLineParts(route, phase = 'decided', { brainLabel = '', t = 
   return {
     taskClass: cls,
     kind,
-    kindLabel: kind && kind !== 'direct' ? routeKindLabel(kind) : '',
+    kindLabel: kind && kind !== 'direct' ? routeKindWord(kind, t) : '',
     provider: target ? normalizeProvider(target.provider, str(target.provider) || null) : null,
     targetLabel: target && !state ? routeTargetLabel(target) : '',
     meta,
@@ -441,6 +528,9 @@ function correctionText(c, tr) {
   }
   if (c.reason === 'remembered_route') return tr('assistant.routes.correction.remembered', 'your saved route {to} replaced {from}', { to: str(c.to), from: str(c.from) });
   if (c.reason === 'remembered_disabled') return tr('assistant.routes.correction.rememberedDisabled', 'saved route {from} is disabled, kept the pick', { from: str(c.from) });
+  // A "here" pick that runs on a worker: another account, or another provider than this conversation's.
+  if (c.reason === 'account_worker') return tr('assistant.routes.correction.accountWorker', '{to}: runs on a worker, because this conversation belongs to another account', { to: str(c.to) });
+  if (c.reason === 'other_provider' && c.provider) return tr('assistant.routes.correction.otherProvider', "{provider} is not this conversation's provider, so it runs on a worker", { provider: providerLabel(c.provider) });
   const text = firstStr(c.text, c.summary, c.message);
   if (text) return text;
   if (c.field && (c.from || c.to)) return `${c.field}: ${str(c.from) || '—'} → ${str(c.to) || 'default'}`;
@@ -485,12 +575,12 @@ function providerIconHtml(provider, hooks) {
   if (!provider) return '';
   try {
     if (typeof hooks.providerIcon === 'function') return hooks.providerIcon(provider) || '';
-    return getProviderMeta(provider).icon || '';
+    return providerMeta(provider).icon || '';
   } catch { return ''; }
 }
 
 function providerColor(provider) {
-  try { return getProviderMeta(provider).color || ''; } catch { return ''; }
+  try { return providerMeta(provider).color || ''; } catch { return ''; }
 }
 
 let _lineUid = 0;
@@ -711,9 +801,12 @@ export function renderRouteCard(container, input, hooks = {}) {
   const tr = tf(hooks.t);
   const brainLabel = () => (typeof hooks.brainLabel === 'function' ? hooks.brainLabel() : '') || routeTargetLabel(n.brain) || tr('assistant.routes.theBrainLower', 'the assistant');
   const options = routeOptions(n, { brainLabel: brainLabel(), t: hooks.t });
+  // Here / Dispatch: each side has its own list, pick and "other" model; the switch decides which is shown and answered.
+  const view = routeCardSides(n, options, { t: hooks.t });
   const state = {
-    selectedId: (options.find(o => o.selected) || options.find(o => !o.disabled) || {}).id || null,
-    other: null,
+    side: view.initial,
+    picks: { direct: view.sides.direct.defaultId, dispatch: view.sides.dispatch.defaultId },
+    others: { direct: null, dispatch: null },
     remember: false,
     pending: false,
     resolved: false,
@@ -752,6 +845,25 @@ export function renderRouteCard(container, input, hooks = {}) {
     card.appendChild(note);
   }
 
+  // The switch: Here (this conversation) or Dispatch (a worker). A side that cannot run the task stays
+  // in view, marked unavailable, with why (worker-only classes, a blind or hidden model, another account).
+  const sidesEl = el('div', 'asst-route-sides');
+  sidesEl.setAttribute('role', 'radiogroup');
+  sidesEl.setAttribute('aria-label', tr('assistant.routes.side.label', 'Where it runs'));
+  const sideBtns = {};
+  for (const kind of ROUTE_SIDES) {
+    const btn = el('button', 'asst-route-side', kind === 'direct' ? tr('assistant.routes.side.here', 'Here') : tr('assistant.routes.side.dispatch', 'Dispatch'));
+    btn.type = 'button';
+    btn.dataset.side = kind;
+    btn.setAttribute('role', 'radio');
+    btn.addEventListener('click', () => setSide(kind));
+    sideBtns[kind] = btn;
+    sidesEl.appendChild(btn);
+  }
+  const sideNote = el('div', 'asst-route-side-note');
+  sideNote.setAttribute('aria-live', 'polite');
+  card.append(sidesEl, sideNote);
+
   const list = el('div', 'asst-route-options');
   list.setAttribute('role', 'radiogroup');
   list.setAttribute('aria-label', tr('assistant.routes.chooseModel', 'Where should this run?'));
@@ -764,7 +876,7 @@ export function renderRouteCard(container, input, hooks = {}) {
     row.setAttribute('aria-checked', 'false');
     row.setAttribute('aria-disabled', o.disabled ? 'true' : 'false');
     row.tabIndex = -1;
-    const kindWord = o.kind && o.kind !== 'direct' ? routeKindLabel(o.kind) : '';
+    const kindWord = o.kind && o.kind !== 'direct' ? routeKindWord(o.kind, hooks.t) : '';
     const sub = [kindWord, routeDisplayAccount(o, hooks.t), o.effort && o.effort !== 'off' ? o.effort : '', o.price ? priceText(o.price) : '', o.vision ? tr('assistant.brain.vision', 'vision') : '', o.reason].filter(Boolean).join(' · ');
     row.innerHTML = `
       <span class="asst-route-num" aria-hidden="true">${esc(o.number)}</span>
@@ -791,7 +903,11 @@ export function renderRouteCard(container, input, hooks = {}) {
     return b != null ? `$${a != null ? f(a) : '?'}/$${f(b)}` : `$${f(a)}`;
   }
 
-  const allOptions = () => (state.other ? [...options, state.other] : options);
+  // The shown side's options (numbered from 1), then its "other" model when one was picked.
+  const sideOptions = () => view.sides[state.side].options;
+  const allOptions = () => (state.others[state.side] ? [...sideOptions(), state.others[state.side]] : sideOptions());
+  const selectedId = () => state.picks[state.side] || null;
+  const busy = () => state.pending || state.resolved || state.expired;
 
   function renderOptions() {
     list.innerHTML = '';
@@ -801,20 +917,55 @@ export function renderRouteCard(container, input, hooks = {}) {
 
   function syncSelection() {
     for (const row of list.querySelectorAll('.asst-route-option')) {
-      const on = row.dataset.optionId === state.selectedId;
+      const on = row.dataset.optionId === selectedId();
       row.setAttribute('aria-checked', on ? 'true' : 'false');
       row.classList.toggle('selected', on);
       row.tabIndex = on ? 0 : -1;
     }
     syncFields();
-    runBtn.disabled = state.pending || state.resolved || state.expired || !state.selectedId;
+    syncSides();
+    runBtn.disabled = busy() || !selectedId();
+  }
+
+  /** The switch, its note (why the other side is unavailable, what a worker side still needs, else what the side means) and the Run label. */
+  function syncSides() {
+    card.dataset.side = state.side;
+    for (const kind of ROUTE_SIDES) {
+      const btn = sideBtns[kind];
+      const side = view.sides[kind];
+      const on = state.side === kind;
+      btn.setAttribute('aria-checked', on ? 'true' : 'false');
+      btn.classList.toggle('selected', on);
+      btn.setAttribute('aria-disabled', side.available && !busy() ? 'false' : 'true');
+      btn.tabIndex = on ? 0 : -1;
+      if (!side.available && side.reason) btn.setAttribute('title', side.reason);
+      else btn.removeAttribute('title');
+    }
+    const current = view.sides[state.side];
+    const other = view.sides[state.side === 'direct' ? 'dispatch' : 'direct'];
+    sideNote.textContent = !other.available && other.reason ? other.reason
+      : current.needsPick && !selectedId() ? current.reason
+        : state.side === 'direct' ? tr('assistant.routes.side.hereDesc', 'Runs in this conversation.') : tr('assistant.routes.side.dispatchDesc', 'A worker runs it; the result comes back here.');
+    runBtn.textContent = state.side === 'direct' ? tr('assistant.routes.runHere', 'Run here') : tr('assistant.routes.runDispatch', 'Dispatch');
+  }
+
+  /** Show the other side (its own pick stays as it was). `focus`: 'switch' (arrow keys on it) or 'option'. */
+  function setSide(kind, { focus = null } = {}) {
+    if (busy() || !view.sides[kind]?.available) return;
+    if (state.side !== kind) {
+      state.side = kind;
+      error.hidden = true;
+      renderOptions();
+    }
+    if (focus === 'switch') sideBtns[kind].focus();
+    else if (focus === 'option') entry.focus();
   }
 
   function select(id, { focus = false } = {}) {
-    if (state.pending || state.resolved || state.expired) return;
+    if (busy()) return;
     const o = allOptions().find(x => x.id === id);
     if (!o || o.disabled) return;
-    state.selectedId = id;
+    state.picks[state.side] = id;
     syncSelection();
     if (focus) list.querySelector(`.asst-route-option[data-option-id="${CSS.escape(id)}"]`)?.focus();
   }
@@ -831,29 +982,33 @@ export function renderRouteCard(container, input, hooks = {}) {
   const effortBtn = taskField('asst-route-effort');
   const accountBtn = taskField('asst-route-account');
   const setFieldLabel = (button, text) => { button.querySelector('.asst-dd-label').textContent = text; button.title = text; };
-  const selected = () => allOptions().find(o => o.id === state.selectedId);
+  const selected = () => allOptions().find(o => o.id === selectedId());
   function editTarget(patch) {
-    if (state.pending || state.resolved || state.expired) return;
-    state.other = { ...selected(), accountId: selected()?.accountChoice || selected()?.accountId || null, accountChoice: Object.hasOwn(patch, 'accountId') ? patch.accountId : selected()?.accountChoice || null, disabled: false, disabledReason: null, accountError: null, ...patch, id: 'other', number: options.length + 1, badge: null, badgeText: tr('assistant.routes.badge.other', 'Your choice') };
-    state.selectedId = 'other';
+    if (busy()) return;
+    const from = selected();
+    if (!from) return;
+    state.others[state.side] = { ...from, accountId: from.accountChoice || from.accountId || null, accountChoice: Object.hasOwn(patch, 'accountId') ? patch.accountId : from.accountChoice || null, disabled: false, disabledReason: null, accountError: null, ...patch, id: 'other', number: sideOptions().length + 1, badge: null, badgeText: tr('assistant.routes.badge.other', 'Your choice') };
+    state.picks[state.side] = 'other';
     renderOptions();
   }
   function syncFields() {
     const target = selected();
     setFieldLabel(otherBtn, target ? routeTargetLabel(target) : tr('assistant.routes.other', 'Other model…'));
     otherBtn.setAttribute('aria-label', tr('assistant.brain.model', 'Model'));
-    otherBtn.disabled = state.pending || state.resolved || state.expired;
+    otherBtn.disabled = busy();
     setFieldLabel(effortBtn, target?.effort || tr('assistant.routes.editorEffortAuto', 'Auto'));
     effortBtn.setAttribute('aria-label', tr('assistant.brain.effort', 'Thinking effort'));
     setFieldLabel(accountBtn, routeDisplayAccount(target, hooks.t) || tr('assistant.routes.account.workersDefault', 'Workers default'));
     accountBtn.setAttribute('aria-label', tr('assistant.brain.account', 'Account profile'));
     const levels = target ? getEffortLevelsForModel(target.provider, catalogModelRow(target.provider, target.model)) : [];
-    effortBtn.disabled = state.pending || state.resolved || state.expired || !levels.some(e => e.id !== 'off');
-    accountBtn.hidden = !['claude-code', 'codex'].includes(target?.provider);
-    accountBtn.disabled = state.pending || state.resolved || state.expired;
+    effortBtn.disabled = busy() || !target || !levels.some(e => e.id !== 'off');
+    // Here runs on this conversation's own account (another one is a worker): only a worker picks one.
+    accountBtn.hidden = state.side === 'direct' || !['claude-code', 'codex'].includes(target?.provider);
+    accountBtn.disabled = busy();
   }
   effortBtn.addEventListener('click', () => {
     const target = selected();
+    if (!target) return;
     const levels = getEffortLevelsForModel(target.provider, catalogModelRow(target.provider, target.model));
     openMenu(effortBtn, { title: tr('assistant.brain.effort', 'Thinking effort'), placement: 'auto', items: [
       { kind: 'radio', label: tr('assistant.routes.editorEffortAuto', 'Auto'), selected: !target.effort, onSelect: () => editTarget({ effort: null }) },
@@ -862,6 +1017,7 @@ export function renderRouteCard(container, input, hooks = {}) {
   });
   accountBtn.addEventListener('click', async () => {
     const target = selected();
+    if (!target) return;
     try {
       const rows = await (target.provider === 'codex' ? fetchCodexAccounts() : fetchClaudeAccounts());
       if (!card.isConnected || state.pending || state.resolved || state.expired || selected() !== target) return;
@@ -882,31 +1038,43 @@ export function renderRouteCard(container, input, hooks = {}) {
     e.stopPropagation();
     if (isMenuOpen(otherBtn)) { closeMenu(); return; }
     const brain = normalizeBrain(hooks.getBrain?.() || { provider: n.brain.provider || 'claude-code', model: n.brain.model });
+    // The menu follows the switch: Here lists this conversation's provider (another model continues it there);
+    // Dispatch lists every provider, and its pick is always a worker.
+    const here = state.side === 'direct' && !n.dispatchOnly;
+    // A worker: the providers the server lists (its CATALOG_PROVIDERS).
+    const workerMenu = {
+      providers: n.other.providers.length ? n.other.providers.map(p => normalizeProvider(p, p)) : null,
+    };
     openModelMenu(otherBtn, {
       brain,
-      shouldOpen: () => card.isConnected && !state.pending && !state.resolved && !state.expired,
+      shouldOpen: () => card.isConnected && !busy(),
       t: hooks.t,
-      title: tr('assistant.routes.otherTitle', 'Run on another model'),
+      title: here ? tr('assistant.routes.otherHereTitle', 'Continue here on another model') : tr('assistant.routes.otherTitle', 'Run on another model'),
       placement: 'auto',
-      providers: n.other.providers.length ? n.other.providers.map(p => normalizeProvider(p, p)) : null,
+      ...(here ? { providers: [brain.provider] } : workerMenu),
       current: selected() ? { provider: selected().provider, model: selected().model } : null,
       onToast: hooks.onToast,
       // Image / video creation: only models that generate the medium (no custom id: its output is unknown).
       ...(n.requires ? { accept: (_p, m) => m?.outputs?.[n.requires] === true, allowCustom: false, emptyLabel: tr('assistant.routes.noCapableModel', 'No model in your catalog can make {medium} yet.', { medium: mediumWords(n.requires, tr) }) } : {}),
       // Design: only models that can see.
       ...(!n.requires && n.visionOnly ? { accept: (_p, m) => m?.vision === true && m?.status !== 'unavailable', allowCustom: false, emptyLabel: tr('assistant.routes.noSeeingModel', 'No model in your catalog can see images yet.') } : {}),
+      // Computer use: never a model known to be blind.
+      ...(!n.requires && !n.visionOnly && n.needsVision ? { accept: (_p, m) => m?.vision !== false } : {}),
       onSelect: (target) => {
-        if (!target?.model || !card.isConnected) return;
-        if (state.pending || state.resolved || state.expired) return;
+        if (!target?.model || !card.isConnected || busy()) return;
         const previous = selected();
-        const kind = n.dispatchOnly || previous?.kind === 'dispatch' || (target.provider && target.provider !== brain.provider) ? 'dispatch' : 'direct';
-        state.other = {
-          id: 'other', kind, provider: target.provider, model: target.model, effort: null, accountId: previous?.provider === target.provider ? previous.accountChoice || previous.accountId || null : null, account: previous?.provider === target.provider ? previous.account || null : null,
-          label: target.label || '', badge: null, number: options.length + 1, here: false,
-          title: target.label || target.model, badgeText: tr('assistant.routes.badge.other', 'Your choice'),
+        const kind = here && target.provider === brain.provider ? 'direct' : 'dispatch';
+        const side = kind === 'direct' ? 'direct' : 'dispatch';
+        state.others[side] = {
+          id: 'other', kind, provider: target.provider, model: target.model, effort: null,
+          ...(kind === 'dispatch' ? { accountId: previous?.provider === target.provider ? previous.accountChoice || previous.accountId || null : null, account: previous?.provider === target.provider ? previous.account || null : null } : {}),
+          label: target.label || '', badge: null, number: view.sides[side].options.length + 1, here: false,
+          title: kind === 'direct' ? tr('assistant.routes.doHere', 'Do it here with {model}', { model: target.label || target.model }) : (target.label || target.model),
+          badgeText: tr('assistant.routes.badge.other', 'Your choice'),
           vision: target.vision === true, price: target.price || null, reason: '', warning: null, disabled: false,
         };
-        state.selectedId = 'other';
+        state.picks[side] = 'other';
+        state.side = side;
         renderOptions();
         list.querySelector('.asst-route-option[data-option-id="other"]')?.focus();
       },
@@ -941,7 +1109,8 @@ export function renderRouteCard(container, input, hooks = {}) {
   cancelBtn.hidden = !n.decline.allowed;
   const runBtn = el('button', 'asst-btn asst-btn-primary asst-route-run', tr('assistant.routes.run', 'Run'));
   runBtn.type = 'button';
-  const hint = el('span', 'asst-route-keys', tr('assistant.routes.keys', '1–4 choose · Enter runs · Esc cancels'));
+  const bothSides = view.sides.direct.available && view.sides.dispatch.available;
+  const hint = el('span', 'asst-route-keys', bothSides ? tr('assistant.routes.keysSides', '← → Here or Dispatch · 1–9 choose · Enter runs · Esc cancels') : tr('assistant.routes.keys', '1–4 choose · Enter runs · Esc cancels'));
   actions.append(hint, cancelBtn, runBtn);
   card.appendChild(actions);
 
@@ -957,7 +1126,7 @@ export function renderRouteCard(container, input, hooks = {}) {
   }
 
   function chosenRoute() {
-    const o = allOptions().find(x => x.id === state.selectedId) || null;
+    const o = selected() || null;
     return {
       routeId: n.routeId,
       taskClass: n.taskClass,
@@ -965,10 +1134,10 @@ export function renderRouteCard(container, input, hooks = {}) {
       summary: n.summary,
       confidence: n.confidence,
       decidedBy: 'user',
-      optionId: state.selectedId,
+      optionId: selectedId(),
       remembered: state.remember,
-      target: o ? { kind: o.kind || 'direct', provider: o.provider, model: o.model, effort: o.effort, accountId: o.accountId || null, label: o.label || (o.here ? routeTargetLabel(o) : o.title) } : null,
-      alternatives: allOptions().filter(x => x.id !== state.selectedId).map(x => ({ provider: x.provider, model: x.model, effort: x.effort, label: x.label })),
+      target: o ? { kind: o.kind || 'direct', provider: o.provider, model: o.model, effort: o.effort, accountId: o.accountId || null, label: (o.kind === 'direct' ? str(o.label).replace(/^do it here with\s+/i, '') : o.label) || (o.here ? routeTargetLabel(o) : o.title) } : null,
+      alternatives: allOptions().filter(x => x.id !== selectedId()).map(x => ({ provider: x.provider, model: x.model, effort: x.effort, label: x.label })),
     };
   }
 
@@ -1011,8 +1180,8 @@ export function renderRouteCard(container, input, hooks = {}) {
   }
 
   function submit() {
-    if (state.pending || state.resolved || state.expired || !state.selectedId) return;
-    const response = buildRouteResponse(n, { optionId: state.selectedId, target: state.other, remember: state.remember });
+    if (busy() || !selectedId()) return;
+    const response = buildRouteResponse(n, { optionId: selectedId(), target: state.others[state.side], remember: state.remember });
     error.hidden = true;
     setPending(true, tr('assistant.routes.routing', 'Routing…'));
     try { hooks.onRespond?.(response, n); } catch { /* ignore */ }
@@ -1045,11 +1214,18 @@ export function renderRouteCard(container, input, hooks = {}) {
       if (o && !o.disabled) { e.preventDefault(); e.stopPropagation(); select(o.id, { focus: true }); }
       return;
     }
+    // ← → switch Here / Dispatch, from the switch itself or from the list.
+    if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.metaKey && !e.ctrlKey && !e.altKey
+      && (e.target?.classList?.contains('asst-route-side') || e.target?.classList?.contains('asst-route-option') || e.target === card)) {
+      e.preventDefault(); e.stopPropagation();
+      setSide(e.key === 'ArrowLeft' ? 'direct' : 'dispatch', { focus: e.target?.classList?.contains('asst-route-side') ? 'switch' : 'option' });
+      return;
+    }
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       const enabled = all.filter(o => !o.disabled);
       if (!enabled.length) return;
       e.preventDefault(); e.stopPropagation();
-      const idx = Math.max(0, enabled.findIndex(o => o.id === state.selectedId));
+      const idx = Math.max(0, enabled.findIndex(o => o.id === selectedId()));
       const next = enabled[(idx + (e.key === 'ArrowDown' ? 1 : -1) + enabled.length) % enabled.length];
       select(next.id, { focus: true });
       return;
@@ -1110,7 +1286,8 @@ export function renderRouteCard(container, input, hooks = {}) {
     get line() { return state.line; },
     /** Focus the preselected option (the panel calls this when the composer is empty). */
     focus() {
-      const row = list.querySelector('.asst-route-option[aria-checked="true"]') || list.querySelector('.asst-route-option');
+      // A side with nothing listed yet (a worker to pick by model) focuses the switch instead.
+      const row = list.querySelector('.asst-route-option[aria-checked="true"]') || list.querySelector('.asst-route-option') || sideBtns[state.side];
       try { row?.focus({ preventScroll: false }); } catch { row?.focus(); }
     },
     focusIfIdle() { if (typeof hooks.shouldFocus !== 'function' || hooks.shouldFocus()) entry.focus(); },
@@ -1146,7 +1323,7 @@ export { openRoutesEditor } from './asst-routes-editor.js';
 
 // ── Models manager (Assistant → Models…) ───────────────────────────────────
 
-const MODEL_SECTIONS = ['claude-code', 'codex', 'opencode'];
+const MODEL_SECTIONS = ['claude-code', 'codex', 'opencode', 'antigravity'];
 const MODEL_TABS = ['available', 'archived'];
 let _modelsManager = null;
 
@@ -1371,7 +1548,7 @@ export async function openModelsManager(hooks = {}) {
   }
 
   function sectionHead(provider, countText) {
-    const meta = getProviderMeta(provider);
+    const meta = providerMeta(provider);
     const section = el('section', 'asst-routes-section asst-models-section');
     section.dataset.provider = provider;
     const head = el('div', 'asst-routes-section-title asst-models-head');
@@ -1381,8 +1558,11 @@ export async function openModelsManager(hooks = {}) {
     return { section, head };
   }
 
+  // An optional provider's section shows once the server lists it (an older server knows no Antigravity).
+  const shownSections = () => MODEL_SECTIONS.filter(p => !OPTIONAL_PROVIDERS.includes(p) || Array.isArray(state.models?.[p]) || arr(state.archived?.[p]).length > 0);
+
   function renderAvailable() {
-    for (const provider of MODEL_SECTIONS) {
+    for (const provider of shownSections()) {
       const rows = arr(state.models[provider]);
       const { section } = sectionHead(provider, modelsOnText(rows, hooks.t));
       if (provider === 'opencode') section.appendChild(el('div', 'asst-modal-note', tr('assistant.models.opencodeNote', 'Connected OpenCode models only. Settings → OpenCode edits the same list.')));
@@ -1397,7 +1577,7 @@ export async function openModelsManager(hooks = {}) {
 
   function renderArchived() {
     let any = false;
-    for (const provider of MODEL_SECTIONS) {
+    for (const provider of shownSections()) {
       const entries = arr(state.archived[provider]);
       if (!entries.length) continue;
       any = true;

@@ -41,9 +41,10 @@
 
 import { isRulesetHost, readRulesetManifest, renderCoexistenceSnippet, renderRuleset, RULESET_HOSTS } from './render.js';
 
-// The pre-2.0 `format` names, as the onboarding wizard and Settings still send them.
-const LEGACY_FORMATS = Object.freeze({ claude: 'claude', codex: 'codex', cursor: 'cursor', generic: 'opencode', opencode: 'opencode', gemini: 'gemini' });
-const LEGACY_VERSION_FORMATS = Object.freeze(['claude', 'codex', 'cursor', 'generic', 'gemini']);
+// The pre-2.0 `format` names, as the onboarding wizard and Settings still send them. `gemini` is what a page from
+// before Antigravity replaced Gemini CLI asks for: Antigravity's text, which reads the same files.
+const LEGACY_FORMATS = Object.freeze({ claude: 'claude', codex: 'codex', cursor: 'cursor', generic: 'opencode', opencode: 'opencode', antigravity: 'antigravity', gemini: 'antigravity' });
+const LEGACY_VERSION_FORMATS = Object.freeze(['claude', 'codex', 'cursor', 'generic', 'antigravity']);
 // A copy someone edited, damaged markers, a CLI that is not there: the request was fine, the files said no.
 const REFUSED_STATES = new Set(['not-installed', 'modified', 'conflict', 'error']);
 const REFUSED_CODES = new Set(['REMOVE_INCOMPLETE', 'CHANGED_UNDERNEATH', 'BUSY']);
@@ -133,7 +134,7 @@ export function legacyRulesetPayload(format, { render = renderRuleset } = {}) {
   const name = String(format || 'claude').toLowerCase();
   if (name === 'coexistence') return { ok: true, ruleset: renderCoexistenceSnippet().text, format: name };
   const host = LEGACY_FORMATS[name];
-  if (!host) return { status: 400, error: `Invalid format: ${name}. Use claude, cursor, generic, gemini, codex, or coexistence.` };
+  if (!host) return { status: 400, error: `Invalid format: ${name}. Use claude, cursor, generic, antigravity, codex, or coexistence.` };
   return { ok: true, ruleset: render(host).text, format: name };
 }
 
@@ -155,7 +156,7 @@ export function legacyRulesetVersionsPayload() {
 
 /** The two endpoints the pre-2.0 UI reads. Same shapes as before, served from the renderer. */
 export function registerLegacyRulesetRoutes(app, { render = renderRuleset } = {}) {
-  // Supports ?format=claude (default) | cursor | generic | gemini | codex | coexistence
+  // Supports ?format=claude (default) | cursor | generic | antigravity | codex | coexistence
   app.get('/api/claude-code/ruleset', (req, res) => {
     try {
       const payload = legacyRulesetPayload(req.query.format, { render });

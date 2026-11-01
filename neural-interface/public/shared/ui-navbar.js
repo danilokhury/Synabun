@@ -15,6 +15,7 @@ import { startTutorial } from './ui-tutorial.js';
 import { toggleClaudePanel, isClaudePanelOpen } from './ui-claude-panel.js';
 import { toggleCodexPanel, isCodexPanelOpen } from './ui-codex-panel.js';
 import { toggleOpencodePanel, isOpencodePanelOpen } from './ui-opencode-panel-v2.js';
+import { toggleAntigravityPanel, isAntigravityPanelOpen } from './ui-antigravity-panel.js';
 import { toggleAssistantPanel, isAssistantPanelOpen, initAssistantPanel } from './ui-assistant-panel.js';
 import { initAssistant } from './ui-assistant.js';
 import { toggleSessionMonitor, fetchLoopsForBadge, fetchNotificationsForBadge } from './ui-sessions.js';
@@ -25,6 +26,7 @@ import { initToolUpdates } from './ui-tool-updates.js';
 import { initCrashNotice } from './ui-crash-notice.js';
 import { initSidepanelTrayPlaceholders } from './ui-sidepanel-tray.js';
 import { initDesktopTitleBar } from './desktop-titlebar.js';
+import { initToprightOverflow } from './ui-topright-overflow.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -35,6 +37,7 @@ export function initNavbar() {
   const claudePanelBtn = $('topright-claude-panel-btn');
   const codexPanelBtn = $('topright-codex-panel-btn');
   const opencodePanelBtn = $('topright-opencode-panel-btn');
+  const antigravityPanelBtn = $('topright-antigravity-panel-btn');
   initSidepanelTrayPlaceholders();
   // The Assistant: shared host wiring (terminal tab + sidepanel), then the
   // sidepanel host, which restores its saved tabs as tray pills.
@@ -61,6 +64,11 @@ export function initNavbar() {
       isOpen: isOpencodePanelOpen,
       toggle: toggleOpencodePanel,
       button: opencodePanelBtn,
+    },
+    antigravity: {
+      isOpen: isAntigravityPanelOpen,
+      toggle: toggleAntigravityPanel,
+      button: antigravityPanelBtn,
     },
   };
 
@@ -110,6 +118,16 @@ export function initNavbar() {
     });
     on('opencode-panel:visibility', (visible) => {
       opencodePanelBtn.classList.toggle('active', !!visible);
+      syncAgentPanelButtons();
+    });
+  }
+  if (antigravityPanelBtn) {
+    antigravityPanelBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      await toggleAgentPanel('antigravity');
+    });
+    on('antigravity-panel:visibility', (visible) => {
+      antigravityPanelBtn.classList.toggle('active', !!visible);
       syncAgentPanelButtons();
     });
   }
@@ -327,6 +345,33 @@ export function initNavbar() {
       storage.setItem(KEYS.TOPRIGHT_TOOLS_HIDDEN, String(!shown));
     });
   }
+
+  // ── The whiteboard rail toggle (#wb-hide-btn ↔ #toolbar-show-btn) ──
+  // Hides the whiteboard tool rail (#wb-toolbar, Focus Mode) behind a SynaBun logo button above the console button
+  // (#term-peek-dock). The workspace toolbar and the session pills (#term-minimized-tray) stay. Remembered across reloads.
+  const wbRail = $('wb-toolbar');
+  const hideBtn = $('wb-hide-btn');
+  const showBtn = $('toolbar-show-btn');
+  if (wbRail && hideBtn && showBtn) {
+    const setRailHidden = (hidden) => {
+      wbRail.classList.toggle('wb-rail-hidden', hidden);
+      wbRail.toggleAttribute('inert', hidden);
+      hideBtn.setAttribute('aria-pressed', String(hidden));
+      showBtn.setAttribute('aria-pressed', String(!hidden));
+      showBtn.hidden = !hidden;
+    };
+    setRailHidden(storage.getItem(KEYS.WHITEBOARD_TOOLBAR_HIDDEN) === 'true');
+    const toggle = (hidden) => {
+      setRailHidden(hidden);
+      storage.setItem(KEYS.WHITEBOARD_TOOLBAR_HIDDEN, String(hidden));
+      (hidden ? showBtn : hideBtn).focus({ preventScroll: true });
+    };
+    hideBtn.addEventListener('click', () => toggle(true));
+    showBtn.addEventListener('click', () => toggle(false));
+  }
+
+  // ── One row, always: what does not fit the band goes into the ⋯ menu ──
+  initToprightOverflow();
 
   // ── Session pills in the row: the whole name is the tooltip ──
   // Laid out in a row, a pill keeps its width on hover (styles.css): widening, it would push the others onto another

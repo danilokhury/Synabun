@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════
-// SynaBun — Assistant envelope translators (Codex / OpenCode → Claude-shaped)
+// SynaBun — Assistant envelope translators (Codex / OpenCode / Antigravity → Claude-shaped)
 // ═══════════════════════════════════════════
 //
 // The assistant UI renders one wire format: the claude-skin envelope
@@ -10,6 +10,7 @@
 // every brain looks the same to the panel. No I/O here.
 
 import { randomUUID } from 'node:crypto';
+import { acpCall, acpToolPaths, acpUiToolName } from './antigravity/tool-call.js';
 
 export function synthesizeInit({ brain, sessionId = null, cwd = null, model = null, permissionMode = null } = {}) {
   return {
@@ -597,6 +598,157 @@ export function createOpenCodeEnvelopeTranslator({ sessionId, emit, onTurnEnd = 
       if (control) { emit({ type: 'control_request', ...control }); return true; }
       if (/^session[.:]updated$/i.test(eventType) && ev.info?.title) { event({ type: 'system', subtype: 'thread_title', title: ev.info.title }); return true; }
       return false;
+    },
+  };
+}
+
+// ── Antigravity (ACP) ────────────────────────────────────────────────────────
+
+/**
+ * An Antigravity tool call as the panel shows it: its name (SynaBun_agent_route for an MCP call, as OpenCode's;
+ * Antigravity's own word otherwise) and its input (an MCP call's arguments; a command as `command`; a path as
+ * `file_path`, so the panel's generic cards read them).
+ */
+export function acpToolUse(update = {}) {
+  const call = acpCall(update);
+  const input = call.mcp ? { ...call.mcp.args } : { ...call.args };
+  if (!call.mcp) {
+    if (call.command && typeof input.command !== 'string') input.command = call.command;
+    const path = acpToolPaths(call)[0];
+    if (path && typeof input.file_path !== 'string') input.file_path = path;
+  }
+  return { id: call.id || `acp-${randomUUID()}`, name: acpUiToolName(call), input };
+}
+
+/** The text an ACP tool call produced: its content blocks' text (diffs as their path), else a raw output. */
+export function acpToolOutput(update = {}) {
+  const parts = [];
+  for (const block of Array.isArray(update.content) ? update.content : []) {
+    if (block?.type === 'content' && block.content?.type === 'text' && block.content.text) parts.push(block.content.text);
+    else if (block?.type === 'diff' && block.path) parts.push(`edited ${block.path}`);
+    else if (block?.type === 'terminal' && block.terminalId) parts.push(`[terminal ${block.terminalId}]`);
+  }
+  if (parts.length) return parts.join('\n');
+  const raw = update.rawOutput;
+  if (typeof raw === 'string') return raw;
+  if (raw && typeof raw === 'object') {
+    const joined = [raw.output, raw.stdout, raw.stderr, raw.error].filter((v) => typeof v === 'string' && v).join('\n');
+    if (joined) return joined;
+    return safeJson(raw);
+  }
+  return '';
+}
+
+/**
+ * Stateful translator for one Antigravity brain turn after another: ACP session/update notifications → the
+ * envelope (`handle(update)`), and the turn's end from the session/prompt answer (`endTurn({ stopReason,
+ * usage, error })`). `planTurn()`: the turn runs in plan mode with the proposal instructions (assistant-persona.js
+ * planModeInstructions): its <proposed_plan> block is the plan (`result.plan`), and the tags never show.
+ */
+export function createAcpEnvelopeTranslator({ emit, brain = {}, planTurn = () => false } = {}) {
+  const state = { started: false, announcedInit: false, text: '', tools: new Map(), turn: 0 };
+  const event = (payload) => emit({ type: 'event', event: payload });
+  const startIfNeeded = () => {
+    if (!state.announcedInit) { state.announcedInit = true; event(synthesizeInit({ brain: 'antigravity', sessionId: brain.sessionId?.() || null, cwd: brain.cwd || null, model: brain.model?.() || null })); }
+    if (state.started) return;
+    state.started = true;
+    event(messageStart(`antigravity-turn-${randomUUID()}`));
+  };
+  // A plan turn's tags never stream: a trailing "<…" that could still become one waits for the next chunk.
+  let held = '';
+  function streamText(delta) {
+    if (planTurn() !== true) return delta;
+    const text = `${held}${delta}`.replace(/<\/?proposed_plan>/g, '');
+    const at = text.lastIndexOf('<');
+    const cut = at !== -1 && ['<proposed_plan>', '</proposed_plan>'].some((tag) => tag.startsWith(text.slice(at))) ? at : text.length;
+    held = text.slice(cut);
+    return text.slice(0, cut);
+  }
+  function toolStarted(update) {
+    const use = acpToolUse(update);
+    if (state.tools.has(use.id)) return state.tools.get(use.id);
+    const known = { use, done: false };
+    state.tools.set(use.id, known);
+    startIfNeeded();
+    event(assistantMessage([{ type: 'tool_use', id: use.id, name: use.name, input: use.input }], `antigravity-tool-${use.id}`));
+    return known;
+  }
+  return {
+    state,
+    /** Forget anything left of an earlier turn (nothing is emitted): the next turn starts clean. */
+    reset() { state.text = ''; state.tools.clear(); state.started = false; held = ''; },
+    /** One session/update's `update`. → true when it meant something for the panel. */
+    handle(update = {}) {
+      const kind = update?.sessionUpdate;
+      if (kind === 'agent_message_chunk' && update.content?.type === 'text') {
+        const delta = String(update.content.text || '');
+        if (!delta) return false;
+        state.text += delta;
+        const shown = streamText(delta);
+        if (shown) { startIfNeeded(); event(textDelta(shown)); }
+        return true;
+      }
+      if (kind === 'agent_thought_chunk' && update.content?.type === 'text') {
+        const delta = String(update.content.text || '');
+        if (!delta) return false;
+        startIfNeeded();
+        event(thinkingDelta(delta));
+        return true;
+      }
+      if (kind === 'tool_call') { toolStarted(update); return true; }
+      if (kind === 'tool_call_update') {
+        const id = String(update.toolCallId || '');
+        if (!id) return false;
+        // An update for a call never announced (a resumed turn): it is announced with what the update carries.
+        const known = state.tools.get(id) || toolStarted({ ...update });
+        if ((update.status === 'completed' || update.status === 'failed') && !known.done) {
+          known.done = true;
+          const output = acpToolOutput(update) || (update.status === 'failed' ? 'tool failed' : '');
+          event(toolResult(id, clip(output), update.status === 'failed'));
+        }
+        return true;
+      }
+      if (kind === 'session_info_update' && typeof update.title === 'string' && update.title.trim()) {
+        event({ type: 'system', subtype: 'thread_title', title: update.title.trim() });
+        return true;
+      }
+      return false;
+    },
+    /**
+     * The turn's end: what the session/prompt answered (stopReason, usage) or the error it rejected with.
+     * `planned`: whether the turn that ended was a plan turn (the caller may have let go of it already).
+     */
+    endTurn({ stopReason = 'end_turn', usage = null, error = null, planned = undefined } = {}) {
+      state.turn += 1;
+      const said = state.text;
+      const planning = typeof planned === 'boolean' ? planned : planTurn() === true;
+      const text = planning ? said.replace(/<\/?proposed_plan>/g, '').trim() : said;
+      const plan = planning ? proposedPlanText(said) : '';
+      if (held) { const rest = held; held = ''; if (rest) { startIfNeeded(); event(textDelta(rest)); } }
+      if (state.started) event(messageStop());
+      // Calls still open when the turn ended (a stop, an error) end with it.
+      for (const [id, known] of state.tools) if (!known.done) { known.done = true; event(toolResult(id, stopReason === 'cancelled' ? 'interrupted' : 'tool did not finish', true)); }
+      state.tools.clear();
+      state.text = '';
+      state.started = false;
+      if (error) {
+        const message = typeof error === 'string' ? error : (error?.message || 'Antigravity turn failed');
+        if (text) event(assistantMessage([{ type: 'text', text }], `antigravity-final-${randomUUID()}`));
+        event({ type: 'result', subtype: 'error_during_execution', is_error: true, result: text || message, usage, total_cost_usd: null, brain: 'antigravity', num_turns: 1 });
+        emit({ type: 'error', message });
+        emit({ type: 'done', code: 1 });
+        return { status: 'failed', text, error: message };
+      }
+      if (stopReason === 'cancelled') {
+        if (text) event(assistantMessage([{ type: 'text', text }], `antigravity-final-${randomUUID()}`));
+        emit({ type: 'aborted' });
+        return { status: 'aborted', text };
+      }
+      if (text) event(assistantMessage([{ type: 'text', text }], `antigravity-final-${randomUUID()}`));
+      const refused = stopReason === 'refusal';
+      event({ type: 'result', subtype: refused ? 'error_during_execution' : 'success', ...(refused ? { is_error: true } : {}), result: text, plan: plan || undefined, usage, total_cost_usd: null, brain: 'antigravity', num_turns: 1, stop_reason: stopReason });
+      emit({ type: 'done', code: refused ? 1 : 0 });
+      return { status: refused ? 'refused' : 'completed', text };
     },
   };
 }

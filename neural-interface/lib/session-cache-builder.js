@@ -3,7 +3,7 @@ import { normalizeMemoryEvents, ingestMemoryEvents } from '../../mcp-server/dist
 import { detectProject } from '../../mcp-server/dist/config.js';
 /**
  * Session Cache Builder — populates session_cache + session_fts for
- * Claude Code, Codex CLI, and OpenCode so the Resume surfaces can do
+ * Claude Code, Codex CLI, OpenCode and Antigravity so the Resume surfaces can do
  * full-body keyword search via FTS5.
  *
  * Per-provider rebuilders walk the provider's session storage, extract
@@ -25,6 +25,7 @@ import {
 import { parseLine } from './session-chunker.js';
 import { listCodexSessionsFromAccounts } from './codex-session-catalog.js';
 import { OPENCODE_SESSION_TABLES, hasOpencodeSessionTables, v2MessageText } from './opencode-db-schema.js';
+import { listAntigravityConversations, parseAntigravityTranscript, readTranscriptText } from './antigravity/transcripts.js';
 
 const MAX_BODY = 256 * 1024;
 const MAX_MSG_CHARS = 8 * 1024;
@@ -490,6 +491,68 @@ export function rebuildOpencodeCache({ getOpencodeDb, onProgress } = {}) {
     emit({ type: 'cache:session', provider: 'opencode', sessionId, done: updated, total });
   }
 
+  return { sessions: total, updated };
+}
+
+// --- Antigravity ---
+
+// agy keeps one transcript.jsonl per conversation (lib/antigravity/transcripts.js). Every conversation it holds,
+// SynaBun's brain and run homes included, is queued for memory capture; the user's own (the panel's and a terminal
+// agy's, the only ones the panel can load again) also go into the Resume index, titled as Antigravity titles them.
+// A conversation unchanged since the last pass (size, time, folder, title) is not read again. `only`: one
+// conversation (a panel turn just ended), the others left as they are. Request/timer paths read at most
+// MAX_BODY bytes per transcript: the index is bounded; full transcripts remain available to memory capture.
+export function rebuildAntigravityCache({ stores = [], only = null, onProgress, list = listAntigravityConversations, read = readTranscriptText } = {}) {
+  const emit = onProgress || (() => {});
+  let conversations;
+  try { conversations = list(stores); } catch { return { sessions: 0, updated: 0 }; }
+  if (only) conversations = conversations.filter((c) => c.sessionId === only);
+  const listed = new Set(conversations.filter((c) => c.store === 'user').map((c) => c.sessionId));
+  const total = listed.size;
+  let updated = 0;
+  for (const c of conversations) {
+    try {
+      queueMemoryCapture({ host: 'antigravity', sessionId: c.sessionId, filePath: c.transcript, cwd: c.cwd || undefined, project: c.cwd ? detectProject(c.cwd) : 'global', size: c.size });
+    } catch { /* memory capture is best effort */ }
+    if (c.store !== 'user') continue;
+    const mtimeIso = new Date(c.mtimeMs).toISOString();
+    const existing = getSessionCacheEntry(c.sessionId, 'antigravity');
+    if (existing && !existing.deleted && Number(existing.file_size) === c.size && existing.file_mtime === mtimeIso
+        && (existing.project_path || null) === (c.cwd || null) && (!c.title || existing.first_prompt === c.title)) continue;
+    const parsed = parseAntigravityTranscript(read(c.transcript, { maxBytes: MAX_BODY }));
+    let body = '';
+    for (const message of parsed.messages) {
+      if (message.role !== 'user' && message.role !== 'assistant') continue;
+      if (message.text) body = appendBody(body, message.text.slice(0, MAX_MSG_CHARS));
+    }
+    const firstPrompt = c.title || parsed.firstPrompt;
+    const project = c.cwd ? basename(c.cwd) : null;
+    upsertSessionCache({
+      session_id: c.sessionId,
+      provider: 'antigravity',
+      project,
+      project_path: c.cwd,
+      git_branch: null,
+      first_prompt: firstPrompt,
+      message_count: parsed.messageCount,
+      created: parsed.created,
+      modified: c.updatedAt || parsed.modified || mtimeIso,
+      file_path: c.transcript,
+      file_size: c.size,
+      file_mtime: mtimeIso,
+      body_size: body.length,
+      deleted: 0,
+    });
+    upsertSessionFts({ session_id: c.sessionId, provider: 'antigravity', project, first_prompt: firstPrompt, body });
+    updated++;
+    emit({ type: 'cache:session', provider: 'antigravity', sessionId: c.sessionId, done: updated, total });
+  }
+  // A conversation Antigravity no longer has (deleted there, or its folder cleared) leaves Resume.
+  if (!only) {
+    for (const cached of listSessionCache('antigravity', { limit: 100000 })) {
+      if (!listed.has(cached.session_id) && !cached.deleted) markSessionDeleted(cached.session_id, 'antigravity', true);
+    }
+  }
   return { sessions: total, updated };
 }
 

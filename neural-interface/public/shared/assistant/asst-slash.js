@@ -4,7 +4,7 @@
 // Pure module (no DOM, no i18n import) so node:test can exercise it. The
 // composer resolves `descKey` through i18n and falls back to `desc`.
 
-import { normalizeComputerMode, normalizeProvider, normalizeRouteMode } from './asst-state.js';
+import { isBrainProvider, normalizeComputerMode, normalizeProvider, normalizeRouteMode } from './asst-state.js';
 
 export const SLASH_COMMANDS = [
   { name: 'dispatch', usage: '/dispatch <provider> [--model m] [--effort e] [--agent a] [--project p] [--tools a,b] [--account id] [--ask] [--title "t"] <task>', descKey: 'assistant.slash.dispatch', desc: 'Dispatch a task to a sidepanel agent' },
@@ -143,6 +143,8 @@ function parseModel(rest) {
     provider = normalizeProvider(first);
     model = null;
   }
+  // /model switches the brain: a provider that only runs dispatched work (none of the four today) is refused, not swapped.
+  if (provider && !isBrainProvider(provider)) return { name: 'model', provider, model, effort: tokens[1] || null, error: 'not_brain' };
   return { name: 'model', provider, model, effort: tokens[1] || null };
 }
 
@@ -182,7 +184,11 @@ export function parseSlashCommand(text) {
       return enabled == null ? { name, mode: null, error: 'invalid_mode', value: restTrim } : { name, mode: enabled ? 'on' : 'off' };
     }
     case 'stop': return { name, target: restTrim && !/^all$/i.test(restTrim) ? restTrim : null, all: /^all$/i.test(restTrim) };
-    case 'new': return { name, provider: restTrim ? normalizeProvider(restTrim) : null };
+    case 'new': {
+      const provider = restTrim ? normalizeProvider(restTrim) : null;
+      // A new session's brain: a provider that only runs dispatched work cannot be one (Antigravity can, since it runs the brain too).
+      return provider && !isBrainProvider(provider) ? { name, provider, error: 'not_brain' } : { name, provider };
+    }
     case 'resume': return { name, sessionId: restTrim || null };
     case 'compact':
     case 'clear':

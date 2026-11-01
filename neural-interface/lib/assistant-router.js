@@ -37,7 +37,7 @@ import { effectiveRouting, normalizeRouteMode } from './assistant-config.js';
 import { normalizeEffort } from './effort-levels.js';
 import { hasRouteAccounts, routeAccountText } from './assistant-route-accounts.js';
 import { chooseUsageAccount } from './account-usage.js';
-import { PROVIDER_LABELS, coversWork, dryProviders, isFreePrice, listPriceOf, rowOf } from './assistant-budget-split.js';
+import { PROVIDER_LABELS, coversWork, dryProviders, isFreePrice, isUnpricedProvider, listPriceOf, rowOf } from './assistant-budget-split.js';
 
 export const TASK_CLASS_META = Object.freeze({
   chat: { label: 'Chat', description: 'Conversation and questions answered from knowledge or memory', defaultKind: 'direct' },
@@ -75,6 +75,8 @@ export function requiresVision(taskClass) { return TASK_CLASS_META[taskClass]?.v
 export const CANNOT_SEE_TEXT = "This model can't see images.";
 export const UNKNOWN_SIGHT_TEXT = "This model isn't known to see images.";
 export const UNAVAILABLE_TEXT = "This model isn't available right now.";
+/** A "here" on an account other than this conversation's: provider histories belong to their account. */
+export const WORKER_FOR_ACCOUNT_TEXT = 'Runs on a worker because this conversation belongs to another account.';
 /** The card / answer text for a model design cannot use (a designFit() verdict). */
 function fitText(fit) { return fit === 'blind' ? CANNOT_SEE_TEXT : fit === 'unavailable' ? UNAVAILABLE_TEXT : UNKNOWN_SIGHT_TEXT; }
 /** What a run of the class collects into its media: the medium it makes, else what it gathers (Design's screenshots). */
@@ -185,7 +187,8 @@ export function normalizeConfidence(value) {
 
 /**
  * Normalize the brain's proposal (agent_route body, or a dispatch spec reshaped
- * into one). A "direct" proposal on another provider is really a dispatch; for a
+ * into one). A "direct" proposal on another provider is really a dispatch
+ * (`coercedProvider` records the first, so the result can say so); for a
  * dispatch-only class (image / video creation, design) every proposal is a dispatch,
  * a "here" one on the brain's own model (`coercedDirect` records the first).
  * Design (`visionOnly`) also always needs a model that can see.
@@ -201,14 +204,17 @@ export function normalizeRouteRequest(body = {}, { brain = {} } = {}) {
   const dispatchOnly = meta.dispatchOnly === true;
   const proposals = [];
   let coercedDirect = false;
+  let coercedProvider = null;
   for (const raw of Array.isArray(body.proposals) ? body.proposals.slice(0, 3) : []) {
     if (!raw || typeof raw !== 'object') continue;
     let kind = raw.kind === 'direct' ? 'direct' : 'dispatch';
     let provider = CATALOG_PROVIDERS.includes(raw.provider) ? raw.provider : null;
     let model = raw.model ? String(raw.model).trim().slice(0, 200) : null;
     if (kind === 'direct') {
-      if (provider && provider !== brain.provider) kind = 'dispatch';
-      else provider = brain.provider || provider;
+      if (provider && provider !== brain.provider) {
+        kind = 'dispatch';
+        if (!proposals.length && !dispatchOnly) coercedProvider = provider;
+      } else provider = brain.provider || provider;
     }
     if (!provider) continue;
     if (dispatchOnly && kind === 'direct') {
@@ -230,7 +236,16 @@ export function normalizeRouteRequest(body = {}, { brain = {} } = {}) {
   const request = { taskClass, taskClassLabel: meta.label, summary: clip(body.summary || '', 400), confidence, needsVision, proposals };
   if (needsOutput || dispatchOnly) Object.assign(request, { needsOutput, dispatchOnly, coercedDirect });
   if (visionOnly) request.visionOnly = true;
+  if (coercedProvider) request.coercedProvider = coercedProvider;
   return request;
+}
+
+/** Why a "here" on `provider` runs on a worker: only the brain's own provider runs in this conversation. */
+function otherProviderCorrection(provider, brain = {}) {
+  return {
+    field: 'kind', from: 'direct', to: 'dispatch', reason: 'other_provider', provider,
+    text: `${providerLabel(provider)} is not this conversation's provider${brain.provider ? ` (${providerLabel(brain.provider)})` : ''}, so it runs on a worker`,
+  };
 }
 
 /** Catalog-backed description of a target: label, tier, vision, outputs, price, context. */
@@ -499,6 +514,8 @@ export function evaluateRoute({ mode, routing = {}, request, brain = {}, brainIn
   if (request.coercedDirect) {
     corrections.push({ field: 'kind', from: 'direct', to: 'dispatch', reason: 'dispatch_only', text: `${label} always runs on a worker, not here` });
   }
+  // "Here" on another provider was always a worker: the result now says so instead of changing the kind silently.
+  if (request.coercedProvider) corrections.push(otherProviderCorrection(request.coercedProvider, brain));
   const sees = (target) => describeTarget(target, { catalog, brain, brainInfo })?.vision;
   const fit = (target) => designFit(catalog, target, { brain, brainInfo });
   // Too blind for this task: design needs a confirmed true (null never counts) on an available row; other vision work refuses a confirmed false.
@@ -643,7 +660,8 @@ export function evaluateRoute({ mode, routing = {}, request, brain = {}, brainIn
   if (dispatchOnly && auto.kind !== 'dispatch') auto = { ...auto, kind: 'dispatch' };
   // A corrected model or provider re-checks the effort.
   auto = effortChecked(auto, catalog, corrections);
-  if (!bound && corrections.some((c) => c.reason !== 'remembered_disabled' && c.reason !== 'remembered_incapable')) source = 'corrected';
+  // The provider rule only names what always happened (a "here" elsewhere is a worker): it corrects nothing.
+  if (!bound && corrections.some((c) => c.reason !== 'remembered_disabled' && c.reason !== 'remembered_incapable' && c.reason !== 'other_provider')) source = 'corrected';
   // With a budget the saved route yields: a provider with no share left moves the task on.
   const budgeted = applyBudget(auto);
   if (budgeted.declined) return budgetDeclined(budgeted);
@@ -671,11 +689,13 @@ function optionFor(id, rawTarget, badge, { catalog, brain, brainInfo, needsVisio
   else if (fit !== 'ok') { option.disabled = true; option.disabledReason = fitText(fit); }
   else if (needsVision && d.vision === false) { option.disabled = true; option.disabledReason = 'This model cannot see images, and this task needs to.'; }
   else if (needsVision && d.vision === null) option.warning = 'Image support unknown for this model.';
-  // The session budget: a provider with no share left cannot take the task (a free model still can).
+  // The session budget: a provider with no share left cannot take the task (a free model still can), and one
+  // that reports no prices cannot run under a budget at all.
   if (!option.disabled && coverage && !budgetCovers(coverage, catalog, target)) {
+    const unpriced = coverage.leftUsd < 0.01 ? null : unpricedText(target.provider);
     option.disabled = true;
-    option.budget = 'share_used_up';
-    option.disabledReason = coverage.leftUsd < 0.01 ? "Budget: this session's budget is spent." : `Budget: the ${providerLabel(target.provider)} share of this session's budget is used up.`;
+    option.budget = unpriced ? 'unpriced' : 'share_used_up';
+    option.disabledReason = unpriced || (coverage.leftUsd < 0.01 ? "Budget: this session's budget is spent." : `Budget: the ${providerLabel(target.provider)} share of this session's budget is used up.`);
   }
   if (here && brainInfo?.contextWindow && d.contextWindow && d.contextWindow < brainInfo.contextWindow) {
     option.warning = `Smaller context (${Math.round(d.contextWindow / 1000)}k) than the current model; a long conversation may not fit.`;
@@ -684,7 +704,12 @@ function optionFor(id, rawTarget, badge, { catalog, brain, brainInfo, needsVisio
 }
 
 export function providerLabel(provider) {
-  return provider === 'claude-code' ? 'Claude Code' : provider === 'codex' ? 'Codex' : provider === 'opencode' ? 'OpenCode' : String(provider || 'Assistant');
+  return provider === 'claude-code' ? 'Claude Code' : provider === 'codex' ? 'Codex' : provider === 'opencode' ? 'OpenCode' : provider === 'antigravity' ? 'Antigravity' : String(provider || 'Assistant');
+}
+
+/** Why a session with a budget cannot run `provider` at all (it reports tokens, never prices), else null. */
+export function unpricedText(provider) {
+  return isUnpricedProvider(provider) ? `Budget: ${providerLabel(provider)} reports tokens, not prices, so a session with a budget cannot run it. Pick another option, or switch the budget to No limit.` : null;
 }
 
 /** `seeingOnly` (design): only rows with a confirmed vision: true, where `needsVision` only drops a confirmed false. */
@@ -725,9 +750,17 @@ function strongestClaude(catalog) {
  * Image / video creation: no "here" (always a worker), models that cannot make
  * the medium disabled, and — when the suggestion cannot — the model that would
  * run it instead (badge "capable"). Design: the same with "can see".
+ *
+ * Both sides, always: the card switches between Here (kind "direct": this
+ * conversation, on its model or another of its provider) and Dispatch (a worker).
+ * A side the options leave without one that can run gets one: a worker on the
+ * brain's own model ("w1", badge "current"), else a capable model of its provider,
+ * else elsewhere; a "here" on a model of the brain's provider that can see when the
+ * brain cannot ("h1", badge "capable"). Worker-only classes get no "here".
+ * → { options, defaultOptionId, sides, defaults } (routeSides).
  */
 export function buildRouteOptions({ request, evaluation, brain = {}, brainInfo = null, catalog = null, routing = {}, coverage = null }) {
-  if (evaluation.reasons?.includes('always-ask')) routing = { ...routing, preferences: {} };
+  const alwaysAsk = evaluation.reasons?.includes('always-ask') === true;
   const medium = request.needsOutput || null;
   const dispatchOnly = request.dispatchOnly === true;
   const visionOnly = request.visionOnly === true;
@@ -735,16 +768,26 @@ export function buildRouteOptions({ request, evaluation, brain = {}, brainInfo =
   const options = [];
   const push = (option) => { if (!options.some((o) => sameTarget(o, option))) options.push(option); };
   const hereTarget = { kind: 'direct', provider: brain.provider, model: brain.model || null, effort: brain.effort || null };
+  // A direct pick on the brain's own model with no effort is "here" as the brain runs now: one row, not two.
+  const onBrainModel = (t) => t.kind === 'direct' && t.provider === brain.provider && String(t.model || '') === String(brain.model || '');
   request.proposals.forEach((p, index) => {
     const target = { kind: p.kind, provider: p.provider, model: p.model || (index === 0 ? evaluation.proposal?.model || null : null), effort: p.effort };
     if (index === 0 && evaluation.proposal) Object.assign(target, evaluation.proposal);
+    if (onBrainModel(target) && !target.effort && brain.effort) target.effort = brain.effort;
     push(optionFor(`s${index + 1}`, target, 'suggested', { ...ctx, reason: p.reason }));
   });
   // The session budget moved the suggestion: the brain's own pick stays on the card, disabled with why.
   if (evaluation.budgetFrom && coverage) push(optionFor('b0', evaluation.budgetFrom, 'suggested', { ...ctx, reason: request.proposals[0]?.reason || null }));
   if (!dispatchOnly) push(optionFor('here', hereTarget, 'current', ctx));
-  const pref = evaluation.reasons?.includes('always-ask') ? null : preferenceTarget(routing.preferences?.[request.taskClass], brain, catalog, { dispatchOnly });
-  if (pref) push(optionFor('r1', pref, 'remembered', ctx));
+  const pref = preferenceTarget(routing.preferences?.[request.taskClass], brain, catalog, { dispatchOnly });
+  // Always ask: the saved route is offered and its side starts on it (never binding: the card still asks).
+  if (pref) {
+    const saved = optionFor('r1', pref, 'remembered', ctx);
+    // A proposal of the same target keeps its row and carries the mark.
+    const row = options.find((o) => sameTarget(o, saved)) || saved;
+    if (alwaysAsk && !saved.disabled) Object.assign(row, { preferred: true, saved: true });
+    push(saved);
+  }
   const anchor = evaluation.proposal?.kind === 'dispatch' || dispatchOnly ? evaluation.proposal || request.proposals[0] : hereTarget;
   const cheaper = neighbour(catalog, anchor, 'cheaper', { needsVision: request.needsVision, seeingOnly: visionOnly, needsOutput: medium });
   if (cheaper) push(optionFor('c1', { kind: anchor.provider === brain.provider && anchor.kind === 'direct' ? 'direct' : 'dispatch', provider: anchor.provider, model: cheaper.id, effort: null }, 'cheaper', ctx));
@@ -766,11 +809,103 @@ export function buildRouteOptions({ request, evaluation, brain = {}, brainInfo =
     const option = seer ? optionFor('g1', seer, 'capable', ctx) : null;
     if (option && !option.disabled) push(option);
   }
+  // Both sides, always: a side with nothing that can run it gets the first candidate that can
+  // (or, with none, the first candidate disabled with why, so the card can say it).
+  // A saved route on an account is checked later (it may be signed out): it does not count, so its side keeps a fallback.
+  const runnable = (kind) => options.some((o) => o.kind === kind && !o.disabled && !(o.saved && o.accountId));
+  const offer = (kind, id, candidates) => {
+    let first = null;
+    for (const [target, badge] of candidates) {
+      if (!target?.provider) continue;
+      const option = optionFor(id, target, badge, ctx);
+      if (options.some((o) => sameTarget(o, option))) continue;
+      if (!option.disabled) { push(option); return; }
+      first = first || option;
+    }
+    if (first && !options.some((o) => o.kind === kind)) push(first);
+  };
+  if (request.taskClass !== 'chat' && !dispatchOnly && !runnable('direct')) offer('direct', 'h1', hereCandidates({ request, catalog, brain }));
+  if (request.taskClass !== 'chat' && !runnable('dispatch')) offer('dispatch', 'w1', workerCandidates({ request, catalog, brain, brainInfo }));
   // Order: suggested first, then here, remembered, a capable stand-in, cheaper, stronger.
   const order = { suggested: 0, current: 1, remembered: 2, capable: 3, cheaper: 4, stronger: 5 };
   options.sort((a, b) => (order[a.badge] ?? 9) - (order[b.badge] ?? 9) || String(a.id).localeCompare(String(b.id)));
-  const defaultOption = options.find((o) => o.badge === 'suggested' && !o.disabled) || options.find((o) => !o.disabled) || options[0];
-  return { options, defaultOptionId: defaultOption?.id || 'here' };
+  return { options, ...routeSides({ options, request }) };
+}
+
+/**
+ * "Here" on another model of the brain's provider when "here" itself cannot run the task
+ * (the brain cannot see a computer task's screen, or the user hid its model): the
+ * cheapest one of that provider that can (one that can see first for vision work).
+ */
+function hereCandidates({ request, catalog, brain }) {
+  if (!brain.provider) return [];
+  const rows = visibleRows(catalog, brain.provider)
+    .filter((row) => row.status !== 'unavailable' && row.toolcall !== false && row.id !== brain.model && (!request.needsVision || row.vision === true))
+    .sort((a, b) => outPrice(a) - outPrice(b) || tierRank(a.tier) - tierRank(b.tier));
+  return rows.map((row) => [{ kind: 'direct', provider: brain.provider, model: row.id, effort: null }, request.needsVision ? 'capable' : null]);
+}
+
+/**
+ * A worker for a card whose options have none that can run: the brain's own model on a
+ * worker (the same model, off this conversation), else a model of its provider that can
+ * (the brain's tier first, one that can see for vision work), else elsewhere (one that
+ * can see, or the strongest Claude model).
+ */
+function workerCandidates({ request, catalog, brain, brainInfo }) {
+  const candidates = [];
+  if (brain.provider) candidates.push([{ kind: 'dispatch', provider: brain.provider, model: brain.model || null, effort: brain.effort || null }, 'current']);
+  const brainTier = brainInfo?.tier || (brain.model ? findModel(catalog, brain.provider, brain.model)?.row?.tier : null) || null;
+  const fits = (row) => row.status !== 'unavailable' && row.toolcall !== false && (!request.needsVision || row.vision === true);
+  const closeness = (row) => (brainTier ? Math.abs(tierRank(row.tier) - tierRank(brainTier)) : 0);
+  const badge = request.needsVision ? 'capable' : null;
+  if (brain.provider) {
+    visibleRows(catalog, brain.provider).filter(fits).filter((row) => row.id !== brain.model)
+      .sort((a, b) => closeness(a) - closeness(b) || outPrice(a) - outPrice(b))
+      .forEach((row) => candidates.push([{ kind: 'dispatch', provider: brain.provider, model: row.id, effort: null }, badge]));
+  }
+  if (request.needsVision) {
+    CATALOG_PROVIDERS.filter((p) => p !== brain.provider)
+      .flatMap((p) => visibleRows(catalog, p).filter(fits).map((row) => ({ provider: p, row })))
+      .sort((a, b) => outPrice(a.row) - outPrice(b.row) || tierRank(a.row.tier) - tierRank(b.row.tier))
+      .forEach(({ provider, row }) => candidates.push([{ kind: 'dispatch', provider, model: row.id, effort: null }, 'capable']));
+  } else if (brain.provider !== 'claude-code') {
+    const opus = strongestClaude(catalog);
+    if (opus) candidates.push([{ kind: 'dispatch', provider: 'claude-code', model: opus.id, effort: null }, null]);
+  }
+  return candidates;
+}
+
+/**
+ * Which side of the card's Here / Dispatch switch can run the task, and the option each side
+ * starts on: { sides: { direct, dispatch }, defaults: { direct, dispatch }, defaultOptionId }.
+ * A side is { available, reason, code } (code: worker_only, account_worker, disabled, none).
+ * Read from the options as they are sent, after the account check (a "here" that moved to a
+ * worker belongs to the dispatch side: its kind is "dispatch").
+ */
+export function routeSides({ options = [], request = {}, defaultOptionId = null } = {}) {
+  const usable = (o) => o && !o.disabled;
+  const chosen = options.find((o) => o.id === defaultOptionId && usable(o))
+    || options.find((o) => o.badge === 'suggested' && usable(o)) || options.find(usable) || options[0] || null;
+  // A side starts on the saved route when Always ask marked it (preferred), else on the chosen option, else its first.
+  const firstOf = (kind) => options.find((o) => o.preferred === true && o.kind === kind && usable(o))
+    || (chosen?.kind === kind && usable(chosen) ? chosen : null) || options.find((o) => o.kind === kind && usable(o)) || null;
+  const label = request.taskClassLabel || TASK_CLASS_META[request.taskClass]?.label || 'This task';
+  const side = (kind) => {
+    if (firstOf(kind)) return { available: true, reason: null, code: null };
+    if (kind === 'direct' && request.dispatchOnly) return { available: false, code: 'worker_only', reason: `${label} always runs on a worker.` };
+    if (kind === 'direct' && options.some((o) => o.kind === 'dispatch' && o.accountKind === 'direct')) {
+      return { available: false, code: 'account_worker', reason: "This conversation's account cannot take it, so it runs on a worker." };
+    }
+    const blocked = options.find((o) => o.kind === kind && o.disabled);
+    if (blocked) return { available: false, code: 'disabled', reason: blocked.disabledReason || null };
+    return { available: false, code: 'none', reason: kind === 'direct' ? 'Nothing in this conversation can run this task.' : 'No worker model can run this task.' };
+  };
+  return {
+    // The card opens on the chosen option's side, on that side's default.
+    defaultOptionId: (chosen && usable(chosen) ? firstOf(chosen.kind)?.id : null) || chosen?.id || 'here',
+    sides: { direct: side('direct'), dispatch: side('dispatch') },
+    defaults: { direct: firstOf('direct')?.id || null, dispatch: firstOf('dispatch')?.id || null },
+  };
 }
 
 /** Validate a route-card answer; returns { declined } or { target, optionId, remember }. */
@@ -779,14 +914,19 @@ export function targetFromAnswer({ card, response = {}, catalog = null, brain = 
   const optionId = String(response.optionId || response.option_id || '').trim();
   const remember = response.remember === true || (typeof response.remember === 'string' && response.remember.length > 0);
   const option = optionId && optionId !== 'other' ? (card.options || []).find((o) => o.id === optionId) : null;
+  // The model this conversation already runs on needs no catalog entry to stay on (an OpenCode model
+  // no longer listed as connected, an id the list spells otherwise): "here" on it changes nothing.
+  // A hidden one is still refused, as everywhere.
+  const onBrain = (target) => target.kind === 'direct' && !!brain.model && target.provider === brain.provider && String(target.model || '') === String(brain.model);
   // A card can remain open while the catalog or hidden-model list changes.
   // Check the chosen target again instead of trusting the option's old state.
   const ensureAvailable = (target) => {
-    if (target.model && findModel(catalog, target.provider, target.model) === null) {
+    const own = onBrain(target);
+    if (target.model && (own ? isDisabled(catalog, target) : findModel(catalog, target.provider, target.model) === null)) {
       if (isDisabled(catalog, target)) throw routeError('MODEL_DISABLED', `${target.model} is disabled in the Assistant's Models list. Pick an enabled model.`);
       throw routeError('ROUTE_INVALID', `Unknown model ${target.model} for ${target.provider}.`);
     }
-    if (findModel(catalog, target.provider, target.model)?.row?.status === 'unavailable') throw routeError('ROUTE_INVALID', UNAVAILABLE_TEXT);
+    if (!own && findModel(catalog, target.provider, target.model)?.row?.status === 'unavailable') throw routeError('ROUTE_INVALID', UNAVAILABLE_TEXT);
     if (!target.model && isDisabled(catalog, target)) throw routeError('MODEL_DISABLED', `Every ${target.provider} model is disabled in the Assistant's Models list. Pick another provider.`);
     // Design: only a confirmed vision: true on an available row (unknown or unavailable is refused too);
     // other vision work: a confirmed false.
@@ -800,10 +940,16 @@ export function targetFromAnswer({ card, response = {}, catalog = null, brain = 
   };
   // Image / video creation and design always run on a worker: a "here" pick is a dispatch onto that model.
   const dispatchOnly = card.dispatchOnly === true;
+  // Only the brain's own provider runs in this conversation: a "here" on another one (an option made
+  // before the brain changed provider, or an "other" pick) is a worker, and the answer says so.
+  const elsewhere = (provider) => !!brain.provider && provider !== brain.provider;
   if (option) {
     if (option.disabled && !option.accountError) throw routeError('ROUTE_INVALID', option.disabledReason || 'That option is not available for this task.');
     const corrections = [];
-    const target = effortChecked({ kind: dispatchOnly ? 'dispatch' : option.kind, provider: option.provider, model: option.model || (dispatchOnly && option.kind === 'direct' ? brain.model || null : null), effort: option.effort, ...(option.accountId ? { accountId: option.accountChoice || option.accountId, ...(option.accountKind ? { accountKind: dispatchOnly ? 'dispatch' : option.accountKind } : {}) } : {}) }, catalog, corrections);
+    const moved = !dispatchOnly && option.kind === 'direct' && elsewhere(option.provider);
+    if (moved) corrections.push(otherProviderCorrection(option.provider, brain));
+    const kind = dispatchOnly || moved ? 'dispatch' : option.kind;
+    const target = effortChecked({ kind, provider: option.provider, model: option.model || (dispatchOnly && option.kind === 'direct' ? brain.model || null : null), effort: option.effort, ...(option.accountId ? { accountId: option.accountChoice || option.accountId, ...(option.accountKind ? { accountKind: dispatchOnly || moved ? 'dispatch' : option.accountKind } : {}) } : {}) }, catalog, corrections);
     ensureAvailable(target);
     return { target, optionId, remember, corrections };
   }
@@ -811,6 +957,11 @@ export function targetFromAnswer({ card, response = {}, catalog = null, brain = 
   if (!t || typeof t !== 'object' || !CATALOG_PROVIDERS.includes(t.provider)) throw routeError('ROUTE_INVALID', 'Pick one of the options or a catalog model.');
   const kind = t.kind === 'direct' && t.provider === brain.provider && !dispatchOnly ? 'direct' : 'dispatch';
   const corrections = [];
+  if (t.kind === 'direct' && kind === 'dispatch') {
+    corrections.push(dispatchOnly
+      ? { field: 'kind', from: 'direct', to: 'dispatch', reason: 'dispatch_only', text: `${TASK_CLASS_META[card.taskClass]?.label || 'This task'} always runs on a worker, not here` }
+      : otherProviderCorrection(t.provider, brain));
+  }
   const target = effortChecked({ kind, provider: t.provider, model: t.model ? String(t.model) : null, effort: t.effort ? String(t.effort).trim().slice(0, 40) : null, accountId: t.accountId ? String(t.accountId).trim() : null }, catalog, corrections);
   ensureAvailable(target);
   return { target, optionId: 'other', remember, corrections };
@@ -1017,9 +1168,13 @@ export function createAssistantRouter({
       : row.signedIn === false ? `Account ${row.label || row.id} (${row.id}) is signed out. Sign it in from the ${providerLabel(target.provider)} account menu, or save another Account in Model routes.` : '';
     const accountError = message ? { code: row ? 'ACCOUNT_SIGNED_OUT' : choice === 'auto' ? 'ACCOUNT_NO_SUBSCRIPTION' : 'ACCOUNT_NOT_FOUND', message } : null;
     // Provider histories are account-owned. Another account can do the task on
-    // a worker; it cannot resume this account's conversation.
+    // a worker; it cannot resume this account's conversation. That move is always
+    // said (a pinned account the user picked carries no usage reason of its own).
     const moved = target.kind === 'direct' && accountId !== (brain.accountId || 'default');
-    const accountCorrection = why ? { reason, from: before?.label || choice, to: row?.label || accountId, usage, workerForAccount: moved, message: why + (moved ? ' Runs on a worker because this conversation belongs to another account.' : '') } : null;
+    const accountCorrection = why
+      ? { reason, from: before?.label || choice, to: row?.label || accountId, usage, workerForAccount: moved, message: why + (moved ? ` ${WORKER_FOR_ACCOUNT_TEXT}` : '') }
+      : moved ? { field: 'kind', reason: 'account_worker', from: rows.find(a => a.id === (brain.accountId || 'default'))?.label || brain.accountId || 'default', to: row?.label || accountId, usage, workerForAccount: true, message: `${WORKER_FOR_ACCOUNT_TEXT.replace(/\.$/, '')} (${row?.label || accountId}).` }
+        : null;
     const enriched = { ...target, accountKind: target.accountKind || target.kind, ...(moved ? { kind: 'dispatch' } : {}), accountId, account, accountError, accountChoice: target.accountChoice || choice, accountCorrection };
     if (check && accountError) throw routeError(accountError.code, message, 409, { accountId, target: enriched });
     return enriched;
@@ -1085,8 +1240,14 @@ export function createAssistantRouter({
     return call('continueDirect', sessionId, { target, route: source, text: source.summary || '' }) !== false;
   }
 
-  function resultFor(status, { routeId, mode, source = null, target = null, card = null, runIds = [], corrections = [], cat = null, brain = {}, brainInfo = null, remembered = false, continuation = false, sessionId = null } = {}) {
+  function resultFor(status, { routeId, mode, source = null, target = null, card = null, runIds = [], corrections = [], cat = null, brain = {}, brainInfo = null, remembered = false, continuation = false, sessionId = null, switched = null, droppedRuns = [] } = {}) {
     const described = target ? { ...describeTarget(target, { catalog: cat, brain, brainInfo }), continuation } : null;
+    // The user's pick was the other kind than the brain proposed; a "here" pick on another account runs on a worker.
+    const kindLead = source !== 'user' ? ''
+      : target?.kind === 'dispatch' && target.accountKind === 'direct'
+      ? 'The user chose to do this here, but on another account than this conversation\'s, so it runs on a worker. '
+      : switched === 'direct' ? `The user chose to do this here, not on a worker${droppedRuns.length ? ` (the held run${droppedRuns.length === 1 ? '' : 's'} ${droppedRuns.join(', ')} ${droppedRuns.length === 1 ? 'was' : 'were'} not started)` : ''}. `
+        : switched === 'dispatch' ? 'The user chose a worker for this, not here. ' : '';
     // A saved route that replaced the brain's pick (never mode) says so first.
     const binding = (corrections || []).find((c) => c?.reason === 'remembered_route');
     const skipped = (corrections || []).find((c) => c?.reason === 'remembered_disabled');
@@ -1103,7 +1264,7 @@ export function createAssistantRouter({
       ok: true, status, routeId, mode, source, target: described, remembered, continuation,
       corrections, runIds, expiresAt: card?.expiresAt ? new Date(card.expiresAt).toISOString() : null,
       ...(shares ? { budget: shares } : {}),
-      next: `${lead}${nextText(status, described, { routeId, label: described?.label })}`,
+      next: `${lead}${status === 'approved' ? kindLead : ''}${nextText(status, described, { routeId, label: described?.label })}`,
     };
   }
 
@@ -1155,13 +1316,23 @@ export function createAssistantRouter({
     const routeId = `route-${randomId()}`;
     const requestId = routeId;
     const r = routing();
-    const { options, defaultOptionId } = buildRouteOptions({ request, evaluation, brain, brainInfo, catalog: cat, routing: r, coverage: evaluation.coverage || null });
+    const built = buildRouteOptions({ request, evaluation, brain, brainInfo, catalog: cat, routing: r, coverage: evaluation.coverage || null });
+    const { options } = built;
     for (const option of options) {
       const first = request.proposals[0];
       const fallback = origin === 'dispatch' && option.badge !== 'remembered' && option.provider === first?.provider ? first.accountId : null;
       Object.assign(option, accountTarget(option, brain, cat, { check: false, fallback }));
       if (option.accountError) { option.disabled = true; option.disabledReason = option.accountError.message; }
+      // A "here" whose account cannot take it (this conversation's is out of usage) runs on a worker
+      // on another account: the card names it as a worker and says why, never "Do it here".
+      if (option.kind === 'dispatch' && option.accountKind === 'direct') {
+        const described = describeTarget(option, { catalog: cat, brain, brainInfo });
+        option.label = `${providerLabel(option.provider)} · ${described?.label || option.model || 'default'}${option.effort ? ` · ${option.effort}` : ''}`;
+        option.warning = option.accountCorrection?.message || WORKER_FOR_ACCOUNT_TEXT;
+      }
     }
+    // The sides and defaults as the options are sent (the account check can disable or move one).
+    const { defaultOptionId, sides, defaults } = routeSides({ options, request, defaultOptionId: built.defaultOptionId });
     const computer = computerConsent({ session, request, options, defaultOptionId, brain, origin });
     const expiresAt = now() + r.cardTimeoutMinutes * 60_000;
     const pref = r.preferences?.[request.taskClass];
@@ -1169,7 +1340,7 @@ export function createAssistantRouter({
       routeId, requestId, sessionId, origin, status: 'pending', mode, workflowId,
       taskClass: request.taskClass, summary: request.summary, confidence: request.confidence, needsVision: request.needsVision,
       needsOutput: request.needsOutput || null, dispatchOnly: request.dispatchOnly === true, visionOnly: request.visionOnly === true,
-      reasons: evaluation.reasons, request, options, defaultOptionId, runIds: new Set(runIds), waiters: new Set(),
+      reasons: evaluation.reasons, request, options, defaultOptionId, sides, defaults, runIds: new Set(runIds), waiters: new Set(),
       createdAt: now(), expiresAt, timer: null, mailboxOnDecision: origin === 'dispatch', brain,
       // The option whose approval is also the computer approval (computerConsent), as this card was sent.
       computer,
@@ -1188,6 +1359,8 @@ export function createAssistantRouter({
         visionOnly: request.visionOnly === true,
         brain: { provider: brain.provider, model: brain.model || null, label: brainInfo?.label || brain.model || providerLabel(brain.provider), vision: brainInfo?.vision ?? null },
         options, defaultOptionId,
+        // The card's Here / Dispatch switch: which side can run the task (and why not), and the option each side starts on.
+        sides, defaults,
         other: { allowed: true, providers: CATALOG_PROVIDERS, catalogPath: '/api/assistant/catalog' },
         remember: { available: request.taskClass !== 'chat', taskClass: request.taskClass, label: request.taskClassLabel, current: pref ? (pref.label || [pref.provider, pref.model].filter(Boolean).join('/')) : null },
         decline: { allowed: true, label: 'Cancel' },
@@ -1396,21 +1569,28 @@ export function createAssistantRouter({
       try { await budget.ensureCovered(card.sessionId, { provider: target.provider, forBrain: target.kind === 'direct', free: targetIsFree(cat, target) }); } catch { /* decided on the shares as they are */ }
       if (cards.get(routeId) !== card || card.status !== 'pending') openCard(routeId, { sessionId });
       if (!budgetCovers(coverageOf(card.sessionId), cat, target)) {
+        const unpriced = unpricedText(target.provider);
+        if (unpriced) throw routeError('BUDGET_UNPRICED', unpriced, 409, { provider: target.provider });
         throw routeError('BUDGET_SHARE_EXHAUSTED', `Budget: the ${providerLabel(target.provider)} share of this session's budget is used up. Pick another option (or a free model), or raise the budget.`, 409, { provider: target.provider });
       }
     }
+    // "Here" on a held dispatch's card: the brain does the task in this conversation, so the held
+    // worker runs are not started (they stop, route_here) and the brain is told to do it itself.
+    const keptHere = card.runIds.size > 0 && target.kind === 'direct';
     // Every held run must be able to start on the pick (the dispatcher's checkHeld: a design run's
     // sight and browser settings on that provider). A pick one would refuse is not approved, saved
-    // or reported started: the card stays open with the reason.
-    for (const runId of card.runIds) {
-      const refusal = call('checkHeld', runId, target);
-      if (refusal) throw routeError(refusal.code || 'ROUTE_INVALID', refusal.message || 'The held run cannot start on that model.', Number(refusal.status) || 400);
+    // or reported started: the card stays open with the reason. A "here" pick starts none.
+    if (!keptHere) {
+      for (const runId of card.runIds) {
+        const refusal = call('checkHeld', runId, target);
+        if (refusal) throw routeError(refusal.code || 'ROUTE_INVALID', refusal.message || 'The held run cannot start on that model.', Number(refusal.status) || 400);
+      }
     }
     // "Do it here" on another model continues in the turn the card was raised in,
     // handed over first. The runtime refuses a pick that turn no longer owns (a
     // newer prompt, a Stop or the session closing came after it): then nothing is
     // approved or remembered, and the card expires on every host.
-    const continuation = !card.runIds.size && continuesHere(target, brain);
+    const continuation = (keptHere || !card.runIds.size) && continuesHere(target, brain);
     // The decision is claimed here, before the first side effect (the runtime's continuation, the
     // held runs, the mailbox): nothing a sink does can close or decide this card again meanwhile.
     card.status = 'approved';
@@ -1428,21 +1608,23 @@ export function createAssistantRouter({
         remembered = true;
       } catch (error) { log('router:remember-error', error?.message || String(error)); }
     }
+    const heldRuns = keptHere ? [] : [...card.runIds];
+    const droppedRuns = keptHere ? [...card.runIds] : [];
     const route = {
       routeId, status: 'approved', sessionId: card.sessionId, taskClass: card.taskClass, summary: card.summary, confidence: card.confidence,
-      target, decidedBy: 'user', remembered, optionId, corrections, mode: card.mode, runIds: [...card.runIds],
+      target, decidedBy: 'user', remembered, optionId, corrections, mode: card.mode, runIds: heldRuns,
       reason: card.options.find((o) => o.id === optionId)?.reason || null, alternatives: card.alternatives, expiresAt: now() + DECIDED_TTL_MS,
     };
     decided.set(routeId, route);
     noteBudgetTask(card.sessionId, { taskClass: card.taskClass, summary: card.summary }, target);
-    const heldRuns = [...card.runIds];
     // A remote session: the held run this card was for is its one dispatch.
     if (heldRuns.length && session.remote === true) route.consumed = true;
+    for (const runId of droppedRuns) call('declineHeld', runId, 'route_here');
     for (const runId of heldRuns) call('startHeld', runId, target, { routeId, decidedBy: 'user', remembered, optionId });
     const view = routeView(route, { catalog: cat, brain, brainInfo });
     call('routeEvent', card.sessionId, 'decided', view);
     const inTurnWaiter = card.waiters.size > 0;
-    const viaMailbox = !inTurnWaiter && !continuation && (card.mailboxOnDecision || heldRuns.length > 0);
+    const viaMailbox = !inTurnWaiter && !continuation && (card.mailboxOnDecision || card.runIds.size > 0);
     // The card said the Mac will be controlled, and this is the option it said it for: the yes is
     // also the computer approval of the turn that carries the route out (this one, or the mailbox
     // turn that executes the decided route). From what the card recorded when it was sent; the
@@ -1451,9 +1633,19 @@ export function createAssistantRouter({
       // `authority` is passed on untouched and never kept: the runtime alone can tell whose it is.
       call('computerApproved', card.sessionId, { routeId, origin, viaMailbox, authority });
     }
-    const result = resultFor('approved', { routeId, mode: card.mode, source: 'user', target, corrections, cat, brain, brainInfo, remembered, runIds: heldRuns, continuation, sessionId: card.sessionId });
+    // The brain proposed one kind and the user picked the other (the card's Here / Dispatch switch):
+    // the result says so first, so the brain follows the pick, not its proposal.
+    const proposed = card.request?.proposals?.[0]?.kind || null;
+    const picked = target.accountKind || target.kind;
+    const switched = proposed && proposed !== picked ? picked : null;
+    const result = resultFor('approved', { routeId, mode: card.mode, source: 'user', target, corrections, cat, brain, brainInfo, remembered, runIds: heldRuns, continuation, sessionId: card.sessionId, switched, droppedRuns });
     if (viaMailbox) {
-      call('mailbox', card.sessionId, { kind: 'route_decided', route: view, runIds: heldRuns, text: heldRuns.length ? `The user picked ${view.target?.label || 'a model'}; the held run${heldRuns.length === 1 ? '' : 's'} started.` : `The user picked ${view.target?.label || 'a model'}. ${result.next}` });
+      const label = view.target?.label || 'a model';
+      const what = card.summary ? `"${card.summary}"` : 'this task';
+      const text = heldRuns.length ? `The user picked ${label}; the held run${heldRuns.length === 1 ? '' : 's'} started.`
+        : droppedRuns.length ? `The user chose to do ${what} here with ${label} instead of on a worker: the held run${droppedRuns.length === 1 ? '' : 's'} ${droppedRuns.join(', ')} ${droppedRuns.length === 1 ? 'was' : 'were'} not started. Do that task here yourself now; do not dispatch it again.`
+          : `The user picked ${label}. ${result.next}`;
+      call('mailbox', card.sessionId, { kind: 'route_decided', route: view, runIds: heldRuns, ...(droppedRuns.length ? { droppedRunIds: droppedRuns } : {}), text });
     }
     settle(card, { status: 'approved', result });
     closeCard(card);
@@ -1483,6 +1675,12 @@ export function createAssistantRouter({
     const remote = session.remote === true;
     if (routeId) {
       const approved = decided.get(routeId);
+      // The user picked "here" on this route's card: it runs in this conversation, never on a worker
+      // (a brain's own direct route, or a saved one in Never ask, keeps its old dispatch behaviour).
+      if (approved && approved.sessionId === sessionId && approved.target?.kind === 'direct' && approved.decidedBy === 'user') {
+        const where = approved.target.model ? ` on ${approved.target.model}` : '';
+        throw routeError('ROUTE_IS_DIRECT', `Route ${routeId} was decided by the user to run here, in this conversation${where}, not on a worker. Do the task yourself now; do not dispatch it. If it should go to a worker after all, ask the user, then call agent_route again.`, 409, { routeId, target: approved.target });
+      }
       if (approved && approved.sessionId === sessionId && approved.target && !approved.consumed) {
         // A remote session's route is claimed here, so a second dispatch cannot take it meanwhile.
         // `claimed` tells the dispatcher to give it back (releaseRoute) if it refuses the launch
@@ -1495,7 +1693,11 @@ export function createAssistantRouter({
         let runTarget = t;
         let budgetCorrection = null;
         if (budgeted() && !budgetCovers(coverageOf(sessionId), cat, t)) {
-          if (approved.mode === 'always-ask' && approved.decidedBy === 'user') throw routeError('BUDGET_SHARE_EXHAUSTED', 'The selected model has no session budget left. Choose a new task route or raise the budget.', 409, { routeId, provider: t.provider });
+          if (approved.mode === 'always-ask' && approved.decidedBy === 'user') {
+            const unpriced = unpricedText(t.provider);
+            if (unpriced) throw routeError('BUDGET_UNPRICED', `${unpriced} Choose a new task route.`, 409, { routeId, provider: t.provider });
+            throw routeError('BUDGET_SHARE_EXHAUSTED', 'The selected model has no session budget left. Choose a new task route or raise the budget.', 409, { routeId, provider: t.provider });
+          }
           try { await budget.ensureCovered(sessionId, { provider: t.provider, forBrain: false, free: targetIsFree(cat, t), task: { taskClass: approved.taskClass, summary: approved.summary || null, provider: t.provider, model: t.model || null } }); } catch { /* decided on the shares as they are */ }
           const request = normalizeRouteRequest({ task_class: approved.taskClass, summary: approved.summary || '', confidence: 1, needs_vision: !!spec.usesComputer, proposals: [{ kind: 'dispatch', provider: t.provider, model: t.model || null, effort: t.effort || null }] }, { brain });
           const moved = budgetMove({ target: { ...t, kind: 'dispatch' }, request, catalog: cat, brain, brainInfo, routing: r, coverage: coverageOf(sessionId) });
@@ -1635,7 +1837,7 @@ export function createAssistantRouter({
     const mode = modeFor(sessionId);
     const prefs = Object.entries(r.preferences || {}).filter(([, p]) => p?.provider)
       .map(([cls, p]) => `${cls} → ${p.kind === 'direct' ? 'here' : p.provider}${p.model ? `/${p.model}` : ''}${p.effort ? ` (${p.effort})` : ''}${hasRouteAccounts(p.provider) ? ` as ${routeAccountText(p, { accounts: liveAccounts(catalog.peek?.()), brain: getSession(sessionId)?.brain, workers: { codex: configStore?.workers?.()?.codexAccount, 'claude-code': configStore?.workers?.()?.claudeAccount } })}` : ''}`);
-    const modeLine = mode === 'always-ask' ? 'always ask (call agent_route before every actionable task; the user picks the model)'
+    const modeLine = mode === 'always-ask' ? 'always ask (call agent_route before every actionable task; the user picks the model, and whether it runs here or on a worker)'
       : mode === 'never' ? 'never ask (agent_route approves at once; the saved routes below are binding and agent_route applies them over your pick, so classify the task correctly)'
         : `ask when unsure (agent_route asks the user below ${Math.round(r.askBelow * 100)}% confidence or for unknown/missing models)`;
     const text = `[SynaBun Router] Route mode: ${modeLine}.${prefs.length ? ` ${mode === 'never' ? 'Saved routes (binding)' : 'Remembered routes'}: ${prefs.join('; ')}.` : ''}`;

@@ -226,7 +226,7 @@ function initialSelection(options: CreateMcpServerOptions): ToolSelection {
 // Create a fully configured McpServer with all tools registered.
 // Used by the HTTP transport (one stateful server per client session): it
 // passes focus on every group and binds each session's own selection at
-// initialize (setServerSelection). Stdio clients (Codex, OpenCode, Gemini)
+// initialize (setServerSelection). Stdio clients (Codex, OpenCode, Antigravity)
 // read their list from their launch (readInitialTools) through the singleton
 // at the bottom of this file.
 export function createMcpServer(options: CreateMcpServerOptions = {}) {

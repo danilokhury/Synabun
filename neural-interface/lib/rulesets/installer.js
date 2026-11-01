@@ -8,7 +8,9 @@
 //   claude    owned file  ~/.claude/rules/synabun.md (and each Claude account's config dir)
 //   opencode  owned file  <opencode config dir>/synabun.md + one `instructions` entry in opencode.json
 //   codex     block       ~/.codex/AGENTS.md (account homes link to it, or get their own block)
-//   gemini    block       ~/.gemini/GEMINI.md
+//   antigravity block     ~/.gemini/config/GEMINI.md (Antigravity's global customization root; the block an
+//                         older SynaBun wrote for Gemini CLI in ~/.gemini/GEMINI.md, which Antigravity also
+//                         reads, is moved here so the rules are never loaded twice)
 //   cursor    none        User Rules live inside the app: copy and paste ("manual")
 //
 // What it will not do: create the config directory of a CLI that is not
@@ -83,11 +85,18 @@ const HOSTS = Object.freeze({
   claude: { label: 'Claude Code', carrier: 'file' },
   codex: { label: 'Codex CLI', carrier: 'block' },
   opencode: { label: 'OpenCode', carrier: 'file' },
-  gemini: { label: 'Gemini CLI', carrier: 'block' },
+  // `legacyHosts`: the stamps an earlier SynaBun wrote for what this host replaced (Gemini CLI's rules, host=gemini).
+  antigravity: { label: 'Antigravity', carrier: 'block', legacyHosts: Object.freeze(['gemini']) },
   cursor: { label: 'Cursor', carrier: 'none' },
 });
 const MANAGED_HOSTS = Object.freeze(RULESET_HOSTS.filter((host) => HOSTS[host].carrier !== 'none'));
-const PROJECT_FILES = Object.freeze([['CLAUDE.md', 'claude'], ['AGENTS.md', 'codex'], ['GEMINI.md', 'gemini']]);
+const PROJECT_FILES = Object.freeze([['CLAUDE.md', 'claude'], ['AGENTS.md', 'codex'], ['GEMINI.md', 'antigravity']]);
+// State rows an earlier SynaBun kept under a host this one replaced: read as the new host's row (readState).
+const RENAMED_HOSTS = Object.freeze({ gemini: 'antigravity' });
+/** Whether a block's stamp is this host's own: its name, or one it replaced. */
+function ownStamp(host, stamped) {
+  return stamped === host || (HOSTS[host]?.legacyHosts || []).includes(stamped);
+}
 const RANK = Object.freeze({ missing: 0, current: 1, newer: 2, outdated: 3, modified: 4, conflict: 5, error: 6 });
 const MAX_SCAN_BYTES = 2 * 1024 * 1024;
 
@@ -259,6 +268,17 @@ export function createRulesetInstaller({
       return view();
     }
     if (!isPlainObject(saved)) return view();
+    // A row kept under a host this SynaBun replaced (Gemini CLI → Antigravity) is the new host's row, marked
+    // `movedFrom` until reconcile has put the rules where the new host reads them (see reconcileHosts).
+    for (const [old, now] of Object.entries(RENAMED_HOSTS)) {
+      const hosts = isPlainObject(saved.hosts) ? saved.hosts : null;
+      if (hosts && isPlainObject(hosts[old]) && !isPlainObject(hosts[now])) {
+        saved.hosts = { ...hosts, [now]: { ...hosts[old], ...(hosts[old].managed === true ? { movedFrom: old } : {}) } };
+        delete saved.hosts[old];
+      }
+      if (Array.isArray(saved.offerAcked)) saved.offerAcked = saved.offerAcked.map((host) => (host === old ? now : host));
+      if (isPlainObject(saved.notice) && Array.isArray(saved.notice.hosts)) saved.notice = { ...saved.notice, hosts: unique(saved.notice.hosts.map((host) => (host === old ? now : host))) };
+    }
     if (Number.isSafeInteger(saved.revision) && saved.revision > 0) state.revision = saved.revision;
     if (typeof saved.autoUpdate === 'boolean') state.autoUpdate = saved.autoUpdate;
     if (isPlainObject(saved.notice)) state.notice = saved.notice;
@@ -352,7 +372,7 @@ export function createRulesetInstaller({
 
   // ── Where things live ──────────────────────────────────────────────────────
   // Resolved the way the MCP toggle routes resolve them: Claude, Codex and
-  // Gemini under the home directory, OpenCode in its configuration folder
+  // Antigravity under the home directory, OpenCode in its configuration folder
   // (OPENCODE_CONFIG_DIR, else XDG_CONFIG_HOME/opencode, else ~/.config/opencode),
   // whose opencode.json OpenCode 2 reads (lib/opencode-config.js).
   function layout() {
@@ -363,6 +383,9 @@ export function createRulesetInstaller({
     return {
       claudeDir: join(home, '.claude'),
       codexHome: join(home, '.codex'),
+      // Antigravity's global customization root (rules, skills, mcp_config.json), and the folder above it, where
+      // Gemini CLI's GEMINI.md lives (Antigravity reads that file too).
+      antigravityDir: join(home, '.gemini', 'config'),
       geminiDir: join(home, '.gemini'),
       opencodeDir: dirname(opencodeConfig),
       opencodeConfig,
@@ -416,7 +439,7 @@ export function createRulesetInstaller({
         ...codexAccounts().filter((account) => account.kind === 'file').map(({ path, dir }) => ({ path, dir })),
       ];
     }
-    if (host === 'gemini') return [{ path: join(where.geminiDir, 'GEMINI.md'), dir: where.geminiDir }];
+    if (host === 'antigravity') return [{ path: join(where.antigravityDir, 'GEMINI.md'), dir: where.antigravityDir, legacyBlock: join(where.geminiDir, 'GEMINI.md') }];
     return [];
   }
   function projectPaths() {
@@ -428,7 +451,10 @@ export function createRulesetInstaller({
     const where = layout();
     try {
       if (host === 'claude') return !!JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'))?.mcpServers?.SynaBun;
-      if (host === 'gemini') return !!JSON.parse(readFileSync(join(where.geminiDir, 'settings.json'), 'utf8'))?.mcpServers?.SynaBun;
+      if (host === 'antigravity') {
+        const text = readFileSync(join(where.antigravityDir, 'mcp_config.json'), 'utf8').replace(/^\uFEFF/, '');
+        return text.trim() ? !!JSON.parse(text)?.mcpServers?.SynaBun : false;
+      }
       if (host === 'codex') return /^\[mcp_servers\.SynaBun\]/m.test(readFileSync(join(where.codexHome, 'config.toml'), 'utf8'));
       if (host === 'opencode') return !!mcpServersOf(mergedOpencodeConfig(readOpencodeConfigDocuments(where.opencodeDir))).SynaBun;
     } catch { /* no config, no registration */ }
@@ -481,7 +507,7 @@ export function createRulesetInstaller({
     }
     const block = blocks[0] || null;
     // A stamp for another tool is not this host's copy, however untouched it is: never updated, never removed.
-    if (block && block.host !== host) return { status: 'conflict', text, bytes, detail: `${foreignBlock(host, block, target.path)} Replace does not apply here: take that block out by hand, then install again.` };
+    if (block && !ownStamp(host, block.host)) return { status: 'conflict', text, bytes, detail: `${foreignBlock(host, block, target.path)} Replace does not apply here: take that block out by hand, then install again.` };
     if (HOSTS[host].carrier === 'file') {
       if (normalise(text) === expected.block) return { status: 'current', text, bytes, block };
       if (!block) return { status: 'modified', text, bytes, block, detail: `${target.path} has no SynaBun markers, so SynaBun treats it as your own file and never replaces it. Move or delete it, then install again.` };
@@ -757,6 +783,45 @@ export function createRulesetInstaller({
     tally.changed = true;
   }
   /**
+   * The block an earlier SynaBun wrote where this host's tool also reads rules, under a name this host replaced
+   * (Gemini CLI's ~/.gemini/GEMINI.md, host=gemini, which Antigravity reads beside its own ~/.gemini/config/GEMINI.md):
+   * once the rules are where the new host keeps them, an untouched old block goes, or the tool would load them twice.
+   * An edited one is the user's: it stays, with a warning. A file that held nothing else and that SynaBun created is
+   * deleted; any other file keeps everything but the block. Never forced.
+   */
+  function moveLegacyBlock(host, file, row, tally) {
+    let bytes;
+    try { bytes = readBytes(file); } catch { return; }
+    if (bytes === null) return;
+    const text = bytes.toString('utf8');
+    const { blocks, conflict } = findBlocks(text);
+    if (conflict) {
+      tally.warnings.push(`${conflict.message} in ${file}, which ${HOSTS[host].label} also reads, so SynaBun left it as it is: remove the old SynaBun marker lines by hand.`);
+      return;
+    }
+    const block = blocks[0];
+    if (!block || !ownStamp(host, block.host)) return;
+    if (!isPristine(block)) {
+      tally.warnings.push(`The SynaBun block an earlier version wrote in ${file} was edited, so it stays there. ${HOSTS[host].label} reads that file as well: take that block out by hand, or the rules are loaded twice.`);
+      return;
+    }
+    const next = removeBlock(text);
+    const created = Array.isArray(row.created) && row.created.some((path) => samePath(path, file));
+    try {
+      tally.backup(backedUp(file, host, () => {
+        if (created && !isSymlink(file) && withoutBom(next).trim() === '') unlinkUnchanged(file, text);
+        else commit(file, next, text);
+      }));
+    } catch (error) {
+      if (error?.code !== 'CHANGED_UNDERNEATH') throw error;
+      tally.warnings.push(`${file} changed while SynaBun was moving its old rules out of it, so it was left as it is.`);
+      return;
+    }
+    tally.changed = true;
+    row.paths = row.paths.filter((path) => !samePath(path, file));
+    row.created = row.created.filter((path) => !samePath(path, file));
+  }
+  /**
    * One carrier. Returns the status it ended in; writes only when the copy is
    * missing, untouched and old, or (forced) one well-formed copy that was
    * edited or that a newer SynaBun wrote. Damaged or duplicate markers are
@@ -951,7 +1016,7 @@ export function createRulesetInstaller({
     };
     for (const target of targets('claude')) add(target.legacyFile, 'claude', 'global');
     for (const target of targets('codex')) add(target.path, 'codex', 'global');
-    for (const target of targets('gemini')) add(target.path, 'gemini', 'global');
+    for (const target of targets('antigravity')) { add(target.path, 'antigravity', 'global'); add(target.legacyBlock, 'antigravity', 'global'); }
     for (const target of targets('opencode')) add(target.legacyFile, 'opencode', 'global');
     for (const dir of projectPaths()) {
       for (const [name, host] of PROJECT_FILES) add(join(dir, name), host, 'project');
@@ -1047,6 +1112,7 @@ export function createRulesetInstaller({
         }
       }
       if (host === 'opencode' && !moveOpencode1Entry(row, tally)) addOpencodeEntry(row, tally);
+      for (const target of list) if (target.legacyBlock) moveLegacyBlock(host, target.legacyBlock, row, tally);
 
       Object.assign(row, {
         managed: true,
@@ -1181,7 +1247,7 @@ export function createRulesetInstaller({
     const created = new Set(row.created);
     // Every place a copy can be: the host's carriers, the row's paths, and what an unfinished removal recorded.
     const recorded = Array.isArray(row.removal?.paths) ? row.removal.paths.filter((path) => typeof path === 'string') : [];
-    const paths = unique([...list.map((target) => target.path), ...row.paths, ...recorded]);
+    const paths = unique([...list.map((target) => target.path), ...list.map((target) => target.legacyBlock).filter(Boolean), ...row.paths, ...recorded]);
     /** Intent first: the paths about to go are saved before the first of them is touched. */
     const recordIntent = (planned) => {
       row.removal = { at: stamp(), error: INTERRUPTED, paths: unique(planned) };
@@ -1256,7 +1322,7 @@ export function createRulesetInstaller({
           if (conflict) { refuse(path, 'conflict', `${conflict.message} in ${path}. SynaBun will not guess: remove the SynaBun marker lines by hand, then remove again.`); continue; }
           const block = blocks[0];
           if (!block) continue;
-          if (block.host !== host) { refuse(path, 'conflict', `${foreignBlock(host, block, path)} Take that block out by hand if you no longer want it.`); continue; }
+          if (!ownStamp(host, block.host)) { refuse(path, 'conflict', `${foreignBlock(host, block, path)} Take that block out by hand if you no longer want it.`); continue; }
           const pristine = isPristine(block);
           if (!force && !pristine) {
             left.push({ path, reason: 'edited', message: `The SynaBun block in ${path} was edited, so SynaBun left it in place and no longer manages it.` });
@@ -1413,6 +1479,19 @@ export function createRulesetInstaller({
         // config.json does not list any more is not moved: the user took it out, which is the opt-out below.
         const older = config && first.status !== 'missing' && !config.hasEntry ? opencode1Record(row) : null;
         const moving = older !== null && opencode1Listed(older);
+        if (first.status === 'missing' && row.movedFrom && isDir(primary.dir)) {
+          // A host this SynaBun replaced (Gemini CLI → Antigravity) was managed: its rules go where the new host reads
+          // them, and the old block goes (installHost moves it). Not an opt-out: nothing was deleted by the user.
+          const moved = installHost(state, host, { force: false }, call);
+          if (moved.ok) { delete row.movedFrom; updated.push(host); to = expected.version; from = from || row.installedVersion || null; }
+          states[host] = hostStatus(host, state).state;
+          continue;
+        }
+        if (first.status === 'missing' && row.movedFrom) {
+          // The new host's folder is not there yet (Antigravity not installed): nothing to move to; asked again later.
+          states[host] = 'not-installed';
+          continue;
+        }
         if (first.status === 'missing' || (config && !config.hasEntry && !moving)) {
           // The user deleted it: an opt-out, never a reason to put it back. (A copy SynaBun's own removal took is
           // not this case: that removal is on record and was dealt with above.)

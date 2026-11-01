@@ -6551,8 +6551,9 @@ function setModelForTab(tab, model) {
 function setEffortForTab(tab, effort) {
   if (!tab) return false;
   const normalized = String(effort || '').trim().toLowerCase();
-  const nextEffort = normalized === 'default' || normalized === 'none' ? 'off' : normalized;
   const supported = effortOptionsForTab(tab);
+  // 'none' is a real level on models that advertise it; elsewhere it means the default.
+  const nextEffort = normalized === 'default' || (normalized === 'none' && !supported.some((option) => option.id === 'none')) ? 'off' : normalized;
   if (!supported.some((option) => option.id === nextEffort)) {
     withTab(tab, () => appendSystem(`Unsupported reasoning effort for ${tab.model || 'this model'}: ${effort}. Use ${supported.map((option) => option.id).join(', ')}.`, 'error'));
     return false;

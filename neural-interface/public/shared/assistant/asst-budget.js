@@ -228,10 +228,11 @@ export function renderBudgetSession(view, { t } = {}) {
       ? tr('assistant.budget.providerSpend', '{spent} spent', { spent: money(row.spentUsd) })
       : tr('assistant.budget.providerAmounts', 'Share {share} · spent {spent} · left for tasks {left}', { share: row.shareUsd == null ? '—' : money(row.shareUsd), spent: money(row.spentUsd), left: row.workerLeftUsd == null ? '—' : money(row.workerLeftUsd) })));
     if (!view.unlimited && row.isBrain && view.split) item.append(el('div', 'asst-modal-note', tr('assistant.budget.reserve', '{reserve} reserved for the brain within this share.', { reserve: money(view.split.brainReserveLeftUsd) })));
-    if (!view.unlimited && (view.dry || []).includes(row.provider)) item.append(el('div', 'asst-budget-dry', tr('assistant.budget.dry', 'Share used up')));
-    if (!row.eligible && row.reason) {
-      const reason = String(row.reason).replace(/^brain:/, '');
-      item.append(el('div', 'asst-modal-note', tr(`assistant.budget.ineligible.${reason}`, { no_models: 'No available models', signed_out: 'Signed out', limited: 'Provider usage limit reached' }[reason] || reason)));
+    const reason = !row.eligible && row.reason ? String(row.reason).replace(/^brain:/, '') : '';
+    // A provider that reports no prices (Antigravity) gets no share under a budget: nothing of it was "used up".
+    if (!view.unlimited && (view.dry || []).includes(row.provider) && reason !== 'unpriced') item.append(el('div', 'asst-budget-dry', tr('assistant.budget.dry', 'Share used up')));
+    if (reason) {
+      item.append(el('div', 'asst-modal-note', tr(`assistant.budget.ineligible.${reason}`, { no_models: 'No available models', signed_out: 'Signed out', limited: 'Provider usage limit reached', unpriced: 'Reports tokens, not prices' }[reason] || reason)));
     }
     providers.append(item);
   }

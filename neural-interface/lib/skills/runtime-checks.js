@@ -6,11 +6,11 @@
 //                "off", a deny rule on Skill(name)), OpenCode's opencode.json and opencode.jsonc (the last rule of
 //                action `skill` whose resource matches the name: OpenCode 2's `permissions`, an OpenCode 1
 //                `permission.skill` read as OpenCode reads it). 'enabled', 'disabled', or 'unknown' when the
-//                settings cannot be read.
+//                settings cannot be read (Antigravity's are not read: always 'unknown', with no reason).
 //   probe        asked of the runtime itself, only when the owner asks (Verify in the Studio): Codex lists its
 //                skills through `codex app-server` (skills/list, forceReload); OpenCode through SynaBun's own
-//                running serve. Claude Code has no listing to ask: it says null with the reason. A probe reads; it
-//                changes no setting.
+//                running serve. Claude Code and Antigravity have no listing to ask: they say null with the reason.
+//                A probe reads; it changes no setting.
 //   enable       the one write here, on the owner's click only (POST /api/skills-studio/v2/eligibility/enable):
 //                the setting that turns the skill off is changed to let it through, the file is backed up first
 //                (DATA_HOME/data/skills/backups/settings/), and the answer names the file, the backup and the lines
@@ -160,6 +160,8 @@ export function createSkillsRuntimeChecks({ codexHome, claudeHome, opencodeConfi
       if (decided?.effect !== 'deny') return { state: 'enabled', reason: null };
       return { state: 'disabled', reason: { kind: 'opencode-permission', file: decided.file, pattern: decided.resource, action: 'deny' } };
     }
+    // Antigravity: SynaBun reads none of its settings, so nothing is said of them (no reason: no "could not be read").
+    if (runtime === 'antigravity') return { state: 'unknown', reason: null };
     return { state: 'unknown', reason: { kind: 'unknown-runtime' } };
   }
 
@@ -273,6 +275,7 @@ export function createSkillsRuntimeChecks({ codexHome, claudeHome, opencodeConfi
       } catch (err) { return { discovered: null, code: 'no-answer', method: 'opencode serve', reason: err?.message || String(err) }; }
     }
     if (runtime === 'claude') return { discovered: null, code: 'no-list', method: 'none', reason: 'Claude Code has no list to ask; its folder rules were checked instead.' };
+    if (runtime === 'antigravity') return { discovered: null, code: 'no-list', method: 'none', reason: 'Antigravity has no list SynaBun can ask; its folder rules were checked instead.' };
     return { discovered: null, method: 'none', reason: 'Unknown runtime.' };
   }
 

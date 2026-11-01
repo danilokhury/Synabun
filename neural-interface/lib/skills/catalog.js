@@ -178,8 +178,12 @@ export function createSkillsCatalog({ roots, readHead, describe, ownership = () 
           });
         }
       } else {
+        // Antigravity's rule for two skills of one name (its folder and a project's .agents/skills) is not known here.
+        const why = runtime === 'antigravity'
+          ? 'Antigravity sees more than one skill of this name; which one it uses is not certain. Give them different names.'
+          : `${runtime === 'codex' ? 'Codex' : 'OpenCode'} lists every skill of this name; which one the model picks is not fixed. Give them different names.`;
         for (const e of list) {
-          (e.collisions ||= []).push({ runtime, with: list.filter((x) => x !== e).map((x) => x.id), outcome: 'both-listed', why: `${runtime === 'codex' ? 'Codex' : 'OpenCode'} lists every skill of this name; which one the model picks is not fixed. Give them different names.` });
+          (e.collisions ||= []).push({ runtime, with: list.filter((x) => x !== e).map((x) => x.id), outcome: 'both-listed', why });
         }
       }
     }

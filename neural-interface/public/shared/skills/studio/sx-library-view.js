@@ -18,11 +18,13 @@ import { html, raw, setHTML, ICONS, healthIcon, relativeTime, fullTime, rovingFo
 import { dropKept, dropDraft } from './sx-docs.js';
 import { encodeArtifactId } from '../ss-ids.js';
 import { revealHidden } from '../ss-unicode.js';
+import { issuesOf } from './sx-fixes.js';
+import { openFixPanel, fixAllSafe, fixNoticeHTML, unreadableFingerprint } from './sx-fixes-view.js';
 
 let _life = null;      // the listeners of the drawn header (filters): they end with the next drawing
 let _lastChecked = null;
 
-const RT_LETTER = { claude: 'C', codex: 'X', opencode: 'O' };
+const RT_LETTER = { claude: 'C', codex: 'X', opencode: 'O', antigravity: 'A' };
 const DIAG_REASONS = ['no-skill-md', 'unreadable-head', 'link', 'too-deep', 'unreadable', 'outside-project', 'not-a-folder'];
 
 /** Where a row comes from, in words: a label and a detail. */
@@ -65,11 +67,22 @@ export function healthWhy(h, t) {
   return '';
 }
 
-export function healthCapsule(row, t) {
+/**
+ * `fix`: the capsule opens the row's fix panel (sx-fixes-view.js) when it holds a problem: in the Library a
+ * `data-fix` button, in a workspace a `data-ws="fix-issues"` one. A capsule with nothing to fix stays a label.
+ */
+export function healthCapsule(row, t, { fix = null } = {}) {
   const worst = worstHealth(row);
   const rest = row.health.filter((h) => h !== worst && h.sev !== 'ok');
   const all = row.health.map((h) => { const why = healthWhy(h, t); return why ? `${healthWords(h, t)}: ${why}` : healthWords(h, t); }).join(' · ');
-  return html`<span class="sx-health sx-health--${worst.sev}" title="${all}">${healthIcon(worst.code)}<span>${healthWords(worst, t)}</span>${rest.length ? html`<span class="sx-health-more">+${rest.length}</span>` : ''}</span>`;
+  const inner = html`${healthIcon(worst.code)}<span>${healthWords(worst, t)}</span>${rest.length ? html`<span class="sx-health-more">+${rest.length}</span>` : ''}`;
+  if (fix && issuesOf(row, { open: true }).length) {
+    const label = t('skillsStudio.fix.open', { problems: all });
+    return fix === 'library'
+      ? html`<button type="button" class="sx-health sx-health--${worst.sev} sx-health--fix" data-fix="${row.key}" tabindex="-1" title="${label}" aria-label="${label}">${inner}</button>`
+      : html`<button type="button" class="sx-health sx-health--${worst.sev} sx-health--fix" data-ws="fix-issues" title="${label}" aria-label="${label}">${inner}</button>`;
+  }
+  return html`<span class="sx-health sx-health--${worst.sev}" title="${all}">${inner}</span>`;
 }
 
 /**
@@ -80,12 +93,12 @@ export function healthCapsule(row, t) {
 export function statusPill(status, ctx, { button = null, id = null } = {}) {
   const { t } = ctx;
   const where = status.where.map((w) => {
-    const runtime = t(`skillsStudio.runtime.${['claude', 'codex', 'opencode', 'agents'].includes(w.runtime) ? w.runtime : 'claude'}`);
+    const runtime = t(`skillsStudio.runtime.${['claude', 'codex', 'opencode', 'antigravity', 'agents'].includes(w.runtime) ? w.runtime : 'claude'}`);
     if (w.scope === 'project') return t('skillsStudio.publish.targetProject', { runtime, project: ctx.projects?.find((p) => p.path === w.projectPath)?.label || w.projectPath || '' });
     if (w.accountId && w.accountId !== 'default') return t('skillsStudio.publish.targetAccount', { runtime, account: w.accountId });
     return t('skillsStudio.publish.targetUser', { runtime });
   });
-  const runtimes = [...new Set(status.where.map((w) => t(`skillsStudio.runtime.${['claude', 'codex', 'opencode', 'agents'].includes(w.runtime) ? w.runtime : 'claude'}`)))].join(', ');
+  const runtimes = [...new Set(status.where.map((w) => t(`skillsStudio.runtime.${['claude', 'codex', 'opencode', 'antigravity', 'agents'].includes(w.runtime) ? w.runtime : 'claude'}`)))].join(', ');
   const text = status.code === 'installed' ? t('skillsStudio.status.installed', { where: runtimes }) : status.code === 'outdated' ? t('skillsStudio.status.outdated', { where: runtimes }) : t(`skillsStudio.status.${status.code}`);
   const title = where.length ? where.join(', ') : t(`skillsStudio.status.help.${status.code}`);
   // Not installed is no tick: the dashed circle (healthIcon has no 'off' and would fall through to the tick).
@@ -96,7 +109,21 @@ export function statusPill(status, ctx, { button = null, id = null } = {}) {
     : html`<span class="sx-status sx-status--${status.code}"${id ? html` id="${id}"` : ''} title="${title}">${inner}</span>`;
 }
 
-/** The runtime capsules of a row (C X O), each named in full. */
+/**
+ * The status and health pills of a row, once each, in the Library cell and the workspace head alike: a library skill
+ * shows its status, and its health only when something is wrong (an info item such as "draft" or "in review" is
+ * what the status already says); anything else shows its health.
+ */
+export function statusPills(row, ctx, { status = installStatus({ skill: row.skill, row }), button = null, id = null, fix = null } = {}) {
+  const how = ctx.guest ? null : fix;
+  if (!status) return healthCapsule(row, ctx.t, { fix: how });
+  const sev = worstHealth(row).sev;
+  // An installation older than the latest version is said too: the status reads "installed" for it.
+  const stale = row.health.some((h) => h.code === 'stale-install');
+  return html`${statusPill(status, ctx, { button, id })}${sev === 'err' || sev === 'warn' || stale ? healthCapsule(row, ctx.t, { fix: how }) : ''}`;
+}
+
+/** The runtime capsules of a row (C X O A), each named in full. */
 export function runtimeCapsules(row, t) {
   return html`<span class="sx-rts">${RUNTIMES.map((rt) => {
     const st = row.runtimes[rt]?.state || 'none';
@@ -169,11 +196,10 @@ function rowHTML(row, ctx, selected, first) {
 function healthCellHTML(row, ctx) {
   const { t } = ctx;
   const status = installStatus({ skill: row.skill, row });
-  if (!status) return healthCapsule(row, t);
-  const worst = worstHealth(row);
+  if (!status) return healthCapsule(row, t, { fix: ctx.guest ? null : 'library' });
   // Installed for one assistant and not the others in effect: one press from the row adds them.
   const also = ['installed', 'outdated'].includes(status.code) && !ctx.guest ? alsoInstall(ctx, { skill: row.skill, row }) : { targets: [], words: '' };
-  return html`<span class="sx-health-cell">${statusPill(status, ctx)}${worst.sev === 'err' || worst.sev === 'warn' ? healthCapsule(row, t) : ''}${status.code === 'approved' && !ctx.guest ? html`<button type="button" class="sx-btn sx-btn--sm sx-btn--primary" data-install="${row.key}" tabindex="-1" title="${t('skillsStudio.library.installHelp')}">${t('skillsStudio.library.install')}</button>` : ''}${also.targets.length ? html`<button type="button" class="sx-btn sx-btn--sm" data-also-install="${row.key}" tabindex="-1" title="${t('skillsStudio.library.alsoInstallHelp')}">${t('skillsStudio.library.alsoInstall', { targets: also.words })}</button>` : ''}</span>`;
+  return html`<span class="sx-health-cell">${statusPills(row, ctx, { status, fix: 'library' })}${status.code === 'approved' && !ctx.guest ? html`<button type="button" class="sx-btn sx-btn--sm sx-btn--primary" data-install="${row.key}" tabindex="-1" title="${t('skillsStudio.library.installHelp')}">${t('skillsStudio.library.install')}</button>` : ''}${also.targets.length ? html`<button type="button" class="sx-btn sx-btn--sm" data-also-install="${row.key}" tabindex="-1" title="${t('skillsStudio.library.alsoInstallHelp')}">${t('skillsStudio.library.alsoInstall', { targets: also.words })}</button>` : ''}</span>`;
 }
 
 /**
@@ -269,9 +295,11 @@ function summaryHTML(ctx, shown) {
   const parts = [t('skillsStudio.library.shown', { shown: shown.length, total })];
   if (counts?.views?.attention) parts.push(tp('skillsStudio.library.attentionCount', counts.views.attention));
   const diag = data?.catalog?.diagnostics || [];
+  // Folders the owner said to leave as they are are not said again until their number changes.
+  const diagSaid = diag.length && !ctx.dismissed?.().has(unreadableFingerprint(diag.length));
   // A server older than the page reads no change times: the dashes are said once, with what brings them.
   const restart = knowsUpdated(ctx) ? '' : html` · <span class="sx-note-warn" id="sx-lib-updated-restart">${t('skillsStudio.library.updatedRestart')}</span>`;
-  return html`<p class="sx-summary" role="status">${parts.join(' · ')}${diag.length ? html` · <button type="button" class="sx-link" data-lib="diagnostics">${tp('skillsStudio.library.diagnostics', diag.length)}</button>` : ''}${data?.catalog?.truncated ? html` · <span class="sx-warn-text">${t('skillsStudio.library.truncated')}</span>` : ''}${restart}</p>`;
+  return html`<p class="sx-summary" role="status">${parts.join(' · ')}${diagSaid ? html` · <button type="button" class="sx-link" data-lib="diagnostics">${tp('skillsStudio.library.diagnostics', diag.length)}</button>` : ''}${data?.catalog?.truncated ? html` · <span class="sx-warn-text">${t('skillsStudio.library.truncated')}</span>` : ''}${restart}</p>`;
 }
 
 /**
@@ -394,7 +422,7 @@ export function renderLibraryPlace(host, ctx) {
   const shown = visible(ctx);
   setHTML(host, html`<section class="sx-place sx-place--library" aria-labelledby="sx-lib-title">
     ${filterHeadHTML(ctx)}
-    <div class="sx-place-notices">${installNoticeHTML(ctx)}${migrationNoticeHTML(ctx)}${keptNoticeHTML(ctx)}${updateNoticeHTML(ctx)}</div>
+    <div class="sx-place-notices">${fixNoticeHTML(ctx, deleteKind)}${installNoticeHTML(ctx)}${migrationNoticeHTML(ctx)}${keptNoticeHTML(ctx)}${updateNoticeHTML(ctx)}</div>
     <div class="sx-place-scroll" id="sx-lib-scroll">
       <div id="sx-lib-summary">${summaryHTML(ctx, shown)}</div>
       <div id="sx-lib-table">${tableHTML(ctx, shown)}</div>
@@ -450,6 +478,8 @@ async function onClick(e, host, ctx) {
   if (also && host.contains(also) && !also.disabled) { onAlsoInstall(also, host, ctx); return; }
   const restore = e.target.closest?.('[data-restore]');
   if (restore && host.contains(restore) && !restore.disabled) { onRestore(restore, host, ctx); return; }
+  const fix = e.target.closest?.('[data-fix]');
+  if (fix && host.contains(fix)) { const row = ctx.rows.find((r) => r.key === fix.dataset.fix); ctx.lib.focus = fix.dataset.fix; if (row) openFixPanel(ctx, row, { deleteKind, bulkDelete }); return; }
   const open = e.target.closest?.('[data-open]');
   if (open && host.contains(open)) { ctx.lib.focus = open.dataset.open; ctx.openRow(open.dataset.open); return; }
   const btn = e.target.closest?.('[data-lib]');
@@ -458,6 +488,9 @@ async function onClick(e, host, ctx) {
   if (act === 'new') ctx.goPlace('create');
   else if (act === 'retry') ctx.reload();
   else if (act === 'install-notice-ok') { ctx.lib.installNotice = null; ctx.render(); }
+  else if (act === 'fix-notice-ok') { ctx.lib.fixNotice = null; ctx.render(); }
+  else if (act === 'fix-all') fixAllSafe(ctx, ctx.rows, deleteKind);
+  else if (act === 'fix-show') { Object.assign(ctx.lib, { view: 'all', health: 'attention' }); ctx.saveLibraryView(); ctx.render(); }
   else if (act === 'clear-filters') { Object.assign(ctx.lib, { view: 'all', kind: 'all', source: 'all', runtime: 'all', health: 'any', q: '' }); ctx.saveLibraryView(); ctx.render(); }
   else if (act === 'bulk-clear') { ctx.lib.selected.clear(); redrawRows(host, ctx); }
   else if (act === 'diagnostics') showDiagnostics(ctx);
@@ -515,7 +548,18 @@ async function showDiagnostics(ctx) {
     li.title = d.message || '';
     list.append(li);
   }
-  await ctx.ask({ title: t('skillsStudio.library.diagnosticsTitle'), lines: [t('skillsStudio.library.diagnosticsHelp')], extra: list, buttons: [{ id: 'ok', label: t('skillsStudio.dialog.close'), kind: 'primary' }], cancelId: 'ok', wide: true });
+  const buttons = ctx.guest ? [{ id: 'ok', label: t('skillsStudio.dialog.close'), kind: 'primary' }]
+    : [{ id: 'dismiss', label: t('skillsStudio.fix.action.dismiss') }, { id: 'ok', label: t('skillsStudio.dialog.close') }, { id: 'rescan', label: t('skillsStudio.fix.action.rescan'), kind: 'primary' }];
+  const answer = await ctx.ask({ title: t('skillsStudio.library.diagnosticsTitle'), lines: [t('skillsStudio.library.diagnosticsHelp'), t('skillsStudio.fix.explain.unreadable')], extra: list, buttons, cancelId: 'ok', wide: true });
+  if (answer === 'dismiss') { ctx.dismissIssues([unreadableFingerprint(diag.length)]); ctx.toast(t('skillsStudio.fix.dismissed')); return; }
+  if (answer !== 'rescan') return;
+  const gen = ctx.gen();
+  try {
+    await ctx.api.rescanSkillsCatalog();
+    if (!ctx.alive(gen)) return;
+    ctx.toast(t('skillsStudio.fix.rescanned'));
+  } catch (err) { if (ctx.alive(gen)) ctx.toast(t('skillsStudio.fix.failed', { error: studioErrorText(ctx.t, err) }), 'error'); }
+  if (ctx.alive(gen)) await ctx.reload();
 }
 
 async function reopenKept(ctx) {
@@ -581,7 +625,7 @@ function bulkExport(ctx) {
   ctx.toast(ctx.tp('skillsStudio.library.bulk.exported', n));
 }
 
-async function bulkDelete(ctx) {
+export async function bulkDelete(ctx) {
   const { t, tp, api } = ctx;
   const chosen = ctx.rows.filter((r) => ctx.lib.selected.has(r.key)).map((r) => ({ row: r, s: subjectOf(r, { caps: ctx.caps }) }))
     .map((x) => ({ ...x, kind: deleteKind(ctx, x.row, x.s) })).filter((x) => x.kind);
@@ -590,32 +634,25 @@ async function bulkDelete(ctx) {
   const inLibrary = chosen.filter((x) => x.kind === 'library');
   // Unsaved text in an open workspace of one of them goes with it only when the owner says so.
   const unsaved = chosen.filter((x) => ctx.workspaces.get(x.row.key)?.tabs.some((tab) => tab.dirty));
-  const box = document.createElement('div');
-  box.className = 'sx-dlg-form';
-  const label = document.createElement('label');
-  label.className = 'sx-field-label';
-  label.htmlFor = 'sx-del-confirm';
-  label.textContent = t('skillsStudio.library.bulk.deleteType', { word: t('skillsStudio.library.bulk.deleteWord') });
-  const input = document.createElement('input');
-  input.id = 'sx-del-confirm';
-  input.className = 'sx-input';
-  input.autocomplete = 'off';
-  const err = document.createElement('p');
-  err.className = 'ss-dlg-error';
-  err.setAttribute('role', 'alert');
-  box.append(label, input, err);
+  const word = t('skillsStudio.library.bulk.deleteWord');
+  const { box, input, err } = deleteConfirmBox(ctx, chosen, { onDisk, inLibrary, unsaved, word });
   const answer = await ctx.ask({
     title: tp('skillsStudio.library.bulk.deleteTitle', chosen.length),
-    // Two kinds, said apart: what is removed from where it is, and what only leaves the library.
-    lines: [
-      ...(onDisk.length ? [t('skillsStudio.library.bulk.deleteExplain'), ...onDisk.slice(0, 8).map((x) => `• ${x.row.label} (${x.row.path || ''})`)] : []),
-      ...(inLibrary.length ? [t('skillsStudio.library.bulk.deleteLibraryExplain'), ...inLibrary.slice(0, 8).map((x) => `• ${x.row.label}`)] : []),
-      ...(unsaved.length ? [tp('skillsStudio.library.bulk.deleteUnsaved', unsaved.length)] : []),
-    ],
     extra: box,
-    buttons: [{ id: 'cancel', label: t('skillsStudio.dialog.cancel') }, { id: 'delete', label: t('skillsStudio.library.bulk.deleteConfirm'), kind: 'danger' }],
+    className: 'ss-dlg--confirm',
+    buttons: [{ id: 'cancel', label: t('skillsStudio.dialog.cancel') }, { id: 'delete', label: t('skillsStudio.library.bulk.deleteConfirm'), kind: 'danger', disabled: true }],
     focus: 'cancel',
-    accept: (id) => { if (id === 'delete' && input.value.trim().toLowerCase() !== t('skillsStudio.library.bulk.deleteWord').toLowerCase()) { err.textContent = t('skillsStudio.library.bulk.deleteTypeError'); return false; } return true; },
+    // Delete stays off until the word is typed; Enter in the field answers once it is.
+    onOpen: (ui) => {
+      input.addEventListener('input', () => { ui.setDisabled('delete', !deleteWordMatches(input.value, word)); if (deleteWordMatches(input.value, word)) err.textContent = ''; });
+      input.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' || e.isComposing) return;
+        e.preventDefault();
+        if (deleteWordMatches(input.value, word)) ui.done('delete'); else err.textContent = t('skillsStudio.library.bulk.deleteTypeError');
+      });
+      input.focus({ preventScroll: true });
+    },
+    accept: (id) => { if (id === 'delete' && !deleteWordMatches(input.value, word)) { err.textContent = t('skillsStudio.library.bulk.deleteTypeError'); return false; } return true; },
   });
   if (answer !== 'delete') return;
   const gen = ctx.gen();
@@ -633,6 +670,78 @@ async function bulkDelete(ctx) {
   ctx.toast(failed.length ? t('skillsStudio.library.bulk.deletePartial', { done, failed: failed.length, first: failed[0] }) : tp('skillsStudio.library.bulk.deleted', done), failed.length ? 'error' : 'info');
   ctx.lib.selected.clear();
   await ctx.reload();
+}
+
+/** Whether what was typed is the confirmation word (case and surrounding spaces aside). */
+export function deleteWordMatches(value, word) {
+  return String(value ?? '').trim().toLocaleLowerCase() === String(word ?? '').trim().toLocaleLowerCase() && !!String(word ?? '').trim();
+}
+
+/**
+ * The body of the delete question: one tidy row per item (its name, its kind, where it is, shortened, with the full
+ * path on hover, and what happens to it), what that means, and the field the word is typed in.
+ */
+export function deleteConfirmBox(ctx, chosen, { onDisk = [], inLibrary = [], unsaved = [], word }) {
+  const { t, tp } = ctx;
+  const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
+  const box = el('div', 'sx-del');
+  const list = el('ul', 'sx-del-list');
+  list.setAttribute('aria-label', t('skillsStudio.library.bulk.deleteListLabel'));
+  const SHOWN = 6;
+  for (const x of chosen.slice(0, SHOWN)) {
+    const li = el('li', 'sx-del-item');
+    const icon = el('span', 'sx-del-icon');
+    icon.setAttribute('aria-hidden', 'true');
+    setHTML(icon, x.row.kind === 'skill' ? ICONS.folder : ICONS.file);
+    const main = el('span', 'sx-del-main');
+    main.append(el('span', 'sx-del-name', x.row.label));
+    const where = x.kind === 'disk' ? shortPath(x.row.path || '') : t('skillsStudio.library.bulk.deleteInLibrary');
+    const path = el('span', 'sx-del-path', where);
+    if (x.kind === 'disk' && x.row.path) path.title = x.row.path;
+    main.append(path);
+    const kind = el('span', 'sx-del-kind', kindLabel(x.row, t));
+    const effect = el('span', `sx-del-effect sx-del-effect--${x.kind}`, x.kind === 'disk' ? t('skillsStudio.library.bulk.deleteEffectDisk') : t('skillsStudio.library.bulk.deleteEffectLibrary'));
+    li.append(icon, main, kind, effect);
+    list.append(li);
+  }
+  if (chosen.length > SHOWN) list.append(el('li', 'sx-del-more', t('skillsStudio.library.bulk.deleteMore', { count: chosen.length - SHOWN })));
+  box.append(list);
+  // Two kinds, said apart: what is removed from where it is (for good), and what only leaves the library.
+  if (onDisk.length) {
+    const note = el('p', 'sx-del-note sx-del-note--danger');
+    setHTML(note, html`${ICONS.warn}<span>${t('skillsStudio.library.bulk.deleteExplain')}</span>`);
+    box.append(note);
+  }
+  if (inLibrary.length) {
+    const note = el('p', 'sx-del-note');
+    setHTML(note, html`${ICONS.info}<span>${t('skillsStudio.library.bulk.deleteLibraryExplain')}</span>`);
+    box.append(note);
+  }
+  if (unsaved.length) {
+    const note = el('p', 'sx-del-note sx-del-note--danger');
+    setHTML(note, html`${ICONS.draft}<span>${tp('skillsStudio.library.bulk.deleteUnsaved', unsaved.length)}</span>`);
+    box.append(note);
+  }
+  const field = el('div', 'sx-del-field');
+  const label = el('label', 'sx-del-label');
+  label.htmlFor = 'sx-del-confirm';
+  // "Type {word} to confirm", with the word set apart as what is to be typed.
+  const sentence = t('skillsStudio.library.bulk.deleteType', { word: '\u0000' });
+  const [before, after = ''] = sentence.split('\u0000');
+  label.append(before, el('code', 'sx-del-word', word), after);
+  const input = el('input', 'sx-del-input');
+  input.id = 'sx-del-confirm';
+  input.type = 'text';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.setAttribute('autocapitalize', 'off');
+  input.setAttribute('aria-describedby', 'sx-del-error');
+  const err = el('p', 'ss-dlg-error');
+  err.id = 'sx-del-error';
+  err.setAttribute('role', 'alert');
+  field.append(label, input, err);
+  box.append(field);
+  return { box, input, err };
 }
 
 /** The P0 id of a row's entry (exported for the workspace's Export of an agent or a command). */

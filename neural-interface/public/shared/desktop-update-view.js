@@ -87,6 +87,7 @@ export const DESKTOP_COPY = Object.freeze({
     'claude-panel': 'a Claude Code panel reply',
     'codex-panel': 'a Codex panel reply',
     'opencode-panel': 'an OpenCode panel reply',
+    'antigravity-panel': 'an Antigravity panel reply',
     'claude-cli': 'a Claude Code session in use',
     loop: 'a loop',
     schedule: 'a schedule',

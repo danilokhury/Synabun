@@ -116,6 +116,8 @@ export function runChip(run, t = tFallback) {
   }
   if (awaitsAnswer(run)) return { tone: 'action', label: t('assistant.run.waitingInput', 'waiting for your answer') };
   const tone = runTone(run);
+  // A held run whose card the user answered "here": the assistant does it, this worker never started.
+  if (run?.completionReason === 'route_here') return { tone, label: t('assistant.run.routedHere', 'not started: done here instead') };
   if (run?.turnState === 'awaiting_permission') return { tone, label: t('assistant.run.needsApproval', 'needs approval') };
   if (run?.turnState === 'needs_input') return { tone, label: t('assistant.run.needsInput', 'needs input') };
   // A Claude Code worker a server restart cut off, until the next start has resumed it (lib/assistant-dispatch.js).
@@ -169,6 +171,46 @@ export const CODEX_ITEM_EVENTS = Object.freeze({
  */
 export const OPENCODE_TOOL_STATES = Object.freeze(['running', 'completed', 'error']);
 
+// The path-like fields of an Antigravity tool call's arguments (lib/worker-confinement.js reads the same ones).
+const ACP_PATH_KEYS = ['path', 'file_path', 'filePath', 'Path', 'AbsolutePath', 'TargetFile', 'DirectoryPath', 'SearchPath'];
+
+/**
+ * An Antigravity (ACP) tool call as an activity: its `kind` says what it does (read, edit, delete,
+ * move, search, execute, think, fetch, switch_mode, other), its `rawInput` holds the tool's own
+ * arguments and its `locations` the files it touches. Another tool (an MCP server's) is read by its
+ * name, as for the other providers. null for a mode switch.
+ */
+function acpToolActivity(call) {
+  const args = obj(call.rawInput);
+  const kind = str(call.kind) || 'other';
+  const title = str(call.title).trim();
+  const paths = [...new Set([
+    ...(Array.isArray(call.locations) ? call.locations : []).map((location) => str(location?.path)),
+    ...ACP_PATH_KEYS.map((key) => (typeof args[key] === 'string' ? args[key] : '')),
+  ].filter(Boolean))];
+  const pick = (...values) => values.map((v) => (typeof v === 'string' ? v.trim() : '')).find(Boolean) || '';
+  switch (kind) {
+    case 'execute': {
+      const command = Array.isArray(args.command) ? args.command.map(str).join(' ') : pick(args.command, args.CommandLine, args.cmd);
+      return { kind: 'shell', name: 'exec_command', input: { command: command || title } };
+    }
+    case 'read': return { kind: 'read', name: 'read', input: { file_path: paths[0] || title } };
+    case 'edit': case 'delete': case 'move':
+      return { kind: 'edit', name: kind === 'edit' ? 'edit' : 'apply_patch', input: paths.length > 1 ? { changes: paths.map((path) => ({ path })) } : { file_path: paths[0] || title } };
+    case 'search': return { kind: 'search', name: 'grep', input: { pattern: pick(args.pattern, args.query, args.Query, args.Pattern) || title, path: paths[0] || '' } };
+    case 'fetch': {
+      const url = pick(args.url, args.Url, args.href);
+      return url ? { kind: 'web', name: 'WebFetch', input: { url } } : { kind: 'web', name: 'WebSearch', input: { query: pick(args.query, args.Query) || title } };
+    }
+    case 'think': return { kind: 'think', name: 'thinking', input: {} };
+    case 'switch_mode': return null;
+    default: {
+      const name = pick(call.name, args.toolName, title) || 'tool';
+      return { kind: kindOf(name, args), name, input: args };
+    }
+  }
+}
+
 /**
  * A worker's provider event ({ provider, eventType?, event }, the payload of
  * sync:sidepanel:provider-event) as what it is doing: { kind, name, input }
@@ -177,7 +219,11 @@ export const OPENCODE_TOOL_STATES = Object.freeze(['running', 'completed', 'erro
  * stage and the tray keep only compactActivity() of it. OpenCode names its
  * tools bash, read, edit, write, patch, glob, grep, list, webfetch,
  * websearch, codesearch, task, todowrite, and MCP tools `<server>_<tool>`
- * (SynaBun_browser_navigate): kindOf() reads all of them.
+ * (SynaBun_browser_navigate): kindOf() reads all of them. An Antigravity
+ * worker's events are ACP session updates (eventType = their `sessionUpdate`):
+ * a tool call when it is announced (`tool_call`, or an update that starts it
+ * and names its kind), a thought chunk as thinking, a plan as planning; its
+ * message text is no activity, as for the others.
  */
 export function activityOf(payload) {
   const provider = str(payload?.provider);
@@ -221,6 +267,13 @@ export function activityOf(payload) {
     const name = str(part.tool).trim();
     const input = obj(part.state?.input);
     return { kind: kindOf(name, input), name, input };
+  }
+  if (provider === 'antigravity') {
+    const type = str(payload.eventType || event.sessionUpdate);
+    if (type === 'agent_thought_chunk') return { kind: 'think', name: 'thinking', input: {} };
+    if (type === 'plan') return { kind: 'plan', name: 'update_plan', input: { todos: Array.isArray(event.entries) ? event.entries : [] } };
+    if (type === 'tool_call' || (type === 'tool_call_update' && str(event.kind) && event.status === 'in_progress')) return acpToolActivity(event);
+    return null;
   }
   return null;
 }

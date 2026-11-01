@@ -121,7 +121,7 @@ export function semverNewer(a, b) {
 // versions of the same scheme compare by compareSemver.
 //
 // Only SynaBun's own versions go through these functions. The CLI tools
-// SynaBun watches (Claude Code, Codex, Gemini, OpenCode) keep plain
+// SynaBun watches (Claude Code, Codex, Antigravity, OpenCode) keep plain
 // compareSemver / semverNewer.
 
 /** True for a date-style SynaBun version (`2026.9.5`, `v.2026.07.34`, `2026.4.26-1`). */

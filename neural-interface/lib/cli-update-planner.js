@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════
 // SynaBun — CLI Update Planner
 //
-// Works out HOW each external CLI (Claude Code, Codex, OpenCode, Gemini) was
+// Works out HOW each external CLI (Claude Code, Codex, OpenCode, Antigravity) was
 // installed, and therefore which command actually updates it and which
 // "latest version" it should be compared against.
 //
@@ -19,12 +19,14 @@
 /**
  * npm package name per tool key. OpenCode has none: npm's opencode-ai is
  * OpenCode 1, which SynaBun does not drive, and OpenCode 2 is installed by its
- * own script, Homebrew or WinGet (lib/opencode-protocol.js).
+ * own script, Homebrew or WinGet (lib/opencode-protocol.js). Neither has the
+ * Antigravity CLI (`agy`): Google ships it as a binary, through its own
+ * installer script or the Homebrew cask antigravity-cli, and it updates itself
+ * (`agy update`).
  */
 export const NPM_PKGS = {
   'claude-code': '@anthropic-ai/claude-code',
   'codex': '@openai/codex',
-  'gemini': '@google/gemini-cli',
 };
 
 /**
@@ -35,22 +37,23 @@ export const NPM_PKGS = {
 export const BREW_FALLBACK_TOKENS = {
   'claude-code': 'claude-code',
   'codex': 'codex',
-  'gemini': 'gemini-cli',
+  'antigravity': 'antigravity-cli',
   // OpenCode 2's own tap (its `opencode` formula there is still OpenCode 1).
   'opencode': 'anomalyco/tap/opencode-v2',
 };
 
 /**
  * Whether each tool ships as a Homebrew cask or a formula. This is a property
- * of the package, not of the machine — claude-code and codex exist ONLY as
- * casks, gemini-cli and opencode ONLY as formulae. Needed when a tool is not
+ * of the package, not of the machine — claude-code, codex and antigravity-cli
+ * exist ONLY as casks, opencode ONLY as a formula. Needed when a tool is not
  * installed and there is no path to classify: guessing the wrong flavour
- * produces a command that simply errors ("Cask 'gemini-cli' is unavailable").
+ * produces a command that simply errors ("No available formula with the name
+ * 'antigravity-cli'").
  */
 export const BREW_KINDS = {
   'claude-code': 'cask',
   'codex': 'cask',
-  'gemini': 'formula',
+  'antigravity': 'cask',
   'opencode': 'formula',
 };
 
@@ -59,7 +62,7 @@ const SELF_UPDATERS = {
   'claude-code': 'claude update',
   'codex': 'codex update',
   'opencode': 'opencode upgrade',
-  // gemini has no self-updater.
+  'antigravity': 'agy update',
 };
 
 /**
@@ -199,7 +202,7 @@ const TOOL_COMMANDS = {
   'claude-code': 'claude',
   'codex': 'codex',
   'opencode': 'opencode',
-  'gemini': 'gemini',
+  'antigravity': 'agy',
 };
 
 /**
@@ -378,8 +381,11 @@ export function installSourceLabel(source) {
  * (checked 2026-10-17): Anthropic's native installer (code.claude.com/docs/en/setup),
  * OpenAI's standalone installer (learn.chatgpt.com/docs/codex/cli), OpenCode 2's
  * install script (https://opencode.ai/v2/install, the one `opencode upgrade`
- * runs; on Windows, where the script does not run, WinGet). These are the same
- * official sources the Install button runs (lib/cli-install.js).
+ * runs; on Windows, where the script does not run, WinGet), and (checked
+ * 2026-10-30) Google's Antigravity CLI installer
+ * (antigravity.google/docs/getting-started). These are the same official
+ * sources the Install button runs (lib/cli-install.js), which on a Mac with
+ * Homebrew installs the Antigravity CLI's cask instead.
  */
 export function vendorInstallCommand(toolKey, platform = process.platform) {
   const windows = platform === 'win32';
@@ -392,6 +398,10 @@ export function vendorInstallCommand(toolKey, platform = process.platform) {
         : 'curl -fsSL https://chatgpt.com/codex/install.sh | sh';
     case 'opencode':
       return windows ? 'winget install --id Anomaly.OpenCode --exact' : 'curl -fsSL https://opencode.ai/v2/install | bash';
+    case 'antigravity':
+      // Google's installer: it checks the binary against the SHA-512 of Google's release manifest and puts agy in
+      // ~/.local/bin (%LOCALAPPDATA%\agy\bin on Windows). A Homebrew machine is told the cask (buildInstallCommand).
+      return windows ? 'irm https://antigravity.google/cli/install.ps1 | iex' : 'curl -fsSL https://antigravity.google/cli/install.sh | bash';
     default:
       return NPM_PKGS[toolKey] ? `npm install -g ${NPM_PKGS[toolKey]}` : '';
   }
@@ -423,9 +433,9 @@ export function buildInstallCommand(toolKey, installSource = 'unknown', { platfo
       ? `brew install --cask ${token}`
       : `brew install ${token}`;
   }
-  // OpenCode 2 has no npm package: its own installer whatever JavaScript package manager the machine uses.
-  if (toolKey === 'opencode') return vendorInstallCommand(toolKey, platform || process.platform);
-  if (!npmPkg) return '';
+  // OpenCode 2 and the Antigravity CLI have no npm package: their vendor's installer whatever JavaScript package
+  // manager the machine uses.
+  if (!npmPkg) return vendorInstallCommand(toolKey, platform || process.platform);
   switch (installSource) {
     case 'bun':   return `bun add -g ${npmPkg}`;
     case 'pnpm':  return `pnpm add -g ${npmPkg}`;

@@ -12,8 +12,9 @@
 // (OpenCode); the panel element gets `<prefix>-cli-blocked` while sending is
 // off.
 //
-// What it says is cli-install-view.js (DOM-free, tested under node); the data
-// and the install stream are cli-status.js. A panel mounts one controller:
+// What it says is cli-install-view.js (DOM-free, tested under node); the state
+// (the answer, the install, Re-check, Add to PATH) is cli-install-controller.js,
+// which the Antigravity panel's setup card uses too. A panel mounts one banner:
 //
 //   const cli = mountCliBanner({ toolKey: 'codex', prefix: 'cxp',
 //     panel: () => panelEl, anchor: () => messagesContainer,
@@ -23,15 +24,11 @@
 //   cli.nudge();           a send that was held back
 //   cli.flagFailure(text); a session could not start the CLI
 
-import { subscribeCliStatus, recheckCliStatus, getCliDocUrl, getCliInstallCommand, getCliLabel, installCli, followCliInstall, getCliInstallJobs, addCliToPath } from './cli-status.js';
-import { cliBannerView, cliInstallText, cliStateOf, reduceInstallJob, setCliInstallTranslator, INSTALLABLE_CLIS } from './cli-install-view.js';
+import { cliInstallText, setCliInstallTranslator } from './cli-install-view.js';
+import { createCliInstallController, DONE_NOTICE_MS } from './cli-install-controller.js';
 import { t } from './i18n.js';
 
 setCliInstallTranslator((key, params) => t(`cliInstall.${key}`, params));
-
-/** How long the note about where an install put the CLI stays, when it has one. */
-const DONE_NOTICE_MS = 12000;
-const NUDGE_MS = 700;
 
 /**
  * @param {object} o
@@ -44,29 +41,10 @@ const NUDGE_MS = 700;
  */
 export function mountCliBanner({ toolKey, prefix, panel, anchor, onBlockedChange = () => {}, doneNoticeMs = DONE_NOTICE_MS } = {}) {
   const p = String(prefix || 'cp');
-  let info = null;        // this CLI in the latest answer of /api/system/tool-versions (null: none yet)
-  let forced = null;      // { reason }: a session could not start it, and the server was not asked again yet
-  let job = null;         // the install under way or just ended (cli-install-view.js reduceInstallJob)
-  let installing = false;
-  let addingPath = false;
-  let pathError = '';
-  let looked = false;     // asked whether the server is already installing it since it went missing
   let el = null;
-  let doneTimer = null;
-  let nudgeTimer = null;
   let lastBlocked = null;
   let destroyed = false;
-
-  const view = () => cliBannerView({
-    toolKey,
-    label: getCliLabel(toolKey),
-    info,
-    forced,
-    job,
-    addingPath, pathError,
-    guideUrl: getCliDocUrl(toolKey),
-    installCommand: getCliInstallCommand(toolKey),
-  }, { t: cliInstallText });
+  let controller = null;
 
   const cls = (name) => `${p}-cli-banner-${name}`;
 
@@ -93,10 +71,10 @@ export function mountCliBanner({ toolKey, prefix, panel, anchor, onBlockedChange
         </div>
       </div>
     `;
-    root.querySelector(`.${cls('install')}`).addEventListener('click', () => { startInstall(); });
-    root.querySelector(`.${cls('recheck')}`).addEventListener('click', () => { recheck(); });
-    root.querySelector(`.${cls('path')}`).addEventListener('click', () => { addPath(); });
-    root.querySelector(`.${cls('dismiss')}`).addEventListener('click', () => { clearDone(); });
+    root.querySelector(`.${cls('install')}`).addEventListener('click', () => { controller?.install(); });
+    root.querySelector(`.${cls('recheck')}`).addEventListener('click', () => { controller?.recheck(); });
+    root.querySelector(`.${cls('path')}`).addEventListener('click', () => { controller?.addPath(); });
+    root.querySelector(`.${cls('dismiss')}`).addEventListener('click', () => { controller?.clearDone(); });
     root.querySelector(`.${cls('copy')}`).addEventListener('click', async (event) => {
       const button = event.currentTarget;
       const command = root.querySelector(`.${cls('command')} code`)?.textContent || '';
@@ -117,7 +95,7 @@ export function mountCliBanner({ toolKey, prefix, panel, anchor, onBlockedChange
   }
 
   function paint(v) {
-    el.className = `${p}-cli-banner ${p}-cli-banner--${v.kind}${nudgeTimer ? ` ${p}-cli-banner--nudge` : ''}`;
+    el.className = `${p}-cli-banner ${p}-cli-banner--${v.kind}${v.nudging ? ` ${p}-cli-banner--nudge` : ''}`;
     el.setAttribute('role', v.live === 'assertive' ? 'alert' : 'status');
     el.setAttribute('aria-live', v.live);
     el.querySelector(`.${cls('icon')}`).textContent = v.icon;
@@ -180,7 +158,8 @@ export function mountCliBanner({ toolKey, prefix, panel, anchor, onBlockedChange
     else link.removeAttribute('href');
     const recheckButton = el.querySelector(`.${cls('recheck')}`);
     recheckButton.hidden = !v.recheck;
-    if (!recheckButton.disabled) recheckButton.textContent = cliInstallText('recheck');
+    recheckButton.disabled = !!v.checking;
+    recheckButton.textContent = cliInstallText(v.checking ? 'checking' : 'recheck');
     const pathButton = el.querySelector(`.${cls('path')}`);
     pathButton.hidden = !v.addPath;
     pathButton.textContent = v.addPath?.label || '';
@@ -191,8 +170,8 @@ export function mountCliBanner({ toolKey, prefix, panel, anchor, onBlockedChange
   }
 
   function render() {
-    if (destroyed) return;
-    const v = view();
+    if (destroyed || !controller) return;
+    const v = controller.view();
     const panelEl = panel?.();
     if (panelEl) panelEl.classList.toggle(`${p}-cli-blocked`, v.blocked);
     if (v.show && place()) paint(v);
@@ -203,151 +182,28 @@ export function mountCliBanner({ toolKey, prefix, panel, anchor, onBlockedChange
     }
   }
 
-  function clearDone() {
-    clearTimeout(doneTimer);
-    doneTimer = null;
-    if (job?.phase === 'done') job = null;
-    render();
-  }
-
-  function apply(event) {
-    if (!job && event?.type !== 'start') job = reduceInstallJob(null, { type: 'start' });
-    job = reduceInstallJob(job, event);
-    if (event?.type === 'done' && event.ok && event.status && typeof event.status === 'object') {
-      info = event.status;
-      forced = null;
-    }
-    render();
-  }
-
-  function settle(final) {
-    if (job?.phase === 'running' && final) job = reduceInstallJob(job, final);
-    if (job?.phase === 'done') {
-      clearTimeout(doneTimer);
-      const where = job.path;
-      if (where && (where.onPath === false || where.added === true)) doneTimer = setTimeout(clearDone, doneNoticeMs);
-      else job = null;
-    }
-    render();
-  }
-
-  async function startInstall() {
-    if (installing || !INSTALLABLE_CLIS.includes(toolKey)) return;
-    installing = true;
-    clearTimeout(doneTimer);
-    job = reduceInstallJob(null, { type: 'start' });
-    render();
-    let final = null;
-    try {
-      final = await installCli(toolKey, { onEvent: apply });
-    } catch (error) {
-      final = { type: 'done', ok: false, code: 'internal', error: error?.message || null };
-    } finally {
-      installing = false;
-      settle(final);
-    }
-  }
-
-  async function addPath() {
-    if (addingPath) return;
-    addingPath = true; pathError = ''; render();
-    try {
-      const result = await addCliToPath(toolKey);
-      info = { ...info, pathStatus: { dir: result.dir, onPath: true, canAdd: false } };
-      job = reduceInstallJob(null, { type: 'done', ok: true, status: info, path: { ...result, added: true } });
-      settle();
-    } catch (error) { pathError = error.message; }
-    finally { addingPath = false; render(); }
-  }
-
-  // An install the server is already running (another window started it, or this page was reloaded during
-  // one): followed here as if this banner had started it.
-  async function followRunning() {
-    if (installing) return;
-    const jobs = await getCliInstallJobs();
-    if (destroyed || installing || jobs?.[toolKey]?.state !== 'running') return;
-    installing = true;
-    job = reduceInstallJob(null, { type: 'start' });
-    render();
-    let final = null;
-    try {
-      final = await followCliInstall(toolKey, { onEvent: apply });
-    } catch (error) {
-      final = { type: 'done', ok: false, code: 'connection', error: error?.message || null };
-    } finally {
-      installing = false;
-      settle(final);
-    }
-  }
-
-  async function recheck() {
-    const button = el?.querySelector(`.${cls('recheck')}`);
-    if (button) { button.disabled = true; button.textContent = cliInstallText('checking'); }
-    // Asking again starts over: an earlier failure is not repeated over a fresh answer.
-    if (job?.phase === 'failed') job = null;
-    try {
-      const next = await recheckCliStatus(toolKey);
-      info = next || info;
-      if (cliStateOf(info) === 'installed' || cliStateOf(info) === 'broken') forced = null;
-    } catch { /* the banner stays as it is */ }
-    finally {
-      if (button?.isConnected) { button.disabled = false; button.textContent = cliInstallText('recheck'); }
-      render();
-    }
-  }
-
-  const unsubscribe = subscribeCliStatus(toolKey, (next) => {
-    info = next || null;
-    const state = cliStateOf(info);
-    if (state === 'installed') {
-      forced = null;
-      if (job?.phase === 'failed') job = null;
-    }
-    if (state === 'missing') {
-      if (!looked) { looked = true; followRunning().catch(() => {}); }
-    } else {
-      looked = false;
-    }
-    render();
-  });
+  controller = createCliInstallController({ toolKey, doneNoticeMs, onChange: () => render() });
+  render();
 
   return {
     /** Draw again (the panel was shown, or rebuilt). */
     refresh: render,
     /** Sending is held back: the CLI is missing, broken, failed to install, or being installed. */
-    blocked: () => view().blocked,
+    blocked: () => controller.blocked(),
     /** What the banner shows now (cli-install-view.js cliBannerView). */
-    view,
+    view: () => controller.view(),
     /** A send was held back: draw attention to the banner for a moment. */
-    nudge() {
-      if (!view().show) return;
-      clearTimeout(nudgeTimer);
-      nudgeTimer = setTimeout(() => { nudgeTimer = null; render(); }, NUDGE_MS);
-      render();
-    },
+    nudge: () => controller.nudge(),
     /**
      * A session could not start the CLI ("Claude CLI not found", a spawn error): show "failed to start" with its
      * words at once, then ask the server again; its answer decides what stays.
      */
-    flagFailure(reason = null) {
-      forced = { reason: reason ? String(reason).slice(0, 300) : null };
-      render();
-      recheckCliStatus(toolKey)
-        .then((next) => {
-          info = next || info;
-          const state = cliStateOf(info);
-          if (state === 'installed' || state === 'broken') forced = null;
-          render();
-        })
-        .catch(() => {});
-    },
+    flagFailure: (reason = null) => controller.flagFailure(reason),
     /** Install from the banner's own button (for a panel's own entry point). */
-    install: startInstall,
+    install: () => controller.install(),
     destroy() {
       destroyed = true;
-      unsubscribe();
-      clearTimeout(doneTimer);
-      clearTimeout(nudgeTimer);
+      controller.destroy();
       el?.remove();
       el = null;
     },

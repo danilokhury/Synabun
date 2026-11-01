@@ -13,7 +13,8 @@
 import { studioErrorText } from './sx-errors.js';
 import { html, setHTML, ICONS } from './sx-dom.js';
 import { loadWorkspace, dirtyTabs, saveVersion } from './sx-docs.js';
-import { healthCapsule, sourceLabel, statusPill } from './sx-library-view.js';
+import { sourceLabel, statusPills, deleteKind, bulkDelete } from './sx-library-view.js';
+import { openFixPanel } from './sx-fixes-view.js';
 import { installStatus } from './sx-install.js';
 import { reviewTargets, installFlow, flowWords, installBusy, acquireInstall, alsoInstall, alsoInstallNow } from './sx-install-flow.js';
 import { changedFiles } from './sx-diff.js';
@@ -117,7 +118,7 @@ function bannersHTML(ctx, ws) {
     const also = ['installed', 'outdated'].includes(status?.code) ? alsoInstall(ctx, { skill: ws.skill || row.skill, row }) : { targets: [] };
     if (also.targets.length) {
       const busy = installBusy((ws.skill || row.skill)?.skillId);
-      const where = [...new Set(status.where.map((w) => t(`skillsStudio.runtime.${['claude', 'codex', 'opencode', 'agents'].includes(w.runtime) ? w.runtime : 'claude'}`)))].join(' · ');
+      const where = [...new Set(status.where.map((w) => t(`skillsStudio.runtime.${['claude', 'codex', 'opencode', 'antigravity', 'agents'].includes(w.runtime) ? w.runtime : 'claude'}`)))].join(' · ');
       out.push(banner('info', ICONS.publish, t('skillsStudio.ws.banner.alsoInstall', { where, targets: also.words }),
         html`<button type="button" class="sx-btn sx-btn--primary" data-ws="also-install" id="sx-ws-also-install"${busy ? ' disabled' : ''} aria-disabled="${busy ? 'true' : 'false'}">${ICONS.publish}<span>${busy ? t('skillsStudio.review.installing') : t('skillsStudio.ws.alsoInstallFor', { targets: also.words })}</span></button>`));
     }
@@ -163,7 +164,6 @@ function headHTML(ctx, ws) {
   // A library skill shows one status (it opens Publish) and its health only when something is wrong; the rest shows
   // where it comes from and its health.
   const status = installStatus({ skill: ws.skill || row.skill, row });
-  const worst = row.health[0] || { sev: 'ok' };
   return html`<div class="sx-ws-head">
     <nav class="sx-crumb" aria-label="${t('skillsStudio.ws.breadcrumb')}">
       <button type="button" class="sx-link" data-ws="back">${ICONS.back}<span>${t('skillsStudio.rail.library')}</span></button>
@@ -172,8 +172,8 @@ function headHTML(ctx, ws) {
     <div class="sx-ws-title">
       <h3 class="sx-ws-name" id="sx-ws-name" tabindex="-1">${ws.label}</h3>
       <span class="sx-tag">${kind}</span>
-      ${status ? statusPill(status, ctx, { button: s.canPublish ? 'go-publish' : null, id: 'sx-ws-status' }) : html`<span class="sx-tag" title="${src.detail}">${src.label}${src.detail ? html` · ${src.detail}` : ''}</span>`}
-      ${!status || worst.sev === 'err' || worst.sev === 'warn' ? healthCapsule(row, t) : ''}
+      ${status ? '' : html`<span class="sx-tag" title="${src.detail}">${src.label}${src.detail ? html` · ${src.detail}` : ''}</span>`}
+      ${statusPills(row, ctx, { status, button: s.canPublish ? 'go-publish' : null, id: 'sx-ws-status', fix: 'workspace' })}
       <span class="sx-spacer"></span>
       ${s.editable ? html`<button type="button" class="sx-btn" data-ws="save" id="sx-save"${dirty ? '' : ' disabled'} aria-keyshortcuts="${ctx.mac ? 'Meta+S' : 'Control+S'}">${t('skillsStudio.ws.save')} <kbd>${ctx.mac ? '⌘S' : 'Ctrl+S'}</kbd></button>` : ''}
       <button type="button" class="sx-icon-btn" data-ws="more" aria-haspopup="menu" aria-expanded="false" aria-label="${t('skillsStudio.ws.more')}" title="${t('skillsStudio.ws.more')}">${ICONS.more}</button>
@@ -292,6 +292,7 @@ async function onAction(act, btn, ctx, ws) {
     case 'retry': ws.error = null; ws.loaded = false; ctx.render(); return;
     case 'save': saveActive(ctx, ws); return;
     case 'go-publish': switchTab(ctx, ws, 'publish'); return;
+    case 'fix-issues': if (ws.row) openFixPanel(ctx, ws.row, { deleteKind, bulkDelete }); return;
     case 'more': openMore(btn, ctx, ws); return;
     case 'customize': customizeCopy(ctx, ws); return;
     case 'adopt': adoptNow(ctx, ws); return;

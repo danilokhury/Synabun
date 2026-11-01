@@ -192,7 +192,7 @@ export function runWithBrainCredential<T>(credential: string | null, fn: () => T
 /**
  * The WhatsApp brain credential of the current caller (whatsapp_send_file sends it on its one request
  * and nowhere else): the request's own header over HTTP (X-Synabun-Brain-Token, the Claude brain),
- * SYNABUN_BRAIN_TOKEN for stdio children (the Codex and OpenCode brains). Never the host process's
+ * SYNABUN_BRAIN_TOKEN for stdio children (the Codex, OpenCode and Antigravity brains). Never the host process's
  * env for an HTTP caller.
  */
 export function callerBrainCredential(): string | null {
@@ -203,7 +203,7 @@ export function callerBrainCredential(): string | null {
 /**
  * Role of the current caller: the ALS identity's role over HTTP (derived from
  * X-Synabun-Role on every request), or SYNABUN_ROLE for stdio children —
- * Codex/OpenCode assistant brains pass the role to their MCP child via env.
+ * Codex/OpenCode/Antigravity assistant brains pass the role to their MCP child via env.
  * In HTTP mode a missing ALS store is a propagation bug, so the host
  * process's own env must never grant a role to an unidentified caller.
  */

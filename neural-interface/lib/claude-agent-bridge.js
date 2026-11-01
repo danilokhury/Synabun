@@ -104,6 +104,7 @@ export const PANEL_CAPABILITIES = Object.freeze([
   'ask_annotations',  // AskUserQuestion answers keep their `annotations`
   'tool_policy',      // query `toolPolicy`: 'full' | 'read-only' | 'no-web'
   'elicitation',      // MCP elicitation as control_request subtype `elicitation` (for clients that declare the feature)
+  'effort_off', // query `effort: 'off'`: thinking disabled, over any effortLevel in the user's settings
   'session_settings', // query `session`: fallback model, limits, directories, plugins, strict MCP, instructions, sandbox, thinking, fast mode, output style, agent
   'reload_plugins',   // inbound `reload_plugins` → `reload_result` + fresh commands_list / mcp_status / plugins_list
   'message_flags',    // session.hookEvents / promptSuggestions / subagentText / agentSummaries → the matching SDK options
@@ -754,6 +755,9 @@ export class ClaudeSession {
       if (this.sessionId && this._resumeAt) { options.resumeSessionAt = this._resumeAt; this._resumeAt = null; }
     }
     if (this.model) options.model = this.model;
+    // Off is the user's pick, not the model's default: without it an
+    // effortLevel in the user's settings would still apply.
+    if (this.panel && this.effort === 'off') options.thinking = { type: 'disabled' };
     if (this.effort && CLAUDE_EFFORT_LEVELS.includes(this.effort)) {
       // Panel sessions use the typed option; every other caller keeps the flag it had.
       if (this.panel) options.effort = this.effort;
@@ -2966,6 +2970,7 @@ export class ClaudeSession {
     if (cwd) this.cwd = cwd;
     // A panel tab that sends no effort means "the model's default": a level that
     // was set goes back to it, live when a session exists.
+    const prevEffort = this.effort;
     const effortCleared = this.panel && !effort && !!this.effort;
     if (effort) this.effort = effort;
     else if (effortCleared) this.effort = null;
@@ -3006,7 +3011,9 @@ export class ClaudeSession {
 
     // Effort alone switches on the live CLI. A restart would cold-start the
     // session and kill any background agents it is running.
+    // (Off disables thinking, a start-up option: to or from it the session restarts.)
     if (this.q && effortChanged && !cwdChanged && !sessionChanged && !newChat
+      && prevEffort !== 'off' && effort !== 'off'
       && typeof this.q.applyFlagSettings === 'function') {
       const effortLevel = CLAUDE_EFFORT_LEVELS.includes(effort) ? effort : null;
       this.q.applyFlagSettings({ effortLevel }).catch(err => log('applyFlagSettings(effort) failed:', err.message));

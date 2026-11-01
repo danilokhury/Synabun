@@ -25,6 +25,7 @@ import { askInPanel, dialogOpen, closeDialog } from '../ss-dialog.js';
 import { closeDropdowns } from '../../cc-dropdown.js';
 import * as api from '../../api.js';
 import { readWholeCatalog, buildRows, countRows, projectsOf, keepSelection } from './sx-library.js';
+import { applyFixState, readDismissed, addDismissed, removeDismissed, DISMISSED_KEY } from './sx-fixes.js';
 import { initialRect, parseOpen } from './sx-geometry.js';
 import { frameRect } from '../../app-frame.js';
 import { updateCards, reviewCount } from './sx-review.js';
@@ -134,6 +135,9 @@ function deriveRows() {
   // Review cards and the rail's count all leave a kept update out.
   const kept = readJson(KEPT_UPDATES_KEY, {});
   S.rows = buildRows({ entries: d.catalog.items, skills: d.skills, status: d.status, reviews: d.reviews.filter((r) => ['pending', 'changes_requested', 'approved', 'partial', 'publish_failed'].includes(r.state)), upstream: d.upstream, kept });
+  // The problems only the fix system finds (a second library record, an older installation), and the ones the owner
+  // dismissed taken out (sx-fixes.js), before anything counts them.
+  applyFixState(S.rows, readDismissed(storage.getItem(DISMISSED_KEY)));
   S.counts = countRows(S.rows);
   S.counts.views.archived = Array.isArray(d.archived) ? d.archived.length : 0;
   S.projects = projectsOf(d.catalog.roots, S.rows);
@@ -174,7 +178,7 @@ export async function openStudio(detail = {}) {
   S.opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   S.docked = storage.getItem(DOCK_KEY) === 'true';
   S.dim = storage.getItem(DIM_KEY) === 'true' && !S.docked;
-  S.lib = { ...S.lib, ...readJson(LIB_KEY, {}), selected: new Set(), focus: null, installNotice: null };
+  S.lib = { ...S.lib, ...readJson(LIB_KEY, {}), selected: new Set(), focus: null, installNotice: null, fixNotice: null };
   S.backdrop = document.createElement('div');
   S.backdrop.className = `studio-backdrop sx-backdrop${S.dim ? '' : ' backdrop-hidden'}`;
   document.body.appendChild(S.backdrop);
@@ -538,7 +542,7 @@ function runtimeFootHTML() {
     if (own.some((r) => r.status === 'ok')) return 'ready';
     return own.length ? 'empty' : 'unknown';
   };
-  const rows = ['claude', 'codex', 'opencode'].map((rt) => {
+  const rows = ['claude', 'codex', 'opencode', 'antigravity'].map((rt) => {
     const st = state(rt);
     const name = t(`skillsStudio.runtime.${rt}`);
     const label = st === 'bridge' ? t('skillsStudio.rail.runtimeFix', { runtime: name }) : `${name}: ${t(`skillsStudio.rail.runtimeState.${st}`)}`;
@@ -673,6 +677,11 @@ function ctx() {
     keepUpdate: (name, revisionId) => { const kept = readJson(KEPT_UPDATES_KEY, {}); kept[name] = revisionId; storage.setItem(KEPT_UPDATES_KEY, JSON.stringify(kept)); deriveRows(); },
     saveLibraryView: () => storage.setItem(LIB_KEY, JSON.stringify({ view: S.lib.view, kind: S.lib.kind, source: S.lib.source, runtime: S.lib.runtime, health: S.lib.health, sort: S.lib.sort })),
     keptDrafts: () => keptDrafts(),
+    // Problems the owner has seen and leaves as they are (sx-fixes.js fingerprints): kept, and said again when they change.
+    dismissed: () => readDismissed(storage.getItem(DISMISSED_KEY)),
+    dismissIssues: (fingerprints) => { storage.setItem(DISMISSED_KEY, addDismissed(storage.getItem(DISMISSED_KEY), fingerprints)); deriveRows(); render({ keepFocus: true }); },
+    restoreIssues: (fingerprints) => { storage.setItem(DISMISSED_KEY, removeDismissed(storage.getItem(DISMISSED_KEY), fingerprints)); deriveRows(); render({ keepFocus: true }); },
+    openSkillFolders,
     workspaces: S.workspaces,
     closeWorkspace: (ws) => { disposeWorkspace(ws); S.workspaces.delete(ws.key); if (S.ws === ws) { S.ws = null; S.place = 'library'; render(); } },
     key: idempotencyKey,

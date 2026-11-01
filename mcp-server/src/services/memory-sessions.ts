@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { getDb } from './sqlite.js';
 
 export interface MemoryEvent {
-  host: 'claude-code'|'codex'|'opencode'; session_id: string; source_id: string;
+  host: 'claude-code'|'codex'|'opencode'|'antigravity'; session_id: string; source_id: string;
   project: string; timestamp: string; role: 'user'|'assistant'|'tool'; text: string;
   cwd?: string; tools?: string[]; files?: string[];
 }
@@ -18,6 +18,15 @@ function visibleText(content: any): string {
 function clean(text: string) {
   return text.replace(/<(system-reminder|environment_context|permissions|INSTRUCTIONS)>[\s\S]*?<\/\1>/g,'').trim();
 }
+// SynaBun's greeting note in an Antigravity prompt (neural-interface/public/shared/agy/agy-greeting.js, same markers).
+const AGY_GREETING_NOTE = /\[SYNABUN_GREETING_START\][\s\S]*?\[SYNABUN_GREETING_END\][ \t]*(?:\r?\n)*/g;
+const AGY_META_BLOCKS = /<(ADDITIONAL_METADATA|USER_SETTINGS_CHANGE|EPHEMERAL_MESSAGE|SYSTEM_MESSAGE)>[\s\S]*?<\/\1>/g;
+/** What a person typed, out of Antigravity's USER_INPUT step (agy wraps it in <USER_REQUEST> with blocks of its own). */
+function antigravityUserWords(content: unknown) {
+  const text = String(content ?? '');
+  const request = /<USER_REQUEST>\r?\n?([\s\S]*?)\r?\n?<\/USER_REQUEST>/.exec(text);
+  return (request ? request[1] : text.replace(AGY_META_BLOCKS, '')).replace(AGY_GREETING_NOTE, '').trim();
+}
 /** Normalize only visible provider records, never reasoning or system text. */
 export function normalizeMemoryEvents(host: MemoryEvent['host'], records: any[], context: {session_id:string;project:string;cwd?:string}): MemoryEvent[] {
   const events: MemoryEvent[] = [];
@@ -25,6 +34,7 @@ export function normalizeMemoryEvents(host: MemoryEvent['host'], records: any[],
     let role: MemoryEvent['role']|undefined;
     let text = '';
     let tools: string[] = [];
+    let sourceId: string|undefined;
     if (host === 'claude-code') {
       if (record.isMeta || record.isSidechain) continue;
       if (record.type === 'user' && !record.toolUseResult && !record.sourceToolAssistantUUID) role='user';
@@ -38,6 +48,17 @@ export function normalizeMemoryEvents(host: MemoryEvent['host'], records: any[],
       if (p?.type === 'agentMessage') { role='assistant'; text=String(p.text || ''); }
       if (p?.type === 'commandExecution') { role='tool'; text=String(p.aggregatedOutput || ''); tools=['commandExecution']; }
       if (p?.type === 'function_call_output') {role='tool';text=String(p.output || '');}
+    } else if (host === 'antigravity') {
+      // agy's transcript.jsonl (brain/<id>/.system_generated/logs): one line per step, keyed by its index (a
+      // re-read of the file, from any offset, gives every step the same source id). The person's words and the
+      // model's answers only: never its `thinking`, agy's own system messages, or tool output.
+      if (Number.isInteger(record.step_index)) sourceId = `step:${record.step_index}`;
+      if (record.type === 'USER_INPUT' && record.source === 'USER_EXPLICIT') { role='user'; text=antigravityUserWords(record.content); }
+      if (record.type === 'PLANNER_RESPONSE' && record.source === 'MODEL') {
+        role='assistant';
+        text=typeof record.content === 'string' ? record.content : '';
+        tools=(Array.isArray(record.tool_calls) ? record.tool_calls : []).map((c:any)=>String(c?.name || '')).filter(Boolean);
+      }
     } else {
       const info = record.info || record;
       if (['user','assistant'].includes(info.role)) role=info.role;
@@ -46,8 +67,8 @@ export function normalizeMemoryEvents(host: MemoryEvent['host'], records: any[],
     }
     text=clean(text);
     if (!role || !text || text.startsWith('# AGENTS.md')) continue;
-    const timestamp = record.timestamp || record.info?.time?.created || record.createdAt;
-    events.push({...context,host,source_id:String(record.uuid || record.id || record.info?.id || `${index}`),role,text,tools,
+    const timestamp = record.timestamp || record.info?.time?.created || record.createdAt || record.created_at;
+    events.push({...context,host,source_id:sourceId ?? String(record.uuid || record.id || record.info?.id || `${index}`),role,text,tools,
       timestamp: timestamp && Number.isFinite(new Date(timestamp).getTime()) ? new Date(timestamp).toISOString() : '1970-01-01T00:00:00.000Z'});
   }
   return events;

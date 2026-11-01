@@ -1,8 +1,9 @@
 // ── Installing library revisions into runtime folders ──
 // An install puts one revision of a library skill (lib/skills/library.js) into one or more runtime folders as a
 // native skill folder: Claude Code (<config dir>/skills or a project's .claude/skills), Codex ($CODEX_HOME/skills
-// or a project's .agents/skills), OpenCode (<config>/opencode/skills or a project's .opencode/skills), and the
-// shared ~/.agents/skills only when the owner turned it on. It is two steps:
+// or a project's .agents/skills, which Antigravity reads too), OpenCode (<config>/opencode/skills or a project's
+// .opencode/skills), Antigravity (~/.gemini/config/skills), and the shared ~/.agents/skills only when the owner
+// turned it on. It is two steps:
 //
 //   plan(…)    what each target would receive (the export of the revision for that runtime, with its digest),
 //              where, which runtimes see that folder (and what else of that name they already see), what is there
@@ -39,7 +40,7 @@ import { PORTABLE_NAME_RE, TARGET_PROFILE, getProfile, lintForProfile } from '..
 import { analyzeResources, argumentDiagnostics } from '../../public/shared/skills/ss-resources.js';
 import { isEditableText } from '../../public/shared/skills/ss-doc.js';
 
-export const INSTALL_TARGETS = Object.freeze(['claude', 'codex', 'opencode', 'agents']);
+export const INSTALL_TARGETS = Object.freeze(['claude', 'codex', 'opencode', 'antigravity', 'agents']);
 export const INSTALLATIONS_SCHEMA = 2;
 const MAX_INSTALLATIONS = 2000;
 
@@ -66,9 +67,11 @@ const REFRESH = {
   opencode: (rootExisted, root) => (root?.family === 'claude'
     ? { kind: 'terminal-only', message: 'An OpenCode open in a terminal reads Claude Code\'s folder (new session); SynaBun\'s own OpenCode panel and an OpenCode Assistant do not: install for OpenCode for those.' }
     : { kind: 'panel-reload', message: 'SynaBun\'s OpenCode panel lists it now; an OpenCode open in a terminal needs a new session.' }),
+  // Antigravity reads its skill folders again by itself: there is no command to run.
+  antigravity: () => ({ kind: 'automatic', message: 'Antigravity picks up the change by itself.' }),
 };
 
-const RUNTIME_LABEL = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', agents: 'the shared agents folder' };
+const RUNTIME_LABEL = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', antigravity: 'Antigravity', agents: 'the shared agents folder' };
 
 /** A target as a request may name it, checked. */
 export function normalizeTarget(t) {
@@ -78,6 +81,8 @@ export function normalizeTarget(t) {
   const scope = t.scope === undefined ? 'user' : t.scope;
   if (scope !== 'user' && scope !== 'project') throw new DeployError(400, 'A target\'s scope is user or project.', 'invalid_target');
   if (runtime === 'agents' && scope !== 'user') throw new DeployError(400, 'The shared agents folder is a user folder; a project\'s .agents/skills is the codex target with scope project.', 'invalid_target');
+  // Antigravity has no project folder of its own: it reads the project's .agents/skills, the Codex project folder.
+  if (runtime === 'antigravity' && scope !== 'user') throw new DeployError(400, 'Antigravity reads a project\'s .agents/skills: that is the codex target with scope project.', 'invalid_target');
   const accountId = t.accountId === undefined || t.accountId === null || t.accountId === '' ? 'default' : t.accountId;
   if (typeof accountId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(accountId)) throw new DeployError(400, 'Not an account id.', 'invalid_target');
   if (scope === 'project' && (typeof t.projectPath !== 'string' || !t.projectPath)) throw new DeployError(400, 'A project target names its project (projectPath).', 'invalid_target');

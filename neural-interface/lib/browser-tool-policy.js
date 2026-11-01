@@ -2,7 +2,7 @@
 // SynaBun — Browser tool policy: every page through the SynaBun browser
 // ═══════════════════════════════════════════
 //
-// The Assistant's brain (Claude, Codex, OpenCode) and the workers it
+// The Assistant's brain (Claude, Codex, OpenCode, Antigravity) and the workers it
 // dispatches look at pages — public or localhost — only through SynaBun's
 // browser tools (browser_*), which open the browser configured in SynaBun
 // (MoreLogin). They never start a browser of their own, and when the SynaBun
@@ -48,13 +48,14 @@ const MAX_DEPTH = 4;
 
 // ── the rule text ───────────────────────────────────────────────────────────
 
-const HOSTS = { claude: 'claude', 'claude-code': 'claude', codex: 'codex', opencode: 'opencode' };
+const HOSTS = { claude: 'claude', 'claude-code': 'claude', codex: 'codex', opencode: 'opencode', antigravity: 'antigravity' };
 const hostKey = (host) => HOSTS[String(host || '').toLowerCase()] || null;
 // Each host's own web search / fetch (the rule names the host's; unknown: all of them).
 const WEB_TOOL_WORDS = {
   claude: 'WebSearch / WebFetch',
   codex: 'Codex\'s web_search',
   opencode: 'webfetch / websearch',
+  antigravity: 'Antigravity\'s own web search, URL reading or browser',
 };
 
 /**
@@ -78,7 +79,7 @@ const TEST_RUN_RULE = 'Automated tests run through their test runner (npm test, 
 /**
  * The browser rule, as bullet lines: the brain's persona (its host's tool
  * names in `tools`), the worker prompts of browser runs. `host`: claude /
- * codex / opencode (names that host's own web tools), else all of them.
+ * codex / opencode / antigravity (names that host's own web tools), else all of them.
  */
 export function browserPolicyText({ tools = '', host = null } = {}) {
   const t = browserToolNames(tools);
@@ -114,9 +115,11 @@ const OPENCODE_BROWSER_TOOL = new RegExp(`^([a-z0-9-]*?(?:${BROWSER_SERVER_WORD}
 const PAGE_TOOL = /^(?:browser_.+|navigate(?:_(?:page|to|to_url|url|back|forward))?|go_?to(?:_(?:url|page))?|go_(?:back|forward)|open_(?:url|page|link|website|webpage|browser|in_browser)|new_page|launch_browser|(?:take|capture)_(?:page_|full_page_|web_?page_|website_)?screenshot|(?:page|full_page|web_?page|website)_screenshot|screenshot(?:_(?:page|url|website|webpage))?)$/;
 const snakeName = (text) => String(text || '').replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/[-.\s]+/g, '_').toLowerCase();
 // Web search / fetch outside the SynaBun browser: Claude's, OpenCode's, Codex's.
-const WEB_TOOLS = new Set(['websearch', 'webfetch', 'web_search', 'web_fetch', 'web_search_preview']);
+const WEB_TOOLS = new Set(['websearch', 'webfetch', 'web_search', 'web_fetch', 'web_search_preview', 'search_web', 'read_url_content', 'execute_url']);
+// Antigravity's own browser and browser subagent (its tools' own names, lib/antigravity/tool-call.js).
+const ANTIGRAVITY_BROWSER_TOOLS = new Set(['open_browser_url', 'read_browser_page', 'browser_subagent', 'list_browser_pages', 'capture_browser_screenshot', 'capture_browser_console_logs', 'execute_browser_javascript', 'click_browser_pixel']);
 // Shell tools: Claude's Bash / PowerShell, Codex's shell family, OpenCode's bash.
-const SHELL_TOOLS = new Set(['bash', 'powershell', 'shell', 'shell_command', 'exec_command', 'local_shell', 'container.exec', 'unified_exec']);
+const SHELL_TOOLS = new Set(['bash', 'powershell', 'shell', 'shell_command', 'exec_command', 'local_shell', 'container.exec', 'unified_exec', 'run_command']);
 
 /**
  * What another MCP server's tool does to a browser (for the refusal), else null:
@@ -983,8 +986,8 @@ function argvDenial(argv, ctx) {
 }
 
 // Where each host puts a shell tool's command and its working directory.
-const COMMAND_KEYS = ['command', 'cmd', 'commands', 'script'];
-const WORKDIR_KEYS = ['workdir', 'cwd', 'working_directory', 'workingDirectory', 'dir'];
+const COMMAND_KEYS = ['command', 'cmd', 'commands', 'script', 'CommandLine'];
+const WORKDIR_KEYS = ['workdir', 'cwd', 'working_directory', 'workingDirectory', 'dir', 'Cwd'];
 
 function shellDenial(input, ctx) {
   const args = input && typeof input === 'object' ? input : {};
@@ -1043,6 +1046,8 @@ export function browserToolDenial(tool, input = {}, { host = null, cwd = null, r
   if (WEB_TOOLS.has(lower)) return refusal(name, 'web search / fetch outside the SynaBun browser');
   // OpenCode's own browser tool drives a browser that is not SynaBun's.
   if (kind === 'opencode' && lower === 'browser') return refusal(name, 'OpenCode\'s own browser');
+  // Antigravity's own browser and browser subagent (its built-in tools carry no server: never SynaBun's browser_*).
+  if (kind === 'antigravity' && (ANTIGRAVITY_BROWSER_TOOLS.has(lower) || /^browser_/.test(lower))) return refusal(name, 'Antigravity\'s own browser');
   if (!SHELL_TOOLS.has(lower)) return null;
   const project = cwd ? resolve(String(cwd)) : process.cwd();
   const why = shellDenial(args, { roots: testRoots(project, roots), cwd: project, readFile: typeof readFile === 'function' ? readFile : defaultReadFile, depth: 0 });

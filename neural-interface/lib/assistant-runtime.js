@@ -16,6 +16,10 @@ import { dirname, resolve } from 'node:path';
 import { createClaudeBrain } from './assistant-brains/claude.js';
 import { createCodexBrain } from './assistant-brains/codex.js';
 import { createOpenCodeBrain } from './assistant-brains/opencode.js';
+import { createAntigravityBrain } from './assistant-brains/antigravity.js';
+import { acpPolicyInput, acpReadOnlyKind, acpToolName } from './antigravity/tool-call.js';
+import { antigravityUsageTokens } from './assistant-usage.js';
+import { UNPRICED_PROVIDER_REASON } from './assistant-budget-split.js';
 import { buildAssistantPersona, formatMailbox, reconcileRouteItems } from './assistant-persona.js';
 import { normalizeTestDensity, testDensityStamp } from './assistant-test-density.js';
 import { codexUsageCostUsd, floorCents } from './assistant-budget.js';
@@ -35,8 +39,9 @@ import { clampBrainModes, clampRouteMode, defaultRemotePolicyRegistry, effective
 import { browserToolDenial } from './browser-tool-policy.js';
 import { browserPolicyRoots } from './browser-policy-roots.js';
 import { stripFollowups } from '../public/shared/assistant/asst-followups.js';
+import { readJsonStrict } from './rulesets/fs-safe.js';
 
-export const BRAIN_PROVIDERS = new Set(['claude-code', 'codex', 'opencode']);
+export const BRAIN_PROVIDERS = new Set(['claude-code', 'codex', 'opencode', 'antigravity']);
 // Every tab is called SynaBun; the session title (the history list) comes from
 // the first prompt. Legacy "Assistant N" titles still count as unnamed.
 export const DEFAULT_SESSION_TITLE = 'SynaBun';
@@ -135,21 +140,33 @@ function readJson(path, fallback) { try { return JSON.parse(readFileSync(path, '
 function writeJsonAtomic(path, value) {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', 'utf8');
-  renameSync(tmp, path);
+  try {
+    writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', 'utf8');
+    renameSync(tmp, path);
+  } catch (error) {
+    try { rmSync(tmp, { force: true }); } catch { /* held too: the next write replaces it */ }
+    throw error;
+  }
 }
+// What Windows answers, now and then, to a rename over a file another process holds open for a
+// moment (an antivirus or indexer scanning it, a backup, the desktop app's pre-update snapshot).
+const HELD_FILE_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+// A write of the sessions index refused that way is tried again after these waits.
+const INDEX_RETRY_MS = [200, 500, 1000, 2000, 5000, 10_000];
 function clip(value, max = 200) { const text = String(value ?? '').replace(/\s+/g, ' ').trim(); return text.length > max ? `${text.slice(0, max - 1)}…` : text; }
 
 /**
  * A brain effort checked against its model (effort-levels.js). "off" (or a
  * model with no levels) stays "off" for Claude and Codex, which reset to the
- * model's default on it; OpenCode has no such variant, so it gets null.
+ * model's default on it; OpenCode has no such variant and Antigravity's thinking
+ * level no "off" (its session keeps the model's own level), so they get null.
  */
 export function checkBrainEffort(provider, model, effort, catalog) {
   if (!effort) return null;
+  if (provider === 'antigravity' && /^(?:off|default|auto|none)$/i.test(String(effort))) return null;
   if (!catalog) return String(effort);
   const next = normalizeEffort({ provider, model, effort, catalog }).effort;
-  return next || (provider === 'opencode' ? null : 'off');
+  return next || (provider === 'opencode' || provider === 'antigravity' ? null : 'off');
 }
 
 /** `catalog` (a catalog value) checks the effort against the brain's model (effort-levels.js). */
@@ -164,7 +181,8 @@ export function normalizeBrain(input = {}, defaults = {}, { catalog = null, cust
     model,
     effort: checkBrainEffort(provider, model, effort, catalog),
     agent: input?.agent ? String(input.agent) : null,
-    accountId: input?.accountId ? String(input.accountId) : (provider === 'opencode' ? null : 'default'),
+    // OpenCode and Antigravity sign in inside their own CLI: SynaBun keeps no account of theirs.
+    accountId: provider === 'antigravity' ? null : input?.accountId ? String(input.accountId) : (provider === 'opencode' ? null : 'default'),
     cwd: input?.cwd ? String(input.cwd) : (input?.project ? String(input.project) : (defaults.cwd || null)),
     tools: provider === 'opencode' ? (storedToolList(input, { customPresets }) ?? storedToolList(defaults, { customPresets }) ?? [...OPENCODE_BRAIN_TOOLS]) : ['all'],
     permissionMode: input?.permissionMode && !legacyPlan ? String(input.permissionMode) : 'default',
@@ -206,6 +224,10 @@ export function createAssistantRuntime({
   ensureIsolatedServe = null,
   stopIsolatedServe = null,
   setupOpencodeSidepanelConfig = null,
+  // Antigravity brains (assistant-brains/antigravity.js): the CLI's launch spec, the environment its process gets,
+  // the brain's home (lib/antigravity/home.js), SynaBun's own MCP entry there, and the policy registry and loopback
+  // address its hook asks (lib/antigravity/policy.js).
+  antigravity = null,
   broadcastSync = () => {},
   dataDir,
   memory = null,
@@ -322,12 +344,43 @@ export function createAssistantRuntime({
       || !!row.remote || !!row.channel || Number(row.costUsd) > 0;
     return holds ? 'unstarted' : 'empty';
   }
+  // Whether the index file may be written: it was read, or there was none. A file that could not be
+  // read (Windows: held by an antivirus or a backup) is never replaced by what this process holds;
+  // reading it is tried again (INDEX_RETRY_MS), and sessions made meanwhile join what it held.
+  let indexReady = false;
+  let indexReadTries = 0;
+  let indexBlockedLogged = false;
+  function readIndexRows() {
+    try {
+      const rows = readJsonStrict(indexPath);
+      if (Array.isArray(rows)) return rows;
+      const error = new Error(`${indexPath} does not hold a list`);
+      error.code = 'INVALID_JSON';
+      throw error;
+    } catch (error) {
+      if (error?.code === 'ENOENT') return [];
+      if (error?.code !== 'INVALID_JSON') throw error;
+      // A corrupt file is moved aside, never deleted, and the index starts again from what is live.
+      const aside = `${indexPath}.corrupt-${Date.now()}`;
+      renameSync(indexPath, aside);
+      log('assistant:index-corrupt', `${error.message}; moved to ${aside}`);
+      return [];
+    }
+  }
   function loadIndex() {
-    const rows = readJson(indexPath, []);
-    if (!Array.isArray(rows)) return;
+    let rows;
+    try { rows = readIndexRows(); } catch (error) {
+      log('assistant:index-unreadable', `${error?.code || ''} ${error?.message || String(error)}`.trim());
+      if (indexReadTries < INDEX_RETRY_MS.length) {
+        setTimeout(loadIndex, INDEX_RETRY_MS[indexReadTries++]).unref?.();
+      } else log('assistant:index-unreadable', `${indexPath} is left as it is; sessions of this run stay in memory only, until a restart reads it`);
+      return;
+    }
+    indexReady = true;
+    const late = sessions.size > 0; // sessions made while the file could not be read
     let dropped = 0;
     for (const row of rows) {
-      if (!row?.id) continue;
+      if (!row?.id || sessions.has(row.id)) continue;
       try { row.brain = normalizeSessionBrain(row.brain); }
       catch (error) { row.brain = { ...row.brain, tools: [], toolListError: { code: error.code, message: error.message, original: row.brain?.tools ?? row.brain?.mcpProfile } }; delete row.brain.mcpProfile; }
       if (settleLegacyRow(row) === 'empty') { dropped += 1; continue; }
@@ -339,16 +392,34 @@ export function createAssistantRuntime({
       }
     }
     // The index is written again without them (and with the started marks).
-    if (dropped) { log('assistant:index', `${dropped} session record(s) without a conversation dropped`); persist(); }
+    if (dropped) log('assistant:index', `${dropped} session record(s) without a conversation dropped`);
+    if (dropped || late) persist();
   }
   let persistTimer = null;
+  let persistRetries = 0; // index writes Windows refused in a row (INDEX_RETRY_MS)
   function persist({ force = false } = {}) {
     const write = () => {
+      if (!indexReady) {
+        if (!indexBlockedLogged) { indexBlockedLogged = true; log('assistant:index', 'not written: the sessions index has not been read'); }
+        return;
+      }
       // A draft is never written: it exists on disk only once its first prompt was sent (startChat).
       const rows = [...sessions.values()].filter((live) => !live.draft).map((live) => publicRecord(live.record, { withLive: false, persisted: true }))
         .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
         .slice(0, settings.retention);
-      try { writeJsonAtomic(indexPath, rows); } catch (error) { log('assistant:index-error', error?.message || String(error)); }
+      try {
+        writeJsonAtomic(indexPath, rows);
+        persistRetries = 0;
+      } catch (error) {
+        log('assistant:index-error', error?.message || String(error));
+        // The records changed (a rename already answered as saved, among them) and the file did not: on
+        // Windows it is written again shortly, with whatever the records hold by then, instead of waiting
+        // for the next change (a restart before it would bring the old records back).
+        if (process.platform === 'win32' && HELD_FILE_CODES.has(error?.code) && persistRetries < INDEX_RETRY_MS.length && !persistTimer) {
+          persistTimer = setTimeout(() => { persistTimer = null; write(); }, INDEX_RETRY_MS[persistRetries++]);
+          persistTimer.unref?.();
+        } else persistRetries = 0;
+      }
     };
     if (force) { if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; } write(); return; }
     if (persistTimer) return;
@@ -1827,6 +1898,8 @@ export function createAssistantRuntime({
   function brainCostBasis(live) {
     const brain = live.record.brain || {};
     if (brain.provider === 'claude-code') return 'reported';
+    // Antigravity reports tokens, not prices: its spend has no dollar figure.
+    if (brain.provider === 'antigravity') return null;
     const info = brainCapabilities(live.record) || {};
     if (brain.provider === 'codex') {
       if (!pricing?.codexPrice) return null;
@@ -1868,6 +1941,10 @@ export function createAssistantRuntime({
     const money = sessionMoney(live.record.id);
     if (!money || money.unlimited) return null;
     // Fail closed: a brain whose spend has no price could spend past the budget.
+    // Antigravity has no price at all (whatever the pricing tables): a dollar budget cannot hold its turns.
+    if (live.record.brain?.provider === 'antigravity') {
+      return { code: 'BRAIN_UNPRICED', message: `${UNPRICED_PROVIDER_REASON}, so the session budget cannot hold an Antigravity brain's spend. Switch the budget to No limit in ⋯ → Budget…, or pick another provider for the brain.` };
+    }
     if (pricing && brainCostBasis(live) === null) {
       const model = live.record.brain?.model || brainCapabilities(live.record)?.id || 'its default model';
       return { code: 'BRAIN_UNPRICED', message: `No price is known for the ${live.record.brain?.provider || ''} brain model ${model}, so the session budget cannot hold its spend. Pick a priced or free model for the brain, or switch the budget to No limit.` };
@@ -2055,6 +2132,8 @@ export function createAssistantRuntime({
       remoteReadOnly: !!remote && remoteBrainLimited(brain.provider),
       // The engine keeps this conversation's thread record: pre-compact.mjs asks for no conversation memory.
       userContextThreads: brain.provider === 'claude-code' && userSuffix.nudges === true,
+      // Antigravity (assistant-brains/antigravity.js): where it runs, and what its policy hook asks of this session.
+      ...(brain.provider === 'antigravity' ? antigravityBrainDeps(live) : {}),
     };
     const gate = ensureGate(live);
     // A remote session's hook / plugin refuses a call it could not check (fail closed).
@@ -2064,7 +2143,7 @@ export function createAssistantRuntime({
         ? () => codexGateBootstrap({ url: gateUrl, session: live.record.id, token: live.gateToken, codexBin: typeof codexBin === 'function' ? codexBin() : codexBin, ...(remote ? { remote: true } : {}) })
         : async () => null;
     }
-    const factories = brainFactories || { 'claude-code': createClaudeBrain, codex: createCodexBrain, opencode: createOpenCodeBrain };
+    const factories = brainFactories || { 'claude-code': createClaudeBrain, codex: createCodexBrain, opencode: createOpenCodeBrain, antigravity: createAntigravityBrain };
     const factory = factories[brain.provider];
     if (!factory) throw new Error(`Unsupported brain provider ${brain.provider}`);
     const memoryHooks = brain.provider === 'claude-code' && memory?.claudeHooks ? memory.claudeHooks({
@@ -3694,6 +3773,69 @@ export function createAssistantRuntime({
     return decision.allow ? { allow: true } : { allow: false, reason: decision.reason, refusals: decision.refusals, stopped: !!decision.abort };
   }
   /**
+   * An Antigravity brain's tool call (its policy hook, lib/antigravity/policy.js), checked in this process the way
+   * gateCheck checks the OpenCode plugin's and the Codex hook's: plan mode, a remote session's read-only rules,
+   * the browser policy (every session, plan mode and subagents included), then the route gate. → { decision:
+   * 'deny', reason } or null (no objection: the brain's approval mode decides). `call`: lib/antigravity/tool-call.js
+   * acpCall. Antigravity's own bookkeeping steps (task boundaries, notes to the user) are never routed.
+   */
+  function antigravityGateCheck(live, call) {
+    const name = acpToolName(call);
+    const input = acpPolicyInput(call);
+    const planned = planGate(live, 'antigravity', name, input);
+    if (planned) return { decision: 'deny', reason: planned.reason };
+    // A remote (WhatsApp) session's Antigravity brain is read-only for good, at every level.
+    if (live.brainRemoteReadOnly && readOnlyToolDecision(name, input, { host: 'antigravity' }) === 'deny') {
+      log('assistant:remote-policy', `${live.record.id}: refused ${name} (read-only)`);
+      return { decision: 'deny', reason: `${readOnlyDenyMessage(name)} Tell the user to do this in SynaBun on their computer if they need it.` };
+    }
+    if (call.mcp) {
+      const remoteDenied = remoteGate(live, name, input, { argsComplete: true, host: 'antigravity' });
+      if (remoteDenied) return { decision: 'deny', reason: remoteDenied.reason };
+    }
+    const browserDenied = browserGate(live, name, input, { host: 'antigravity' });
+    if (browserDenied) return { decision: 'deny', reason: browserDenied.reason };
+    if (!live.gate || call.kind === 'think') return null;
+    const decision = decide(live, name);
+    return decision.allow ? null : { decision: 'deny', reason: decision.reason };
+  }
+  /** What an Antigravity brain needs from this session (assistant-brains/antigravity.js deps). */
+  function antigravityBrainDeps(live) {
+    const ag = antigravity || {};
+    const saved = live.record.usageState?.antigravity;
+    return {
+      antigravityLaunch: typeof ag.launch === 'function' ? ag.launch : () => null,
+      childEnv: typeof ag.childEnv === 'function' ? ag.childEnv : undefined,
+      antigravityHome: typeof ag.home === 'function' ? (sessionId) => ag.home(sessionId) : null,
+      synabunMcpEntry: typeof ag.synabunMcpEntry === 'function' ? ag.synabunMcpEntry : null,
+      policy: ag.policy || null,
+      policyUrl: typeof ag.policyUrl === 'function' ? ag.policyUrl() : (ag.policyUrl || null),
+      connect: ag.connect || undefined,
+      userGemini: ag.userGemini || undefined,
+      policyCheck: (call) => antigravityGateCheck(live, call),
+      // ACP counts tokens per session: what the session the record names had counted (a resume books only what follows).
+      sessionUsageBase: saved && saved.sessionId && saved.sessionId === live.record.providerSessionId ? saved.usage || null : null,
+      onAntigravitySession: (sessionId) => { if (sessionId && live.record.providerSessionId !== sessionId) { live.record.providerSessionId = sessionId; touch(live); } },
+      onAntigravitySessionUsage: (sessionId, total) => { live.record.usageState ||= {}; live.record.usageState.antigravity = { sessionId, usage: total }; },
+      onAntigravityUsage: (info) => settleAntigravityBrain(live, info),
+    };
+  }
+  /** One Antigravity brain turn's tokens into the ledger: unpriced (tokens, not prices), exact when its total agrees. */
+  function settleAntigravityBrain(live, { usage: turnUsage = null, model = null } = {}) {
+    if (!usage || !turnUsage) return;
+    metered('antigravity-settle', () => {
+      const { tokens, mismatch } = antigravityUsageTokens(turnUsage);
+      if (totalTokens(tokens) === 0) return;
+      const taskId = currentTask(live.record.id) || ensureTaskId(live.record.id);
+      usage.settle({
+        sessionId: live.record.id, taskId, scope: 'brain', runId: null, turn: live.record.turns, provider: 'antigravity',
+        model: model || live.record.brain?.model || null, part: 'main', tokens, costUsd: null, costBasis: 'unpriced',
+        fidelity: mismatch ? 'partial' : 'exact', reason: mismatch ? 'antigravity-total-mismatch' : null, source: 'antigravity-acp-usage',
+      });
+    });
+    persist({ force: true });
+  }
+  /**
    * A remote session's hard refusal for one tool call (every level), else null.
    * `argsComplete: false`: the host did not pass the call's arguments. An
    * OpenCode brain's own web tools are refused (the read-only level's network rule).
@@ -3913,6 +4055,9 @@ export function createAssistantRuntime({
   return {
     handleWebSocket, listSessions, getSession, createSession, updateSession, closeSession, destroySession, removeSession,
     resolveTerminal, accountInUse, ownsIsolatedServe, noteDispatch, subscribe, shutdown,
+    // The sessions index written now, synchronously: the server's exit handler runs it on every way out,
+    // since an exit through process.exit() never reaches shutdown()'s own write.
+    flushIndex: () => persist({ force: true }),
     observeBroadcast: onPermissionBroadcast,
     testDensityFor, routerSession, routerSend, routerEvent, routerMailbox, routerContinue, routerSinks, routerRouted, routerRouteFailed, routerComputerApproved, gateCheck, isPlanning, isPlanReadOnly,
     clarifySession, clarifyEvent, clarifyGate, clarifySinks,

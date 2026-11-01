@@ -35,7 +35,6 @@ import { t } from '../i18n.js';
 import '../account-i18n.js';
 import { forgetGreeting, mountGreeting } from '../greeting/greeting-card.js';
 import { notify, NOTIF_TYPE } from '../ui-notifications.js';
-import { getProviderMeta } from '../provider-icons.js';
 import { isGuest, hasPermission } from '../ui-sync.js';
 import { getWhiteboardElementById } from '../ui-whiteboard.js';
 import { focusNativeLoopRun } from '../ui-native-loop-router.js';
@@ -63,7 +62,7 @@ import { budgetChipText, budgetSpendText, budgetTone, closeBudgetEditor, createB
 import { computerRemoteView, createComputerPanel, createComputerToggle, normalizeComputerRemote, openFrameLightbox, closeFrameLightbox, requestDesktopStop } from './asst-computer.js';
 import {
   applyLimit, applyLimitPacket, applyUsagePacket, brainLabel, createRenameWriter, createTabState, DEFAULT_ROUTE_MODE, deserializeTabState, fmtCost, fmtRunLine, limitExpiresIn, limitNoticeText, modelShortName,
-  brainModePatch, normalizeBrain, normalizeComputerMode, permissionModeLabel, normalizeRouteMode, normalizeTestDensity, projectLabel, providerShortLabel, readStoredBrain, runFromPayload,
+  brainModePatch, isBrainProvider, normalizeBrain, normalizeComputerMode, permissionModeLabel, normalizeRouteMode, normalizeTestDensity, projectLabel, providerMeta, providerShortLabel, readStoredBrain, runFromPayload,
   serializeTabState, sessionStatus, tabStorageKey, userSessionTitle,
 } from './asst-state.js';
 import {
@@ -244,8 +243,9 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   if (host.toolbarSlot) host.toolbarSlot.appendChild(barEl);
 
   // ── Helpers ──
-  const providerIcon = (p) => getProviderMeta(p).icon;
-  const providerColor = (p) => getProviderMeta(p).color;
+  // A worker-only provider provider-icons.js does not know yet keeps its own name (asst-state.js providerMeta).
+  const providerIcon = (p) => providerMeta(p).icon;
+  const providerColor = (p) => providerMeta(p).color;
   const visible = () => { try { return host.isVisible ? !!host.isVisible() : true; } catch { return true; } };
 
   // ── Just-in-time tips (../tour/tour-tips.js): once each, ever; never in a replay or while the tour runs ──
@@ -1480,6 +1480,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
         compact();
         return true;
       case 'new':
+        if (parsed.error === 'not_brain') { toast(notBrainText(parsed.provider)); return false; }
         newSession(parsed.provider || null);
         return true;
       case 'resume':
@@ -1507,6 +1508,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
         if (parsed.error) { toast(tt('assistant.slash.needsText', 'Usage: /remember <text>')); return false; }
         return queueOrSend({ ...payload, display: payload.text, text: tt('assistant.prompts.remember', 'Store this in SynaBun memory with the remember tool (pick a fitting category, project, tags and importance): {text}', { text: parsed.text }) });
       case 'model': {
+        if (parsed.error === 'not_brain') { toast(notBrainText(parsed.provider)); return false; }
         if (!parsed.model && !parsed.provider) { picker.openField('model'); return true; }
         const next = { ...st.brain };
         let requiresSwitch = false;
@@ -1555,10 +1557,15 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     }
   }
 
+  /** /model or /new naming a provider that runs dispatched work only (none today: all four can be the brain). */
+  function notBrainText(provider) {
+    return tt('assistant.slash.notBrain', '{provider} runs dispatched work only, never the Assistant itself. Send it a task with /dispatch {id} <task>.', { provider: providerShortLabel(provider), id: provider });
+  }
+
   function dispatchErrorText(parsed) {
     switch (parsed.error) {
-      case 'missing_provider': return tt('assistant.slash.dispatchProvider', 'Usage: /dispatch <claude|codex|opencode> [flags] <task>');
-      case 'invalid_provider': return tt('assistant.slash.dispatchInvalidProvider', 'Unknown provider "{provider}". Use claude, codex or opencode.', { provider: parsed.provider });
+      case 'missing_provider': return tt('assistant.slash.dispatchProvider', 'Usage: /dispatch <claude|codex|opencode|antigravity> [flags] <task>');
+      case 'invalid_provider': return tt('assistant.slash.dispatchInvalidProvider', 'Unknown provider "{provider}". Use claude, codex, opencode or antigravity.', { provider: parsed.provider });
       case 'unknown_flag': return tt('assistant.slash.dispatchUnknownFlag', 'Unknown flag --{flag}', { flag: parsed.flag });
       case 'missing_flag_value': return tt('assistant.slash.dispatchFlagValue', 'Flag --{flag} needs a value', { flag: parsed.flag });
       case 'missing_task': return tt('assistant.slash.dispatchTask', 'Add the task text after the flags');
@@ -1607,6 +1614,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   }
 
   function newSession(provider) {
+    // Only a brain provider names a new session's brain (Claude Code, Codex, OpenCode or Antigravity).
+    if (provider && !isBrainProvider(provider)) provider = null;
     const b = provider ? normalizeBrain({ ...st.brain, provider, model: '', effort: null, agent: null, accountId: null }) : st.brain;
     // This one is still empty: it is the new session (the server keeps one draft, not a pile of them).
     // /new <provider> switches its brain as the picker does; what only this page showed (/help) is cleared.

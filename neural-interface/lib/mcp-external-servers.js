@@ -10,7 +10,9 @@ const object = value => value && typeof value === 'object' && !Array.isArray(val
 const canonical = path => { try { return realpathSync(path); } catch { return resolve(path); } };
 const claudeProject = (user, cwd) => user.projects?.[canonical(cwd)] || user.projects?.[resolve(cwd)] || {};
 const external = name => name !== 'SynaBun';
-export const EXTERNAL_SERVER_LIMITATIONS = Object.freeze({ codex: 'Plugin-provided MCP servers cannot be enumerated from config.toml', 'claude-code': 'claude.ai connectors are unavailable under strict MCP configuration' });
+export const EXTERNAL_SERVER_LIMITATIONS = Object.freeze({ codex: 'Plugin-provided MCP servers cannot be enumerated from config.toml', 'claude-code': 'claude.ai connectors are unavailable under strict MCP configuration', antigravity: 'A project\'s own .agents/mcp_config.json still loads into an Antigravity session; managed brains, workers and restricted panel sessions refuse enabled project servers before starting agy' });
+/** Where Antigravity keeps its MCP servers: { mcpServers: { name: { command, args, env, disabled } | { serverUrl, headers, disabled } } }. */
+export function antigravityMcpConfigPath(home = homedir()) { return join(home, '.gemini', 'config', 'mcp_config.json'); }
 export const externalServerName = name => typeof name === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(name) && external(name);
 function read(path, fallback = null) {
   try { return readFileSync(path, 'utf8'); }
@@ -144,7 +146,7 @@ export function claudePluginDefinitions(pluginRoot, manifest = document(join(plu
 function claudeEntry(entry) { return structuredClone(entry); }
 
 /** This is the only filesystem discovery boundary; definitions never escape through servers/catalogView. */
-export function externalServerInventory({ provider, cwd = process.cwd(), codexHome, home = homedir(), dataHome, registry, opencodeConfig, readProject = true, env = process.env } = {}) {
+export function externalServerInventory({ provider, cwd = process.cwd(), codexHome, home = homedir(), dataHome, registry, opencodeConfig, antigravityConfigPath = antigravityMcpConfigPath(home), readProject = true, env = process.env } = {}) {
   const reg = registry || (dataHome ? document(join(dataHome, 'data', 'mcp-registry.json')) : {});
   const access = agentAccessFrom(reg), definitions = new Map(), rows = new Map();
   function add(name, entry, source, deliverable = true, reason = null, kind = null) {
@@ -172,6 +174,13 @@ export function externalServerInventory({ provider, cwd = process.cwd(), codexHo
     for (const [name, entry] of Object.entries(mcpServersOf(base))) add(name, entry, 'user');
     if (env.OPENCODE_CONFIG) for (const [name, entry] of Object.entries(mcpServersOf(document(resolve(env.OPENCODE_CONFIG))))) add(name, entry, 'user-override');
     if (readProject) for (const path of projectOpenCodeConfigs(cwd)) for (const [name, entry] of Object.entries(mcpServersOf(document(path)))) add(name, entry, 'project');
+  } else if (provider === 'antigravity') {
+    // A remote server names its address `serverUrl` there; `disabled: true` turns it off in Antigravity itself.
+    for (const [name, entry] of Object.entries(object(document(antigravityConfigPath).mcpServers))) {
+      const own = object(entry);
+      const url = typeof own.serverUrl === 'string' ? own.serverUrl : own.url;
+      add(name, url !== undefined && own.url === undefined ? { ...own, url } : own, 'user', true, null, url !== undefined ? 'http' : 'stdio');
+    }
   } else if (provider === 'claude-code') {
     const configDir = env.CLAUDE_CONFIG_DIR || join(home, '.claude');
     const settings = { ...document(join(configDir, 'settings.json')), ...document(join(cwd, '.claude', 'settings.json')), ...document(join(cwd, '.claude', 'settings.local.json')) };
@@ -247,8 +256,8 @@ export function selectExternalServers(tools, inventory) {
 }
 export function externalCatalog(options = {}) {
   const rows = new Map();
-  for (const provider of ['codex', 'opencode', 'claude-code']) for (const row of discoverExternalServers({ ...options, provider })) {
-    if (!rows.has(row.name)) rows.set(row.name, { ref: `mcp:${row.name}`, label: row.name, selectable: row.selectable, providers: { codex: 'absent', opencode: 'absent', 'claude-code': 'absent' }, blocked: row.blocked });
+  for (const provider of ['codex', 'opencode', 'claude-code', 'antigravity']) for (const row of discoverExternalServers({ ...options, provider })) {
+    if (!rows.has(row.name)) rows.set(row.name, { ref: `mcp:${row.name}`, label: row.name, selectable: row.selectable, providers: { codex: 'absent', opencode: 'absent', 'claude-code': 'absent', antigravity: 'absent' }, blocked: row.blocked });
     rows.get(row.name).providers[provider] = row.blocked ? 'blocked' : row.deliverable ? 'deliverable' : 'unavailable';
   }
   return [...rows.values()].sort((a, b) => a.ref.localeCompare(b.ref));

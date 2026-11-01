@@ -5,7 +5,7 @@ import { readStoredToolListRecord } from './tool-lists.js';
 // ═══════════════════════════════════════════
 //
 // A "dispatch" is one worker run launched by the central assistant: a single
-// provider conversation (Claude / Codex / OpenCode) that executes one task,
+// provider conversation (Claude / Codex / OpenCode / Antigravity) that executes one task,
 // then stays warm for follow-up turns until the assistant completes it or the
 // idle timeout fires. It rides on NativeLoopRuntime (ledger, claims, sidepanel
 // attach) through the per-launch buildPrompt/wrapAdapter overrides, so the
@@ -43,16 +43,18 @@ import { loadPlaybook } from './assistant-playbooks.js';
 import { loadStyleGuideForRun } from './style-guide/store.js';
 import { claimCheckWaived, normalizeTestDensity, testingApplies } from './assistant-test-density.js';
 import { normalizeEffort } from './effort-levels.js';
-import { createTurnEvidence, recordProviderEvent, evidenceSnapshot, claimEvidenceLine } from './assistant-evidence.js';
+import { acpCommandOf, createTurnEvidence, recordProviderEvent, evidenceSnapshot, claimEvidenceLine } from './assistant-evidence.js';
 import { BUDGET_MAX_USD, codexUsageCostUsd, floorCents } from './assistant-budget.js';
-import { MIN_SPEND_USD, PROVIDER_LABELS, isFreePrice } from './assistant-budget-split.js';
+import { MIN_SPEND_USD, PROVIDER_LABELS, UNPRICED_PROVIDER_REASON, isFreePrice, isUnpricedProvider } from './assistant-budget-split.js';
 import { createBudgetPlanner } from './assistant-budget-planner.js';
-import { CLAUDE_ESTIMATE_SOURCE, CODEX_USAGE_KEYS, TOKEN_KEYS, addTokens, codexUsageTokens, createClaudeMeter, createCodexMeter, createOpenCodeMeter, totalTokens, withTotal, zeroTokens } from './assistant-usage.js';
+import { CLAUDE_ESTIMATE_SOURCE, CODEX_USAGE_KEYS, TOKEN_KEYS, addTokens, antigravityUsageTokens, codexUsageTokens, createClaudeMeter, createCodexMeter, createOpenCodeMeter, totalTokens, withTotal, zeroTokens } from './assistant-usage.js';
 import { claudeTokensCostUsd } from './assistant-pricing.js';
 import { RemotePolicyError, clampDispatchSpec, getSessionPolicy, readRegisteredProjects } from './remote-policy.js';
 import { limitFromText } from '../public/shared/assistant/asst-limit.js';
 
-export const NATIVE_PROVIDERS = new Set(['claude-code', 'codex', 'opencode']);
+// Antigravity (Google's `agy`, over ACP: lib/native-loop-providers.js createAntigravityNativeLoopAdapter) is a worker
+// provider only: never a brain, no accounts, its usage reported in tokens and never priced.
+export const NATIVE_PROVIDERS = new Set(['claude-code', 'codex', 'opencode', 'antigravity']);
 // awaiting_route: an un-routed dispatch held until the user picks a model on
 // the route card (ask modes). It is active but consumes no rails.
 // suspended: a native worker the server suspended as it went down (its CLI
@@ -85,7 +87,7 @@ export function runStatusFromState(state) {
 export const MIN_MAX_MINUTES = 20;
 
 export const DEFAULT_LIMITS = Object.freeze({
-  perProvider: Object.freeze({ 'claude-code': 3, codex: 4, opencode: 3 }),
+  perProvider: Object.freeze({ 'claude-code': 3, codex: 4, opencode: 3, antigravity: 3 }),
   perCodexAccount: 2,
   perSession: 6,
   queuedPerSession: 20,
@@ -298,7 +300,53 @@ export function summarizeProviderEvent(payload = {}) {
     if (/question\.asked/i.test(eventType)) return `question asked: ${clip((event.questions || []).map((q) => q.question).join(' | '), 200)}`;
     return null;
   }
+  if (payload.provider === 'antigravity') {
+    // eventType is the ACP session/update kind; event the update as the agent sent it.
+    if (eventType === 'agent_message_chunk') {
+      const text = event.content?.type === 'text' ? event.content.text : '';
+      return text && String(text).trim() ? `assistant: ${clip(text, 200)}` : null;
+    }
+    if (eventType === 'tool_call') return `${acpToolNoun(event)} started: ${acpToolDetail(event)}`;
+    if (eventType === 'tool_call_update') {
+      // Only the end of a call: its start was the tool_call line, its progress says nothing new.
+      if (event.status !== 'completed' && event.status !== 'failed') return null;
+      return `${acpToolNoun(event)} ${event.status === 'failed' ? 'failed' : 'done'}: ${acpToolDetail(event)}`;
+    }
+    if (eventType === 'plan') {
+      const entries = Array.isArray(event.entries) ? event.entries : [];
+      if (!entries.length) return null;
+      const done = entries.filter((step) => step?.status === 'completed').length;
+      const current = entries.find((step) => step?.status === 'in_progress');
+      return `plan: ${done}/${entries.length} done${current?.content ? `, now ${clip(current.content, 120)}` : ''}`;
+    }
+    if (eventType === 'synabun.provider_exit') {
+      const how = event.signal ? ` (${event.signal})` : event.code !== null && event.code !== undefined ? ` (code ${event.code})` : '';
+      return `error: Antigravity exited${how}${event.error ? `: ${clip(event.error, 160)}` : ''}`;
+    }
+    return null;
+  }
   return null;
+}
+
+/** What an ACP tool call is, for a transcript line: command, file_change or tool (Codex's words). */
+function acpToolNoun(call = {}) {
+  const kind = String(call.kind || '');
+  // agy names an MCP call call_mcp_tool, kind `execute`: it is a tool, never a command.
+  if (call.name === 'call_mcp_tool' || (call.rawInput && typeof call.rawInput === 'object' && call.rawInput.ServerName && call.rawInput.ToolName)) return 'tool';
+  if (kind === 'execute') return 'command';
+  if (kind === 'edit' || kind === 'delete' || kind === 'move') return 'file_change';
+  return 'tool';
+}
+/** The command, the paths or the title of an ACP tool call; its id when an update carries none of them. */
+function acpToolDetail(call = {}) {
+  const input = call.rawInput && typeof call.rawInput === 'object' ? call.rawInput : {};
+  if (input.ServerName && input.ToolName) return clip(`${input.ServerName}_${input.ToolName}`, 140);
+  const command = call.kind === 'execute' ? acpCommandOf(call) : '';
+  if (command) return clip(command, 140);
+  const paths = (Array.isArray(call.locations) ? call.locations : []).map((location) => location?.path).filter((path) => typeof path === 'string' && path);
+  if (paths.length && call.kind !== 'execute' && call.kind !== 'fetch') return clip(paths.join(', '), 160);
+  if (call.title) return clip(call.title, 140);
+  return call.toolCallId ? `call ${String(call.toolCallId).slice(0, 12)}` : (call.kind || 'tool');
 }
 
 // The old five-cap keys a config file may still hold: never limits (the budget planner owns the money).
@@ -479,8 +527,10 @@ export function createAssistantDispatcher({
   let closing = false;
 
   // ── persistence ────────────────────────────────────────────────────────────
-  /** Why the original provider account of a run cannot be used now ('' when it can). */
+  /** Why the original provider account of a run cannot be used now ('' when it can, or the provider has no accounts). */
   function providerAccountUnusable(accountId, provider = 'claude-code', entry = null) {
+    // OpenCode and Antigravity sign in inside their own CLI: SynaBun keeps no account of theirs.
+    if (provider !== 'codex' && provider !== 'claude-code') return '';
     if (provider === 'codex') {
       const home = codexAccounts?.homeFor?.(accountId);
       if (home && entry?.codexHome && resolve(home) !== resolve(entry.codexHome)) return 'its CODEX_HOME changed';
@@ -658,9 +708,11 @@ export function createAssistantDispatcher({
         status: runtimeRun.status, turnState: runtimeRun.turnState, stoppedReason: runtimeRun.stoppedReason,
         error: runtimeRun.error, claimedBy: runtimeRun.claimedBy, providerSessionId: runtimeRun.providerSessionId,
         providerThreadId: runtimeRun.providerThreadId,
+        ...((runtimeRun.antigravityHome || entry.resumeInfo?.antigravityHome || entry.antigravityHome) ? { antigravityHome: runtimeRun.antigravityHome || entry.resumeInfo?.antigravityHome || entry.antigravityHome } : {}),
       } : (entry.runtime || null),
       providerSessionId: runtimeRun?.providerSessionId || entry.providerSessionId || null,
       providerThreadId: runtimeRun?.providerThreadId || entry.providerThreadId || null,
+      ...((runtimeRun?.antigravityHome || entry.resumeInfo?.antigravityHome || entry.antigravityHome) ? { antigravityHome: runtimeRun?.antigravityHome || entry.resumeInfo?.antigravityHome || entry.antigravityHome } : {}),
     };
   }
   function safeRuntime() { try { return getRuntime(); } catch { return null; } }
@@ -1070,10 +1122,11 @@ export function createAssistantDispatcher({
   /**
    * Why a run's spend could not be held to the budget (no price for its model), else null. Enforced
    * only with a budget and a price source (`pricing`): Claude reports cost, Codex needs a list price,
-   * OpenCode a catalog price (a free model is fine).
+   * OpenCode a catalog price (a free model is fine), Antigravity never has one (tokens, not prices).
    */
   function unpricedReason(entry) {
     if (!pricing || entry.provider === 'claude-code' || !limitedNow()) return null;
+    if (isUnpricedProvider(entry.provider)) return UNPRICED_PROVIDER_REASON;
     const model = entry.pricingModel || entry.model || null;
     if (entry.provider === 'codex') {
       let price = null;
@@ -1085,7 +1138,10 @@ export function createAssistantDispatcher({
   function refuseUnpriced(entry) {
     const why = unpricedReason(entry);
     if (!why) return;
-    throw new DispatchError('BUDGET_UNPRICED', `Not dispatched: ${why}, so the session budget could not hold its spend. Pick a priced model or a free one (agent_catalog shows prices).`, { status: 409, provider: entry.provider, model: entry.pricingModel || entry.model || null });
+    const next = isUnpricedProvider(entry.provider)
+      ? `Dispatch it to another provider (agent_catalog shows prices), or ask the user to switch the session budget to No limit (Assistant → Budget) to run it on ${providerName(entry.provider)}.`
+      : 'Pick a priced model or a free one (agent_catalog shows prices).';
+    throw new DispatchError('BUDGET_UNPRICED', `Not dispatched: ${why}, so the session budget could not hold its spend. ${next}`, { status: 409, provider: entry.provider, model: entry.pricingModel || entry.model || null });
   }
   const providerName = (provider) => PROVIDER_LABELS[provider] || provider;
   /** The session budget's words for a provider whose share is used up ("codex share used up: $4.00 of $4.00 spent"). */
@@ -1522,7 +1578,7 @@ export function createAssistantDispatcher({
     emit(entry, 'route_pending', { routeId: routed.routeId });
     return {
       ok: true, queued: true, awaitingRoute: true, routeId: routed.routeId, run: view(entry),
-      next: 'This run is waiting for the user to pick its model on the route card. Do not dispatch it again. It starts automatically after the pick; the decision arrives as a [SynaBun Mailbox] route_decided event.',
+      next: 'This run is waiting for the user to pick its model on the route card. Do not dispatch it again. It starts automatically after the pick; the decision arrives as a [SynaBun Mailbox] route_decided event. If the user picks "here" instead, this run never starts and that event asks you to do the task yourself.',
     };
   }
 
@@ -1581,7 +1637,10 @@ export function createAssistantDispatcher({
     const entry = entries.get(runId);
     if (!entry || entry.state !== 'awaiting_route') return false;
     entry.state = 'stopped'; entry.completionReason = reason; entry.finishedAt = iso(now()); entry.turnState = 'terminal'; entry.pending = [];
-    entry.route = { ...(entry.route || {}), status: reason === 'route_expired' ? 'expired' : 'declined', decidedBy: reason === 'route_expired' ? 'timeout' : 'user', decidedAt: iso(now()) };
+    // route_here: the user picked "here" on its card, so the assistant does the task itself and this worker never starts.
+    const status = reason === 'route_expired' ? 'expired' : reason === 'route_here' ? 'here' : 'declined';
+    entry.route = { ...(entry.route || {}), status, decidedBy: reason === 'route_expired' ? 'timeout' : 'user', decidedAt: iso(now()) };
+    if (reason === 'route_here') entry.notes.push('the user chose to do this task here, in the conversation: this worker was not started');
     delete entry.rawSpec;
     emit(entry, 'stopped');
     return true;
@@ -1892,6 +1951,10 @@ export function createAssistantDispatcher({
       adminSandbox: entry.resumeInfo?.adminSandbox === true,
       onCodexSandbox: (value) => { resumeInfoOf(entry).adminSandbox = value === true; persist({ force: true }); },
       onSandboxPlan: (plan) => { resumeInfoOf(entry).sandboxPlan = plan; persist({ force: true }); },
+      // Antigravity counts tokens per session (ACP usage): what its session had counted, kept for a resume after a
+      // restart, so the resumed run's first turn books only its own.
+      sessionUsageBase: entry.provider === 'antigravity' ? entry.resumeInfo?.acpSessionUsage || null : null,
+      onSessionUsage: (value) => { if (entry.provider === 'antigravity' && value && typeof value === 'object') resumeInfoOf(entry).acpSessionUsage = value; },
       guardMode: entry.guardMode, scratchDir: entry.scratchDir || null, serverPort: Number(serverPort) > 0 ? Number(serverPort) : null,
       localPortRange: localPortRange && Number(localPortRange.from) > 0 && Number(localPortRange.to) >= Number(localPortRange.from) ? { from: Number(localPortRange.from), to: Number(localPortRange.to) } : null,
       idleTimeoutMs: entry.idleTimeoutMs, maxTurns: entry.maxTurns, outputSchema: entry.outputSchema, project: entry.project,
@@ -1914,6 +1977,8 @@ export function createAssistantDispatcher({
         if (!Number.isInteger(pid) || pid <= 0) return;
         resumeInfoOf(entry).pid = pid;
         entry.resumeInfo.pidStartedAt = info.startedAt || iso(now());
+        // An Antigravity run's own home (lib/antigravity/home.js): where its conversation is, for a resume.
+        if (typeof info.home === 'string' && info.home) { entry.resumeInfo.antigravityHome = info.home; entry.antigravityHome = info.home; }
         persist({ force: true });
       },
       ...extra,
@@ -2056,8 +2121,11 @@ export function createAssistantDispatcher({
       throw new DispatchError(known ? 'PERMISSION_ALREADY_RESOLVED' : 'NO_PENDING_REQUEST', known ? `Request ${requestId} was already resolved` : `No pending request ${requestId} on run ${runId}`, { status: 409 });
     }
     const behavior = response.behavior === 'allow' || response.decision === 'allow' || response.decision === 'answer' ? 'allow' : 'deny';
+    // Antigravity saves an "always" answer for every later session of the user's, outside the run: a worker's
+    // answer is for this request only.
+    const always = entry.provider === 'antigravity' ? false : !!response.always;
     finishPending(runId, requestId, {
-      behavior, updatedInput: response.updatedInput, message: response.message || response.note, always: !!response.always,
+      behavior, updatedInput: response.updatedInput, message: response.message || response.note, always,
       answers: response.answers, resolvedBy: origin,
     }, { origin });
     return view(entry);
@@ -2105,6 +2173,7 @@ export function createAssistantDispatcher({
       liveState.turnMeteredUsd = 0;
       let raw = await inner.runTurn(prompt, { ...meta, turn: turnNumber, outputSchema: entry.outputSchema || undefined });
       if (entry.provider === 'codex') settleCodexTurn(entry, liveState, raw);
+      else if (entry.provider === 'antigravity') settleAntigravityTurn(entry, liveState, raw);
       let text = typeof raw?.text === 'string' ? raw.text : '';
       const evalRun = isEvalRun(entry);
       let parsed = evalRun ? { found: false } : parseResultContract(text);
@@ -2142,6 +2211,7 @@ export function createAssistantDispatcher({
           if (retryParsed.found) { parsed = { ...retryParsed, source: 'retry' }; text = `${text}\n\n${retryText}`; }
           retryCost = accumulateCost(entry, retry);
           if (entry.provider === 'codex') settleCodexTurn(entry, liveState, retry);
+          else if (entry.provider === 'antigravity') settleAntigravityTurn(entry, liveState, retry);
         } catch (error) {
           // Stopped during the retry: the run ends here (handleTurnError books the retry), with no
           // turn_completed or follow-up after it. The first provider turn was paid for: book it first.
@@ -2149,6 +2219,7 @@ export function createAssistantDispatcher({
           if (liveState.abortReason || liveState.suspending) { accumulateCost(entry, raw); throw error; }
           retryCost = accumulateCost(entry, error);
           if (entry.provider === 'codex') settleCodexTurn(entry, liveState, error);
+          else if (entry.provider === 'antigravity') settleAntigravityTurn(entry, liveState, error);
           entry.notes.push(`result retry failed: ${error?.message || error}`);
         }
       }
@@ -2174,7 +2245,8 @@ export function createAssistantDispatcher({
       liveState.turnOpen = false;
       stopUsagePolling(liveState);
       let turnUsage = raw?.usage || null;
-      if (entry.provider === 'codex') turnUsage = liveState.turnUsage || null;
+      // Codex and Antigravity: what their provider turns (the retry included) reported, in provider keys.
+      if (entry.provider === 'codex' || entry.provider === 'antigravity') turnUsage = liveState.turnUsage || null;
       else if (entry.provider === 'opencode') turnUsage = (await settleOpenCodeTurn(entry, liveState)) || turnUsage;
       // A reported cost below an earlier turn's estimate can make this negative: a turn never reads below $0.
       const turnCost = Math.max(0, accumulateCost(entry, raw) + retryCost + (Number(liveState.turnMeteredUsd) || 0));
@@ -2383,6 +2455,8 @@ export function createAssistantDispatcher({
     if (entry.provider === 'codex') settleCodexTurn(entry, liveState, error);
     // OpenCode: what streamed before the failure, as it stands (its serve may be gone: no reconcile).
     else if (entry.provider === 'opencode') bookOpenCodeTurn(entry, liveState, { reconciled: false });
+    // Antigravity: a stopped turn's answer still carried its tokens (the adapter puts them on the abort).
+    else if (entry.provider === 'antigravity') settleAntigravityTurn(entry, liveState, error);
     announceUnpriced(entry);
     checkSession(entry.assistantSessionId, { source: entry });
     if (budgetStopReason(entry.completionReason)) return { providerSessionId: null };
@@ -2465,7 +2539,8 @@ export function createAssistantDispatcher({
     if (!raw) return 0;
     const cost = Number(raw.costUsd);
     const added = bookCost(entry, cost, raw.basis || 'reported');
-    if (entry.provider !== 'codex') addLegacyUsage(entry, raw.usage);
+    // Codex and Antigravity usage reaches entry.usage when it is settled (settleCodexTurn, settleAntigravityTurn).
+    if (entry.provider !== 'codex' && entry.provider !== 'antigravity') addLegacyUsage(entry, raw.usage);
     return added;
   }
 
@@ -2749,6 +2824,38 @@ export function createAssistantDispatcher({
       }
     }
     // At once, not debounced: a kill must not leave the saved meter state behind the ledger.
+    persist({ force: true });
+  }
+
+  // Antigravity: each provider turn's answer carries that turn's own ACP usage (the adapter takes it off the
+  // session's running totals; a failed or stopped turn has none, so the next answer carries it). Tokens only:
+  // Antigravity is billed by its Google sign-in and reports no price, so every row is unpriced, never $0.
+  /**
+   * Book one Antigravity provider turn: its five token classes into the ledger (exact when the agent's own total
+   * agrees with one reading of its classes, else partial: 'antigravity-total-mismatch'), its usage in provider keys
+   * into the run's and the turn's legacy totals, and the run marked unpriced. Nothing without usage.
+   */
+  function settleAntigravityTurn(entry, liveState, raw) {
+    if (entry.usageState?.closed) return;
+    const usage = raw?.usage && typeof raw.usage === 'object' ? raw.usage : null;
+    if (!usage) return;
+    const { tokens, mismatch } = antigravityUsageTokens(usage);
+    if (totalTokens(tokens) === 0) return;
+    const used = { input_tokens: tokens.input, output_tokens: tokens.output, reasoning_tokens: tokens.reasoning, cache_read_input_tokens: tokens.cacheRead, cache_write_input_tokens: tokens.cacheWrite };
+    addLegacyUsage(entry, used);
+    if (liveState) {
+      const prev = liveState.turnUsage || {};
+      liveState.turnUsage = Object.fromEntries(Object.entries(used).map(([key, value]) => [key, (Number(prev[key]) || 0) + value]));
+    }
+    markUnpriced(entry, UNPRICED_PROVIDER_REASON);
+    // No model named: the one the session runs (the adapter reads it off the session's config options).
+    let model = entry.model || null;
+    if (!model) { try { model = liveState?.inner?.describe?.()?.model || null; } catch { model = null; } }
+    settleUsage(entry, {
+      model, part: 'main', tokens, costUsd: null, costBasis: 'unpriced',
+      fidelity: mismatch ? 'partial' : 'exact', reason: mismatch ? 'antigravity-total-mismatch' : null, source: 'antigravity-acp-usage',
+    });
+    // At once, not debounced: a kill must not leave the saved run behind the ledger.
     persist({ force: true });
   }
 
@@ -3245,7 +3352,7 @@ export function createAssistantDispatcher({
     const state = runState(entry, {
       browserSessionId, browserTabId, desktopGrant,
       startedAt: entry.startedAt || iso(now()),
-      extra: { resumeSessionId: entry.providerSessionId, resumeThreadId: entry.providerThreadId, costBaseUsd, resumingWorker: true },
+      extra: { resumeSessionId: entry.providerSessionId, resumeThreadId: entry.providerThreadId, costBaseUsd, resumingWorker: true, antigravityHome: entry.resumeInfo?.antigravityHome || null },
     });
     // The CLI's spend stop (--max-budget-usd) counts from the total the resumed CLI restores (costBaseUsd): what the run
     // may still spend (its ceiling less what it spent, never more than the session has left) goes on top of that. A
@@ -3511,6 +3618,57 @@ export function createAssistantDispatcher({
     }
     processQueue().catch(() => {});
   }
+  /** One transcript line into a live run's ring (bounded by lines and characters). */
+  function pushRingLine(liveState, line) {
+    liveState.ring.push(line);
+    liveState.ringChars += line.length;
+    // The message line still growing is no longer the last one.
+    liveState.messageLine = null;
+    while (liveState.ring.length > limits.ringSize || liveState.ringChars > limits.ringChars) {
+      const removed = liveState.ring.shift();
+      liveState.ringChars -= removed?.length || 0;
+    }
+  }
+  /**
+   * An Antigravity message chunk (ACP agent_message_chunk): the text joins the message's line when that line is
+   * still the ring's last one (same messageId), else it starts a new "assistant:" line. Clipped as every line is.
+   */
+  function growMessageLine(liveState, update = {}) {
+    const text = update?.content?.type === 'text' ? String(update.content.text || '') : '';
+    if (!text) return;
+    const id = update.messageId ?? null;
+    const open = liveState.messageLine;
+    if (open && open.id === id && liveState.ring.length && liveState.ring[liveState.ring.length - 1] === open.line) {
+      open.text += text;
+      const line = `${open.stamp} assistant: ${clip(open.text, 200)}`;
+      if (line !== open.line) {
+        liveState.ring[liveState.ring.length - 1] = line;
+        liveState.ringChars += line.length - open.line.length;
+        open.line = line;
+      }
+      return;
+    }
+    if (!text.trim()) return;
+    const stamp = iso(now()).slice(11, 19);
+    const line = `${stamp} assistant: ${clip(text, 200)}`;
+    pushRingLine(liveState, line);
+    liveState.messageLine = { id, text, stamp, line };
+  }
+  /**
+   * An ACP tool_call_update carries only what changed: the call it updates, as the run has seen it so far, so its
+   * end is said with the call's kind, command and title. Other payloads pass as they are. Bounded per run.
+   */
+  function withAcpCall(liveState, payload) {
+    if ((payload.eventType !== 'tool_call' && payload.eventType !== 'tool_call_update') || !payload.event?.toolCallId) return payload;
+    const calls = liveState.acpCalls || (liveState.acpCalls = new Map());
+    const id = String(payload.event.toolCallId);
+    const call = { ...(calls.get(id) || {}) };
+    for (const [key, value] of Object.entries(payload.event)) if (value !== undefined && value !== null) call[key] = value;
+    calls.delete(id);
+    calls.set(id, call);
+    if (calls.size > 200) calls.delete(calls.keys().next().value);
+    return { ...payload, event: call };
+  }
   function onRuntimeMessage(message) {
     const runId = message?.run?.runId;
     if (!runId || !entries.has(runId)) return;
@@ -3529,7 +3687,9 @@ export function createAssistantDispatcher({
         // trigger reading (lib/skills/eval-trace.js; read with transcript format 'tools').
         if (isEvalRun(entry)) { try { recordEvalCalls(liveState, message.event || {}); } catch {} }
         if (entry.provider === 'opencode') { try { meterOpenCode(entry, liveState, message.event || {}); } catch (error) { log(runId, 'assistant:meter-error', error?.message || String(error)); } }
-        const summary = summarizeProviderEvent(message.event || {});
+        // Antigravity streams each message in small chunks: one transcript line per message, grown as it streams.
+        if (entry.provider === 'antigravity' && message.event?.eventType === 'agent_message_chunk') { growMessageLine(liveState, message.event.event); return; }
+        const summary = summarizeProviderEvent(entry.provider === 'antigravity' ? withAcpCall(liveState, message.event || {}) : message.event || {});
         // A guard decision (lib/worker-confinement.js) is also a note of the run: what was refused or warned about,
         // with its reason, so the brain and the panel see it without the transcript. The first twenty.
         if ((message.event?.eventType || message.event?.event?.type) === 'synabun.confinement') {
@@ -3537,15 +3697,7 @@ export function createAssistantDispatcher({
           if (count <= 20) entry.notes.push(`guard ${message.event.event?.action || 'refused'}: ${clip(summary, 300)}`);
           else if (count === 21) entry.notes.push('guard: more decisions follow in the transcript');
         }
-        if (summary) {
-          const line = `${iso(now()).slice(11, 19)} ${summary}`;
-          liveState.ring.push(line);
-          liveState.ringChars += line.length;
-          while (liveState.ring.length > limits.ringSize || liveState.ringChars > limits.ringChars) {
-            const removed = liveState.ring.shift();
-            liveState.ringChars -= removed?.length || 0;
-          }
-        }
+        if (summary) pushRingLine(liveState, `${iso(now()).slice(11, 19)} ${summary}`);
       }
       return;
     }
@@ -3556,13 +3708,16 @@ export function createAssistantDispatcher({
       persist({ force: true });
       emit(entry, 'tools_changed');
     }
-    entry.runtime = { status: run.status, turnState: run.turnState, stoppedReason: run.stoppedReason, error: run.error, claimedBy: run.claimedBy, providerSessionId: run.providerSessionId, providerThreadId: run.providerThreadId };
+    const runHome = run.antigravityHome || entry.resumeInfo?.antigravityHome || entry.antigravityHome || null;
+    entry.runtime = { status: run.status, turnState: run.turnState, stoppedReason: run.stoppedReason, error: run.error, claimedBy: run.claimedBy, providerSessionId: run.providerSessionId, providerThreadId: run.providerThreadId, ...(runHome ? { antigravityHome: runHome } : {}) };
     // A new provider identity is saved at once: a crash before the run's next write (its first alive mark comes up to
     // a minute later) would otherwise leave no session to resume.
     const newIdentity = (run.providerSessionId && run.providerSessionId !== entry.providerSessionId)
-      || (run.providerThreadId && run.providerThreadId !== entry.providerThreadId);
+      || (run.providerThreadId && run.providerThreadId !== entry.providerThreadId)
+      || (run.antigravityHome && run.antigravityHome !== entry.antigravityHome);
     if (run.providerSessionId) entry.providerSessionId = run.providerSessionId;
     if (run.providerThreadId) entry.providerThreadId = run.providerThreadId;
+    if (run.antigravityHome) entry.antigravityHome = run.antigravityHome;
     if (newIdentity) persist({ force: true });
     if (message.type === 'sidepanel:run-updated' && message.reason === 'started' && entry.state === 'starting') {
       entry.state = 'running';

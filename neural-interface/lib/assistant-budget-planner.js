@@ -27,7 +27,7 @@ import { dirname } from 'node:path';
 import { BUDGET_DEFAULT_USD, BUDGET_WARN_RATIO, roundUsd } from './assistant-budget.js';
 import {
   BUDGET_PROVIDERS, MIN_SPEND_USD, billingOf, bucketEligibility, budgetView, coverageOf, coversWork, divideLeft,
-  dryProviders, fallbackWeights, jevWeights, listPriceOf, priceLabel, providerSpendOf, rowOf, totalSpentOf,
+  dryProviders, fallbackWeights, isUnpricedProvider, jevWeights, listPriceOf, priceLabel, providerSpendOf, rowOf, totalSpentOf,
 } from './assistant-budget-split.js';
 
 export const SPLIT_REASONS = Object.freeze(['first_route', 'share_used_up', 'brain_turn', 'budget_changed', 'run_ended']);
@@ -156,13 +156,16 @@ export function createBudgetPlanner({
   function jevInput(id, { value, used, cov, eligible, brainInfo, cat, needs, task, reason, tasks }) {
     const rows = safe(() => accounts(), null);
     const prefs = safe(() => routing()?.preferences, {}) || {};
-    const savedRoutes = Object.entries(prefs).filter(([, pref]) => pref?.provider).map(([taskClass, pref]) => {
+    const savedRoutes = Object.entries(prefs).filter(([, pref]) => pref?.provider && !isUnpricedProvider(pref.provider)).map(([taskClass, pref]) => {
       const info = modelInfo(cat, pref.provider, pref.model || null, accountFor(pref.provider, rows, brainInfo));
       return { taskClass, provider: pref.provider, model: pref.model || null, effort: pref.effort || null, price: info.price, billing: info.billing };
     });
     const recent = safe(() => recentSpend(id), null) || {};
     const providers = {};
     for (const provider of BUDGET_PROVIDERS) {
+      // A provider no budget can hold (it reports no prices) is never asked about and never described: Jev's state
+      // stays the one its questions were tuned on (budget-judgments.ts).
+      if (isUnpricedProvider(provider)) continue;
       const own = providerSpendOf(used, provider);
       const account = accountFor(provider, rows, brainInfo);
       const routed = savedRoutes.filter((r) => r.provider === provider);
@@ -308,7 +311,8 @@ export function createBudgetPlanner({
     if (!id || !limited()) return true;
     let cov = coverage(id);
     if (coversWork(cov, { provider, forBrain, free })) return true;
-    if (cov.leftUsd < MIN_SPEND_USD || free) return false;
+    // No split gives an unpriced provider money: never a re-split (or a Jev request) for one.
+    if (cov.leftUsd < MIN_SPEND_USD || free || isUnpricedProvider(provider)) return false;
     const key = `${id}:${provider}:${forBrain ? 'brain' : 'runs'}`;
     const tried = needTries.get(key);
     const value = readSetting();

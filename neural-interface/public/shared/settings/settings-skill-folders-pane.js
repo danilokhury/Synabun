@@ -66,7 +66,7 @@ export async function refreshSkillChips(root) {
     const skill = byDir.get(chip.dataset.ccSkill);
     if (!skill || chip.style.pointerEvents === 'none') continue;
     const target = chip.dataset.ccTarget;
-    const installed = skill.installedTargets || { claude: !!skill.installed, codex: false, opencode: false };
+    const installed = skill.installedTargets || { claude: !!skill.installed, codex: false, opencode: false, antigravity: false };
     const now = chipState(skill.targetStates?.[target], !!installed[target]);
     chip.classList.toggle('on', now.on);
     chip.dataset.state = now.on ? 'on' : 'off';

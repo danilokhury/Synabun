@@ -27,9 +27,16 @@ if (hostedSidepanelId && host) {
       receivePath = panel.attachPathToOpencode;
       end = panel.endHostedOpenCodeSessions;
       defaults = () => ({ project: store.getState().cwd || '' });
+    } else if (provider === 'antigravity') {
+      const panel = await import('./ui-antigravity-panel.js');
+      await panel.toggleAntigravityPanel();
+      receivePath = panel.attachPathToAntigravity;
+      end = panel.endHostedAntigravitySessions;
+      // The active tab's project (the picker's hidden input holds '' until the project list has loaded).
+      defaults = panel.antigravityPanelDefaults;
     } else throw new Error('Unknown session provider');
-    const focus = () => document.querySelector('#cp-input, #cxp-input, .ocpv2-compose textarea')?.focus();
-    const title = document.querySelector('.cp-session-label, .cxp-session-label, .ocpv2-session-label');
+    const focus = () => document.querySelector('#cp-input, #cxp-input, .ocpv2-compose textarea, .agy-input')?.focus();
+    const title = document.querySelector('.cp-session-label, .cxp-session-label, .ocpv2-session-label, .agy-session-btn span');
     const syncTitle = () => host.title(hostedSidepanelId, title?.textContent?.trim());
     if (title) new MutationObserver(syncTitle).observe(title, { childList: true, subtree: true, characterData: true });
     syncTitle();

@@ -35,7 +35,7 @@ export function launchTools(selection) {
 export function toolsView(entry) {
   const selected = dispatchTools({ tools: entry.toolsRequested ?? undefined, provider: entry.provider, usesBrowser: entry.usesBrowser, taskClass: entry.taskClass });
   const current = requireToolList(resolveToolList(entry.tools ?? launchTools(selected), { source: 'runtime', provider: entry.provider }));
-  const label = entry.provider === 'claude-code' ? 'Claude Code' : entry.provider === 'codex' ? 'Codex' : entry.provider || 'This worker';
+  const label = entry.provider === 'claude-code' ? 'Claude Code' : entry.provider === 'codex' ? 'Codex' : entry.provider === 'opencode' ? 'OpenCode' : entry.provider === 'antigravity' ? 'Antigravity' : entry.provider || 'This worker';
   return { requested: entry.toolsRequested ?? null, groups: current.groups, added: selected.added, effect: current.effect, count: current.count, servers: entry.externalServers?.names || [], disabledServers: entry.externalServers?.disabled || [],
     note: current.effect === 'focus' ? `${label} reaches every SynaBun tool on demand; this list is its focus.` : 'Loads exactly these SynaBun groups, plus always-on tools and role/grant tools.' };
 }
@@ -47,5 +47,5 @@ export function dispatchInput(body) {
 }
 
 export function workerToolsLine(catalog = toolCatalogView()) {
-  return `SynaBun tools for workers: pass tools: [group ids] on agent_dispatch. Always there: ${catalog.alwaysOnTools.join(', ')}. With no tools a worker gets ${catalog.default.join(', ')}. Groups: ${catalog.groups.map(group => `${group.id} (${group.count})`).join(' · ')}. Host effect: ${Object.entries(catalog.effect).map(([host, effect]) => `${host}: ${effect}`).join(', ')}. Strict hosts load exactly those groups; Claude Code and Codex always reach every SynaBun tool on demand and the list only sets their focus. Never assume a Claude Code or Codex worker lacks a group you left out. Your MCP servers: name them as mcp:<name> in tools (or mcp:* for all allowed servers). Every unnamed external server is off for that worker on every supported provider. Available server refs: ${(catalog.servers || []).filter(row => row.selectable !== false).map(row => row.ref).join(', ') || 'none listed'}.`;
+  return `SynaBun tools for workers: pass tools: [group ids] on agent_dispatch. Always there: ${catalog.alwaysOnTools.join(', ')}. With no tools a worker gets ${catalog.default.join(', ')}. Groups: ${catalog.groups.map(group => `${group.id} (${group.count})`).join(' · ')}. Host effect: ${Object.entries(catalog.effect).map(([host, effect]) => `${host}: ${effect}`).join(', ')}. Strict hosts load exactly those groups; Claude Code and Codex always reach every SynaBun tool on demand and the list only sets their focus. Never assume a Claude Code or Codex worker lacks a group you left out. Your MCP servers: name them as mcp:<name> in tools (or mcp:* for all allowed servers). Every unnamed external server is off for that worker on Claude Code, Codex, OpenCode and Antigravity. Available server refs: ${(catalog.servers || []).filter(row => row.selectable !== false).map(row => row.ref).join(', ') || 'none listed'}.`;
 }

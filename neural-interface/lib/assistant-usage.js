@@ -20,6 +20,7 @@
 //      claudeModelUsageTokens(entry)   one SDK ModelUsage entry
 //      codexUsageTokens(usage)         → { tokens, mismatch } (Codex input includes cached, output includes reasoning)
 //      openCodeTokens(tokens)          already five classes
+//      antigravityUsageTokens(usage)   → { tokens, mismatch } (an ACP usage block; which classes nest is read off its total)
 //
 // 2. METERS  one per provider session. Each keeps a small JSON-safe state()
 //    the caller persists and hands back as { state }.
@@ -201,6 +202,34 @@ export function codexUsageTokens(usage) {
     reasoning: raw.reasoning_output_tokens,
   };
   return { tokens, mismatch: raw.total_tokens !== null && raw.total_tokens !== totalTokens(tokens) };
+}
+
+/**
+ * Antigravity usage: the ACP `usage` block of a prompt answer ({ inputTokens, outputTokens, thoughtTokens,
+ * cachedReadTokens, cachedWriteTokens, totalTokens }, camelCase or snake_case). ACP defines totalTokens as the sum
+ * of every type, so the classes are taken as disjoint; when the agent's own total says the cached tokens sit inside
+ * the input, or the thought tokens inside the output (the Gemini API's own convention), they are taken out. Which
+ * reading applied is the one whose sum is the total; `mismatch` when none is.
+ * @returns {{ tokens: object, mismatch: boolean }}
+ */
+export function antigravityUsageTokens(usage) {
+  const u = usage && typeof usage === 'object' ? usage : {};
+  const input = count(u.inputTokens ?? u.input_tokens);
+  const output = count(u.outputTokens ?? u.output_tokens);
+  const thought = count(u.thoughtTokens ?? u.thought_tokens ?? u.thinking_tokens ?? u.reasoningTokens);
+  const cacheRead = count(u.cachedReadTokens ?? u.cached_read_tokens ?? u.cache_read_tokens);
+  const cacheWrite = count(u.cachedWriteTokens ?? u.cached_write_tokens ?? u.cache_write_tokens);
+  const rawTotal = u.totalTokens ?? u.total_tokens;
+  const total = rawTotal === undefined || rawTotal === null || rawTotal === '' || !Number.isFinite(Number(rawTotal)) ? null : count(rawTotal);
+  const disjoint = { input, cacheWrite, cacheRead, output, reasoning: thought };
+  if (total === null) return { tokens: disjoint, mismatch: false };
+  const cachedInside = { ...disjoint, input: Math.max(0, input - cacheRead - cacheWrite) };
+  const thoughtInside = { ...disjoint, output: Math.max(0, output - thought) };
+  const bothInside = { ...cachedInside, output: thoughtInside.output };
+  for (const reading of [disjoint, cachedInside, thoughtInside, bothInside]) {
+    if (totalTokens(reading) === total) return { tokens: reading, mismatch: false };
+  }
+  return { tokens: disjoint, mismatch: true };
 }
 
 /** OpenCode message tokens ({ input, output, reasoning, cache:{ read, write } }): already five additive classes. */

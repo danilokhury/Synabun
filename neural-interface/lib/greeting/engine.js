@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════
 //
 // One greeting for every agent. When a person comes back and opens a fresh
-// session (the Assistant, the Claude Code / Codex / OpenCode panels, a
+// session (the Assistant, the Claude Code / Codex / OpenCode / Antigravity panels, a
 // terminal Claude Code session), SynaBun says in one or two sentences what
 // they were doing last here, what is open, and what finished or failed while
 // they were away. The harness writes it; the session's own model never greets,
@@ -34,7 +34,7 @@ import { agentNote, awayText, basisOf, buildFacts, clipLabel, decide, fallbackLi
 
 export const GREETING_EVENT = 'greeting:changed';
 const STATE_VERSION = 1;
-const SURFACE_AGENT = Object.freeze({ assistant: 'assistant', 'claude-panel': 'claude-code', 'claude-cli': 'claude-code', 'codex-panel': 'codex', 'opencode-panel': 'opencode' });
+const SURFACE_AGENT = Object.freeze({ assistant: 'assistant', 'claude-panel': 'claude-code', 'claude-cli': 'claude-code', 'codex-panel': 'codex', 'opencode-panel': 'opencode', 'antigravity-panel': 'antigravity' });
 
 const iso = (at) => new Date(at).toISOString();
 const ms = (value) => { const at = typeof value === 'number' ? value : Date.parse(value ?? ''); return Number.isFinite(at) ? at : null; };

@@ -15,7 +15,7 @@ import { studioErrorText } from './sx-errors.js';
 import { html, setHTML } from './sx-dom.js';
 import { BLOCK_CODES, planModel, resultModel } from './sx-plan.js';
 import { installTargets, wholeTarget } from './sx-subject.js';
-import { confirmations, installOutcome, parseTargetKey, reviewDestinations, assistantsOf, installedRuntimesOf, alsoInstallTargets, alsoInstallRevision } from './sx-install.js';
+import { confirmations, installOutcome, parseTargetKey, reviewDestinations, assistantsOf, installedRuntimesOf, alsoInstallTargets, alsoInstallRevision, alsoInstallScope } from './sx-install.js';
 
 // ── One install at a time per skill ──
 // Every surface that installs (the Publish tab's button, Review's card, the workspace banner) takes this lock for
@@ -47,7 +47,7 @@ function tell(skillId, busy) { for (const fn of _watchers) { try { fn({ skillId,
 /** The words of a target: "Claude Code · all projects", "Codex · project Repo", "Claude Code · account work". */
 export function targetWords(ctx, tg) {
   const { t } = ctx;
-  const runtime = t(`skillsStudio.runtime.${['claude', 'codex', 'opencode', 'agents'].includes(tg?.runtime) ? tg.runtime : 'claude'}`);
+  const runtime = t(`skillsStudio.runtime.${['claude', 'codex', 'opencode', 'antigravity', 'agents'].includes(tg?.runtime) ? tg.runtime : 'claude'}`);
   if (tg?.scope === 'project') return t('skillsStudio.publish.targetProject', { runtime, project: tg.projectLabel || ctx.projects?.find((p) => p.path === tg.projectPath)?.label || tg.projectPath || '' });
   if (tg?.accountId && tg.accountId !== 'default') return t('skillsStudio.publish.targetAccount', { runtime, account: tg.accountId });
   return t('skillsStudio.publish.targetUser', { runtime });
@@ -72,8 +72,11 @@ export function installedNow(ctx) { return installedRuntimesOf(ctx.data?.status 
  * (sx-install.js alsoInstallTargets), with their words. Empty when there is nothing to add.
  */
 export function alsoInstall(ctx, { skill, row }) {
-  const targets = alsoInstallTargets({ skill, row, targets: targetsNow(ctx), assistants: assistantsNow(ctx), installed: installedNow(ctx) });
-  return { targets: targets.map(wholeTarget), words: targets.map((t) => ctx.t(`skillsStudio.runtime.${t.runtime}`)).join(' · ') };
+  // A skill installed for one project only adds to that project (sx-install.js alsoInstallScope); its words say so.
+  const scope = alsoInstallScope(skill);
+  const project = scope.startsWith('project:') ? scope.slice(8) : null;
+  const targets = alsoInstallTargets({ skill, row, targets: targetsNow(ctx, { projects: project ? [project] : [] }), assistants: assistantsNow(ctx), installed: installedNow(ctx) });
+  return { targets: targets.map(wholeTarget), words: targets.map((t) => (project ? targetWords(ctx, t) : ctx.t(`skillsStudio.runtime.${t.runtime}`))).join(' · ') };
 }
 
 /**
@@ -137,7 +140,7 @@ export async function refreshSkillWorkspaces(ctx, skillId, { resetPublish = fals
 export function refreshWords(ctx, outcome) {
   const installed = installedNow(ctx);
   return (outcome?.refresh || []).map((x) => {
-    const kind = Array.isArray(installed) && ['claude', 'codex', 'opencode'].includes(x.runtime) && !installed.includes(x.runtime) ? 'not-installed' : x.kind;
+    const kind = Array.isArray(installed) && ['claude', 'codex', 'opencode', 'antigravity'].includes(x.runtime) && !installed.includes(x.runtime) ? 'not-installed' : x.kind;
     return ctx.t(`skillsStudio.publish.refresh.${kind}`, { runtime: ctx.t(`skillsStudio.runtime.${x.runtime}`) });
   });
 }
@@ -145,7 +148,7 @@ export function refreshWords(ctx, outcome) {
 /** Why a runtime's settings turn the skill off, in words (sx-plan.js eligibility reason). */
 export function eligibilityWords(ctx, runtime, reason) {
   const { t } = ctx;
-  const name = t(`skillsStudio.runtime.${['claude', 'codex', 'opencode', 'agents'].includes(runtime) ? runtime : 'claude'}`);
+  const name = t(`skillsStudio.runtime.${['claude', 'codex', 'opencode', 'antigravity', 'agents'].includes(runtime) ? runtime : 'claude'}`);
   const file = shortPath(reason?.file || '');
   const kind = ['codex-config', 'claude-override', 'claude-deny', 'opencode-permission', 'unreadable', 'invalid-json'].includes(reason?.kind) ? reason.kind : 'other';
   return t(`skillsStudio.publish.eligibility.reason.${kind}`, { runtime: name, file, pattern: reason?.pattern || '*', rule: reason?.rule || reason?.key || '' });

@@ -4,10 +4,24 @@ import { detectProject } from '../../mcp-server/dist/config.js';
 import { normalizeMemoryEvents, ingestMemoryEvents } from '../../mcp-server/dist/services/memory-sessions.js';
 import { maintenancePaused } from './memory-timers.js';
 
-export function queueMemoryCapture({host,sessionId,filePath,project,cwd}) {
-  if(!filePath || !sessionId || !['claude-code','codex'].includes(host))return;
+/** The hosts whose transcripts are captured from a file (OpenCode's rows are taken in session-cache-builder.js). */
+export const CAPTURE_HOSTS=Object.freeze(['claude-code','codex','antigravity']);
+
+/**
+ * `size`: the transcript's size now, when the caller knows it. A file already read to that size is left as it is
+ * (a pass over every Antigravity conversation would otherwise mark each one pending again).
+ */
+export function queueMemoryCapture({host,sessionId,filePath,project,cwd,size=null}) {
+  if(!filePath || !sessionId || !CAPTURE_HOSTS.includes(host))return;
+  if(size!=null) {
+    const row=getDb().prepare('SELECT file_path,byte_offset,status,cwd FROM memory_capture_files WHERE host=? AND session_id=?').get(host,sessionId);
+    if(row && row.status==='complete' && row.file_path===filePath && Number(row.byte_offset)===Number(size) && (row.cwd || null)===(cwd || null))return;
+  }
+  // An Antigravity conversation whose folder agy named only later is read again from its start: its events take the
+  // project (each step keeps its source id, so nothing is stored twice).
   getDb().prepare(`INSERT INTO memory_capture_files(host,session_id,file_path,project,cwd) VALUES(?,?,?,?,?)
-    ON CONFLICT(host,session_id) DO UPDATE SET file_path=excluded.file_path,project=excluded.project,cwd=excluded.cwd,status='pending',error=NULL`)
+    ON CONFLICT(host,session_id) DO UPDATE SET file_path=excluded.file_path,project=excluded.project,cwd=excluded.cwd,status='pending',error=NULL,
+      byte_offset=CASE WHEN excluded.host='antigravity' AND memory_capture_files.cwd IS NOT excluded.cwd THEN 0 ELSE memory_capture_files.byte_offset END`)
     .run(host,sessionId,filePath,cwd ? detectProject(cwd) : project || 'global',cwd || null);
 }
 

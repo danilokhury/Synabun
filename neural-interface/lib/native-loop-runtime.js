@@ -3,7 +3,7 @@ import { storedToolList, toolListRecord, readStoredToolListRecord } from './tool
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
-export const NATIVE_LOOP_PROFILES = new Set(['claude-code', 'codex', 'opencode']);
+export const NATIVE_LOOP_PROFILES = new Set(['claude-code', 'codex', 'opencode', 'antigravity']);
 
 export function isNativeLoopProfile(profile) {
   return NATIVE_LOOP_PROFILES.has(String(profile || ''));
@@ -22,6 +22,7 @@ function cleanDescriptor(record) {
     provider: record.provider,
     providerSessionId: record.providerSessionId || null,
     providerThreadId: record.providerThreadId || null,
+    ...(record.antigravityHome ? { antigravityHome: record.antigravityHome } : {}),
     source: record.source,
     focus: !!record.focus,
     status: record.status,
@@ -344,6 +345,7 @@ export class NativeLoopRuntime {
   _setIdentity(record, identity = {}) {
     const providerSessionId = identity.providerSessionId || identity.sessionId || null;
     const providerThreadId = identity.providerThreadId || identity.threadId || null;
+    const antigravityHome = typeof identity.antigravityHome === "string" && identity.antigravityHome ? identity.antigravityHome : null;
     let changed = false;
     if (providerSessionId && providerSessionId !== record.providerSessionId) {
       record.providerSessionId = providerSessionId;
@@ -351,6 +353,10 @@ export class NativeLoopRuntime {
     }
     if (providerThreadId && providerThreadId !== record.providerThreadId) {
       record.providerThreadId = providerThreadId;
+      changed = true;
+    }
+    if (antigravityHome && antigravityHome !== record.antigravityHome) {
+      record.antigravityHome = antigravityHome;
       changed = true;
     }
     if (changed) this._emit('sidepanel:run-updated', record, { reason: 'identity' });
@@ -397,6 +403,7 @@ export class NativeLoopRuntime {
       provider: state.profile,
       providerSessionId: null,
       providerThreadId: null,
+      antigravityHome: typeof state.antigravityHome === "string" && state.antigravityHome ? state.antigravityHome : null,
       source,
       focus,
       status: 'starting',
@@ -639,6 +646,7 @@ export class NativeLoopRuntime {
       browserTabId: state.browserTabId || null,
       suspendedAt: null,
       suspendReason: null,
+      ...(typeof state.antigravityHome === "string" && state.antigravityHome ? { antigravityHome: state.antigravityHome } : {}),
       resumes: (Number(record.resumes) || 0) + 1,
       resumedAt: iso(this.now()),
       buildPrompt,

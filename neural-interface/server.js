@@ -56,7 +56,7 @@ import { createEventLoopMonitor } from './lib/event-loop-monitor.js';
 import { createRulesetInstaller } from './lib/rulesets/installer.js';
 import { registerRulesetRoutes, registerLegacyRulesetRoutes } from './lib/rulesets/api.js';
 import { createPtyHostManager } from './lib/pty-host/manager.js';
-import { AGENT_HEADERS, hostNameOf, isAllowedHost, isAllowedWebSocketOrigin, parseCookies, refuseUpgrade } from './lib/http-guards.js';
+import { AGENT_HEADERS, hostNameOf, isAllowedHost, isAllowedWebSocketOrigin, parseCookies, refuseUpgrade, requireLocal as requireLoopbackSocket } from './lib/http-guards.js';
 import { createRequestGates, extraHostNames, hostsOf, savedValueOf, startedValueOf } from './lib/request-gate.js';
 import { createGitDiffRouter } from './lib/git-diff-api.js';
 import { gitRead, gitReadSync, setGitFallbackFolder, withGitFallback } from './lib/git-read.js';
@@ -192,6 +192,7 @@ import { codexReasoningEffort } from './lib/effort-levels.js';
 import {
   createClaudeNativeLoopAdapter,
   createCodexNativeLoopAdapter,
+  createAntigravityNativeLoopAdapter,
   createOpenCodeNativeLoopAdapter,
   openCodeRunConfigFor,
   openCodeRunEnvFor,
@@ -234,12 +235,21 @@ import { initBlobStore, blobGetNamespace, blobGet, blobPut, blobDelete, blobClea
 import { createUiBlobRouter } from './lib/ui-blob-api.js';
 import { memoCache, asyncPool } from './lib/memo-cache.js';
 import {
+  buildAntigravityMcpEntry,
   buildClaudeMcpEntry,
   buildCodexMcpKv,
-  buildGeminiMcpEntry,
+  describeAntigravityMcpEntry,
+  mergeAntigravityMcpConfig,
   mergeClaudeMcpConfig,
-  mergeGeminiMcpConfig,
+  parseAntigravityMcpConfig,
+  removeAntigravityMcpServer,
 } from './lib/mcp-client-config.js';
+import { ANTIGRAVITY_PANEL_CAPABILITIES, ANTIGRAVITY_WS_PATH, createAntigravityPanelBridge, validateRunHome } from './lib/antigravity/panel-bridge.js';
+import { migrateGeminiFiles, migrateUiStateValues as migrateGeminiUiState } from './lib/antigravity/migrate-gemini.js';
+import { groupSessionsByProject, listAntigravityModels, listAntigravitySessions } from './lib/antigravity/catalog.js';
+import { defaultAntigravityPolicy } from './lib/antigravity/policy.js';
+import { antigravityHomeDir, antigravityHomesRoot, pruneAntigravityHomes } from './lib/antigravity/home.js';
+import { antigravityStores, findUserConversation, parseAntigravityTranscript, readTranscriptText } from './lib/antigravity/transcripts.js';
 import {
   buildAgentDisallowedTools,
   agentAccessFrom,
@@ -304,7 +314,7 @@ import { registerSkillEvalRoutes } from './lib/skills/evals-api.js';
 import { evalConfinementSupport } from './lib/skills/eval-confinement.js';
 import { evalShellReadPaths, evalShellSupported, prepareEvalShell } from './lib/skills/eval-sandbox.js';
 import { urlProblem as skillSourceUrlProblem } from './public/shared/skills/ss-creation.js';
-import { claudeRowsToMessages, codexRolloutToMessages, opencodeRowsToMessages } from './lib/skills/creation-sources.js';
+import { antigravityMessagesToMessages, claudeRowsToMessages, codexRolloutToMessages, opencodeRowsToMessages } from './lib/skills/creation-sources.js';
 import { renderSkillBody } from './public/shared/skills/ss-args.js';
 import { claudeBoolean } from './public/shared/skills/ss-profiles.js';
 import { generateSessionTitle } from './lib/session-title-generator.js';
@@ -381,7 +391,7 @@ import {
   getFbActionBudget, getFbEngagementTier, FB_ACTION_TYPES,
 } from './lib/db.js';
 import {
-  rebuildClaudeCache, rebuildCodexCache, rebuildOpencodeCache,
+  rebuildClaudeCache, rebuildCodexCache, rebuildOpencodeCache, rebuildAntigravityCache,
 } from './lib/session-cache-builder.js';
 import {
   clearOpenCodeHistory,
@@ -2399,6 +2409,8 @@ async function runGracefulShutdown(reason) {
   try { keepRuns = _assistantDispatcher?.suspendForShutdown?.(reason) || []; } catch (err) { console.warn('  assistant suspend err:', err?.message); }
   try { await _nativeLoopRuntime?.shutdown(reason, { keep: keepRuns }); } catch (err) { console.warn('  native loop stop err:', err?.message); }
   try { stopAllIsolatedServes(); } catch (err) { console.warn('  isolated opencode stop err:', err?.message); }
+  // The Antigravity panel's `agy acp` processes (one per open panel socket).
+  try { await antigravityPanel.closeAll(); } catch (err) { console.warn('  antigravity panel stop err:', err?.message); }
   // The code editor's completion serve, and today's autocomplete counters.
   try { await editorCompletion.stop(); } catch (err) { console.warn('  editor completion stop err:', err?.message); }
 
@@ -3654,6 +3666,28 @@ function getClaudeSdkExecutable() {
     sdkExecutable: _readClaudeSkinConfig().sdkExecutable || null,
     isInsideSynabun,
   });
+}
+
+// Google Antigravity's CLI (`agy`): what the side panel (`agy acp`), the workers, the model list and the session list
+// start. The resolver's answer, as a program and the words before its own arguments: a binary as it is, a script
+// through node, a PowerShell script through PowerShell. A Windows command file (cmd.exe) cannot take words after the
+// fact, so it is reported as not runnable here (the terminal profile still runs it). null when none is installed.
+function antigravityLaunch() {
+  const found = cliResolver.launcher('antigravity');
+  _noteCliLookup('antigravity', found, 'Antigravity CLI');
+  const spec = found.spec;
+  if (!found.path || !spec || found.state === 'broken') return null;
+  if (spec.kind === 'direct') return { command: spec.launchPath || found.path, args: [], version: found.version || null, path: found.path };
+  if (spec.kind === 'node-script') return { command: process.execPath, args: [spec.launchPath], version: found.version || null, path: found.path };
+  if (spec.kind === 'powershell') return { command: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-File', spec.launchPath], version: found.version || null, path: found.path };
+  return null;
+}
+// The environment an Antigravity process gets: the PATH a new terminal has (agy runs the user's tools), never the
+// owner's live data paths or a brain's credential.
+function antigravityChildEnv() {
+  const env = withPathEnv({ ...process.env }, getAugmentedPath());
+  for (const key of ['SQLITE_DB_PATH', 'MEMORY_DATA_DIR', 'SYNABUN_BRAIN_TOKEN', 'SYNABUN_ASSISTANT_SESSION', 'SYNABUN_ASSISTANT_THREADS']) delete env[key];
+  return env;
 }
 
 // Codex: what the SDK and the app-server start. On Windows the native codex.exe
@@ -9023,6 +9057,30 @@ setInterval(() => {
 
 process.once('exit', stopAllIsolatedServes);
 
+// ── Antigravity side panel (/ws/antigravity) ──
+// One `agy acp` (Google's Antigravity ACP server) per panel socket, one ACP session per tab
+// (lib/antigravity/panel-bridge.js; docs/antigravity-sidepanel.md). Pasted attachments are written under the data
+// home for the agent to read; nothing reaches Antigravity's own folders.
+const antigravityPanel = createAntigravityPanelBridge({
+  resolveLaunch: async () => antigravityLaunch(),
+  childEnv: () => antigravityChildEnv(),
+  attachmentsRoot: resolve(DATA_HOME, 'data', 'antigravity', 'attachments'),
+  homesRoot: () => antigravityHomesRoot(DATA_HOME),
+  isRunHomeActive: (homeDir) => (_nativeLoopRuntime?.list({ activeOnly: true }) || []).some((run) => run.provider === 'antigravity' && run.antigravityHome === homeDir && (run.status === 'starting' || run.status === 'running')),
+  // Bypass keeps the browser policy: a test runner passes from inside a registered code project (lib/antigravity/bypass.js).
+  policyRoots: () => { try { return browserPolicyRoots(loadHookProjects()); } catch { return []; } },
+  clientInfo: { name: 'synabun', title: 'SynaBun', version: String(process.env.npm_package_version || '0') },
+  // Greeting (lib/greeting/): a prompt typed in the panel is noted, and the greeting a tab opened with is told to
+  // the model once, before the typed words (public/shared/agy/agy-greeting.js markers).
+  onHumanPrompt: ({ cwd, words }) => { try { _greeting?.noteActivity({ cwd: cwd || PACKAGE_ROOT, surface: 'antigravity-panel', words }); } catch {} },
+  greetingNote: (id, opts) => _greeting?.consumeNote(id, opts) || '',
+  // `/synabun …` reads the bundled skill, as the Codex panel's does (lib/skill-prompt-bridge.js).
+  expandPrompt: (text) => expandSynabunCodexSlashPrompt(text, join(SKILLS_SOURCE_DIR, 'synabun', 'SKILL.md')),
+  // A turn that ended may have added to the conversation's transcript: Resume search and memory sessions follow.
+  onTurnEnd: ({ sessionId }) => { try { refreshAntigravitySession(sessionId); } catch {} },
+  log: (line) => console.log(line),
+});
+
 function handleOpencodeV2Ws(ws) {
   _ocpV2WsClients.add(ws);
   ws._nativeLoopWindowId = null;
@@ -14372,9 +14430,15 @@ function isSidepanelClaimTokenRevoked(windowId, claimToken) {
 
 // Native provider run ledger. A sidepanel can attach after a page refresh or
 // after a schedule started while no Neural Interface window was open.
+function withSidepanelRunHome(run) {
+  if (!run || run.provider !== 'antigravity' || run.antigravityHome || !run.runId) return run;
+  const home = _assistantDispatcher?.get?.(run.runId)?.antigravityHome || null;
+  return home ? { ...run, antigravityHome: home } : run;
+}
+
 app.get('/api/sidepanel-runs', (req, res) => {
   const activeOnly = req.query.active === '1' || req.query.active === 'true';
-  res.json({ ok: true, runs: _nativeLoopRuntime?.list({ activeOnly }) || [] });
+  res.json({ ok: true, runs: (_nativeLoopRuntime?.list({ activeOnly }) || []).map(withSidepanelRunHome) });
 });
 
 app.post('/api/sidepanel-runs/release-window', (req, res) => {
@@ -14386,7 +14450,7 @@ app.post('/api/sidepanel-runs/release-window', (req, res) => {
 app.get('/api/sidepanel-runs/:runId', (req, res) => {
   const run = _nativeLoopRuntime?.get(req.params.runId);
   if (!run) return res.status(404).json({ error: 'Native sidepanel run not found' });
-  res.json({ ok: true, run });
+  res.json({ ok: true, run: withSidepanelRunHome(run) });
 });
 
 app.post('/api/sidepanel-runs/:runId/claim', (req, res) => {
@@ -14395,7 +14459,7 @@ app.post('/api/sidepanel-runs/:runId/claim', (req, res) => {
   }
   const result = _nativeLoopRuntime?.claim(req.params.runId, req.body?.windowId);
   if (!result?.ok) return res.status(result?.reason === 'not_found' ? 404 : 409).json(result || { ok: false });
-  res.json(result);
+  res.json(result.run ? { ...result, run: withSidepanelRunHome(result.run) } : result);
 });
 
 app.post('/api/sidepanel-runs/:runId/release', (req, res) => {
@@ -14533,7 +14597,7 @@ app.post('/api/loop/launch', async (req, res) => {
       // .claude/ set awaitingNext and attachLoopDriver() drives /clear + re-prompt; if those
       // hooks are absent (e.g. a claude-code task run under a hookless harness) the loop STALLS.
       // 'exec': harness-agnostic — attachExecLoopDriver() owns iteration via sentinel echoes, so
-      // OpenCode/Codex/Gemini self-advance. Facebook seeding must stay profile:opencode for this.
+      // OpenCode/Codex/Antigravity self-advance. Facebook seeding must stay profile:opencode for this.
       driverType: nativeRuntime ? 'native' : (cliProfile === 'claude-code' ? 'hook' : 'exec'),
       runtimeType: nativeRuntime ? 'native' : 'pty',
       surface: nativeRuntime ? 'sidepanel' : 'terminal',
@@ -14652,12 +14716,12 @@ app.post('/api/loop/launch', async (req, res) => {
       loopLog(terminalSessionId, 'launch:driver', 'attaching hook-driven loop driver (claude-code)');
       attachLoopDriver(terminalSessionId);
     } else {
-      // Codex/Gemini/other: spawn shell, server drives `<cli> exec` commands per iteration.
+      // Codex/Antigravity/other: spawn shell, server drives `<cli> exec` commands per iteration.
       // The driver invokes a platform-native wrapper that captures the CLI
       // status and emits a sentinel. Immune to PS1/PROMPT overrides.
       loopLog(terminalSessionId, 'launch:spawn', 'creating shell PTY for exec-driven CLI', { profile: cliProfile, cwd: loopCwd });
       createTerminalSession('shell', 120, 30, loopCwd, { extraEnv: loopExtraEnv, sessionId: terminalSessionId });
-      loopLog(terminalSessionId, 'launch:driver', 'attaching exec loop driver (codex/gemini/other)', { profile: cliProfile });
+      loopLog(terminalSessionId, 'launch:driver', 'attaching exec loop driver (codex/antigravity/other)', { profile: cliProfile });
       attachExecLoopDriver(terminalSessionId);
     }
 
@@ -14774,7 +14838,7 @@ app.post('/api/loop/stop', async (req, res) => {
 });
 
 // POST /api/loop/resolve-from-ancestors — process-tree fallback for MCP env loss.
-// The MCP server walks its ancestor PID chain (codex/opencode/gemini → shell PTY)
+// The MCP server walks its ancestor PID chain (codex/opencode/antigravity → shell PTY)
 // and POSTs the chain here. We match any PID against terminalSessions[*].pty.pid
 // and return that loop's browserSessionId/browserTabId. Layer B of the
 // defense-in-depth browser tab isolation fix.
@@ -15570,7 +15634,7 @@ async function launchScheduledLoop(schedule) {
     }
 
     // Native providers run headlessly in their durable provider conversation.
-    // Gemini and unsupported profiles retain the existing PTY drivers.
+    // Unsupported profiles retain the existing PTY drivers.
     let runDescriptor = null;
     if (nativeRuntime) {
       const presentation = resolveScheduleRunPresentation(
@@ -17742,6 +17806,8 @@ function systemActivitySources() {
       const blockers = getOpenCodeHistoryBlockers();
       return blockers.activeTurns + blockers.startingTurns;
     },
+    // A prompt running in an Antigravity panel tab (lib/antigravity/panel-bridge.js); dispatched runs are under assistant.
+    'antigravity-panel': () => antigravityPanel.turnsRunning(),
     'claude-cli': () => recentCliSessions(sessionRegistry),
     loop: () => {
       // A dispatched worker also runs in the native runtime: it is counted under assistant.
@@ -17770,7 +17836,9 @@ app.get('/api/system/activity', (req, res) => {
 const TOOL_DEFS = [
   { key: 'claude-code', cmd: 'claude',   versionArg: '--version', npm: '@anthropic-ai/claude-code' },
   { key: 'codex',       cmd: 'codex',    versionArg: '--version', npm: '@openai/codex' },
-  { key: 'gemini',      cmd: 'gemini',   versionArg: '--version', npm: '@google/gemini-cli' },
+  // Google's Antigravity CLI has no npm package: a Homebrew cask's newer version is what `brew outdated` says, and
+  // the CLI updates itself (`agy update`).
+  { key: 'antigravity', cmd: 'agy',      versionArg: '--version' },
   // npm's opencode-ai is OpenCode 1: OpenCode 2's newer version is what Homebrew says (a brew install) or what OpenCode
   // itself announces in its own interface.
   { key: 'opencode',    cmd: 'opencode', versionArg: '--version' },
@@ -17970,7 +18038,11 @@ async function checkToolVersions({ force = false } = {}) {
     || 'unknown';
   for (const [key, info] of Object.entries(results)) {
     const source = info.installed ? info.installSource : dominantSource;
-    info.installCommand = buildInstallCommand(key, source, { platform: process.platform });
+    // The Antigravity CLI: the command of the install its button runs here (Homebrew's cask on a Mac that has
+    // Homebrew, else Google's installer), so the banner never shows one command and runs another.
+    info.installCommand = key === 'antigravity' && info.install?.available
+      ? cliInstaller.manualCommand(key)
+      : buildInstallCommand(key, source, { platform: process.platform });
   }
 
   // A check started before a newer refresh must never publish its stale answer.
@@ -18039,7 +18111,7 @@ app.use('/api/cli/path', createCliPathApi({
   pathManager: cliPathManager, resolver: cliResolver, isGuestRequest, port: () => PORT,
   diagnostics: async () => {
     const fresh = await freshTerminalPath();
-    const statuses = await cliResolver.resolveAll(['claude-code', 'codex', 'opencode']);
+    const statuses = await cliResolver.resolveAll(['claude-code', 'codex', 'opencode', 'antigravity']);
     return { platform: process.platform, pathKey: Object.keys(fresh.env).find(key => key.toUpperCase() === 'PATH'),
       entries: fresh.entries, os: fresh.os, pathext: fresh.env.PATHEXT || fresh.env.PathExt || null,
       tools: Object.fromEntries(Object.entries(statuses).map(([tool, status]) => [tool, { path: status.path, launchPath: status.launchPath, ...cliPathManager.inspect(status) }])) };
@@ -19171,8 +19243,9 @@ app.put('/api/morelogin/config', (req, res) => {
 app.post('/api/morelogin/test', async (req, res) => {
   try {
     const status = await moreLogin.getMoreLoginStatus(_moreLoginOpts());
-    if (!status.installed) return res.json({ ok: false, error: 'MoreLogin desktop app is not installed.' });
+    if (!status.installed) return res.json({ ok: false, error: `MoreLogin desktop app was not found and nothing answers on port ${status.port}.` });
     if (!status.running) return res.json({ ok: false, error: `MoreLogin API not reachable on port ${status.port}. Open MoreLogin and enable its local API (Settings → API & MCP).` });
+    if (status.apiError) return res.json({ ok: false, error: status.apiError });
     res.json({ ok: true, port: status.port, profileCount: status.profileCount });
   } catch (err) {
     res.json({ ok: false, error: err.message });
@@ -19268,6 +19341,25 @@ function _normalizeMcpEntry(input) {
   return { command, args, env, url, type };
 }
 
+// ── Antigravity's MCP configuration (~/.gemini/config/mcp_config.json) ──
+// The one file `agy mcp add` writes and both the Antigravity CLI and app read: { mcpServers: { name: { command, args,
+// env, disabled } | { serverUrl, headers, disabled } } }. Antigravity creates it empty; an empty file reads as {}.
+function antigravityConfigDir() { return join(getHomePath(), '.gemini', 'config'); }
+function antigravityMcpConfigPath() { return join(antigravityConfigDir(), 'mcp_config.json'); }
+/** The parsed file ({} when missing or empty); throws on a file that is not a JSON object, so nothing overwrites it. */
+function readAntigravityMcpConfig() {
+  const path = antigravityMcpConfigPath();
+  if (!existsSync(path)) return {};
+  return parseAntigravityMcpConfig(readFileSync(path, 'utf8'));
+}
+function writeAntigravityMcpConfig(data) {
+  const path = antigravityMcpConfigPath();
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.synabun-${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  renameSync(tmp, path);
+}
+
 function _writeMoreLoginMcpToAgents(entry) {
   const targets = [];
   const home = getHomePath();
@@ -19283,18 +19375,16 @@ function _writeMoreLoginMcpToAgents(entry) {
       targets.push('Claude Code');
     }
   } catch (e) { console.warn('[morelogin] Claude register failed:', e.message); }
-  try { // Gemini (~/.gemini/settings.json)
-    const p = join(home, '.gemini', 'settings.json');
-    if (existsSync(p)) {
-      const data = JSON.parse(readFileSync(p, 'utf8') || '{}');
-      if (!data.mcpServers) data.mcpServers = {};
-      data.mcpServers[MORELOGIN_MCP_KEY] = entry.url
-        ? { url: entry.url, trust: true }
-        : { command: entry.command, args: entry.args || [], ...(entry.env ? { env: entry.env } : {}), trust: true };
-      writeFileSync(p, JSON.stringify(data, null, 2) + '\n', 'utf8');
-      targets.push('Gemini');
+  try { // Antigravity (~/.gemini/config/mcp_config.json, the CLI's and the app's): only where Antigravity has run
+    if (existsSync(antigravityConfigDir())) {
+      const data = readAntigravityMcpConfig();
+      data.mcpServers = { ...(data.mcpServers || {}), [MORELOGIN_MCP_KEY]: buildAntigravityMcpEntry(entry.url
+        ? { type: entry.type || 'http', url: entry.url }
+        : { command: entry.command, args: entry.args || [], env: entry.env }) };
+      writeAntigravityMcpConfig(data);
+      targets.push('Antigravity');
     }
-  } catch (e) { console.warn('[morelogin] Gemini register failed:', e.message); }
+  } catch (e) { console.warn('[morelogin] Antigravity register failed:', e.message); }
   try { // Codex (~/.codex/config.toml) — stdio only
     const p = join(home, '.codex', 'config.toml');
     if (existsSync(p) && entry.command) {
@@ -19332,13 +19422,11 @@ function _removeMoreLoginMcpFromAgents() {
     }
   } catch {}
   try {
-    const p = join(home, '.gemini', 'settings.json');
-    if (existsSync(p)) {
-      const data = JSON.parse(readFileSync(p, 'utf8') || '{}');
+    if (existsSync(antigravityMcpConfigPath())) {
+      const data = readAntigravityMcpConfig();
       if (data.mcpServers && data.mcpServers[MORELOGIN_MCP_KEY]) {
-        delete data.mcpServers[MORELOGIN_MCP_KEY];
-        writeFileSync(p, JSON.stringify(data, null, 2) + '\n', 'utf8');
-        targets.push('Gemini');
+        writeAntigravityMcpConfig(removeAntigravityMcpServer(data, MORELOGIN_MCP_KEY));
+        targets.push('Antigravity');
       }
     }
   } catch {}
@@ -21164,10 +21252,106 @@ app.get('/api/opencode/sessions', (req, res) => {
   }
 });
 
-// GET /api/gemini/sessions — stub (Gemini CLI has no known session storage)
-app.get('/api/gemini/sessions', (req, res) => {
-  const projects = loadHookProjects();
-  res.json({ projects: projects.map(p => ({ path: p.path, label: p.label || basename(p.path), total: 0, sessions: [] })) });
+// GET /api/antigravity/sessions — Antigravity's own conversations (ACP session/list on a short-lived `agy acp`),
+// grouped under the registered projects. A missing or signed-out CLI lists nothing and says why.
+let _antigravitySessionsCache = null; // { at, value }
+app.get('/api/antigravity/sessions', async (req, res) => {
+  try {
+    const projects = loadHookProjects();
+    const limit = Math.min(parseInt(req.query.limit) || 30, 100);
+    const offset = parseInt(req.query.offset) || 0;
+    const search = (req.query.search || '').toString();
+    const fresh = _antigravitySessionsCache && Date.now() - _antigravitySessionsCache.at < 15_000 && req.query.refresh !== '1';
+    const listed = fresh ? _antigravitySessionsCache.value : await listAntigravitySessions({ launch: antigravityLaunch(), env: antigravityChildEnv() });
+    if (!fresh && !listed.error) _antigravitySessionsCache = { at: Date.now(), value: listed };
+    res.json({
+      projects: groupSessionsByProject(listed.sessions, projects, { targetProject: req.query.project || null, search, offset, limit }),
+      ...(listed.error ? { error: listed.error } : {}),
+      ...(listed.authRequired ? { authRequired: true } : {}),
+      ...(listed.cliMissing ? { cliMissing: true } : {}),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/antigravity/models — what an ACP session offers SynaBun (lib/antigravity/catalog.js: a short-lived `agy acp`
+// in a throwaway home; `agy models` only when ACP fails), kept for a minute.
+// { models: [{ id, label, efforts?, default? }], source: 'live' | 'stale' | 'unavailable', via, signedIn?, tier?, error? }
+let _antigravityModelsCache = null; // { at, value }
+app.get('/api/antigravity/models', async (req, res) => {
+  try {
+    const age = _antigravityModelsCache ? Date.now() - _antigravityModelsCache.at : Infinity;
+    if (age < 60_000 && req.query.refresh !== '1') return res.json(_antigravityModelsCache.value);
+    const value = await listAntigravityModels({ launch: antigravityLaunch(), env: antigravityChildEnv() });
+    if (value.source === 'live') {
+      // A different list than the one the Assistant's catalog last read: its rows are rebuilt (as for Claude's).
+      const ids = (rows) => (rows || []).map((row) => `${row.id}${row.default ? '*' : ''}`).join('\n');
+      const changed = _antigravityModelsCache && ids(_antigravityModelsCache.value.models) !== ids(value.models);
+      _antigravityModelsCache = { at: Date.now(), value };
+      if (changed) _assistantCatalog?.refresh?.().catch(() => {});
+    }
+    else if (_antigravityModelsCache?.value?.models?.length) return res.json({ ..._antigravityModelsCache.value, source: 'stale', error: value.error });
+    res.json(value);
+  } catch (err) {
+    res.status(500).json({ models: [], source: 'unavailable', error: err.message });
+  }
+});
+
+// POST /api/antigravity/policy — the question the PreToolUse hook of a SynaBun Antigravity home asks before every tool
+// call of a brain or run SynaBun started (lib/antigravity/policy-hook.mjs → lib/antigravity/policy.js). The home's
+// token names who registered the checker; an unknown token is refused. Loopback socket only (requireLocal), and only
+// { token, payload }: the answer is { decision: 'deny' | 'ask' | 'allow', reason? }.
+app.post('/api/antigravity/policy', requireLoopbackSocket, express.json({ limit: '4mb' }), async (req, res) => {
+  const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+  try {
+    res.json(await defaultAntigravityPolicy.decide(body.token, body.payload && typeof body.payload === 'object' ? body.payload : {}));
+  } catch (err) {
+    res.json({ decision: 'deny', reason: `SynaBun could not check this call (${err?.message || err}).` });
+  }
+});
+/** Where the hook of a SynaBun Antigravity home reaches this server (loopback, the port this server listens on). */
+function antigravityPolicyUrl() { return `http://127.0.0.1:${PORT}/api/antigravity/policy`; }
+/** The home of an Antigravity brain or run (lib/antigravity/home.js), under the data home's runtime folder. */
+function antigravityHomeFor(kind, id) { return antigravityHomeDir(antigravityHomesRoot(DATA_HOME), kind, id); }
+
+// Antigravity's conversations as SynaBun keeps them (lib/antigravity/transcripts.js, read only): the user's own go
+// into Resume's index (session_cache + session_fts, provider antigravity), every one, SynaBun's brain and run homes
+// included, into memory capture (lib/memory-session-capture.js). A pass at start, one after a panel turn ends (that
+// conversation only, a moment later so agy has written its last step), one every five minutes, and a fresh one
+// before Resume or Skills Studio searches them (at most every 15 s).
+function antigravitySessionStores({ userOnly = false } = {}) {
+  return antigravityStores({ homesRoot: userOnly ? null : antigravityHomesRoot(DATA_HOME) });
+}
+let _antigravityCacheAt = 0;
+function refreshAntigravityCatalog({ force = false } = {}) {
+  if (!force && Date.now() - _antigravityCacheAt < 15_000) return null;
+  _antigravityCacheAt = Date.now();
+  try { return rebuildAntigravityCache({ stores: antigravitySessionStores() }); }
+  catch (err) { console.warn('  Session cache (antigravity) error:', err.message); return null; }
+}
+const _antigravityRefreshTimers = new Map();
+function refreshAntigravitySession(sessionId) {
+  if (typeof sessionId !== 'string' || !sessionId) return;
+  clearTimeout(_antigravityRefreshTimers.get(sessionId));
+  _antigravityRefreshTimers.set(sessionId, setTimeout(() => {
+    _antigravityRefreshTimers.delete(sessionId);
+    try { rebuildAntigravityCache({ stores: antigravitySessionStores({ userOnly: true }), only: sessionId }); }
+    catch (err) { console.warn('  Session cache (antigravity) error:', err.message); }
+  }, 1500));
+  _antigravityRefreshTimers.get(sessionId).unref?.();
+}
+/** SynaBun's own MCP entry for an Antigravity home: the registration the Setup card writes (stdio, this install). */
+function antigravitySynabunMcpEntry() {
+  const { envPath, mcpCommand, mcpArgs } = getMcpPaths();
+  return { command: mcpCommand, args: mcpArgs, env: { DOTENV_PATH: envPath, SYNABUN_DATA_HOME: DATA_HOME, MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data') } };
+}
+
+// GET /api/antigravity/panel — what the side panel's socket offers on this server (lib/antigravity/panel-bridge.js).
+// Admin-only like the socket itself, so the page tells a refused socket (403 here too: a guest, the automation
+// browser) from a server that predates it (404: it needs a restart) instead of reconnecting forever.
+app.get('/api/antigravity/panel', (req, res) => {
+  res.json({ ok: true, socket: ANTIGRAVITY_WS_PATH, capabilities: [...ANTIGRAVITY_PANEL_CAPABILITIES], live: antigravityPanel.liveCount() });
 });
 
 // ── Hybrid session content search (FTS5 + semantic re-rank for Claude) ──
@@ -21203,6 +21387,9 @@ app.get('/api/session-search', async (req, res) => {
         .filter((session) => !projectPath || (session.projectPath && samePath(session.projectPath, projectPath)));
       codexCatalogById = new Map(codexCatalog.map((session) => [session.sessionId, session]));
     }
+
+    // Antigravity's index follows its transcripts (refreshAntigravityCatalog: at most every 15 s).
+    if (provider === 'antigravity') refreshAntigravityCatalog();
 
     // 1. FTS5 substring hits
     const ftsRows = searchSessionFts(q, { provider, project: projectFilter, limit: limit * 2 });
@@ -22252,7 +22439,7 @@ app.delete('/api/claude-code/mcp', (req, res) => {
 });
 
 // ═══════════════════════════════════════════
-// Multi-Provider MCP Setup (Gemini, Codex)
+// Multi-Provider MCP Setup (Antigravity, Codex)
 // ═══════════════════════════════════════════
 
 // ── Minimal TOML helpers (for Codex config.toml) ──
@@ -22411,51 +22598,43 @@ function buildCodexMcpCliCommand() {
   return `codex mcp add SynaBun ${envArgs} -- node ${JSON.stringify(definition.args[0])}`;
 }
 
-// ── Gemini MCP endpoints ──
+// ── Antigravity MCP endpoints ──
+// ~/.gemini/config/mcp_config.json (lib/mcp-client-config.js): the file the Antigravity CLI and app share. A file that
+// is not a JSON object is never overwritten: the request fails and says so.
 
-app.get('/api/setup/gemini/mcp', (req, res) => {
+app.get('/api/setup/antigravity/mcp', (req, res) => {
   try {
-    const settingsPath = join(getHomePath(), '.gemini', 'settings.json');
-    if (!existsSync(settingsPath)) return res.json({ ok: true, connected: false });
-    const data = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-    const connected = !!(data.mcpServers && data.mcpServers.SynaBun);
-    res.json({ ok: true, connected });
+    const path = antigravityMcpConfigPath();
+    if (!existsSync(path)) return res.json({ ok: true, connected: false, path });
+    const data = readAntigravityMcpConfig();
+    const entry = data.mcpServers?.SynaBun;
+    res.json({ ok: true, connected: !!entry && entry.disabled !== true, disabled: entry?.disabled === true, path });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/api/setup/gemini/mcp', (req, res) => {
+app.post('/api/setup/antigravity/mcp', (req, res) => {
   try {
-    const dir = join(getHomePath(), '.gemini');
-    const settingsPath = join(dir, 'settings.json');
     const { envPath, mcpCommand, mcpArgs } = getMcpPaths();
-    mkdirSync(dir, { recursive: true });
-    let data = {};
-    try { data = JSON.parse(readFileSync(settingsPath, 'utf-8')); } catch {}
-    data = mergeGeminiMcpConfig(data, {
+    const data = mergeAntigravityMcpConfig(readAntigravityMcpConfig(), {
       command: mcpCommand,
       args: mcpArgs,
       env: { DOTENV_PATH: envPath, SYNABUN_DATA_HOME: DATA_HOME, MEMORY_DATA_DIR: resolve(DATA_HOME, 'mcp-data') },
     });
-    writeFileSync(settingsPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
-    res.json({ ok: true, message: 'SynaBun MCP registered in Gemini CLI. Restart Gemini to connect.', rules: syncRulesWithMcp('gemini', 'install', req.body) });
+    writeAntigravityMcpConfig(data);
+    res.json({ ok: true, message: 'SynaBun MCP registered in Antigravity. New Antigravity sessions connect to it.', rules: syncRulesWithMcp('antigravity', 'install', req.body) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.delete('/api/setup/gemini/mcp', (req, res) => {
+app.delete('/api/setup/antigravity/mcp', (req, res) => {
   try {
-    const settingsPath = join(getHomePath(), '.gemini', 'settings.json');
-    if (!existsSync(settingsPath)) return res.json({ ok: true, rules: syncRulesWithMcp('gemini', 'remove') });
-    const data = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-    if (data.mcpServers && data.mcpServers.SynaBun) {
-      delete data.mcpServers.SynaBun;
-      if (Object.keys(data.mcpServers).length === 0) delete data.mcpServers;
-      writeFileSync(settingsPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
-    }
-    res.json({ ok: true, message: 'SynaBun MCP removed from Gemini CLI.', rules: syncRulesWithMcp('gemini', 'remove') });
+    if (!existsSync(antigravityMcpConfigPath())) return res.json({ ok: true, rules: syncRulesWithMcp('antigravity', 'remove') });
+    const data = readAntigravityMcpConfig();
+    if (data.mcpServers && data.mcpServers.SynaBun) writeAntigravityMcpConfig(removeAntigravityMcpServer(data));
+    res.json({ ok: true, message: 'SynaBun MCP removed from Antigravity.', rules: syncRulesWithMcp('antigravity', 'remove') });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -22516,11 +22695,11 @@ app.get('/api/setup/status', (req, res) => {
     } catch {}
     claude.cliCommand = claudeMcpAddCommand(mcpPaths);
 
-    // Gemini
-    let gemini = { connected: false };
+    // Antigravity (~/.gemini/config/mcp_config.json)
+    let antigravity = { connected: false };
     try {
-      const gj = JSON.parse(readFileSync(join(home, '.gemini', 'settings.json'), 'utf-8'));
-      gemini.connected = !!(gj.mcpServers && gj.mcpServers.SynaBun);
+      const entry = readAntigravityMcpConfig().mcpServers?.SynaBun;
+      antigravity.connected = !!entry && entry.disabled !== true;
     } catch {}
 
     // Codex
@@ -22540,7 +22719,7 @@ app.get('/api/setup/status', (req, res) => {
     let rules = null;
     try { rules = rulesetInstaller.status(); } catch (err) { rules = { ok: false, error: err.message }; }
 
-    res.json({ ok: true, claude, gemini, codex, opencode, rules, paths: { mcpIndexPath, envPath, mcpCommand, mcpArgs } });
+    res.json({ ok: true, claude, antigravity, codex, opencode, rules, paths: { mcpIndexPath, envPath, mcpCommand, mcpArgs } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -22640,7 +22819,7 @@ skillsService = createSkillsService({
   // its skill hints); invite guests do not (broadcastSync keeps `skills:` to the owner).
   broadcast: (event) => broadcastSync({ type: 'skills:changed', event }),
   // Which assistants are installed here (the CLI resolver), for the default of "My assistants" (Settings → Skills).
-  installedRuntimes: () => ({ claude: cliFoundForWarmup('claude-code'), codex: cliFoundForWarmup('codex'), opencode: cliFoundForWarmup('opencode') }),
+  installedRuntimes: () => ({ claude: cliFoundForWarmup('claude-code'), codex: cliFoundForWarmup('codex'), opencode: cliFoundForWarmup('opencode'), antigravity: cliFoundForWarmup('antigravity') }),
   runtimeChecks: skillsRuntimeChecks,
   operationsOptions: { notify: (item) => {
     const session = _assistantRuntime?.listSessions?.().find((s) => s.status !== 'ended');
@@ -22848,9 +23027,11 @@ function skillBrowserAvailability() {
     const unreadable = browserConfigUnreadable(cfg);
     if (unreadable) return { available: false, reason: `The browser settings cannot be read (${unreadable}): fix them in Settings → Browser.` };
     if (cfg.connectMode === 'morelogin') {
-      let installed = false;
-      try { installed = !!moreLogin.isMoreLoginInstalled().installed; } catch { installed = false; }
-      return installed ? { available: true, reason: null } : { available: false, reason: 'MoreLogin is the default browser (Settings → Browser) and it is not installed.' };
+      // The exe in a known folder, or the local API answered lately (an install in a custom folder). This is read
+      // synchronously, so a miss refreshes the answer in the background for the next call.
+      const installed = moreLogin.isMoreLoginPresent();
+      if (!installed) moreLogin.probeMoreLoginApi({ savedCfg: cfg, timeout: 1500 }).catch(() => {});
+      return installed ? { available: true, reason: null } : { available: false, reason: 'MoreLogin is the default browser (Settings → Browser) and it was not found: its app is in no known folder and its local API does not answer.' };
     }
     if ([...browserSessions.values()].some((s) => s?.context)) return { available: true, reason: null };
     if (findBrowserExecutable(cfg.channel)) return { available: true, reason: null };
@@ -22941,6 +23122,19 @@ async function skillSourceSessions({ provider, project = null, q = '', limit = 4
         out.push({ provider, sessionId: row.id, title, project: proj.path, projectLabel: proj.label || basename(proj.path), modified: row.time_updated ? new Date(row.time_updated).toISOString() : null, messages: Number(row.message_count) || 0 });
       }
     }
+  } else if (provider === 'antigravity') {
+    // The user's own Antigravity conversations (the panel's and a terminal agy's), as Resume's index keeps them,
+    // titled as Antigravity titles them (refreshAntigravityCatalog).
+    refreshAntigravityCatalog();
+    for (const entry of listSessionCache('antigravity', { limit: 100000 })) {
+      if (entry.deleted || !entry.project_path) continue;
+      const dir = resolve(entry.project_path);
+      const proj = projects.find((p) => isInside(resolve(p.path), dir, { allowRoot: true }));
+      if (!proj) continue;
+      const title = String(entry.first_prompt || '');
+      if (search && !title.toLowerCase().includes(search) && !String(entry.session_id).toLowerCase().includes(search)) continue;
+      out.push({ provider, sessionId: entry.session_id, title, project: proj.path, projectLabel: proj.label || basename(proj.path), modified: entry.modified || null, messages: Number(entry.message_count) || 0 });
+    }
   }
   return out.sort((a, b) => String(b.modified || '').localeCompare(String(a.modified || ''))).slice(0, Math.max(1, Math.min(100, Number(limit) || 40)));
 }
@@ -22948,7 +23142,8 @@ async function skillSourceSessions({ provider, project = null, q = '', limit = 4
 /**
  * One session transcript as messages, read the way each runtime keeps it: Claude Code's transcript inside a
  * registered project's folder (lib/path-confine.js findSessionTranscript), Codex's rollout inside its account's home,
- * OpenCode's rows of its database. Bounded: the first messages and the last ones of a very long session.
+ * OpenCode's rows of its database, Antigravity's transcript in the user's own ~/.gemini. Bounded: the first messages
+ * and the last ones of a very long session.
  */
 async function skillSourceConversation({ provider, sessionId, project = null }) {
   const keep = (list, m) => { list.push(m); if (list.length > 2400) list.splice(300, list.length - 2100); };
@@ -22990,6 +23185,16 @@ async function skillSourceConversation({ provider, sessionId, project = null }) 
     if (!session) throw Object.assign(new Error('That OpenCode session was not found.'), { status: 404, code: 'source_not_found' });
     const rows = db.prepare(`SELECT type, data FROM session_message WHERE session_id = ? AND type IN ('user', 'assistant') ORDER BY seq ASC LIMIT 5000`).all(sessionId);
     return { title: session.title || '', project, messages: opencodeRowsToMessages(rows) };
+  }
+  if (provider === 'antigravity') {
+    // The transcript in the user's own Antigravity folder (~/.gemini/antigravity-cli/brain/<id>/…), read as
+    // lib/antigravity/transcripts.js reads it: no link followed, bounded; never the model's reasoning.
+    const found = findUserConversation(sessionId);
+    if (!found) throw Object.assign(new Error('That Antigravity conversation was not found.'), { status: 404, code: 'source_not_found' });
+    const parsed = parseAntigravityTranscript(readTranscriptText(found.transcript));
+    const messages = [];
+    for (const m of antigravityMessagesToMessages(parsed.messages)) keep(messages, m);
+    return { title: found.title || parsed.firstPrompt || '', project: found.cwd || project, messages };
   }
   throw Object.assign(new Error('Unknown provider.'), { status: 400, code: 'source_failed' });
 }
@@ -23078,7 +23283,8 @@ function getOpenCodeCommandDir() {
   return xdgDefault;
 }
 
-const SKILL_TARGETS = /** @type {const} */ (['claude', 'codex', 'opencode']);
+// Antigravity reads its user skills from ~/.gemini/config/skills (lib/skills/roots.js), installed like the others.
+const SKILL_TARGETS = /** @type {const} */ (['claude', 'codex', 'opencode', 'antigravity']);
 
 /** Where the old prompt / command bridge of a skill is (Codex, OpenCode), or null (Claude Code never had one). */
 function legacyBridgePath(target, skillName) {
@@ -23340,6 +23546,7 @@ function listAvailableSkills() {
     claude: isSkillInstalled('claude', dirName),
     codex: isSkillInstalled('codex', dirName),
     opencode: isSkillInstalled('opencode', dirName),
+    antigravity: isSkillInstalled('antigravity', dirName),
   });
   // What each runtime has of it: a native skill folder ('native'; 'modified' when changed since SynaBun installed
   // it; 'other' when it is not SynaBun's), and an old bridge not moved yet. `installedTargets` stays the one flag
@@ -23724,6 +23931,11 @@ app.post('/api/sidepanel/kill-session', async (req, res) => {
           killed = true;
         }
       }
+    } else if (provider === 'antigravity') {
+      // An Antigravity session lives in the `agy acp` of the panel socket that opened it, which ends with that
+      // socket: nothing outlives a closed panel, so there is nothing to kill here. Its conversation stays in
+      // Antigravity's own history (Resume lists it).
+      killed = false;
     } else if (provider === 'opencode') {
       // OpenCode sessions live on the OpenCode SDK server, not in an orphan
       // map — DELETE them via the proxy.
@@ -25276,7 +25488,7 @@ app.get('/api/mcp/platforms', (req, res) => {
     claudeCode: existsSync(join(home, '.claude.json')) || existsSync(join(home, '.claude')),
     opencode: existsSync(getOpencodeConfigDir()),
     codex: existsSync(join(home, '.codex')),
-    gemini: existsSync(join(home, '.gemini')),
+    antigravity: existsSync(antigravityConfigDir()) || existsSync(join(home, '.gemini', 'antigravity-cli')),
   });
 });
 
@@ -25393,7 +25605,7 @@ app.post('/api/mcp/install/github', async (req, res) => {
 });
 
 // GET /api/mcp/installed-all — unified view of every externally-installed MCP
-// across Claude Code / OpenCode / Codex / Gemini + SynaBun's registry + Claude Code plugins.
+// across Claude Code / OpenCode / Codex / Antigravity + SynaBun's registry + Claude Code plugins.
 // Excludes SynaBun's built-in tool-group servers (they're baked in, not "installed").
 app.get('/api/mcp/installed-all', (req, res) => {
   try {
@@ -25440,17 +25652,17 @@ app.get('/api/mcp/installed-all', (req, res) => {
       }
     } catch {}
 
-    // Gemini
+    // Antigravity (~/.gemini/config/mcp_config.json: a remote server is `serverUrl`)
     try {
-      const p = join(home, '.gemini', 'settings.json');
-      if (existsSync(p)) {
-        const data = JSON.parse(readFileSync(p, 'utf-8'));
+      if (existsSync(antigravityMcpConfigPath())) {
+        const data = readAntigravityMcpConfig();
         for (const [name, cfg] of Object.entries(data.mcpServers || {})) {
-          touch(name, 'gemini', {
-            transport: cfg.type || (cfg.url ? 'http' : 'stdio'),
-            command: cfg.command || null,
-            args: cfg.args || null,
-            url: cfg.url || null,
+          const seen = describeAntigravityMcpEntry(cfg);
+          touch(name, 'antigravity', {
+            transport: seen.transport,
+            command: seen.command || null,
+            args: seen.args?.length ? seen.args : null,
+            url: seen.url || null,
           });
         }
       }
@@ -25666,16 +25878,11 @@ async function internalMcpSync({ name, config, platforms }) {
         content = tomlUpsertSection(content, `mcp_servers.${name}`, kvPairs);
         writeFileSync(configPath, content, 'utf-8');
         results.codex = 'ok';
-      } else if (p === 'gemini') {
-        const dir = join(home, '.gemini');
-        const settingsPath = join(dir, 'settings.json');
-        mkdirSync(dir, { recursive: true });
-        let data = {};
-        try { data = JSON.parse(readFileSync(settingsPath, 'utf-8')); } catch {}
-        if (!data.mcpServers) data.mcpServers = {};
-        data.mcpServers[name] = buildGeminiMcpEntry(config);
-        writeFileSync(settingsPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
-        results.gemini = 'ok';
+      } else if (p === 'antigravity') {
+        const data = readAntigravityMcpConfig();
+        data.mcpServers = { ...(data.mcpServers || {}), [name]: buildAntigravityMcpEntry(config) };
+        writeAntigravityMcpConfig(data);
+        results.antigravity = 'ok';
       }
     } catch (err) {
       results[p] = `error: ${err.message}`;
@@ -25733,17 +25940,12 @@ app.delete('/api/mcp/sync', (req, res) => {
         }
         results.codex = 'ok';
 
-      } else if (p === 'gemini') {
-        const settingsPath = join(home, '.gemini', 'settings.json');
-        if (existsSync(settingsPath)) {
-          const data = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-          if (data.mcpServers?.[name]) {
-            delete data.mcpServers[name];
-            if (Object.keys(data.mcpServers).length === 0) delete data.mcpServers;
-            writeFileSync(settingsPath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
-          }
+      } else if (p === 'antigravity') {
+        if (existsSync(antigravityMcpConfigPath())) {
+          const data = readAntigravityMcpConfig();
+          if (data.mcpServers?.[name]) writeAntigravityMcpConfig(removeAntigravityMcpServer(data, name));
         }
-        results.gemini = 'ok';
+        results.antigravity = 'ok';
       }
     } catch (err) {
       results[p] = `error: ${err.message}`;
@@ -26160,9 +26362,11 @@ const CLI_CONFIG_PATH = resolve(DATA_HOME, 'data', 'cli-config.json');
 const CLI_DEFAULTS = {
   'claude-code': { command: 'claude' },
   'codex':       { command: 'codex' },
-  'gemini':      { command: 'gemini' },
+  'antigravity': { command: 'agy' },
   'opencode':    { command: 'opencode' },
 };
+// Profiles SynaBun no longer drives: a path saved for one (Gemini CLI, replaced by Antigravity) is never a profile.
+const RETIRED_CLI_PROFILES = new Set(['gemini']);
 
 // Parsed cli-config.json keyed by mtime — every terminal spawn resolves its
 // profile through here, so skip the read + parse when the file is unchanged.
@@ -26175,7 +26379,9 @@ function loadCliConfig() {
     if (!_cliConfigCache || _cliConfigCache.mtimeMs !== mtimeMs) {
       _cliConfigCache = { mtimeMs, raw: JSON.parse(readFileSync(CLI_CONFIG_PATH, 'utf-8')) };
     }
-    return { ...CLI_DEFAULTS, ...structuredClone(_cliConfigCache.raw) };
+    const saved = structuredClone(_cliConfigCache.raw);
+    for (const retired of RETIRED_CLI_PROFILES) delete saved?.[retired];
+    return { ...CLI_DEFAULTS, ...saved };
   } catch { return { ...CLI_DEFAULTS }; }
 }
 
@@ -26196,7 +26402,7 @@ const SHELL_PROFILE = { shell: DEFAULT_SHELL, args: interactiveShellArgs(), env:
 /**
  * Build terminal profile config dynamically from cli-config.json.
  * Re-reads config each call so changes take effect without restart.
- * @param {string} profileId - CLI profile ID (e.g. 'claude-code', 'codex', 'gemini', 'shell')
+ * @param {string} profileId - CLI profile ID (e.g. 'claude-code', 'codex', 'antigravity', 'shell')
  * @param {Object} [opts] - Optional overrides
  * @param {string} [opts.model] - Model flag for CLIs that support it (e.g. claude --model sonnet)
  */
@@ -26219,6 +26425,8 @@ function getTerminalProfile(profileId, opts = {}) {
     cmd = `${cmd} resume ${terminalArgument(opts.resume, DEFAULT_SHELL)}`;
   } else if (opts.resume && profileId === 'opencode') {
     cmd = `${cmd} -s ${terminalArgument(opts.resume, DEFAULT_SHELL)}`;
+  } else if (opts.resume && profileId === 'antigravity') {
+    cmd = `${cmd} --conversation ${terminalArgument(opts.resume, DEFAULT_SHELL)}`;
   }
   // Append model flag for CLIs that support it
   else if (opts.model) {
@@ -26236,7 +26444,7 @@ function getTerminalProfile(profileId, opts = {}) {
     const modelMap = {
       'claude-code': (m) => `${cmd} --model ${m}`,
       'codex':       (m) => `${cmd} --model ${m}`,
-      'gemini':      (m) => `${cmd} --model ${m}`,
+      'antigravity': (m) => `${cmd} --model ${m}`,
       // OpenCode's terminal app has no --model (it prints its help and exits): the model is picked in it.
       'opencode':    () => cmd,
     };
@@ -26254,6 +26462,9 @@ function getTerminalProfile(profileId, opts = {}) {
     if (codexEffort) {
       cmd = `${cmd} -c model_reasoning_effort="${codexEffort}"`;
     }
+  } else if (opts.effort && profileId === 'antigravity') {
+    // agy --effort: low | medium | high | xhigh | max (the model's own default when the flag is left out).
+    if (['low', 'medium', 'high', 'xhigh', 'max'].includes(opts.effort)) cmd = `${cmd} --effort ${opts.effort}`;
   }
   // Every Codex terminal: the Windows sandbox the Admin sandbox setting allows. A bare value
   // (Codex reads one that is not TOML as a string), so no shell can strip a quote from it.
@@ -26265,7 +26476,7 @@ function getTerminalProfile(profileId, opts = {}) {
   // The loop runs in a PTY with no human to answer prompts, so accessing
   // sibling projects or running Bash/Write would stall.
   // Scoped to opts.loopBypass so interactive terminal sessions still prompt.
-  if (opts.loopBypass && profileId === 'claude-code') {
+  if (opts.loopBypass && (profileId === 'claude-code' || profileId === 'antigravity')) {
     cmd = `${cmd} --dangerously-skip-permissions`;
   }
 
@@ -26294,7 +26505,7 @@ function getTerminalProfile(profileId, opts = {}) {
 // provider sign-in terminals. The desktop app uses this same server/PTY host.
 async function freshTerminalPath(base = process.env) {
   const os = await osPath.refresh({ force: true });
-  const launchers = ['claude-code', 'codex', 'opencode', 'gemini'].map(tool => cliResolver.launcher(tool));
+  const launchers = ['claude-code', 'codex', 'opencode', 'antigravity'].map(tool => cliResolver.launcher(tool));
   // A packaged application's runtime and npm's global bin (rememberPackagedPath above), after the user's own.
   const { last: synabunDirs, extra: extraDirs } = rememberedPackagedPath();
   return { ...composeTerminalPath({ env: base, os, launchers, synabunDirs, extraDirs }), os, launchers };
@@ -26861,7 +27072,7 @@ async function driveNextIteration(session, loopState, filename) {
   return true;
 }
 
-// ── Exec-based Loop Driver (Codex, Gemini, etc.) ──
+// ── Exec-based Loop Driver (Codex, Antigravity, etc.) ──
 // Fully isolated from Claude's hook-based driver. Runs platform-native wrapper
 // files inside a shell PTY and detects completion via sentinel echo markers.
 // The wrapper captures the CLI status before printing SYNABUN_ITER_DONE_<N>, so
@@ -27188,6 +27399,31 @@ _nativeLoopRuntime = new NativeLoopRuntime({
         // sidepanel; SynaBun carries no Codex for the SDK to find by itself.
         codexPath: getNativeCodexBin(),
         // Assistant task runs: where the browser policy hook lets its test runners run besides its own project.
+        policyRoots: taskBrowserPolicyRoots(state),
+      });
+    },
+    // Google Antigravity: one `agy acp` per run (lib/native-loop-providers.js createAntigravityNativeLoopAdapter), in
+    // the run's own Antigravity home (lib/antigravity/home.js: exactly the run's MCP servers, the policy hook that
+    // asks POST /api/antigravity/policy before every tool call, the user's rules and skills). Approvals go to the
+    // Assistant's broker under `ask`; without an installed CLI the run fails at once with the install hint.
+    antigravity: (state) => {
+      const launch = antigravityLaunch();
+      if (!launch) throw new Error('Antigravity runs need the Antigravity CLI (agy). Install it from the Antigravity side panel (one click), or run `brew install --cask antigravity-cli` (macOS) or `curl -fsSL https://antigravity.google/cli/install.sh | bash` (Windows: `irm https://antigravity.google/cli/install.ps1 | iex`), sign in by running `agy` once, then try again.');
+      // A resumed run uses the home its first start wrote (its conversation is there).
+      const homeDir = state.resumingWorker && typeof state.antigravityHome === 'string' && state.antigravityHome
+        ? validateRunHome(state.antigravityHome, antigravityHomesRoot(DATA_HOME))
+        : antigravityHomeFor('run', state.runId || state.terminalSessionId || `loop-${Date.now()}`);
+      return createAntigravityNativeLoopAdapter({
+        ...state,
+        launch,
+        // The PATH a new terminal has: Antigravity runs the user's own tools.
+        extraEnv: { PATH: antigravityChildEnv().PATH, ...(state.extraEnv || {}) },
+        serverPort: PORT,
+        homeDir,
+        synabunMcpEntry: antigravitySynabunMcpEntry(),
+        policy: defaultAntigravityPolicy,
+        policyUrl: antigravityPolicyUrl(),
+        // Assistant task runs: where the browser policy lets its test runners run besides its own project.
         policyRoots: taskBrowserPolicyRoots(state),
       });
     },
@@ -27819,6 +28055,17 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       ClaudeSession: claudeBridgeModule.ClaudeSession,
       sdkVersion: claudeBridgeModule.SDK_VERSION,
       handleCodexSkinWebSocket, ensureIsolatedServe, stopIsolatedServe, setupOpencodeSidepanelConfig,
+      // An Antigravity brain (lib/assistant-brains/antigravity.js): `agy acp` in the brain's own home, its hook asking
+      // POST /api/antigravity/policy, SynaBun's MCP entry the Setup card writes.
+      antigravity: {
+        launch: antigravityLaunch,
+        // The PATH a new terminal has (agy runs the user's tools); never the owner's live data paths or a credential.
+        childEnv: antigravityChildEnv,
+        home: (sessionId) => antigravityHomeFor('brain', sessionId),
+        synabunMcpEntry: antigravitySynabunMcpEntry,
+        policy: defaultAntigravityPolicy,
+        policyUrl: antigravityPolicyUrl,
+      },
       broadcastSync,
       dataDir: LOOP_DATA_DIR,
       memory: assistantMemory,
@@ -28196,7 +28443,7 @@ function findLoopFileForTerminal(terminalSessionId) {
 }
 
 /**
- * Exec-based loop driver for non-Claude CLIs (Codex, Gemini, etc.).
+ * Exec-based loop driver for non-Claude CLIs (Codex, Antigravity, etc.).
  * State machine: booting → ready → running → ready → ...
  *
  * Completion detection: sentinel echo approach.
@@ -28972,7 +29219,7 @@ app.delete('/api/terminal/sessions/:id', (req, res) => {
 });
 
 app.get('/api/terminal/profiles', (req, res) => {
-  const profileIds = ['claude-code', 'codex', 'gemini', 'opencode', 'shell'];
+  const profileIds = ['claude-code', 'codex', 'antigravity', 'opencode', 'shell'];
   const profiles = profileIds.map(id => {
     const p = getTerminalProfile(id);
     return { id, shell: p.shell, args: p.args };
@@ -29823,7 +30070,7 @@ app.put('/api/cli/config', (req, res) => {
 app.post('/api/cli/detect/:profileId', async (req, res) => {
   try {
     const { profileId } = req.params;
-    if (!['claude-code', 'codex', 'gemini', 'opencode'].includes(profileId)) return res.status(400).json({ ok: false, error: 'Unknown profile' });
+    if (!['claude-code', 'codex', 'antigravity', 'opencode'].includes(profileId)) return res.status(400).json({ ok: false, error: 'Unknown profile' });
     const status = await cliResolver.resolve(profileId, { force: true, configured: null });
     res.json({
       ok: true,
@@ -29873,7 +30120,7 @@ function stripAnsi(str) {
 // stdin: false — message appended as the last CLI arg (flag takes a value)
 const CLI_SIDECAR_CONFIG = {
   'claude-code': { args: ['-p', '--verbose'], stdin: true },   // -p = non-interactive mode; reads prompt from stdin
-  'gemini':      { args: ['-p'],              stdin: false },   // -p <value>; PowerShell passes correctly on Windows
+  'antigravity': { args: ['-p'],              stdin: false },   // agy -p <prompt>: one print-mode turn
   'codex':       { args: ['-q'],              stdin: false },   // -q <msg>; flag takes a value
   'shell':       null,
 };
@@ -29888,7 +30135,7 @@ const CLI_LIVE_CONFIG = {
     maxIdleMs: 120000,                      // 2 min absolute max wait
     useBracketedPaste: true,
   },
-  'gemini': {
+  'antigravity': {
     promptPatterns: [/>\s*$/m, /\u276F\s*$/m],
     idleMs: 3000,
     maxIdleMs: 120000,
@@ -30005,7 +30252,7 @@ function spawnSidecarProcess(linkId, sessionId, message) {
   const sidecarConfig = CLI_SIDECAR_CONFIG[profile];
   if (!sidecarConfig) throw new Error(`No sidecar config for profile: ${profile}`);
 
-  // Get the CLI command from config (e.g. 'claude', 'gemini', 'codex')
+  // Get the CLI command from config (e.g. 'claude', 'agy', 'codex')
   const cliConfig = loadCliConfig();
   const command = (cliConfig[profile]?.command || '').trim();
   if (!command) throw new Error(`No CLI command configured for ${profile}`);
@@ -30025,7 +30272,7 @@ function spawnSidecarProcess(linkId, sessionId, message) {
     // stdin-based: args are fixed, message piped after spawn (e.g. Claude Code)
   } else if (IS_WIN) {
     // Windows: cmd.exe shell quoting mangles multi-word args (splits by spaces),
-    // causing CLIs like Gemini to misparse -p "hello world" as -p + positional "hello" "world".
+    // causing CLIs that take a value after -p (agy) to misparse -p "hello world" as -p + positional "hello" "world".
     // Use PowerShell which correctly passes $msg as a single argument value.
     tmpFile = join(os.tmpdir(), `synabun-relay-${randomBytes(4).toString('hex')}.txt`);
     writeFileSync(tmpFile, message, 'utf-8');
@@ -32391,8 +32638,10 @@ async function createBrowserSession(options = {}) {
     || savedCfg.connectMode === 'morelogin';
   if (_wantMoreLogin) {
     try {
-      if (!moreLogin.isMoreLoginInstalled().installed) {
-        throw new Error('MoreLogin desktop app is not installed');
+      // An install outside the known folders (a custom folder on Windows) still
+      // counts when its local API answers.
+      if (!moreLogin.isMoreLoginInstalled().installed && !(await moreLogin.probeMoreLoginApi({ savedCfg })).running) {
+        throw new Error(`MoreLogin desktop app was not found and its local API does not answer on port ${moreLogin.getMoreLoginPort(savedCfg)}`);
       }
       // Installed but possibly not running (e.g. an autonomous schedule fires with
       // nobody at the machine to open it) — auto-launch and wait for its local API
@@ -35560,7 +35809,7 @@ app.post('/api/browser/sessions/:id/upload', async (req, res) => {
 });
 
 // Browser config endpoint
-app.get('/api/browser/config', (req, res) => {
+app.get('/api/browser/config', async (req, res) => {
   const config = loadBrowserConfig();
   const detected = findBrowserExecutable();
   // Check if Chrome is currently running (informs profile mirroring warnings)
@@ -35581,7 +35830,11 @@ app.get('/api/browser/config', (req, res) => {
   let attachSeeded = false;
   try { attachSeeded = existsSync(getAttachProfileRoot()); } catch {}
   let moreloginInstalled = false;
-  try { moreloginInstalled = moreLogin.isMoreLoginInstalled().installed; } catch {}
+  // The exe in a known folder, or a local API that answers (a custom install folder): a short probe only when needed.
+  try {
+    moreloginInstalled = moreLogin.isMoreLoginPresent()
+      || (await moreLogin.probeMoreLoginApi({ savedCfg: config, timeout: 1500 })).running;
+  } catch {}
   const unreadable = browserConfigUnreadable(config);
   res.json({ config, detectedPath: detected, chromeRunning, attachSeeded, moreloginInstalled, ...(unreadable && { configError: `browser-config.json is unreadable (${unreadable}); saving these settings replaces it` }) });
 });
@@ -35626,12 +35879,20 @@ app.get('/api/browser/detect-profiles', (req, res) => {
 app.get('/api/browser/morelogin-envs', async (req, res) => {
   try {
     const cfg = loadBrowserConfig();
-    const installed = moreLogin.isMoreLoginInstalled().installed;
     const port = moreLogin.getMoreLoginPort(cfg);
-    if (!installed) return res.json({ ok: true, installed: false, running: false, port, envs: [] });
+    // Probe first: the install-folder check knows only the default folders, and an
+    // answering local API proves the app is there wherever it was installed.
     const probe = await moreLogin.probeMoreLoginApi({ savedCfg: cfg, port });
+    const installed = probe.running || moreLogin.isMoreLoginInstalled().installed;
+    if (!installed) return res.json({ ok: true, installed: false, running: false, port, envs: [], error: probe.error || null });
     if (!probe.running) return res.json({ ok: true, installed: true, running: false, port, envs: [], error: probe.error || null });
+    // The API answered with an error (signature required, API off): say why, never an empty list.
+    if (probe.apiError) return res.json({ ok: false, installed: true, running: true, port, envs: [], error: probe.apiError });
     const envs = await moreLogin.listProfiles({ savedCfg: cfg, port });
+    // The API counted profiles but none could be read: a shape problem, never "no profiles yet".
+    if (probe.count > 0 && !envs.length) {
+      return res.json({ ok: false, installed: true, running: true, port, envs: [], error: `MoreLogin reports ${probe.count} profile(s) but SynaBun could not read them from its answer; a newer MoreLogin may have changed its API.` });
+    }
     res.json({
       ok: true, installed: true, running: true, port, envs,
       // Observed website-policy blocks — MoreLogin's local API never exposes the
@@ -35882,10 +36143,11 @@ const httpServer = app.listen(PORT, async () => {
   // Activation is an explicit user choice via Settings → Browser / the MoreLogin tab.
   setTimeout(async () => {
     try {
-      if (!moreLogin.isMoreLoginInstalled().installed) return;
-      const cfg = loadBrowserConfig();
+      const mlBootCfg = loadBrowserConfig();
+      const cfg = mlBootCfg;
       const port = moreLogin.getMoreLoginPort(cfg);
       const probe = await moreLogin.probeMoreLoginApi({ savedCfg: cfg, port });
+      if (!probe.running && !moreLogin.isMoreLoginInstalled().installed) return;
       const isDefault = cfg.connectMode === 'morelogin';
       console.log(`  MoreLogin:  detected${probe.running ? ` · API on :${port} (${probe.count} profile(s))` : ' · app not running'}${isDefault ? ' · default AI browser' : ''}`);
     } catch { /* best-effort */ }
@@ -35949,6 +36211,12 @@ const httpServer = app.listen(PORT, async () => {
           if (oc.updated > 0) console.log(`  Session cache (opencode): indexed ${oc.updated}/${oc.sessions}`);
         } catch (err) { console.warn('  Session cache (opencode) error:', err.message); }
       },
+      () => {
+        const agy = refreshAntigravityCatalog({ force: true });
+        if (agy?.updated > 0) console.log(`  Session cache (antigravity): indexed ${agy.updated}/${agy.sessions}`);
+        // Runs and brains end on their own: their conversations are picked up by this pass, every five minutes.
+        setInterval(() => refreshAntigravityCatalog({ force: true }), 5 * 60 * 1000).unref?.();
+      },
     ];
     const next = () => {
       const pass = passes.shift();
@@ -35988,6 +36256,18 @@ const httpServer = app.listen(PORT, async () => {
     console.warn('  Hook dedup warning:', err.message);
   }
 
+  // Antigravity replaced Gemini CLI: what was saved under `gemini` (a CLI path, a keybind, loop templates and
+  // schedules, the launch profile and resume tab in the UI state) is read as Antigravity's from this boot on
+  // (lib/antigravity/migrate-gemini.js). Idempotent; a file it cannot read is left as it is. Never stops the boot.
+  try {
+    const migrated = migrateGeminiFiles({ dataHome: DATA_HOME, log: (line) => console.log(`  ${line}`) });
+    if (migrated.changed.includes('cli-config.json')) { _cliConfigCache = null; cliResolver.invalidate(); }
+    const ui = loadUiState();
+    if (migrateGeminiUiState(ui)) saveUiState(ui);
+  } catch (err) {
+    console.warn('  Antigravity migration warning:', err.message);
+  }
+
   // Keep the installed SynaBun rules current: an untouched copy of an older
   // ruleset is rewritten (unless the user switched that off), an edited copy is
   // left alone, a deleted one counts as an opt-out. Never installs for a tool
@@ -36001,6 +36281,16 @@ const httpServer = app.listen(PORT, async () => {
     if (rules.optedOut.length) console.log(`  Rules:     no longer managed for ${rules.optedOut.join(', ')} (the installed copy was removed)`);
   } catch (err) {
     console.warn('  Rules reconcile warning:', err.message);
+  }
+
+  // SynaBun's Antigravity homes (lib/antigravity/home.js): a run's home lives a week past its last use (a run resumes
+  // within minutes of a restart), an Assistant brain's two months (its conversation can be picked up later).
+  try {
+    const root = antigravityHomesRoot(DATA_HOME);
+    const removed = [...pruneAntigravityHomes(root, { kinds: ['run', 'models'], keep: antigravityPanel.activeHomes() }), ...pruneAntigravityHomes(root, { kinds: ['brain'], maxAgeMs: 60 * 24 * 60 * 60_000 })];
+    if (removed.length) console.log(`  Antigravity: removed ${removed.length} unused SynaBun home${removed.length === 1 ? '' : 's'}`);
+  } catch (err) {
+    console.warn('  Antigravity homes warning:', err.message);
   }
 
   // Clean up orphaned loop state files from previous server runs.
@@ -36134,7 +36424,7 @@ httpServer.on('upgrade', function onUpgrade(req, socket, head) {
   if (guest) {
     if (url.pathname.startsWith('/ws/terminal/') && !invitePermissions.terminal) { socket.destroy(); return; }
     if (url.pathname.startsWith('/ws/browser/') && !invitePermissions.browser) { socket.destroy(); return; }
-    if (['/ws/claude-skin', '/ws/codex-skin', '/ws/opencode-v2'].includes(url.pathname) || url.pathname.startsWith('/ws/assistant/')) {
+    if (['/ws/claude-skin', '/ws/codex-skin', '/ws/opencode-v2', '/ws/antigravity'].includes(url.pathname) || url.pathname.startsWith('/ws/assistant/')) {
       socket.destroy();
       return;
     }
@@ -36165,7 +36455,7 @@ httpServer.on('upgrade', function onUpgrade(req, socket, head) {
     return;
   }
 
-  if (url.pathname.startsWith('/ws/browser/') || url.pathname.startsWith('/ws/assistant/') || url.pathname === '/ws/whiteboard' || url.pathname === '/ws/cards' || url.pathname === '/ws/sync' || url.pathname === '/ws/claude-skin' || url.pathname === '/ws/codex-skin' || url.pathname === '/ws/opencode-v2' || url.pathname === '/ws/sessions') {
+  if (url.pathname.startsWith('/ws/browser/') || url.pathname.startsWith('/ws/assistant/') || url.pathname === '/ws/whiteboard' || url.pathname === '/ws/cards' || url.pathname === '/ws/sync' || url.pathname === '/ws/claude-skin' || url.pathname === '/ws/codex-skin' || url.pathname === '/ws/opencode-v2' || url.pathname === '/ws/antigravity' || url.pathname === '/ws/sessions') {
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit('connection', ws, req);
     });
@@ -36229,6 +36519,12 @@ wss.on('connection', (ws, req) => {
   // ── Route: OpenCode V2 (clean-slate sidepanel) ──
   if (url.pathname === '/ws/opencode-v2') {
     handleOpencodeV2Ws(ws);
+    return;
+  }
+
+  // ── Route: Antigravity side panel (Google's agy over ACP) ──
+  if (url.pathname === '/ws/antigravity') {
+    antigravityPanel.handleSocket(ws);
     return;
   }
 
@@ -36816,11 +37112,15 @@ process.on('exit', () => {
   try { stopOpencodeServer(); } catch {}
   try { editorCompletionServe.stop('exit'); } catch {}
   try { _claudeBridge?.shutdownAllBridges?.(); } catch {}
+  try { antigravityPanel.closeAll(); } catch {}
   try { saveSessionSnapshot(); } catch {}
   try { flushUiStateSync(); } catch {}
   try { flushWhiteboardSync(); } catch {}
   try { flushCostDataSync(); } catch {}
   try { memoryMap.flushSync(); } catch {}
+  // The Assistant's session records (a rename among them): this handler runs before the Assistant's own
+  // exit handler, which the SIGKILL below never lets run.
+  try { _assistantRuntime?.flushIndex?.(); } catch {}
   if (_preserveExitCode) return;
   try { process.kill(process.pid, 'SIGKILL'); } catch {}
 });

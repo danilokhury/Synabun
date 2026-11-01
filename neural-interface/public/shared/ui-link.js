@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════
 //
 // Floating Link Panel that mediates turn-based conversations
-// between AI agents (Claude Code, Codex, Gemini, etc.) via linked
+// between AI agents (Claude Code, Codex, Antigravity, etc.) via linked
 // terminal sessions. Users can inject messages, control auto-relay,
 // and watch agents collaborate in real-time.
 
@@ -31,7 +31,7 @@ const SVG_COPY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 const PROFILE_META = {
   'claude-code': { label: 'Claude Code', color: '#D4A27F' },
   'codex':       { label: 'Codex CLI',   color: '#74c7a5' },
-  'gemini':      { label: 'Gemini CLI',  color: '#669DF6' },
+  'antigravity': { label: 'Antigravity CLI', color: '#669DF6' },
   'shell':       { label: 'Shell',       color: '#aaaaaa' },
   'browser':     { label: 'Browser',     color: '#4fc3f7' },
 };
@@ -245,7 +245,7 @@ async function _showSetupView() {
       <div class="link-panel-empty">
         <div class="link-panel-empty-icon">${SVG_UNLINK}</div>
         <p>Open at least 2 terminal sessions to create a link.</p>
-        <p style="opacity:0.5;font-size:12px;">Use the terminal panel to launch Claude Code, Codex, or Gemini.</p>
+        <p style="opacity:0.5;font-size:12px;">Use the terminal panel to launch Claude Code, Codex, or Antigravity.</p>
       </div>
     `;
     return;

@@ -41,6 +41,7 @@ export const GREETING_COPY = Object.freeze({
   'agent.claude-code': 'Claude Code',
   'agent.codex': 'Codex',
   'agent.opencode': 'OpenCode',
+  'agent.antigravity': 'Antigravity',
   open: 'Open memory',
   'source.writer': 'Written ahead by {model}',
   'source.fallback': 'Put together from the records, no model',

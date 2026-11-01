@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════
 // SynaBun — CLI Status (shared)
-// Detects whether Claude / Codex / OpenCode CLIs are installed by
+// Detects whether Claude / Codex / OpenCode / Antigravity CLIs are installed by
 // querying /api/system/tool-versions. Caches the response, fans out
 // updates to subscribers, and auto-polls (every 30s) while at least
 // one subscribed tool is not installed (missing, or found but broken).
@@ -17,33 +17,34 @@ import { cliStateOf, cliInstallOffer, INSTALLABLE_CLIS } from './cli-install-vie
 
 export { cliStateOf, cliInstallOffer };
 
-const TOOL_KEYS = ['claude-code', 'codex', 'opencode', 'gemini'];
+const TOOL_KEYS = ['claude-code', 'codex', 'opencode', 'antigravity'];
 
 // The vendors' install pages. The server's `guideUrl` wins when it sends one.
 const CLI_DOC_URLS = {
   'claude-code': 'https://code.claude.com/docs/en/setup',
   'codex':       'https://learn.chatgpt.com/docs/codex/cli',
   'opencode':    'https://opencode.ai/v2/docs',
-  'gemini':      'https://github.com/google-gemini/gemini-cli',
+  'antigravity': 'https://antigravity.google/docs/getting-started',
 };
 
 // Fallback only. The server computes the command that fits the machine (the
 // vendor's recommended installer for its system, or the package manager the
-// other CLIs came from: buildInstallCommand in lib/cli-update-planner.js) and
-// returns it as `installCommand`. These apply only before the first
-// tool-versions response.
+// other CLIs came from: buildInstallCommand in lib/cli-update-planner.js; for
+// the Antigravity CLI, the command of the install its button runs there, which
+// is Homebrew's cask on a Mac that has Homebrew) and returns it as
+// `installCommand`. These apply only before the first tool-versions response.
 const CLI_INSTALL_CMDS = {
   'claude-code': { posix: 'curl -fsSL https://claude.ai/install.sh | bash', windows: 'irm https://claude.ai/install.ps1 | iex' },
   'codex':       { posix: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh', windows: 'powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"' },
   'opencode':    { posix: 'curl -fsSL https://opencode.ai/v2/install | bash', windows: 'winget install --id Anomaly.OpenCode --exact' },
-  'gemini':      { posix: 'npm install -g @google/gemini-cli', windows: 'npm install -g @google/gemini-cli' },
+  'antigravity': { posix: 'curl -fsSL https://antigravity.google/cli/install.sh | bash', windows: 'irm https://antigravity.google/cli/install.ps1 | iex' },
 };
 
 const CLI_LABELS = {
   'claude-code': 'Claude Code',
   'codex':       'Codex',
   'opencode':    'OpenCode',
-  'gemini':      'Gemini CLI',
+  'antigravity': 'Antigravity CLI',
 };
 
 const POLL_INTERVAL_MS = 30000;

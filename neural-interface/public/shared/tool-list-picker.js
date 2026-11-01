@@ -11,7 +11,7 @@ export function toolPickerHTML(id, tools, options = {}) {
   if (!catalog) return '';
   const view = toolListView(catalog, tools, { translate, ...options });
   return dropdownHTML(id, view.entries, { multiple: true, label: toolWord('label'), classes: 'tool-list-picker',
-    summary: view.summary, ...options, classes: `tool-list-picker ${options.classes || ''}`.trim(), attrs: `data-tool-options="${encodeURIComponent(JSON.stringify({ inheritLabel: options.inheritLabel, usesBrowser: options.usesBrowser, taskClass: options.taskClass, cwd: options.cwd, provider: options.provider, includeServers: options.includeServers, externalSelection: catalog.externalServersVersion >= 2 && options.includeServers !== false && options.provider !== 'gemini', externalRefs: (tools ?? catalog.defaultTools ?? []).filter(id => id.startsWith('mcp:')) }))}"` });
+    summary: view.summary, ...options, classes: `tool-list-picker ${options.classes || ''}`.trim(), attrs: `data-tool-options="${encodeURIComponent(JSON.stringify({ inheritLabel: options.inheritLabel, usesBrowser: options.usesBrowser, taskClass: options.taskClass, cwd: options.cwd, provider: options.provider, includeServers: options.includeServers, externalSelection: catalog.externalServersVersion >= 2 && options.includeServers !== false && options.provider !== 'antigravity', externalRefs: (tools ?? catalog.defaultTools ?? []).filter(id => id.startsWith('mcp:')) }))}"` });
 }
 export function updateToolPicker(input, tools, options = {}) {
   options = { ...JSON.parse(decodeURIComponent(dropdownOf(input)?.dataset.toolOptions || '%7B%7D')), ...options };
@@ -20,7 +20,7 @@ export function updateToolPicker(input, tools, options = {}) {
   const view = toolListView(catalog, tools, { translate, ...options });
   setDropdownItems(input, view.entries);
   const dd = dropdownOf(input);
-  if (dd) dd.dataset.toolOptions = encodeURIComponent(JSON.stringify({ inheritLabel: options.inheritLabel, usesBrowser: options.usesBrowser, taskClass: options.taskClass, cwd: options.cwd, provider: options.provider, includeServers: options.includeServers, externalSelection: catalog.externalServersVersion >= 2 && options.includeServers !== false && options.provider !== 'gemini', externalRefs: (tools ?? catalog.defaultTools ?? []).filter(id => id.startsWith('mcp:')) }));
+  if (dd) dd.dataset.toolOptions = encodeURIComponent(JSON.stringify({ inheritLabel: options.inheritLabel, usesBrowser: options.usesBrowser, taskClass: options.taskClass, cwd: options.cwd, provider: options.provider, includeServers: options.includeServers, externalSelection: catalog.externalServersVersion >= 2 && options.includeServers !== false && options.provider !== 'antigravity', externalRefs: (tools ?? catalog.defaultTools ?? []).filter(id => id.startsWith('mcp:')) }));
   const label = dropdownOf(input)?.querySelector('.cc-dropdown-value');
   if (label) { label.textContent = view.summary; label.title = view.summary; }
 }

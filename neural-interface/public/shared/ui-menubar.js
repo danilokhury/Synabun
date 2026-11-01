@@ -160,7 +160,7 @@ export function initMenubar() {
     'menu-terminal-assistant': 'terminal',
     'menu-terminal-claude': 'terminal',
     'menu-terminal-codex': 'terminal',
-    'menu-terminal-gemini': 'terminal',
+    'menu-terminal-antigravity': 'terminal',
     'menu-terminal-opencode': 'terminal',
     'menu-terminal-shell': 'terminal',
     'menu-terminal-browser': 'browser',
@@ -572,7 +572,7 @@ function wireTerminalMenu() {
     'menu-terminal-assistant': () => emit('assistant:open'),
     'menu-terminal-claude':  () => emit('terminal:open', { profile: 'claude-code' }),
     'menu-terminal-codex':   () => emit('terminal:open', { profile: 'codex' }),
-    'menu-terminal-gemini':   () => emit('terminal:open', { profile: 'gemini' }),
+    'menu-terminal-antigravity': () => emit('terminal:open', { profile: 'antigravity' }),
     'menu-terminal-opencode': () => emit('terminal:open', { profile: 'opencode' }),
     'menu-check-cli-updates': async () => {
       const [tools, syn] = await Promise.all([

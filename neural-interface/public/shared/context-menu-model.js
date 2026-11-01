@@ -90,6 +90,7 @@ export const OPEN_ENTRIES = [
   { id: 'open-claude-panel', key: 'claudePanel', action: 'toggle-claude-panel', active: 'topright-claude-panel-btn', appIcon: 'menu-terminal-claude', icon: 'panel' },
   { id: 'open-codex-panel', key: 'codexPanel', press: 'topright-codex-panel-btn', active: 'topright-codex-panel-btn', appIcon: 'menu-terminal-codex', icon: 'panel' },
   { id: 'open-opencode-panel', key: 'opencodePanel', press: 'topright-opencode-panel-btn', active: 'topright-opencode-panel-btn', appIcon: 'menu-terminal-opencode', icon: 'panel' },
+  { id: 'open-antigravity-panel', key: 'antigravityPanel', press: 'topright-antigravity-panel-btn', active: 'topright-antigravity-panel-btn', appIcon: 'menu-terminal-antigravity', icon: 'panel' },
   null,
   { id: 'open-terminal', key: 'terminal', event: ['terminal:open', { profile: 'shell' }], perm: 'terminal', appIcon: 'menu-terminal-shell', icon: 'terminal' },
   { id: 'open-claude-terminal', key: 'claudeTerminal', action: 'launch-claude', perm: 'terminal', icon: 'terminal' },

@@ -65,12 +65,15 @@ export function resumeSandboxPlan(current, previous, channelPort) {
  */
 export function resumeRefusal(entry, { now = Date.now(), workLeftMs = Infinity, atShutdown = false, isDirectory = () => true, accountUnusable = () => '' } = {}) {
   if (!entry) return 'the run is not known';
-  if (!['claude-code', 'codex', 'opencode'].includes(entry.provider)) return 'this provider cannot continue after a restart';
+  if (!['claude-code', 'codex', 'opencode', 'antigravity'].includes(entry.provider)) return 'this provider cannot continue after a restart';
   if (entry.confinement?.kind === 'skill-eval') return 'a skill evaluation run is a measurement and starts over instead';
   if (entry.confinement) return 'a skill drafting run is not resumed';
   if (entry.removedAt) return 'the run was removed';
-  if (!(entry.provider === 'codex' ? entry.providerThreadId : entry.providerSessionId)) return `its ${entry.provider === 'codex' ? 'Codex thread' : entry.provider === 'opencode' ? 'OpenCode session' : 'Claude session'} had not started yet`;
+  if (!(entry.provider === 'codex' ? entry.providerThreadId : entry.providerSessionId)) return `its ${entry.provider === 'codex' ? 'Codex thread' : entry.provider === 'opencode' ? 'OpenCode session' : entry.provider === 'antigravity' ? 'Antigravity session' : 'Claude session'} had not started yet`;
   if (entry.provider === 'opencode' && !entry.resumeInfo?.persistentOpenCode) return 'its OpenCode session has no durable run data';
+  // Antigravity keeps the conversation in the run's own home (lib/antigravity/home.js): a run started before homes
+  // existed has its session in the user's own ~/.gemini, which a resume does not use.
+  if (entry.provider === 'antigravity' && !entry.resumeInfo?.antigravityHome) return 'its Antigravity session has no SynaBun home to resume from';
   const resumes = Number(entry.resumes) || 0;
   if (resumes >= MAX_RESUMES) return `it was resumed ${resumes} times already`;
   if (!(workLeftMs > 0)) return entry.maxMinutes ? `its ${entry.maxMinutes} minutes of work time are used up` : 'its work time is used up';
@@ -79,7 +82,8 @@ export function resumeRefusal(entry, { now = Date.now(), workLeftMs = Infinity, 
   if (since && now - since > RESUME_WINDOW_MS) return `the server was back ${Math.round((now - since) / 60_000)} minutes later (more than ${Math.round(RESUME_WINDOW_MS / 60_000)})`;
   if (!entry.cwd || !isDirectory(entry.cwd)) return `its working directory is gone (${entry.cwd || 'none'})`;
   let unusable = '';
-  try { unusable = entry.provider === 'opencode' ? '' : String(accountUnusable((entry.provider === 'codex' ? entry.codexAccountId : entry.claudeAccountId) || 'default', entry.provider, entry) || ''); } catch (error) { unusable = error?.message || 'it could not be read'; }
+  // OpenCode and Antigravity sign in inside their own CLI: SynaBun keeps no account of theirs.
+  try { unusable = entry.provider === 'opencode' || entry.provider === 'antigravity' ? '' : String(accountUnusable((entry.provider === 'codex' ? entry.codexAccountId : entry.claudeAccountId) || 'default', entry.provider, entry) || ''); } catch (error) { unusable = error?.message || 'it could not be read'; }
   if (unusable) return `its ${entry.provider === 'codex' ? 'Codex' : 'Claude'} account (${entry.codexAccountId || entry.claudeAccountId || 'default'}) cannot be used: ${unusable}`;
   return null;
 }
@@ -184,7 +188,12 @@ export function processCommandLine(pid, { platform = process.platform, run = exe
  */
 export function isRunCliCommand(command, runId) {
   const text = String(command || '');
-  return !!runId && text.includes(String(runId)) && ((text.includes('--input-format') && text.includes('stream-json')) || (text.includes('app-server') && text.includes('synabun_worker_run=')));
+  return !!runId && text.includes(String(runId)) && (
+    (text.includes('--input-format') && text.includes('stream-json'))
+    || (text.includes('app-server') && text.includes('synabun_worker_run='))
+    // Antigravity: `agy acp --gemini-dir <data home>/runtime/antigravity/homes/run-<run id>-…` (lib/antigravity/home.js).
+    || (/\sacp(?:\s|$)/.test(text) && text.includes('--gemini-dir') && /[\\/]antigravity[\\/]homes[\\/]run-/.test(text))
+  );
 }
 
 /** Windows: end a process and every process it started (taskkill /T /F, as the server's own shutdown does). */

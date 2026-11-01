@@ -19,13 +19,32 @@
 //     interface IPs and its hostname — while a different port and the public internet stay open. The earlier
 //     `localhost:<port>` literal did NOT cover [::ffff:127.0.0.1] (a verified full bypass of the whole layer on the
 //     dual-stack listener): Seatbelt's `localhost` resolves to 127.0.0.1 + ::1 only. The host literal must be `*`
-//     or `localhost` (a numeric IP literal is rejected by the parser); `*` is the only form that is address-proof.
+//     or `localhost` (a numeric IP literal, with or without a CIDR suffix, is rejected by the parser: "host must be
+//     * or localhost in network address"); `*` is the only form that is address-proof.
 //     Seatbelt has no port-range syntax (`*:4120-4400` is rejected), so a reserved range is emitted one port a line.
 //   • `(deny file-read* file-write* (subpath "<canonical>"))` blocks reads AND writes under a path; a later
 //     `(allow file-read* file-write* (subpath "<canonical>"))` wins (Seatbelt is last-match-wins within a filter),
 //     so SynaBun's whole data home can be denied and the run's own scratch / cwd / config folder allowed back after
 //     it. Seatbelt matches the RESOLVED path, so every literal must be canonicalised (/tmp is a symlink to
 //     /private/tmp; an un-resolved literal never matches, and an allow-back must resolve the same way as its deny).
+//   • macOS 27 (27.2 / 26B123, confirmed with scratch sandbox-exec probes outside the repo, 2026-11-01): a
+//     `(deny network-outbound (remote ip …))` rule placed textually AFTER an `(allow network-outbound (remote ip
+//     …))` rule silently defeats that allow — even when the deny's port is completely unrelated to the allow's
+//     (e.g. a later `deny *:4096` broke an earlier `allow localhost:9` for a different, unrelated port 9). This
+//     held on every literal form tried (`localhost` and `*` alike), so it is not about the host literal at all —
+//     it is purely textual position. A deny is never undone by what comes after it, and a later allow for one port
+//     never reopens a different, already-denied port — only "deny AFTER allow, different port" misbehaves. A
+//     same-port pair (a broad `*:<port>` allow immediately followed by a narrower `localhost:<port>` deny, the
+//     INTERNET_PORTS local-redeny below) still narrows correctly on 27.2: last-match-wins for an overlapping
+//     filter is unaffected, confirmed by direct probe. The fix is purely about ORDER, so buildWorkerSandboxProfile
+//     emits every plain port/range deny FIRST, then the strict profile's own allow-then-narrow pair for
+//     INTERNET_PORTS, then the worker-channel allow(s) dead last among network-outbound rules — nothing (deny)
+//     ever follows them, on macOS 26 or 27. This does not widen anything: the channel allow keeps the narrow
+//     `localhost:<port>` literal (still local-only on both macOS versions), and the reorder also fixes a second,
+//     previously-undetected collateral regression — the strict profile's own INTERNET_PORTS allow-back (meant to
+//     keep DNS/SSH/HTTP/HTTPS reachable on real remote hosts) was equally defeated by the later control-port and
+//     reserved-range denies that used to sit between it and nothing; a guarded worker in the strict fallback had
+//     silently lost the public internet too.
 //   • The sandbox is inherited by detached / nohup grandchildren, so a worker cannot escape it by backgrounding.
 //   • A same-user `KERN_PROCARGS2` read (ps -E / a tiny C program) CANNOT be blocked by Seatbelt (it is a same-uid
 //     kernel allowance, not a sandbox-governed operation). So a worker inside the sandbox can still read another
@@ -166,6 +185,10 @@ function metadataAncestors(allowPaths, denyPaths) {
  *                               spelling (the IPv4-mapped one included); Seatbelt's `localhost` misses [::ffff:…],
  *                               and mixing `ip6` rules with `localhost` ones silently re-opens IPv4 loopback (verified
  *                               on macOS 26), so this is written as deny-all-then-allow, never as a loopback deny.
+ *                               On macOS 27 a later deny for an unrelated port defeats an earlier allow (see the
+ *                               module header), so every network-outbound ALLOW rule this emits — the strict
+ *                               profile's INTERNET_PORTS allow-back and the channel allow(s) — is placed after
+ *                               every plain port/range deny, with the channel allow(s) last of all.
  * @param {string} [o.note] a short comment line (the run id), for readability in a log.
  * @returns {string} the profile text (ends with a newline).
  */
@@ -177,34 +200,41 @@ export function buildWorkerSandboxProfile({ denyPorts = [], denyLocalPorts = [],
     ? { from: Math.max(1, Number(denyPortRange.from)), to: Math.min(65535, Number(denyPortRange.to)) } : null;
   const denies = [...new Set((denyPaths || []).filter((p) => typeof p === 'string' && p).map(canonicalPath))];
   const allows = [...new Set((allowPaths || []).filter((p) => typeof p === 'string' && p).map(canonicalPath))];
+  const channelPorts = strictLocal ? cleanPorts(strictLocal.allowPorts) : [];
   const lines = ['(version 1)'];
   if (note) lines.push(`; ${String(note).replace(/[\r\n]+/g, ' ').slice(0, 200)}`);
   lines.push('(allow default)');
   if (strictLocal) {
     // Detection failed: nothing local is known to be safe, so nothing local is reachable but the worker channel.
-    // Deny every outbound IP connection, allow the internet's ports back on every host, take them away again on this
-    // computer's own addresses, and allow the channel last (last match wins).
     lines.push('; strict: the relay detection failed for this run, so no local port is reachable but the worker channel');
     lines.push(`(deny network-outbound (remote ip ${sexpr('*:*')}))`);
-    for (const port of INTERNET_PORTS) lines.push(`(allow network-outbound (remote ip ${sexpr(`*:${port}`)}))`);
-    for (const port of INTERNET_PORTS) if (port !== 53) localOnly.add(port); // a local DNS resolver stays reachable
-    for (const port of cleanPorts(strictLocal.allowPorts)) {
-      localOnly.delete(port);
-      lines.push(`(allow network-outbound (remote ip ${sexpr(`localhost:${port}`)}))`);
-    }
   }
-  // The control ports: a worker's own programs may not open them (its MCP tools are the way in). `*:<port>` blocks
-  // the port on every address (127.0.0.1, ::1, [::ffff:127.0.0.1], 0.0.0.0, the LAN IPs, the hostname); the public
-  // internet and every other port stay open.
+  // The control ports and the reserved relay range FIRST, before any allow rule below: on macOS 27 a later deny
+  // here would defeat an earlier allow for an unrelated port (module header). A plain deny is never undone by
+  // what follows it, so their own position relative to each other never matters.
   const seen = new Set();
   for (const port of ports) { seen.add(port); lines.push(`(deny network-outbound (remote ip ${sexpr(`*:${port}`)}))`); }
-  // Local-only denies (an internet port a relay holds here, local SSH): this computer's own addresses, never the internet.
-  for (const port of [...new Set([...localOnly, ...ALWAYS_LOCAL_DENY_PORTS])].sort((x, y) => x - y)) {
-    if (strictLocal && cleanPorts(strictLocal.allowPorts).includes(port)) continue;
-    lines.push(`(deny network-outbound (remote ip ${sexpr(`localhost:${port}`)}))`);
-  }
   // The reserved relay range in full: every isolated OpenCode serve, whether it started before or after this profile.
   if (range) for (let p = range.from; p <= range.to; p++) { if (!seen.has(p)) { seen.add(p); lines.push(`(deny network-outbound (remote ip ${sexpr(`*:${p}`)}))`); } }
+  if (strictLocal) {
+    // Allow the internet's ports back on every host, then narrow them to this computer's own addresses right
+    // after (same port: last-match-wins narrows it locally, unaffected by the macOS 27 ordering issue above,
+    // which is about an unrelated port's deny, not a same-port narrowing pair).
+    for (const port of INTERNET_PORTS) if (port !== 53) localOnly.add(port); // a local DNS resolver stays reachable
+    for (const port of channelPorts) localOnly.delete(port);
+    for (const port of INTERNET_PORTS) lines.push(`(allow network-outbound (remote ip ${sexpr(`*:${port}`)}))`);
+  }
+  // Local-only denies (an internet port a relay holds here, local SSH): this computer's own addresses, never the
+  // internet. In strict mode these sit right after the INTERNET_PORTS allow-back above (the same-port narrowing
+  // pair); otherwise there is no preceding allow to narrow and the position carries no ordering requirement.
+  for (const port of [...new Set([...localOnly, ...ALWAYS_LOCAL_DENY_PORTS])].sort((x, y) => x - y)) {
+    if (channelPorts.includes(port)) continue;
+    lines.push(`(deny network-outbound (remote ip ${sexpr(`localhost:${port}`)}))`);
+  }
+  // The worker channel, allowed dead last among every network-outbound rule above: on macOS 27 any later deny —
+  // even for a wholly unrelated port — would silently defeat this allow (module header). Kept local-only
+  // (`localhost:<port>`, not `*:<port>`): still unreachable from a remote host on this exact port, on macOS 26 and 27.
+  for (const port of channelPorts) lines.push(`(allow network-outbound (remote ip ${sexpr(`localhost:${port}`)}))`);
   // SynaBun's whole data home (its auth secrets, other runs' task text, the memory DB) and other runtimes' creds:
   // a worker neither reads nor writes them.
   for (const path of denies) lines.push(`(deny file-read* file-write* (subpath ${sexpr(path)}))`);

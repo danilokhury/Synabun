@@ -74,7 +74,7 @@ export const AGENT_CALL_KINDS = Object.freeze(['agent', 'synabun-mcp']);
  */
 export const OWNER_READ_PREFIXES = Object.freeze([...ADMIN_ONLY_PREFIXES.filter((prefix) => prefix !== '/api/hook-'), '/api/git']);
 /** The owner's sockets: a terminal, the agent panels, the Assistant, the browser panel. */
-export const OWNER_SOCKET_PREFIXES = Object.freeze(['/ws/terminal/', '/ws/claude-skin', '/ws/codex-skin', '/ws/opencode-v2', '/ws/assistant/', '/ws/browser/']);
+export const OWNER_SOCKET_PREFIXES = Object.freeze(['/ws/terminal/', '/ws/claude-skin', '/ws/codex-skin', '/ws/opencode-v2', '/ws/antigravity', '/ws/assistant/', '/ws/browser/']);
 /** Sockets that stay open for the app's pages to draw, read-only for a peer the owner's powers are refused to. */
 export const READ_ONLY_SOCKET_PATHS = Object.freeze(['/ws/sync']);
 

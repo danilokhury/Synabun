@@ -6,7 +6,8 @@
 // router, the dispatcher, the catalog (routing sheet, agent_catalog) and every
 // Assistant model menu leave them out. One denylist per provider, so new
 // models start enabled:
-//   claude-code, codex → ~/.synabun/data/assistant-hidden-models.json
+//   claude-code, codex,
+//   antigravity        → ~/.synabun/data/assistant-hidden-models.json
 //   opencode           → the Settings → OpenCode store (lib/opencode-hidden-models.js),
 //                        so both screens edit the same list
 // Matching (lib/assistant-catalog.js hiddenModelId): the id, or the row's
@@ -54,7 +55,7 @@ import { HIDDEN_MODELS_SYNC_TYPE as OPENCODE_SYNC_TYPE } from './opencode-hidden
 import { createWriterLock } from './rulesets/lock.js';
 
 export const ASSISTANT_HIDDEN_SYNC_TYPE = 'assistant:hidden-models-changed';
-export const OWN_PROVIDERS = Object.freeze(['claude-code', 'codex']);
+export const OWN_PROVIDERS = Object.freeze(['claude-code', 'codex', 'antigravity']);
 export const MAX_HIDDEN_PER_PROVIDER = 2000;
 /** How long a save waits for another process that is saving. */
 export const HIDDEN_LOCK_TIMEOUT_MS = 2000;
@@ -202,8 +203,9 @@ export function planHiddenPins({ ids = [], pins = {}, rows = [], source = null, 
 }
 
 /**
- * The Claude Code / Codex store:
- * { version, updatedAt, providers: { 'claude-code': [], codex: [] }, pins: { 'claude-code': { [id]: pin }, codex: {} } }.
+ * The Claude Code / Codex / Antigravity store:
+ * { version, updatedAt, providers: { 'claude-code': [], codex: [], antigravity: [] }, pins: { 'claude-code': { [id]: pin }, codex: {}, antigravity: {} } }.
+ * (Antigravity rows are their own models: no alias, so nothing of theirs is ever pinned.)
  */
 export function createAssistantHiddenModelsStore({
   path, now = Date.now, log = () => {},
@@ -508,7 +510,7 @@ export function resolveHiddenModelId({ id, provider = null, action = 'hide', row
 }
 
 /**
- * GET   /  → { ok, providers: { 'claude-code': [], codex: [], opencode: [] }, pins }
+ * GET   /  → { ok, providers: { 'claude-code': [], codex: [], opencode: [], antigravity: [] }, pins }
  * PATCH /  { provider?, hide?: [], show?: [] } → the new lists plus what changed.
  *          A missing provider is inferred from the unfiltered catalog. Hiding an
  *          alias ("haiku") records the model it names at that moment (`pins`),

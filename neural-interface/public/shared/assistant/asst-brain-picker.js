@@ -42,6 +42,7 @@ import { createMascotControl } from './asst-mascot.js';
 import { modelChipForms, modelChipName, modelChipTag } from './asst-model-chip.js';
 import {
   ACCOUNT_PROVIDERS,
+  BRAIN_PROVIDERS,
   brainRequiresSwitch,
   emptyProjectView,
   modelShortName,
@@ -50,6 +51,7 @@ import {
   PLAN_MODE_PROVIDERS,
   permissionModeLabel,
   PROVIDERS,
+  providerMeta,
   projectLabel,
   resolveBrainDefaults,
   TEST_DENSITIES,
@@ -113,6 +115,7 @@ const PLAN_DESC = {
   'claude-code': 'Plan first; approving the plan continues in the approval mode below',
   codex: 'Native Codex plan mode (read-only sandbox)',
   opencode: 'OpenCode plan agent (no file edits)',
+  antigravity: 'Antigravity explores and proposes a plan; code changes wait for your approval',
 };
 
 function agentName(agent) {
@@ -194,7 +197,7 @@ function hiddenOpencodeIds(remote) {
 }
 
 // The models the user hid (Assistant → Models), per provider, as the last catalog load saw them.
-let _hidden = { 'claude-code': new Set(), codex: new Set(), opencode: new Set() };
+let _hidden = { 'claude-code': new Set(), codex: new Set(), opencode: new Set(), antigravity: new Set() };
 
 function hiddenSets(remote) {
   const out = {};
@@ -295,7 +298,7 @@ function catalogSaysNone(remote, provider, local) {
 }
 
 /**
- * { 'claude-code': [...], codex: [...], opencode: [...] }: the models of every
+ * { 'claude-code': [...], codex: [...], opencode: [...], antigravity: [...] }: the models of every
  * Assistant model menu and of the Routes editor, from GET /api/assistant/catalog
  * (see mergeProviderModels). Models the user hid (Assistant → Models, and
  * Settings → OpenCode for OpenCode) never appear. `force` asks the server for a
@@ -316,6 +319,7 @@ export async function loadModelCatalog({ force = false } = {}) {
     // No catalog (request failed): the last known disabled lists still apply.
     const sets = remote ? hiddenSets(remote) : { ..._hidden, opencode: new Set([...(_hidden.opencode || []), ...hiddenOpencodeIds(null)]) };
     _hidden = sets;
+    if (remote?.providers) _providerInfo = remote.providers;
     for (const provider of PROVIDERS) {
       const local = getModelsForProfile(provider) || [];
       // An empty list the catalog vouches for is its answer: the window's own rows do not stand in for it.
@@ -365,6 +369,33 @@ function keepCatalog(catalog, sets) {
 
 /** The last loadModelCatalog() result, synchronously (null before the first load). */
 export function cachedModelCatalog() { return _catalog; }
+
+// The catalog's provider entries ([{ id, brain, accounts, priced, signedIn?, tier? }]) as the last load saw them:
+// Antigravity's sign-in state is read from there (it signs in inside its own CLI; SynaBun keeps no account of it).
+let _providerInfo = null;
+
+/** One provider's catalog entry ({ id, brain, signedIn?, tier?, … }), from an array or a map; null when unknown. */
+export function catalogProviderInfo(provider, providers = _providerInfo) {
+  if (!provider || !providers) return null;
+  if (Array.isArray(providers)) return providers.find(p => p && p.id === provider) || null;
+  const entry = providers[provider];
+  return entry && typeof entry === 'object' ? entry : null;
+}
+
+/**
+ * What the model menu and the model chip say about Antigravity's sign-in (`info`: its catalog entry):
+ * { state: 'signedIn' | 'signedOut' | 'unknown', text }. Antigravity signs in with Google inside its own panel;
+ * the tier is the plan its session reported ("Google AI Pro").
+ */
+export function antigravitySignInView(info, t = null) {
+  const tr = tf(t);
+  const tier = typeof info?.tier === 'string' && info.tier.trim() ? info.tier.trim() : (typeof info?.tier?.name === 'string' ? info.tier.name.trim() : '');
+  if (info?.signedIn === true) {
+    return { state: 'signedIn', text: tier ? tr('assistant.brain.antigravitySignedInTier', 'Signed in with Google ({tier})', { tier }) : tr('assistant.brain.antigravitySignedIn', 'Signed in with Google') };
+  }
+  if (info?.signedIn === false) return { state: 'signedOut', text: tr('assistant.brain.antigravitySignedOut', 'Not signed in: open the Antigravity panel to sign in') };
+  return { state: 'unknown', text: tr('assistant.brain.antigravitySignInUnknown', 'Sign-in not checked yet: Antigravity signs in inside its own panel') };
+}
 
 /** UI metadata from the same catalog load; no second list or extra endpoint. */
 export function modelCatalogStatus() {
@@ -474,7 +505,8 @@ function tierTag(m, tr) {
 /**
  * Model menu grouped by provider, filterable, with "Custom model id…".
  * opts: { brain, onSelect(target), includeHere, hereLabel, title, t, placement,
- *         current:{provider, model}|null, warnSwitch, providers, onToast(text),
+ *         current:{provider, model}|null, warnSwitch, providers (default: the brain
+ *         providers, so a worker-only one is listed only when named), onToast(text),
  *         accept(provider, model) → bool (only those models), emptyLabel (when none
  *         passes), allowCustom (default true), zIndex (see asst-menu.js),
  *         accountItems (menu items listed first, under accountTitle) }
@@ -546,13 +578,15 @@ export async function openModelMenu(anchor, opts = {}) {
     if (includeHere) {
       items.push({ kind: 'radio', id: '__here', label: hereLabel || tr('assistant.routes.brainDecides', 'Let the brain decide'), selected: !current, onSelect: () => onSelect?.({ here: true }) });
     }
-    const list = Array.isArray(providers) && providers.length ? PROVIDERS.filter(p => providers.includes(p)) : PROVIDERS;
+    // Without `providers` the menu is a brain's (the toolbar's model field, the WhatsApp brain): every provider the
+    // Assistant can run on (BRAIN_PROVIDERS, Antigravity included); a route or a dispatch names its own providers.
+    const list = Array.isArray(providers) && providers.length ? PROVIDERS.filter(p => providers.includes(p)) : BRAIN_PROVIDERS;
     let listed = 0;
     for (const provider of list) {
       const models = (catalog[provider] || []).filter(m => typeof accept !== 'function' || accept(provider, m));
       if (!models.length && !opts.routingEditor) continue;
       listed += models.length;
-      const meta = getProviderMeta(provider);
+      const meta = providerMeta(provider);
       const hiddenCount = metadata.hiddenCounts[provider] || 0;
       const note = opts.routingEditor ? tr('assistant.routes.menu.hiddenCount', '{count} hidden in Models', { count: hiddenCount }) : warnSwitch && provider !== b.provider ? tr('assistant.brain.newConversation', 'starts a new conversation') : '';
       items.push({ kind: 'header', label: meta.label, icon: meta.icon, color: meta.color, note });
@@ -780,6 +814,8 @@ export function createBrainPicker(host, hooks = {}) {
   // The composer chip's account cue: the account menu's initial avatar when the provider has more than one
   // account (or the account is signed out), "Auto" for Auto; null otherwise. Its full words are the tooltip's.
   function accountCue(brain) {
+    // Antigravity signed out: a warning cue on the chip (its words are the tooltip's and the Model menu's).
+    if (brain.provider === 'antigravity') return catalogProviderInfo('antigravity')?.signedIn === false ? { text: '!', tone: 'warn' } : null;
     if (!ACCOUNT_PROVIDERS.has(brain.provider)) return null;
     if (brain.accountId === 'auto') return { text: t('assistant.brain.accountAutoShort', 'Auto'), tone: 'muted' };
     const accounts = brain.provider === 'codex' ? getCachedCodexAccounts() : getCachedClaudeAccounts();
@@ -804,7 +840,8 @@ export function createBrainPicker(host, hooks = {}) {
       effortSupported: brain.provider === 'opencode' || hasEfforts,
       effort: brain.provider === 'opencode'
         ? (brain.agent || t('assistant.brain.agentDefault', 'default'))
-        : (level ? level.label : (brain.effort || t('assistant.brain.effortOff', 'off'))),
+        // Antigravity has no "off" level: no level is the model's own default ("Default").
+        : (level ? level.label : (brain.effort || (brain.provider === 'antigravity' ? (efforts.find(e => e.id === 'off')?.label || t('assistant.brain.effortOff', 'off')) : t('assistant.brain.effortOff', 'off')))),
       variantSupported: brain.provider === 'opencode' && hasEfforts,
       variant: level ? level.label : (brain.effort || t('assistant.brain.variantDefault', 'default variant')),
       project: brain.project ? projectLabel(brain.project, _projectsCache || []) : t('assistant.brain.projectHome', 'Home'),
@@ -888,6 +925,7 @@ export function createBrainPicker(host, hooks = {}) {
     const tip = [
       v.meta.label, model, who ? t('assistant.brain.asAccount', 'as {account}', { account: who }) : '',
       acc ? accountIdentity(acc) : '', acc ? accountBadge(acc, p).text : '',
+      brain.provider === 'antigravity' ? antigravitySignInView(catalogProviderInfo('antigravity'), hooks.t).text : '',
     ].filter(Boolean).join(' · ');
     setBtn('model', { label: '', icon: v.meta.icon, color: v.meta.color, tooltip: tip, aria: `${t('assistant.brain.model', 'Model')}: ${tip}` });
 
@@ -1111,10 +1149,12 @@ export function createBrainPicker(host, hooks = {}) {
     const brain = currentBrain();
     if (field === 'model') {
       // The account rows come from the kept lists; they are read again in the background once loaded.
-      if (ACCOUNT_PROVIDERS.has(brain.provider)) {
+      // Antigravity has no SynaBun account: its sign-in state comes with the catalog.
+      if (ACCOUNT_PROVIDERS.has(brain.provider) || brain.provider === 'antigravity') {
         if (_warmProviders.has(brain.provider)) ensureLoaded(brain.provider).catch(() => {});
         else await ensureLoaded(brain.provider);
       }
+      const antigravity = brain.provider === 'antigravity';
       await openModelMenu(anchor, {
         brain,
         shouldOpen,
@@ -1122,8 +1162,8 @@ export function createBrainPicker(host, hooks = {}) {
         placement,
         current: { provider: brain.provider, model: brain.model },
         warnSwitch: true,
-        accountItems: ACCOUNT_PROVIDERS.has(brain.provider) ? accountItems(brain) : [],
-        accountTitle: accountText('menuTitle', {}, accountProvider(brain)),
+        accountItems: ACCOUNT_PROVIDERS.has(brain.provider) ? accountItems(brain) : antigravity ? antigravitySignInItems() : [],
+        accountTitle: antigravity ? t('assistant.brain.antigravitySignIn', 'Antigravity sign-in') : accountText('menuTitle', {}, accountProvider(brain)),
         onToast: hooks.onToast,
         onManageModels: hooks.onManageModels,
         onSelect: (target) => {
@@ -1296,6 +1336,12 @@ export function createBrainPicker(host, hooks = {}) {
       onManage: (id) => (id ? hooks.onManageAccounts?.(brain.provider, id) : hooks.onManageAccounts?.(brain.provider)),
       onError: (err) => hooks.onToast?.(err?.message || String(err)),
     };
+  }
+
+  // Antigravity's place for accounts in the Model menu: its sign-in state, one line (antigravitySignInView).
+  function antigravitySignInItems() {
+    const view = antigravitySignInView(catalogProviderInfo('antigravity'), hooks.t);
+    return [{ kind: 'info', id: '__antigravity_signin', label: view.text, className: `asst-agy-signin asst-agy-signin-${view.state}` }];
   }
 
   // The composer's Model menu lists the brain's accounts too (Claude or Codex), as the cog's account menu

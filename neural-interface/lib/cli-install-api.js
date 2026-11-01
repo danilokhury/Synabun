@@ -24,7 +24,7 @@ import { Router } from 'express';
 import { guestForbidden, noStore, requireLocal, requireLocalHost, requireSameOriginJson, sendGuardError, uiOnly } from './http-guards.js';
 import { openNdjsonStream } from './whatsapp/api.js';
 
-export const INSTALLABLE_TOOLS = Object.freeze(['claude-code', 'codex', 'opencode']);
+export const INSTALLABLE_TOOLS = Object.freeze(['claude-code', 'codex', 'opencode', 'antigravity']);
 
 /**
  * @param {object} deps

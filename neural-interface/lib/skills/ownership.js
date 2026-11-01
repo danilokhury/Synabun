@@ -272,7 +272,7 @@ export function createSkillInstaller({ dataDir, now = () => new Date().toISOStri
   /**
    * Install `payload` at `destination` (a plain name in `root`).
    * @param {object} o
-   * @param {'claude'|'codex'|'opencode'} o.target @param {string} o.name @param {string} o.root @param {string} o.destination
+   * @param {'claude'|'codex'|'opencode'|'antigravity'|'agents'} o.target @param {string} o.name @param {string} o.root @param {string} o.destination
    * @param {object} o.payload from payloadFromFolder / payloadFromText
    * @param {object} [o.source] where the payload came from ({ kind: 'bundled', name, digest })
    * @param {{ expectedDestinationDigest?: string }} [o.decision] the person confirmed replacing what is there now

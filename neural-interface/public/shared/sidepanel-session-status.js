@@ -8,8 +8,8 @@
 // Assistant (sessionStatus). The same source as the tray pills, never a second
 // guess. DOM-free.
 
-const WORKING = /^(cp|cxp|ocpv2|asp)-pill-running$/;
-const NEEDS_YOU = /^((cp|cxp|asp)-pill-attention|ocpv2-pill-waiting)$/;
+const WORKING = /^(cp|cxp|ocpv2|agy|asp)-pill-running$/;
+const NEEDS_YOU = /^((cp|cxp|agy|asp)-pill-attention|ocpv2-pill-waiting)$/;
 
 /** The states a detached window's pill shows: a session in it needs you > one works > none. */
 export const SESSION_WINDOW_STATES = Object.freeze(['action', 'working', 'idle']);

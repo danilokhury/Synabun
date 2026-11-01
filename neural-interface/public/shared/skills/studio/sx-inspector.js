@@ -21,7 +21,7 @@ import { html, raw, setHTML, ICONS } from './sx-dom.js';
 import { descriptionHelp, keptKeys, frontmatterText } from './sx-editor-model.js';
 import { snippetsFor, applySnippet, snippetMatches, SNIPPET_GROUPS } from './sx-snippets.js';
 
-const OTHER_PROFILES = ['portable-six-field', 'codex-native', 'opencode-native'];
+const OTHER_PROFILES = ['portable-six-field', 'codex-native', 'opencode-native', 'antigravity-native'];
 let _life = null;
 
 /** The checks of a head document: the Studio's (gutter and list) and, for a skill, each other runtime's. */

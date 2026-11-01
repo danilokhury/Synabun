@@ -25,6 +25,7 @@ const PROVIDER_LABELS = {
   'claude-code': 'Claude Code',
   codex: 'Codex',
   opencode: 'OpenCode',
+  antigravity: 'Antigravity',
 };
 
 function providerLabel(provider) {
@@ -57,7 +58,7 @@ function topKeywords(task, title) {
 /** The provider's host name for browserPolicyText (its own web tools). */
 function policyHost(provider) {
   const value = String(provider || '').toLowerCase();
-  return value === 'claude-code' ? 'claude' : value === 'codex' || value === 'opencode' ? value : null;
+  return value === 'claude-code' ? 'claude' : value === 'codex' || value === 'opencode' || value === 'antigravity' ? value : null;
 }
 
 /**
@@ -223,7 +224,7 @@ function capabilityLine(capability, state = {}) {
     case 'read-only':
       return 'CAPABILITY: read-only. You may read, search and analyze anywhere; you must not modify files, run state-changing shell commands, or publish anything. The shell runs read-only commands only (rg, grep, ls, cat, head, tail, find, stat, diff, jq, git log / diff / status / show / blame, node --check, npm ls, curl without an output file); programs, test runners and writes to files are not available.' + enforced;
     case 'workspace':
-      return `CAPABILITY: workspace. You may edit files inside the working directory${scratch ? `, the OS temp folder and your scratch folder (${scratch})` : ' and the OS temp folder'} and run the commands the task needs; nothing is written anywhere else (not under the home folder, another project or a tool's configuration such as ~/.claude, ~/.codex, ~/.agents, ~/.config/opencode or ~/.synabun). Shell commands that write elsewhere (redirections, cp, mv, rm, ln, tee, sed -i, git -C another folder, a global install) are refused.` + enforced;
+      return `CAPABILITY: workspace. You may edit files inside the working directory${scratch ? `, the OS temp folder and your scratch folder (${scratch})` : ' and the OS temp folder'} and run the commands the task needs; nothing is written anywhere else (not under the home folder, another project or a tool's configuration such as ~/.claude, ~/.codex, ~/.agents, ~/.config/opencode, ~/.gemini or ~/.synabun). Shell commands that write elsewhere (redirections, cp, mv, rm, ln, tee, sed -i, git -C another folder, a global install) are refused.` + enforced;
     default:
       return 'CAPABILITY: full access as configured by the user.';
   }

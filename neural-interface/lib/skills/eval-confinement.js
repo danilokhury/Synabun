@@ -96,7 +96,9 @@ export function evalConfinementSupport(provider, { platform = process.platform }
   if (name === 'claude-code') return { ok: true, level: 'strict', shell: platform === 'darwin' ? 'sandbox' : 'never', optIn: false, note: 'Read, Write, Edit, Glob, Grep and Skill inside its folder; no settings file, hook or plugin but the skill under test; a shell only under the evaluation\'s macOS sandbox (no network, no home folder); no web, no MCP tools, no subagents.' };
   if (name === 'codex') return { ok: true, level: 'sandbox', shell: 'own-sandbox', optIn: true, note: `Codex keeps its shell under its ${platform === 'win32' ? 'Windows' : platform === 'darwin' ? 'Seatbelt' : 'Linux'} sandbox: writes inside its folder only, no network, no web search, no MCP server; its shell can read files anywhere on this computer, and what it reads can reach its model provider.` };
   if (name === 'opencode') return { ok: true, level: 'rules', shell: platform === 'darwin' ? 'sandbox' : 'never', optIn: false, note: 'OpenCode with no project configuration or plugin of the folder, its web, subagent and todo tools off, no MCP server, reads and edits inside its folder only; a shell only under the evaluation\'s macOS sandbox (no network, no home folder).' };
-  return { ok: false, reason: `${name || 'That provider'} cannot be held to an evaluation folder.` };
+  // Antigravity (a worker of the Assistant) has no evaluation confinement in SynaBun: an evaluation never runs unconfined.
+  if (name === 'antigravity') return { ok: false, reason: 'Antigravity cannot be held to an evaluation folder: skill evaluations run on Claude Code, Codex and OpenCode.' };
+  return { ok: false, reason: `${name || 'That provider'} cannot be held to an evaluation folder: skill evaluations run on Claude Code, Codex and OpenCode.` };
 }
 
 /**

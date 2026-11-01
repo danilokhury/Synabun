@@ -66,6 +66,7 @@ export const KEYS = {
   ACTIVE_WORKSPACE:    'neural-active-workspace',  // sessionStorage
   GRID_SNAP:           'neural-grid-snap',
   TOPRIGHT_TOOLS_HIDDEN: 'neural-topright-tools-hidden',  // the workspace tools toggle is off ('true')
+  WHITEBOARD_TOOLBAR_HIDDEN: 'neural-whiteboard-toolbar-hidden',  // the whiteboard rail (#wb-toolbar) is hidden behind the logo button ('true')
   CATEGORIES_VISIBLE:  'neural-categories-visible',
   WHITEBOARD:          'neural-whiteboard',
   WHITEBOARD_RULESET_ALERT_DISMISSED: 'neural-whiteboard-ruleset-alert-dismissed',
@@ -127,7 +128,7 @@ export const DEFAULT_KEYBINDS = {
   'toggle-assistant':    'Ctrl+a',
   'launch-claude':       '1',
   'launch-codex':        '2',
-  'launch-gemini':       '3',
+  'launch-antigravity':  '3',
   'launch-opencode':     '4',
   'launch-browser':      'b',
   'launch-youtube':      'y',
@@ -154,7 +155,7 @@ export const KEYBIND_META = {
   'toggle-assistant-panel': { label: 'Toggle Assistant Sidepanel', group: 'Launch App', icon: 'assistant' },
   'launch-claude':       { label: 'Claude Code',           group: 'Launch App', icon: 'claude' },
   'launch-codex':        { label: 'Codex CLI',             group: 'Launch App', icon: 'codex' },
-  'launch-gemini':       { label: 'Gemini CLI',            group: 'Launch App', icon: 'gemini' },
+  'launch-antigravity':  { label: 'Antigravity CLI',       group: 'Launch App', icon: 'antigravity' },
   'launch-opencode':     { label: 'OpenCode',              group: 'Launch App', icon: 'opencode' },
   'launch-browser':      { label: 'Browser',               group: 'Launch App', icon: 'browser' },
   'launch-youtube':      { label: 'YouTube',               group: 'Launch App', icon: 'youtube' },

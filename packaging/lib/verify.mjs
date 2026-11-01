@@ -5,7 +5,7 @@
  *           code, the payload beside it, the headless entry), every native
  *           binary is for the target's processor, the executables may run,
  *           nothing private came along, and none of the tools the user
- *           installs separately (Claude Code, Codex, OpenCode, Gemini CLI). One
+ *           installs separately (Claude Code, Codex, OpenCode, the Antigravity CLI). One
  *           program of somebody else's has to be there: cloudflared, the pinned
  *           build for the target, in its one place. A Windows bundle carries
  *           Git for Windows too (the Git Bash Claude Code needs there), the
@@ -234,7 +234,7 @@ export async function auditBundle(ctx) {
   let bytes = 0;
   const foreign = [];
   const relatives = [];
-  // Claude Code, Codex, OpenCode and Gemini CLI are the user's own installations:
+  // Claude Code, Codex, OpenCode and the Antigravity CLI are the user's own installations:
   // a package of one, its command, or its executable under any name it goes by
   // has no place in an application, whatever brought it.
   const external = new Map();
@@ -373,7 +373,7 @@ function freePort() {
  * The environment a smoke run gets: a home of its own, a data home of its own,
  * a port nothing listens on, no registration with the operating system, no
  * browser, no paid API. Nothing of the build machine's user is reachable, its
- * Claude Code, Codex, OpenCode and Gemini CLI included (SYNABUN_TOOL_DISCOVERY
+ * Claude Code, Codex, OpenCode and the Antigravity CLI included (SYNABUN_TOOL_DISCOVERY
  * keeps the search to the PATH below): the run is a first start on a machine
  * that has none of them.
  */

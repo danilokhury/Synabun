@@ -6,7 +6,7 @@
  *   2. the application, as exactly the files `npm pack` would publish
  *   3. its production dependencies, installed by the target's own npm, and
  *      none of the tools the user installs separately (Claude Code, Codex,
- *      OpenCode, Gemini CLI: lib/external-tools.js)
+ *      OpenCode, the Antigravity CLI: lib/external-tools.js)
  *   4. the native modules: compiled where there is no prebuilt binary, made
  *      executable, and stripped of other platforms' binaries
  *   5. the public embedding model, checked against its pins
@@ -233,7 +233,7 @@ export async function installDependencies(ctx) {
 }
 
 /**
- * Claude Code, Codex, OpenCode and Gemini CLI are installed by the user and are
+ * Claude Code, Codex, OpenCode and the Antigravity CLI are installed by the user and are
  * never part of an application. The lockfiles hold none of them, so npm should
  * have downloaded none; whatever came anyway is removed here, before anything
  * is compiled, counted or packaged, and the audit refuses a bundle that still

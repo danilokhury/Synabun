@@ -164,7 +164,7 @@ const MESSAGES = {
   activityText: 'activityText must be true or false',
   strictWorkerApprovals: 'strictWorkerApprovals must be true or false',
   computerUse: 'computerUse must be true or false',
-  brain: 'brain must be null (same as the Assistant) or { provider, model, effort } with a provider of claude-code, codex or opencode',
+  brain: 'brain must be null (same as the Assistant) or { provider, model, effort } with a provider of claude-code, codex, opencode or antigravity',
   transcriptionEnabled: 'transcriptionEnabled must be true or false',
   transcriptionLanguage: "transcriptionLanguage must be 'auto' or a 2-3 letter lowercase language code, such as en or pt",
   transcriptionEnginePath: 'transcriptionEnginePath must be empty (find whisper-cli by itself) or the absolute path of the whisper-cli program',

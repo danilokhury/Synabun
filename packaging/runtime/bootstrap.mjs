@@ -290,7 +290,7 @@ async function probeNatives() {
     .map(target => ({ id: target.id, kind: target.kind, executable: isExecutable(target.path) }));
   out.vendoredBinaries = { ok: binaries.every(binary => binary.executable), binaries };
 
-  // Claude Code, Codex, OpenCode and Gemini CLI are the user's own
+  // Claude Code, Codex, OpenCode and the Antigravity CLI are the user's own
   // installations: an application that carries one was built wrong.
   const { externalToolsInstalledIn } = await load('lib/external-tools.js');
   const inside = ['mcp-server', 'neural-interface']

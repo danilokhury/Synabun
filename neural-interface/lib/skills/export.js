@@ -7,7 +7,10 @@
 //   - Claude Code: `disable-model-invocation: true` / `user-invocable: false` in SKILL.md (that key only);
 //   - Codex: `policy.allow_implicit_invocation: false` in agents/openai.yaml (made when there is none; otherwise
 //     that one value is set and every other value, comment and order is kept);
-//   - OpenCode: metadata `opencode/autoinvoke: "false"` in SKILL.md (the metadata key only).
+//   - OpenCode: metadata `opencode/autoinvoke: "false"` in SKILL.md (the metadata key only);
+//   - Antigravity: `disable-slash-command: true` in SKILL.md (that key only) for a skill the person may not start by
+//     name. Antigravity has no setting that keeps its model from starting a skill: an export of an explicit-only
+//     skill for it is refused (L-08-invocation-unrepresentable), never written wider.
 // A Codex export also carries the harness metadata Codex shows in its skill picker (agents/openai.yaml
 // `interface`: display_name, short_description, default_prompt, from the skill's own name and description; the
 // 02-standards-runtimes report, §6.3). A sidecar that is already there keeps every value it has: only the interface
@@ -140,7 +143,7 @@ export function buildExport({ files, dirs = [] }, profileId) {
       }
       const next = patchHead(headText, changes);
       if (next === null) {
-        diagnostics.push({ ruleId: 'L-08-adapt-failed', severity: 'error', message: `The SKILL.md frontmatter could not be changed to keep ${profile?.title || profileId} from ${t.key === 'user-invocable' ? 'showing it to the person' : 'starting it on its own'}: fix the YAML first.`, file: 'SKILL.md', line: null });
+        diagnostics.push({ ruleId: 'L-08-adapt-failed', severity: 'error', message: `The SKILL.md frontmatter could not be changed to keep ${profile?.title || profileId} from ${t.key === 'user-invocable' || t.key === 'disable-slash-command' ? 'showing it to the person' : 'starting it on its own'}: fix the YAML first.`, file: 'SKILL.md', line: null });
         continue;
       }
       headText = next;

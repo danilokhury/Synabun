@@ -11,14 +11,15 @@
 //
 // Invocation is kept as intent, apart from any one runtime's spelling of it: who may start the skill (the user
 // by name, the model on its own), read from every dialect a folder carries (Claude Code fields, Codex's
-// agents/openai.yaml, OpenCode's metadata) and compared with what a target would read from the exported bytes,
-// so an install never lets a model start a skill its author kept explicit-only (invocationPlan).
+// agents/openai.yaml, OpenCode's metadata, Antigravity's disable-slash-command) and compared with what a target
+// would read from the exported bytes, so an install never lets a model start a skill its author kept
+// explicit-only (invocationPlan).
 //
 // No DOM, no I/O: the page and the server load it; YAML is parsed by the caller.
 
 import { findHiddenChars } from './ss-unicode.js';
 
-export const PROFILE_SET_VERSION = '2026-10-22';
+export const PROFILE_SET_VERSION = '2026-10-30';
 
 const RETRIEVED = '2026-10-21';
 const SOURCES = Object.freeze({
@@ -29,6 +30,7 @@ const SOURCES = Object.freeze({
   codexPrompts: { title: 'Codex custom prompts (deprecated)', url: 'https://learn.chatgpt.com/docs/custom-prompts', retrieved: RETRIEVED },
   opencode: { title: 'OpenCode skills', url: 'https://opencode.ai/docs/skills/', retrieved: RETRIEVED },
   opencodeCommands: { title: 'OpenCode commands', url: 'https://opencode.ai/docs/commands/', retrieved: RETRIEVED },
+  antigravity: { title: 'Antigravity CLI reference', url: 'https://antigravity.google/docs/cli/reference', retrieved: '2026-10-30' },
 });
 
 export const PORTABLE_FIELDS = Object.freeze(['name', 'description', 'license', 'compatibility', 'metadata', 'allowed-tools']);
@@ -39,6 +41,9 @@ export const CLAUDE_FIELDS = Object.freeze([
 ]);
 const OPENCODE_FIELDS = Object.freeze(['name', 'description', 'license', 'compatibility', 'metadata', 'disable-model-invocation']);
 const CODEX_FIELDS = Object.freeze(['name', 'description', 'metadata']);
+const ANTIGRAVITY_FIELDS = Object.freeze(['name', 'description', 'disable-slash-command']);
+/** The most of a SKILL.md body Antigravity reads (UTF-8 bytes after the frontmatter). */
+export const ANTIGRAVITY_BODY_BYTES = 24 * 1024;
 
 export const PORTABLE_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const CODEX_SIDECAR = 'agents/openai.yaml';
@@ -121,6 +126,19 @@ export const PROFILES = Object.freeze({
     ],
     reload: { file: 'new-session', newRoot: 'new-session', note: 'A running OpenCode may not see a new skill; start a new session (or restart the server) to be sure.' },
   }),
+  'antigravity-native': Object.freeze({
+    id: 'antigravity-native', version: '2026-10-30', title: 'Antigravity', runtime: 'antigravity', status: 'current',
+    sources: [SOURCES.antigravity], verified: null,
+    fields: { recognized: ANTIGRAVITY_FIELDS, required: ['name', 'description'], strictTopLevel: false },
+    limits: { nameChars: 64, descriptionChars: 1024, bodyBytes: ANTIGRAVITY_BODY_BYTES },
+    invocation: { model: 'chosen by its description; no field keeps the model from starting it', user: '/name; `disable-slash-command: true` hides it' },
+    substitutions: null,
+    roots: [
+      { scope: 'user', path: '~/.gemini/config/skills', note: 'where SynaBun installs' },
+      { scope: 'project', path: '<project>/.agents/skills', note: 'the Codex project folder, which Antigravity reads too' },
+    ],
+    reload: { file: 'automatic', newRoot: 'automatic', note: 'Antigravity reads its skill folders again by itself; there is no command to run.' },
+  }),
   'codex-prompt': Object.freeze({
     id: 'codex-prompt', version: '2026-10-21', title: 'Codex custom prompt (deprecated)', runtime: 'codex', status: 'legacy',
     sources: [SOURCES.codexPrompts], verified: null,
@@ -144,7 +162,7 @@ export const PROFILES = Object.freeze({
 });
 
 /** The profile an install into a runtime is checked against. */
-export const TARGET_PROFILE = Object.freeze({ claude: 'claude-code', codex: 'codex-native', opencode: 'opencode-native', agents: 'portable-six-field' });
+export const TARGET_PROFILE = Object.freeze({ claude: 'claude-code', codex: 'codex-native', opencode: 'opencode-native', antigravity: 'antigravity-native', agents: 'portable-six-field' });
 
 export function getProfile(id) {
   return Object.prototype.hasOwnProperty.call(PROFILES, id) ? PROFILES[id] : null;
@@ -162,6 +180,11 @@ export function profileList() {
 
 const has = (data, key) => !!data && Object.prototype.hasOwnProperty.call(data, key);
 const isMap = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+const ENCODER = new TextEncoder();
+/** A text's length in UTF-8 bytes (0 for anything else). */
+const utf8Length = (text) => (typeof text === 'string' ? ENCODER.encode(text).length : 0);
+/** "24 KB", "25.3 KB", "812 bytes". */
+const kb = (bytes) => (bytes < 1024 ? `${bytes} bytes` : `${Math.round((bytes / 1024) * 10) / 10} KB`);
 const kindOf = (value) => {
   if (value === undefined) return 'absent';
   if (value === null) return 'empty';
@@ -202,9 +225,11 @@ export function readInvocationIntent({ data, sidecar = null }) {
   const meta = isMap(data?.metadata) ? data.metadata : null;
   if (meta && has(meta, 'opencode/autoinvoke')) said.opencodeModel = openSwitch(meta['opencode/autoinvoke']);
   if (meta && has(meta, 'opencode/slash')) said.opencodeSlash = openSwitch(meta['opencode/slash']);
+  // Antigravity's `disable-slash-command: true` keeps /name from the person, as Claude Code's user-invocable: false does.
+  if (has(data, 'disable-slash-command')) said.antigravityUser = claudeBoolean(data['disable-slash-command']) === true ? false : (claudeBoolean(data['disable-slash-command']) === false ? true : null);
   const modelSays = [said.claudeModel, said.codexModel, said.opencodeModel].filter((v) => v === true || v === false);
   const model = !modelSays.includes(false);
-  const user = said.claudeUser !== false;
+  const user = said.claudeUser !== false && said.antigravityUser !== false;
   const conflicts = [];
   if (modelSays.includes(false) && modelSays.includes(true)) conflicts.push('model');
   return { user, model, slash: said.opencodeSlash ?? null, said, conflicts };
@@ -227,6 +252,10 @@ export function effectiveInvocation(profileId, { data, sidecar = null }) {
     // /api/skill answered `autoinvoke: false` for each in an isolated serve (2026-10-22).
     const claudeOff = claudeBoolean(data?.['disable-model-invocation']) === true;
     return { model: !(openSwitch(meta?.['opencode/autoinvoke']) === false || claudeOff), user: true, slash: openSwitch(meta?.['opencode/slash']) === true };
+  }
+  if (runtime === 'antigravity') {
+    // Only a YAML true is taken as hiding /name (anything else is not counted on); nothing keeps its model from starting a skill.
+    return { model: true, user: data?.['disable-slash-command'] !== true };
   }
   return { model: true, user: true };
 }
@@ -254,6 +283,7 @@ export function invocationPlan(profileId, { intent, data, sidecar = null }) {
   }
   if (!intent.user && now.user) {
     if (runtime === 'claude') transforms.push({ file: 'SKILL.md', op: 'frontmatter', key: 'user-invocable', value: false, reason: 'Keeps /name hidden in Claude Code, as the skill\'s other settings say.' });
+    else if (runtime === 'antigravity') transforms.push({ file: 'SKILL.md', op: 'frontmatter', key: 'disable-slash-command', value: true, reason: 'Keeps /name hidden in Antigravity, as the skill\'s other settings say.' });
     else diagnostics.push({ ruleId: 'L-08-user-invocation-broader', severity: 'warning', message: `${profile.title} has no setting that hides a skill from the person: there it can still be started by name.`, file: 'SKILL.md', line: null });
   }
   return { transforms, diagnostics };
@@ -306,7 +336,7 @@ export function lintForProfile(profileId, { parsed, folderName = '', headPath = 
       if (hidden.length || /[<>]/.test(name)) add('L-03-name-chars', 'error', `"name" holds characters ${profile.title} refuses (${hidden.length ? hidden.map((h) => h.label).join(', ') : 'an angle bracket'}).`, lineOf('name'));
       const portableName = PORTABLE_NAME_RE.test(name);
       if (!portableName) {
-        if (strictPortable || runtime === 'opencode') add('L-03-name-format', 'error', `"name" must be lowercase letters, digits and single hyphens for ${profile.title}.`, lineOf('name'));
+        if (strictPortable || runtime === 'opencode' || runtime === 'antigravity') add('L-03-name-format', 'error', `"name" must be lowercase letters, digits and single hyphens for ${profile.title}.`, lineOf('name'));
         else add('L-03-name-format', 'warning', `"name" is not lowercase letters, digits and single hyphens: other runtimes may refuse it.`, lineOf('name'));
       }
       if (folderName && name !== folderName) {
@@ -396,6 +426,14 @@ export function lintForProfile(profileId, { parsed, folderName = '', headPath = 
       if (has(data, key) && data[key] !== null && typeof data[key] !== 'string') add(`L-04-${key}-type`, 'error', `"${key}" must be text; it is ${kindOf(data[key])}.`, lineOf(key));
     }
     if (has(data, 'hooks') && !isMap(data.hooks)) add('L-04-hooks-type', 'error', `"hooks" must be a mapping of events; it is ${kindOf(data.hooks)}.`, lineOf('hooks'));
+  }
+
+  // Antigravity's own field and limit
+  if (runtime === 'antigravity') {
+    if (has(data, 'disable-slash-command') && typeof data['disable-slash-command'] !== 'boolean') add('L-04-disable-slash-command-type', 'error', `"disable-slash-command" must be true or false; it is ${kindOf(data['disable-slash-command'])}.`, lineOf('disable-slash-command'));
+    const bytes = utf8Length(parsed?.body);
+    const max = profile.limits.bodyBytes || ANTIGRAVITY_BODY_BYTES;
+    if (bytes > max) add('L-03-body-size', 'error', `The body is ${kb(bytes)}; ${profile.title} reads ${kb(max)} at most. Move detail into files the skill points to.`, parsed?.bodyLine || null);
   }
 
   // Keys the profile does not read

@@ -3,13 +3,12 @@
 import { clampEffortId, getEffortLevelsForModel, modelEffortIds, fetchClaudeAccounts, fetchCodexAccounts, getCachedClaudeAccounts, getCachedCodexAccounts, getClaudeWorkerAccountId, getCodexWorkerAccountId } from '../agent-runtime-options.js';
 import { accountSummary, accountName, accountBadge, accountIdentity } from '../account-view.js';
 import { accountUsageText, autoAccountLabel } from '../account-usage.js';
-import { getProviderMeta } from '../provider-icons.js';
 import { getRouting, putRouting } from './asst-api.js';
 import { catalogModelRow, hiddenModelFor, ICON_CARET, openModelMenu } from './asst-brain-picker.js';
 import { closeMenu, currentMenu } from './asst-menu.js';
 import { loadRouteModels, routeModelLabel, routeModelsStatus, watchRouteModels } from './asst-route-models.js';
 import { designRouteSight, openModelsManager, routeCatalogRow, routeModeLabel } from './asst-route.js';
-import { DEFAULT_ROUTE_MODE, normalizeRouteMode, ROUTE_MODES } from './asst-state.js';
+import { DEFAULT_ROUTE_MODE, normalizeRouteMode, PROVIDERS, providerMeta, ROUTE_MODES } from './asst-state.js';
 
 const ICON_ROUTE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h15l-4-4M20 17H5l4 4"/></svg>';
 const ICON_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg>';
@@ -37,7 +36,8 @@ function choiceKey(p) { return p ? JSON.stringify([p.kind || 'direct', p.provide
 export function routeAccountView(pref, task, brain, accounts, workers = {}, t = null) {
   const tr = translator(t);
   const empty = { label: tr('assistant.routes.editorUnusedValue', '—'), readOnly: true, options: [], hint: '' };
-  if (!pref || pref.provider === 'opencode') return empty;
+  // Only Claude Code and Codex run under an account (OpenCode and Antigravity sign in inside their own CLIs).
+  if (!pref || pref.provider === 'opencode' || pref.provider === 'antigravity') return empty;
   const direct = task.id === 'chat' || routeExecutionKind(pref, task, brain) === 'direct';
   const provider = task.id === 'chat' ? brain.provider : pref.provider;
   if (!['claude-code', 'codex'].includes(provider)) return empty;
@@ -381,7 +381,8 @@ export async function openRoutesEditor(hooks = {}) {
       state.menuFocus = modelBtn.dataset.focusKey;
       const emptyLabel = task.requires ? tr('assistant.routes.noCapableModel', 'No model in your catalog can make {medium} yet.', { medium: tr(`assistant.routes.medium.${task.requires === 'video' ? 'videos' : 'images'}`, task.requires) }) : tr('assistant.routes.noSeeingModel', 'No model in your catalog can see images yet.');
       const menu = await openModelMenu(modelBtn, {
-        brain: brain(), t: hooks.t, includeHere: true, hereLabel: tr('assistant.routes.brainDecides', 'Assistant chooses'), title: task.label,
+        // Every provider a route can name (Antigravity included).
+        brain: brain(), t: hooks.t, includeHere: true, hereLabel: tr('assistant.routes.brainDecides', 'Assistant chooses'), title: task.label, providers: PROVIDERS,
         current: pref ? { provider: pref.provider, model: pref.model } : null, onToast: hooks.onToast,
         routingEditor: true, onManageModels: () => manageModels(modelBtn.dataset.focusKey),
         ...(task.requires ? { accept: (_p, m) => m.outputs?.[task.requires] === true, allowCustom: false, emptyLabel } : {}),
@@ -400,7 +401,7 @@ export async function openRoutesEditor(hooks = {}) {
     // Keys are stable across translations; accessible names use the translated field.
     modelBtn.dataset.focusKey = `${task.id}-model`; caret(modelBtn); modelBtn.setAttribute('aria-haspopup', 'dialog');
     modelBtn.title = label;
-    if (pref?.provider) { const mark = el('span', 'asst-icon'); mark.setAttribute('aria-hidden', 'true'); mark.innerHTML = getProviderMeta(pref.provider).icon; mark.style.color = getProviderMeta(pref.provider).color; modelBtn.prepend(mark); }
+    if (pref?.provider) { const mark = el('span', 'asst-icon'); mark.setAttribute('aria-hidden', 'true'); mark.innerHTML = providerMeta(pref.provider).icon; mark.style.color = providerMeta(pref.provider).color; modelBtn.prepend(mark); }
     modelCell.append(modelBtn);
     const source = el('span', 'asst-routes-source');
     let sourceText = pref ? tr('assistant.routes.source.yours', 'Your choice') : tr('assistant.routes.source.default', 'Assistant chooses');
@@ -433,14 +434,14 @@ export async function openRoutesEditor(hooks = {}) {
     if (effortValue !== unusedValue && effortValue !== effortText) effortBtn.setAttribute('aria-label', tr('assistant.routes.fieldLabel', '{task}: {field}, {value}', { task: task.label, field: tr('assistant.routes.columns.effort', 'Effort'), value: `${effortValue} · ${effortText}` }));
     const effortCell = el('div', 'asst-routes-cell asst-routes-effort-cell'); effortCell.append(el('span', 'asst-routes-cell-label', tr('assistant.routes.columns.effort', 'Effort')), effortBtn); node.append(effortCell);
     const kind = routeExecutionKind(pref, task, brain());
-    const runLabel = task.id === 'chat' ? tr('assistant.routes.inConversation', 'In conversation') : !pref ? task.dispatchOnly ? tr('assistant.routes.workerChooses', 'Worker · assistant chooses') : tr('assistant.routes.brainDecides', 'Assistant chooses') : kind === 'direct' ? tr('assistant.routes.inConversation', 'In conversation') : tr('assistant.routes.onWorker', '{provider} worker', { provider: getProviderMeta(pref.provider).label });
+    const runLabel = task.id === 'chat' ? tr('assistant.routes.inConversation', 'In conversation') : !pref ? task.dispatchOnly ? tr('assistant.routes.workerChooses', 'Worker · assistant chooses') : tr('assistant.routes.brainDecides', 'Assistant chooses') : kind === 'direct' ? tr('assistant.routes.inConversation', 'In conversation') : tr('assistant.routes.onWorker', '{provider} worker', { provider: providerMeta(pref.provider).label });
     const run = fieldButton('asst-routes-run', task, tr('assistant.routes.columns.run', 'Runs in'), runLabel, () => openMenuFor(run, tr('assistant.routes.columns.run', 'Runs in'), [
       { kind: 'radio', id: 'direct', label: tr('assistant.routes.inConversation', 'In conversation'), desc: tr('assistant.routes.conversationDesc', 'Continue this conversation on the chosen model for this task.'), selected: kind === 'direct', onSelect: () => setChoice(task.id, { ...pref, kind: 'direct' }, run.dataset.focusKey) },
-      { kind: 'radio', id: 'dispatch', label: tr('assistant.routes.onWorker', '{provider} worker', { provider: getProviderMeta(pref?.provider).label }), desc: tr('assistant.routes.workerDesc', 'Hand the task to a worker and show its result here.'), selected: kind === 'dispatch', onSelect: () => setChoice(task.id, { ...pref, kind: 'dispatch' }, run.dataset.focusKey) },
+      { kind: 'radio', id: 'dispatch', label: tr('assistant.routes.onWorker', '{provider} worker', { provider: providerMeta(pref?.provider).label }), desc: tr('assistant.routes.workerDesc', 'Hand the task to a worker and show its result here.'), selected: kind === 'dispatch', onSelect: () => setChoice(task.id, { ...pref, kind: 'dispatch' }, run.dataset.focusKey) },
     ]));
     run.dataset.focusKey = `${task.id}-run`; run.disabled = !pref || task.dispatchOnly || pref.provider !== brain().provider || task.id === 'chat';
     const inConversation = task.id === 'chat' || (pref && kind === 'direct');
-    const runValue = inConversation ? tr('assistant.routes.editorInConversation', 'This conversation') : pref ? getProviderMeta(pref.provider).label : unusedValue;
+    const runValue = inConversation ? tr('assistant.routes.editorInConversation', 'This conversation') : pref ? providerMeta(pref.provider).label : unusedValue;
     run.querySelector('.asst-dd-label').textContent = runValue;
     if (inConversation) run.setAttribute('aria-label', tr('assistant.routes.fieldLabel', '{task}: {field}, {value}', { task: task.label, field: tr('assistant.routes.columns.run', 'Runs in'), value: runValue }));
     if (!run.disabled) caret(run);

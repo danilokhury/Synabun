@@ -20,7 +20,7 @@ export const REVIEW_STATE_LABEL = Object.freeze({
   withdrawn: 'Withdrawn',
 });
 
-export const RUNTIME_LABEL = Object.freeze({ claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', agents: 'Shared (~/.agents/skills)' });
+export const RUNTIME_LABEL = Object.freeze({ claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', antigravity: 'Antigravity', agents: 'Shared (~/.agents/skills)' });
 
 /** A target as a person reads it: the runtime, and the project or the account when it is not the default one. */
 export function targetLabel(t) {
@@ -123,7 +123,7 @@ export function targetChoices({ sharedAgentsRoot = false } = {}, suggested = [])
     choices.push({ key, runtime: target.runtime, target, label: targetLabel(target), on: true });
   }
   const plainAsked = new Set(asked.filter(plainTarget).map((t) => t.runtime));
-  for (const runtime of ['claude', 'codex', 'opencode', ...(sharedAgentsRoot ? ['agents'] : [])]) {
+  for (const runtime of ['claude', 'codex', 'opencode', 'antigravity', ...(sharedAgentsRoot ? ['agents'] : [])]) {
     if (plainAsked.has(runtime)) continue;
     const target = { runtime };
     choices.push({ key: JSON.stringify(target), runtime, target, label: targetLabel(target), on: !asked.length && runtime === 'claude' });

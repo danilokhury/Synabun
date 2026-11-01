@@ -1368,6 +1368,40 @@ export function injectAssistantStyles() {
     /* Route card */
     .asst-route-summary { color: var(--asst-text); }
     .asst-route-reasons { margin-top: -4px; color: var(--asst-text-3); font-size: 11.5px; }
+    /* Here / Dispatch: a segmented choice of where the task runs; the list, the model menu and Run follow it.
+       sm capsules in one xs-padded track; the pick takes the gold "on" pair, like the option's key. */
+    .asst-route-sides {
+      display: inline-flex;
+      align-self: flex-start;
+      gap: 2px;
+      padding: 2px;
+      border-radius: var(--asst-pill-r-md);
+      background: var(--asst-fill-1);
+      box-shadow: inset 0 0 0 1px var(--asst-line);
+    }
+    .asst-route-side {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 76px;
+      height: var(--asst-pill-h-sm);
+      padding: 0 var(--asst-pill-px-sm);
+      border: 0;
+      border-radius: var(--asst-pill-r-sm);
+      background: transparent;
+      color: var(--asst-text-2);
+      font: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+      cursor: pointer;
+      transition: background-color var(--asst-dur-fast) var(--asst-ease-standard), box-shadow var(--asst-dur-fast) var(--asst-ease-standard), color var(--asst-dur-fast) var(--asst-ease-standard);
+    }
+    .asst-route-side:hover { background: var(--asst-fill-2); color: var(--asst-text); }
+    .asst-route-side.selected { background: var(--asst-pill-on-fill); box-shadow: inset 0 0 0 1px var(--asst-pill-on-ring); color: var(--asst-text); }
+    .asst-route-side[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
+    .asst-route-side[aria-disabled="true"]:not(.selected):hover { background: transparent; color: var(--asst-text-2); }
+    .asst-route-side-note { margin-top: -6px; color: var(--asst-text-3); font-size: 11.5px; }
     .asst-route-options { display: flex; flex-direction: column; gap: 4px; }
     .asst-route-option {
       display: flex;

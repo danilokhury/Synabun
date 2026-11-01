@@ -43,6 +43,12 @@ export const SANDBOX_ELEVATION = Object.freeze({
     changes: false,
     reason: 'OpenCode has no operating-system sandbox, only permission rules, so nothing it starts needs administrator approval.',
   }),
+  // Antigravity (`agy acp`, lib/native-loop-providers.js) is started with no sandbox setting at all: every edit,
+  // command or outside access it wants is a permission request SynaBun answers (lib/worker-confinement.js).
+  antigravity: Object.freeze({
+    changes: false,
+    reason: 'SynaBun starts Antigravity (agy acp) with no sandbox setting and answers each of its permission requests itself, so nothing it starts asks for administrator approval.',
+  }),
 });
 
 /** Only `true` turns it on: anything else (missing, a string, null) is the default, off. */

@@ -2,24 +2,25 @@
 // SynaBun Neural Interface — Resume Sessions
 // Toolbar dropdown for browsing and resuming
 // past CLI sessions across projects.
-// Supports: Claude Code, Codex CLI, Gemini CLI, OpenCode.
+// Supports: Claude Code, Codex CLI, Antigravity CLI, OpenCode.
 // ═══════════════════════════════════════════
 
 import { emit, on } from './state.js';
-import { fetchClaudeSessions, fetchCodexSessions, fetchOpencodeSessions, fetchGeminiSessions, searchMemories, searchSessions, startSessionIndexing, cancelSessionIndexing, fetchIndexingStatus } from './api.js';
+import { fetchClaudeSessions, fetchCodexSessions, fetchOpencodeSessions, fetchAntigravitySessions, searchMemories, searchSessions, startSessionIndexing, cancelSessionIndexing, fetchIndexingStatus } from './api.js';
 import { isGuest, hasPermission } from './ui-sync.js';
 import { storage } from './storage.js';
 import { getProviderMeta, PROVIDER_META } from './provider-icons.js';
+import { migrateProviderId } from './agent-runtime-options.js';
 
 const $ = (id) => document.getElementById(id);
 
 // ── CLI providers for Resume ──
-const RESUME_PROVIDERS = ['claude-code', 'codex', 'gemini', 'opencode'];
+const RESUME_PROVIDERS = ['claude-code', 'codex', 'antigravity', 'opencode'];
 const PROVIDER_FETCH = {
   'claude-code': fetchClaudeSessions,
   'codex':       fetchCodexSessions,
   'opencode':    fetchOpencodeSessions,
-  'gemini':      fetchGeminiSessions,
+  'antigravity': fetchAntigravitySessions,
 };
 
 // ── State ──
@@ -28,7 +29,7 @@ let _searchDebounce = null;
 let _currentSearch = '';
 let _expandedProject = null;  // path of currently expanded project
 let _loading = false;
-let _selectedProvider = storage.getItem('synabun-resume-provider') || 'claude-code';
+let _selectedProvider = migrateProviderId(storage.getItem('synabun-resume-provider') || 'claude-code');
 const _projectsByProvider = new Map();
 const _loadPromises = new Map();
 
@@ -177,9 +178,10 @@ async function loadAllProjects(search = '') {
     _loading = true;
     try {
       // When actively searching, route through the FTS5 + semantic hybrid endpoint
-      // so we match the full session body, not just the first prompt.
+      // so we match the full session body, not just the first prompt (every provider,
+      // Antigravity's conversations too: lib/session-cache-builder.js).
       let projects;
-      if (search && search.trim().length >= 2 && provider !== 'gemini') {
+      if (search && search.trim().length >= 2) {
         const data = await searchSessions({
           q: search,
           provider,

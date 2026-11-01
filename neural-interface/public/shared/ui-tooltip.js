@@ -50,7 +50,7 @@ export function initTooltip() {
     // Left-side placement (session dropdowns in sidepanels)
     // Anchor to the left edge of the containing sidepanel so tooltip always appears fully outside
     if (preferred === 'left') {
-      const panel = el.closest('.claude-panel, .codex-panel, .ocp-panel, .assistant-panel, .menubar-dropdown--resume');
+      const panel = el.closest('.claude-panel, .codex-panel, .ocp-panel, .agy-panel, .assistant-panel, .menubar-dropdown--resume');
       const anchorLeft = panel ? panel.getBoundingClientRect().left : r.left;
       if (anchorLeft - gap - tw > b.left + 4) {
         setPlacement('left');

@@ -55,13 +55,18 @@ export const WHOLESALE_SELECTORS = [
   // OpenCode side panel transcript
   '.ocpv2-part-text', '.ocpv2-reasoning-body', '.ocpv2-tc-summary', '.ocpv2-tc-meta', '.ocpv2-tc-body',
   '.ocpv2-tool-input', '.ocpv2-tool-output', '.ocpv2-sb-summary',
+  // Antigravity side panel: session names, the transcript, tool and request cards, the plan, what waits to be sent
+  '.agy-session-label', '.agy-tab-label', '.agy-sess-list .agy-pop-item-title', '.agy-sess-list .agy-pop-item-meta',
+  '.agy-msg-text', '.agy-msg .agy-md', '.agy-msg-image', '.agy-thought-body',
+  '.agy-card-title', '.agy-card-subtitle', '.agy-card-text', '.agy-card-body', '.agy-card-error', '.agy-plan-text',
+  '.agy-queue-text', '.agy-chip', '.agy-folder-chip',
   // Assistant transcript, run and worker cards
   '.asst-msg-text', '.asst-md', '.asst-thinking-content', '.asst-run-title', '.asst-run-summary', '.asst-run-escalate-reason',
   '.asst-tool-detail', '.asst-tool-body', '.asst-tool-section', '.asst-tl-said', '.asst-tl-subject', '.asst-bubble-text',
   '.asst-station-sub', '.asst-station-log', '.asst-auto-title', '.asst-auto-summary', '.asst-auto-detail',
   // Composers, once they hold text (an empty one keeps its placeholder sharp)
   '#cp-input:not(:placeholder-shown)', '#cxp-input:not(:placeholder-shown)', '.ocpv2-compose-input:not(:placeholder-shown)',
-  '.asst-input:not(:placeholder-shown)',
+  '.asst-input:not(:placeholder-shown)', '.agy-input:not(:placeholder-shown)',
   // Terminal output (the WebGL canvas and the DOM renderer alike) and the terminal's browser tab
   '.term-viewport .xterm-screen', '.term-float-tab-body .xterm', '.browser-canvas', '.browser-url-input', '.browser-title-label',
   // Resume results

@@ -422,7 +422,8 @@ function scanHints(repoPath) {
   const hints = [];
   if (existsSync(join(repoPath, '.claude-plugin', 'plugin.json'))) hints.push('claude-plugin');
   if (existsSync(join(repoPath, '.codex'))) hints.push('codex');
-  if (existsSync(join(repoPath, 'gemini-extension.json'))) hints.push('gemini');
+  // Antigravity's plugins: its own manifests, and the Gemini CLI extensions `agy plugin install` imports.
+  if (['gemini-extension.json', join('.antigravity-plugin', 'plugin.json'), join('.gemini-plugin', 'plugin.json')].some((file) => existsSync(join(repoPath, file)))) hints.push('antigravity');
   if (existsSync(join(repoPath, '.cursor'))) hints.push('cursor');
   if (existsSync(join(repoPath, '.windsurf'))) hints.push('windsurf');
   return hints;

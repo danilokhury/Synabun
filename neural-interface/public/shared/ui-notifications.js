@@ -49,6 +49,7 @@ const PANEL_SHOW_EVENTS = {
   claude: 'claude-panel:show',
   codex: 'codex-panel:show',
   opencode: 'opencode-panel:show',
+  antigravity: 'antigravity-panel:show',
   assistant: 'assistant-panel:show',
 };
 

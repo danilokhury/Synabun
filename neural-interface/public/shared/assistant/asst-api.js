@@ -48,7 +48,7 @@ export function fetchAssistantCatalog({ force = false } = {}) {
 
 // ── Hidden models (Assistant → Models) ───────
 
-/** → { ok, providers: { 'claude-code': [], codex: [], opencode: [] } } */
+/** → { ok, providers: { 'claude-code': [], codex: [], opencode: [], antigravity: [] } } */
 export function getHiddenModelLists() {
   return jsonFetch('/api/assistant/hidden-models');
 }

@@ -1,6 +1,6 @@
 // ── AI skill creation: the sources a draft is made from (P3) ──
 // What lib/skills/creation.js puts in a drafting job's workspace (`sources/`) before the worker starts: one session
-// transcript of Claude Code, Codex or OpenCode, SynaBun memories, a read-only snapshot of a registered project, the
+// transcript of Claude Code, Codex, OpenCode or Antigravity, SynaBun memories, a read-only snapshot of a registered project, the
 // files of an existing skill. Every file opens with a line saying it is untrusted data, secrets are taken out
 // (lib/log-redact.js: before anything is cut short, so half a secret never survives), and every source has a
 // budget: what does not fit is cut, and the manifest says so. A web page is read by the server with the SynaBun
@@ -87,6 +87,24 @@ export function opencodeRowsToMessages(rows) {
     if (!row) continue;
     const m = v2MessageText(row.type, row.data);
     if (m?.text) out.push({ role: m.role, text: m.text });
+  }
+  return out;
+}
+
+/**
+ * Antigravity's transcript as lib/antigravity/transcripts.js parses it (parseAntigravityTranscript().messages:
+ * { role: user | assistant | tool_result, text, tools }) → messages: the person's words, the model's answers and
+ * the tools it called (never its reasoning), and what the tools gave back.
+ */
+export function antigravityMessagesToMessages(messages) {
+  const out = [];
+  for (const m of Array.isArray(messages) ? messages : []) {
+    if (!m || typeof m !== 'object') continue;
+    if (m.role === 'user' && typeof m.text === 'string' && m.text.trim()) out.push({ role: 'user', text: m.text });
+    else if (m.role === 'assistant') {
+      if (typeof m.text === 'string' && m.text.trim()) out.push({ role: 'assistant', text: m.text });
+      for (const t of Array.isArray(m.tools) ? m.tools : []) out.push({ role: 'tool', tool: String(t?.name || 'tool'), text: safeJson(t?.input) });
+    } else if (m.role === 'tool_result' && typeof m.text === 'string' && m.text.trim()) out.push({ role: 'tool_result', text: m.text, error: m.error === true });
   }
   return out;
 }

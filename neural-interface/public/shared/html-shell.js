@@ -177,10 +177,10 @@ export function getSharedHTML() {
             <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z"/></svg></span> ${t('menu.apps.codexCli')} <span class="count-badge count-badge--green menu-update-badge" id="codex-menu-update-badge"></span></span>
             <span class="menu-shortcut" data-keybind-for="launch-codex"></span>
           </div>
-          <div class="menu-item" id="menu-terminal-gemini">
+          <div class="menu-item" id="menu-terminal-antigravity">
             <span class="menu-check"></span>
-            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z"/></svg></span> ${t('menu.apps.geminiCli')} <span class="count-badge count-badge--green menu-update-badge" id="gemini-menu-update-badge"></span></span>
-            <span class="menu-shortcut" data-keybind-for="launch-gemini"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 20 12 4l7.5 16"/><path d="M8.2 20a3.8 3.8 0 0 1 7.6 0"/></svg></span> ${t('menu.apps.antigravityCli')} <span class="count-badge count-badge--green menu-update-badge" id="antigravity-menu-update-badge"></span></span>
+            <span class="menu-shortcut" data-keybind-for="launch-antigravity"></span>
           </div>
           <div class="menu-item" id="menu-terminal-opencode">
             <span class="menu-check"></span>
@@ -495,7 +495,8 @@ ${is3D ? '' : `
 </div>
 
 <!-- Top-Right Controls: one row. The glass dock (workspace switcher, then the tools), then #topright-buttons: the
-     tools toggle (#topright-tools-btn, shows and hides the dock) and the agent side panels, always one row of their own.
+     ⋯ (#topright-overflow-btn: what does not fit the band, ui-topright-overflow.js), the tools toggle
+     (#topright-tools-btn, shows and hides the dock) and the agent side panels. Always one row, never wrapped.
      Snap to grid and Tile terminals are on the whiteboard rail (#wb-toolbar) and in View. The session pills
      (#term-minimized-tray) are a row under the bar, right-aligned with it (styles.css: "Fit"). -->
 <div id="topright-controls">
@@ -569,6 +570,10 @@ ${is3D ? '' : `
   </button>
   </div>
   <div id="topright-buttons">
+  <button id="topright-overflow-btn" class="topright-icon-btn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="topright-overflow-menu" aria-label="${t('toolbar.more')}" data-tooltip="${t('toolbar.more')}">
+    <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg>
+  </button>
+  <div id="topright-overflow-menu" role="menu" aria-label="${t('toolbar.more')}" hidden></div>
   <button id="topright-tools-btn" class="topright-icon-btn" type="button" aria-expanded="true" aria-controls="topright-inner" aria-label="${t('toolbar.hideTools')}" data-tooltip="${t('toolbar.hideTools')}">
     <svg viewBox="0 0 24 24"><path d="M13 17l5-5-5-5"/><path d="M6 17l5-5-5-5"/></svg>
     <span class="topright-tools-dot" aria-hidden="true"></span>
@@ -588,9 +593,16 @@ ${is3D ? '' : `
     <svg viewBox="0 0 24 30" fill="currentColor"><path d="M18 6H6V24H18V6ZM24 30H0V0H24V30Z"/></svg>
     <span class="count-badge count-badge--green" id="opencode-update-badge"></span>
   </button>
+  <button id="topright-antigravity-panel-btn" class="topright-icon-btn" data-tooltip="${t('antigravityPanel.toolbar')}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 20 12 4l7.5 16"/><path d="M8.2 20a3.8 3.8 0 0 1 7.6 0"/></svg>
+    <span class="count-badge count-badge--green" id="antigravity-update-badge"></span>
+  </button>
   </div>
   <div id="term-minimized-tray"></div>
 </div>
+<button id="toolbar-show-btn" type="button" aria-pressed="true" aria-controls="wb-toolbar" aria-label="${t('toolbar.showWhiteboardToolbar')}" data-tooltip="${t('toolbar.showWhiteboardToolbar')}" hidden>
+  <img src="logo-synabun.png" alt="" draggable="false">
+</button>
 
 <!-- Help Modal -->
 <div id="help-overlay">
@@ -820,6 +832,10 @@ ${getEditorPanelHTML()}
       </button>
       <button class="wb-tool wb-tool-sm" id="wb-toggle-logo" data-tooltip="Toggle logo">
         <img src="logo-synabun.png" alt="" style="width:18px;height:auto;opacity:0.6;">
+      </button>
+      <div class="wb-tool-sep"></div>
+      <button class="wb-tool" id="wb-hide-btn" type="button" aria-pressed="false" aria-controls="wb-toolbar" aria-label="${t('toolbar.hideWhiteboardToolbar')}" data-tooltip="${t('toolbar.hideWhiteboardToolbar')}">
+        <svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
       </button>
     </div>
 

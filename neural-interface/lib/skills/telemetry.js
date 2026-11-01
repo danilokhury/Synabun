@@ -9,6 +9,7 @@ export const USAGE_COVERAGE = Object.freeze({
   claude: { native: true, method: 'Skill tool request + successful tool result', limit: 'SynaBun dispatched runs only. Discovery is not invocation; task outcome is not skill quality.' },
   codex: { native: false, method: 'Successful exact cat of an installed SKILL.md', limit: 'No native invocation event. File reads are inferred loads, never invocation counts. Complex shell commands are not classified.' },
   opencode: { native: true, method: 'Completed skill tool part', limit: 'SynaBun dispatched runs only. Other terminals and historical transcripts are not mined.' },
+  antigravity: { native: false, method: 'Successful read of an installed SKILL.md', limit: 'No native invocation event: Antigravity reads a skill\'s SKILL.md itself. File reads are inferred loads, never invocation counts. SynaBun dispatched runs only.' },
 });
 const hash = (s) => createHash('sha256').update(s).digest('hex');
 // Native item IDs can restart on a follow-up turn; the dispatcher retains this turn across restarts.
@@ -64,6 +65,11 @@ export function createSkillTelemetry({ dataDir, deployer, settings, now = Date.n
           if (pending.size > 2000) pending.delete(pending.keys().next().value);
         } else if (c.ok === true) add(run, i, 'invoked', 'native_skill_tool', c.id);
         else if (c.ok === false) add(run, i, 'failed', 'native_skill_tool', c.id);
+      }
+      // Antigravity reads an installed skill's SKILL.md with its own file tool: a completed read of that exact file.
+      if (run.provider === 'antigravity' && (c.tool === 'read_file' || c.tool === 'view_file') && c.ok === true && typeof c.input.path === 'string') {
+        const matches = installs.filter((i) => resolve(c.input.path) === join(i.destination.path, 'SKILL.md'));
+        if (matches.length === 1) add(run, matches[0], 'loaded', 'successful_skill_file_read', c.id, 'inferred');
       }
       if (run.provider === 'codex' && c.tool === 'shell' && c.phase === 'done' && c.ok === true) {
         // A conservative grammar: no pipes, substitutions, multiple commands, or merely mentioning a path.

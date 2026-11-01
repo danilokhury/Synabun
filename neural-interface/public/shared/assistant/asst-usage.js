@@ -13,6 +13,7 @@ const REASONS = {
   'codex-no-records': ['reason.codex-no-records', 'Codex ended without final usage records.'],
   'codex-rollout-missing': ['reason.codex-rollout-missing', "Codex usage records were missing; the turn's own totals were used."],
   'opencode-not-reconciled': ['reason.opencode-not-reconciled', "OpenCode's final message check did not finish."],
+  'antigravity-total-mismatch': ['reason.antigravity-total-mismatch', "Antigravity's token total did not match its token classes; the classes were counted as reported."],
   interrupted: ['reason.interrupted', 'A turn was interrupted; the call it cut off is counted from the stream.'],
   'no-result': ['reason.no-result', 'A run ended mid-turn; its last calls are counted from the stream.'],
 };
@@ -34,7 +35,7 @@ const node = (tag, cls, value) => {
 };
 const valid = (n) => Number.isSafeInteger(n) && n >= 0;
 const safe = (n) => (valid(n) ? n : 0);
-const providerName = (id) => ['claude-code', 'codex', 'opencode'].includes(id) ? getProviderMeta(id).label : id === 'jev' ? 'Jev' : String(id || '');
+const providerName = (id) => ['claude-code', 'codex', 'opencode'].includes(id) ? getProviderMeta(id).label : id === 'antigravity' ? 'Antigravity' : id === 'jev' ? 'Jev' : String(id || '');
 const defaultTr = (_, fallback, params) => String(fallback).replace(/\{(\w+)\}/g, (_m, key) => params?.[key] ?? `{${key}}`);
 export const formatExactTokens = (n) => new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(valid(n) ? n : 0);
 export function formatCompactTokens(n) {

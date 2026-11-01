@@ -23,6 +23,8 @@
 //                 <config>/opencode skill folders stay listed as read by no runtime.
 //                 OpenCode also reads ~/.claude/skills and both .agents roots (not in SynaBun's own OpenCode panel,
 //                 which turns the Claude ones off).
+//   Antigravity   ~/.gemini/config/skills (Google Antigravity's `agy`; where SynaBun installs) and a project's
+//                 .agents/skills (the Codex project folder, which Antigravity reads too). Not fixture-tested.
 //   Shared        ~/.agents/skills: Codex and OpenCode (and other agents) read it. SynaBun writes there only when
 //                 the owner turned that on (`sharedAgentsRoot`).
 //   SynaBun       PACKAGE_ROOT/skills, the bundled skills: read-only.
@@ -34,7 +36,7 @@ import { lstatSync, readdirSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-export const RUNTIMES = Object.freeze(['claude', 'codex', 'opencode']);
+export const RUNTIMES = Object.freeze(['claude', 'codex', 'opencode', 'antigravity']);
 
 const realFs = { lstat: lstatSync, realpath: realpathSync, readdir: readdirSync };
 
@@ -186,6 +188,11 @@ export function createRootResolver({
     add({ family: 'opencode', kind: 'commands', scope: 'user', sourceKind: 'legacy-bridge', path: join(home, '.opencode', 'command'), runtimes: ['opencode'],
       policy: { write: 'migration', reason: 'An old place SynaBun wrote bridges to.' }, discovery: { contract: '~/.opencode/command/<name>.md', verified: 'unverified' } });
 
+    // Antigravity (Google's `agy`): its own skills folder under ~/.gemini/config. It needs no refresh: it reads the folder again by itself.
+    add({ family: 'antigravity', kind: 'skills', scope: 'user', sourceKind: 'native', path: join(home, '.gemini', 'config', 'skills'), runtimes: ['antigravity'],
+      policy: owner('Antigravity\'s own skills folder.'), discovery: { contract: '~/.gemini/config/skills/<name>/SKILL.md', verified: 'docs' },
+      installTarget: { runtime: 'antigravity', scope: 'user' } });
+
     // Shared.
     add({ family: 'shared', kind: 'skills', scope: 'shared', sourceKind: 'shared', path: join(home, '.agents', 'skills'), runtimes: ['codex', 'opencode'],
       policy: sharedOn ? owner('Shared by Codex, OpenCode and other agents; turned on by the owner.') : { write: 'owner-opt-in', reason: 'Shared by Codex, OpenCode and other agents: SynaBun writes here only when you turn it on.' },
@@ -206,8 +213,8 @@ export function createRootResolver({
         policy: owner('The project\'s commands.'), discovery: { contract: '.claude/commands/<ns>/<name>.md → /ns:name', verified: 'docs' } });
       add({ family: 'claude', kind: 'agents', scope: 'project', sourceKind: 'native', path: at('.claude', 'agents'), runtimes: ['claude'], ...p,
         policy: owner('The project\'s agents.'), discovery: { contract: '.claude/agents/<name>.md', verified: 'docs' } });
-      add({ family: 'codex', kind: 'skills', scope: 'project', sourceKind: 'native', path: at('.agents', 'skills'), runtimes: ['codex', 'opencode'], ...p,
-        policy: owner('The project\'s shared skills (Codex\'s repository folder; OpenCode reads it too).'), discovery: { contract: '.agents/skills/<name>/SKILL.md', verified: 'fixture codex-cli 0.163.0, opencode 2.0.32' },
+      add({ family: 'codex', kind: 'skills', scope: 'project', sourceKind: 'native', path: at('.agents', 'skills'), runtimes: ['codex', 'opencode', 'antigravity'], ...p,
+        policy: owner('The project\'s shared skills (Codex\'s repository folder; OpenCode and Antigravity read it too).'), discovery: { contract: '.agents/skills/<name>/SKILL.md', verified: 'fixture codex-cli 0.163.0, opencode 2.0.32; Antigravity: docs' },
         installTarget: { runtime: 'codex', scope: 'project' } });
       add({ family: 'codex', kind: 'skills', scope: 'project', sourceKind: 'compat', path: at('.codex', 'skills'), runtimes: ['codex'], ...p,
         policy: never('Read by Codex 0.163.0 but not in its guide: new skills go to .agents/skills.'), discovery: { contract: '.codex/skills/<name>/SKILL.md', verified: 'fixture codex-cli 0.163.0' } });

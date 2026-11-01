@@ -13,16 +13,43 @@
 
 export const KIND_IDS = Object.freeze(['shell', 'read', 'edit', 'search', 'web', 'subagent', 'plan', 'memory', 'runs', 'computer', 'think', 'mcp']);
 
-// Tool names after lowercasing and stripping `mcp__<server>__` / `<server>_`.
+// Tool names after lowercasing and stripping `mcp__<server>__` / `<server>_`. Antigravity's own tools keep their
+// snake_case names (run_command, read_file, write_to_file, grep_search, search_web …).
 const KIND_TOOLS = {
-  shell: ['bash', 'bashoutput', 'killshell', 'shell', 'exec_command', 'commandexecution'],
-  read: ['read', 'notebookread', 'view'],
-  edit: ['edit', 'multiedit', 'write', 'notebookedit', 'patch', 'apply_patch', 'filechange'],
-  search: ['grep', 'glob', 'ls', 'list', 'codesearch', 'toolsearch'],
-  web: ['webfetch', 'websearch'],
-  subagent: ['task', 'agent', 'collabtoolcall', 'taskstop'],
+  shell: ['bash', 'bashoutput', 'killshell', 'shell', 'exec_command', 'commandexecution', 'run_command', 'send_command_input', 'command_status', 'read_terminal', 'shell_exec'],
+  read: ['read', 'notebookread', 'view', 'read_file', 'view_file', 'view_file_outline', 'view_code_item', 'view_content_chunk', 'read_resource', 'read_notebook'],
+  edit: ['edit', 'multiedit', 'write', 'notebookedit', 'patch', 'apply_patch', 'filechange', 'write_to_file', 'write_file', 'create_file', 'replace_file_content', 'multi_replace_file_content', 'edit_file', 'edit_notebook', 'delete_file', 'move_file'],
+  search: ['grep', 'glob', 'ls', 'list', 'codesearch', 'toolsearch', 'grep_search', 'find_by_name', 'list_dir', 'list_directory', 'codebase_search', 'code_search'],
+  web: ['webfetch', 'websearch', 'search_web', 'read_url_content', 'open_browser_url', 'read_browser_page', 'browser_subagent'],
+  subagent: ['task', 'agent', 'collabtoolcall', 'taskstop', 'invoke_subagent'],
   plan: ['todowrite', 'todoread', 'update_plan'],
 };
+
+// Antigravity names its arguments in its own words: each alias is filled from the first of them that is set.
+const INPUT_ALIASES = [
+  ['command', ['CommandLine']],
+  ['cwd', ['Cwd']],
+  ['file_path', ['AbsolutePath', 'TargetFile', 'Path']],
+  ['path', ['DirectoryPath', 'SearchPath', 'SearchDirectory']],
+  ['query', ['Query']],
+  ['url', ['Url']],
+];
+
+/**
+ * A tool call's input with the names the rack reads (command, file_path, path, query, url) filled from
+ * Antigravity's own (CommandLine, AbsolutePath, TargetFile, DirectoryPath, Query, Url …). A name that is set
+ * already is kept; anything else is left as it came. Not an object: {}.
+ */
+export function canonicalToolInput(input) {
+  const i = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  let out = null;
+  for (const [alias, sources] of INPUT_ALIASES) {
+    if (i[alias] !== undefined && i[alias] !== null && i[alias] !== '') continue;
+    const value = sources.map(key => i[key]).find(v => typeof v === 'string' && v);
+    if (value) { out = out || { ...i }; out[alias] = value; }
+  }
+  return out || i;
+}
 // SynaBun's own tools: only when the call is SynaBun's (or carries no server).
 const MEMORY_TOOLS = ['recall', 'remember', 'reflect', 'forget', 'restore', 'memories', 'sync', 'category'];
 const COMPUTER_TOOLS = ['computer', 'computer_apps', 'computer_ax', 'computer_status'];

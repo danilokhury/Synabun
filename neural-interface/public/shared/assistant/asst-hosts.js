@@ -108,14 +108,22 @@ export function createAssistantHosts({
     return { host: hostId, sessionId, focused: true };
   }
 
-  /** Map(id → session) of the sessions still open on the server (boot's saved-tab restore). */
+  /**
+   * Map(id → session) of the sessions still open on the server, or null when the list could not be
+   * read (a server that is starting answers before its Assistant routes exist): a host restoring its
+   * saved tabs from it keeps them then, instead of reading "none is open".
+   */
+  async function readLive() {
+    let list;
+    try { list = await api.list(); } catch { return null; }
+    return new Map((Array.isArray(list) ? list : [])
+      .filter(s => s?.id && isAssistantSessionLive(s))
+      .map(s => [s.id, s]));
+  }
+
+  /** Map(id → session) of the sessions still open on the server (boot's saved-tab restore); a failing server reads as none. */
   async function fetchLive() {
-    try {
-      const list = await api.list();
-      return new Map((Array.isArray(list) ? list : [])
-        .filter(s => s?.id && isAssistantSessionLive(s))
-        .map(s => [s.id, s]));
-    } catch { return new Map(); }
+    return (await readLive()) || new Map();
   }
 
   /**
@@ -302,6 +310,7 @@ export function createAssistantHosts({
     gone,
     noteFocus,
     fetchLive,
+    readLive,
     isLive: isAssistantSessionLive,
     lastUsed: () => lastOpen(),
     hosts: () => [...adapters.keys()],

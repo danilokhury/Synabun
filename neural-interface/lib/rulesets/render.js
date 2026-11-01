@@ -18,7 +18,7 @@ import { normalise, sha12 } from './normalise.js';
 
 export { normalise, sha12 };
 
-export const RULESET_HOSTS = Object.freeze(['claude', 'codex', 'opencode', 'gemini', 'cursor']);
+export const RULESET_HOSTS = Object.freeze(['claude', 'codex', 'opencode', 'antigravity', 'cursor']);
 export const RULESETS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'templates', 'rulesets');
 
 const HOST_SLOT = '<!-- host -->';

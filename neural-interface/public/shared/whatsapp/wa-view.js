@@ -89,7 +89,7 @@ export const BRAIN_COPY = Object.freeze({
   effortDefault: 'Default effort',
   saved: 'WhatsApp model saved. It applies from your next message.',
 });
-const BRAIN_PROVIDER_LABELS = Object.freeze({ 'claude-code': 'Claude', codex: 'Codex', opencode: 'OpenCode' });
+const BRAIN_PROVIDER_LABELS = Object.freeze({ 'claude-code': 'Claude', codex: 'Codex', opencode: 'OpenCode', antigravity: 'Antigravity' });
 export function brainProviderLabel(provider) { return BRAIN_PROVIDER_LABELS[provider] || String(provider || ''); }
 /**
  * The stored choice of a status: { provider, model, effort } or null (same as
@@ -399,7 +399,7 @@ export function waView(status, { now = Date.now() } = {}) {
     }
     case 'connected': {
       const who = accountLine(s);
-      // A Codex / OpenCode brain holds the conversation at read-only whatever the level.
+      // A Codex / OpenCode / Antigravity brain holds the conversation at read-only whatever the level.
       const applies = s.brainLimit?.provider ? say('view.connected.readOnlyBrain', 'Read-only ({brain} brain)', { brain: s.brainLimit.label || s.brainLimit.provider }) : level;
       return view('ok', say('view.connected.title', 'Connected'), [mode, who, applies].filter(Boolean).join(' · '), { primary: button('open-conversation', say('button.openConversation', 'Open conversation')), secondary: button('test', say('button.test', 'Send a test message')), step: 'done', pane: 'connected', nav: 'connected' });
     }

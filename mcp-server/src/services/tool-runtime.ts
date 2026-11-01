@@ -1,7 +1,7 @@
 /**
  * The tool selection of one MCP server runtime: which SynaBun groups it advertises, and how.
  *
- * strict: the runtime advertises exactly its groups (OpenCode, Gemini, any other stdio client). focus: it
+ * strict: the runtime advertises exactly its groups (OpenCode, Antigravity, any other stdio client). focus: it
  * advertises every group and its groups only steer the instructions (Claude Code's ToolSearch, Codex's deferred
  * catalog, which Codex snapshots at the start of a turn). Gated groups follow the caller's role and grant in both
  * modes, never a list.
@@ -25,7 +25,7 @@ export const TOOLS_ENV = 'SYNABUN_TOOLS';
 export const TOOLS_PATH_ENV = 'SYNABUN_TOOLS_PATH';
 /** deferred / focus: a focus host; profiled / strict: a strict one. */
 export const TOOL_CATALOG_MODE_ENV = 'SYNABUN_TOOL_CATALOG_MODE';
-/** Read as aliases through the legacy conversion (an older Neural Interface, a user's own config.toml or Gemini settings); never written. */
+/** Read as aliases through the legacy conversion (an older Neural Interface, a user's own config.toml or an Antigravity mcp_config.json); never written. */
 export const LEGACY_PROFILE_ENV = 'SYNABUN_PROFILE';
 export const LEGACY_RUNTIME_PROFILE_PATH_ENV = 'SYNABUN_RUNTIME_PROFILE_PATH';
 

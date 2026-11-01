@@ -60,6 +60,22 @@ export function toolCallsOf(payload = {}) {
     }
     return out;
   }
+  if (payload.provider === 'antigravity') {
+    // An ACP tool call (session/update tool_call, then tool_call_update with its status). Antigravity names its
+    // tool (read_file, run_command, call_mcp_tool …) and its arguments in its own words: the path a read names
+    // and a command's line are kept under `path` / `command`; an MCP call is <server>.<tool>.
+    if ((eventType === 'tool_call' || eventType === 'tool_call_update') && event.toolCallId) {
+      const raw = isObject(event.rawInput) ? event.rawInput : {};
+      const mcp = String(event.name || '') === 'call_mcp_tool' && raw.ServerName && raw.ToolName ? `${raw.ServerName}.${raw.ToolName}` : '';
+      const location = Array.isArray(event.locations) ? event.locations.find((l) => typeof l?.path === 'string' && l.path)?.path : '';
+      const path = [raw.AbsolutePath, raw.Path, raw.TargetFile, raw.path, raw.file_path, location].find((v) => typeof v === 'string' && v) || '';
+      const command = typeof raw.CommandLine === 'string' ? raw.CommandLine : typeof raw.command === 'string' ? raw.command : '';
+      const input = { ...(path ? { path } : {}), ...(command ? { command } : {}) };
+      const status = String(event.status || '');
+      out.push({ id: String(event.toolCallId), tool: mcp || String(event.name || event.kind || ''), input, phase: status, ok: status === 'completed' ? true : status === 'failed' ? false : null });
+    }
+    return out;
+  }
   return out;
 }
 

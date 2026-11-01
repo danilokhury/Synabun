@@ -139,7 +139,9 @@ export function draftConfinementSupport(provider, { platform = process.platform 
     };
   }
   if (name === 'opencode') return { ok: true, level: 'rules', note: 'OpenCode with its shell, web, subagent and skill tools switched off, no MCP server, and every edit answered inside its folder only.' };
-  return { ok: false, reason: `${name || 'That provider'} cannot be held to a drafting folder.` };
+  // Antigravity (a worker of the Assistant) has no drafting confinement in SynaBun: a drafting run never starts unconfined.
+  if (name === 'antigravity') return { ok: false, reason: 'Antigravity cannot be held to a drafting folder: skill drafting runs on Claude Code, Codex and OpenCode.' };
+  return { ok: false, reason: `${name || 'That provider'} cannot be held to a drafting folder: skill drafting runs on Claude Code, Codex and OpenCode.` };
 }
 
 /** The MCP server names a Codex config.toml declares ([mcp_servers.NAME] tables), for disabling them one by one. */

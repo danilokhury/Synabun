@@ -20,9 +20,9 @@
 // `tx` in Settings; the wizard reads the same catalogue, i18n/en.json).
 
 /** The tools SynaBun installs rules for, in the order both surfaces list them. Cursor is copy-only. */
-export const RULES_INSTALL_HOSTS = Object.freeze(['claude', 'gemini', 'codex', 'opencode']);
+export const RULES_INSTALL_HOSTS = Object.freeze(['claude', 'antigravity', 'codex', 'opencode']);
 
-export const RULES_HOST_LABELS = Object.freeze({ claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', gemini: 'Gemini', cursor: 'Cursor', coexistence: 'coexistence' });
+export const RULES_HOST_LABELS = Object.freeze({ claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', antigravity: 'Antigravity', cursor: 'Cursor', coexistence: 'coexistence' });
 
 /** The states that count as "the rules are in place". `shadowed` is installed too, only not loaded (Codex's override file). */
 export const RULES_IN_PLACE = Object.freeze(['installed', 'newer', 'shadowed']);

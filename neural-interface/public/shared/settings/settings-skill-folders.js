@@ -8,7 +8,7 @@
 // each runtime chip's state (a native folder, an old bridge, someone else's folder). Every sentence is a
 // settings.redesign.skills.* key; the pane (settings-skill-folders-pane.js) draws it.
 
-const RUNTIME = { claude: 'settings.redesign.product.claude', codex: 'settings.redesign.product.codex', opencode: 'settings.redesign.product.opencode' };
+const RUNTIME = { claude: 'settings.redesign.product.claude', codex: 'settings.redesign.product.codex', opencode: 'settings.redesign.product.opencode', antigravity: 'settings.redesign.product.antigravity' };
 
 /** What the status answer says, or that the server cannot say it yet (one from before the Skills Service). */
 export function readFoldersStatus(answer) {
@@ -26,7 +26,7 @@ export function readFoldersStatus(answer) {
   };
 }
 
-const ASSISTANTS = ['claude', 'codex', 'opencode'];
+const ASSISTANTS = ['claude', 'codex', 'opencode', 'antigravity'];
 
 /**
  * The owner's assistants (GET /v2/config `assistants`: chosen, detected, effective): one chip per runtime, on when

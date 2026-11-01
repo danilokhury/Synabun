@@ -142,7 +142,7 @@ export function sameAsk(a, b) {
   return x.length > 0 && x.length === y.length && x.every((k, i) => k === y[i]);
 }
 
-const RUNTIME_OF_FAMILY = { claude: 'claude', codex: 'codex', opencode: 'opencode', shared: 'agents' };
+const RUNTIME_OF_FAMILY = { claude: 'claude', codex: 'codex', opencode: 'opencode', antigravity: 'antigravity', shared: 'agents' };
 
 /**
  * The targets a skill can be installed into: each runtime's own skills folder for each account, the shared
@@ -175,12 +175,13 @@ export function installTargets({ roots = [], config = {}, projects = [] } = {}) 
     for (const runtime of ['claude', 'codex', 'opencode']) {
       const target = { runtime, scope: 'project', projectPath: p.path };
       const sub = runtime === 'claude' ? '.claude/skills' : runtime === 'codex' ? '.agents/skills' : '.opencode/skills';
-      // Who reads a project's folders (lib/skills/roots.js): .claude/skills and .agents/skills are read by OpenCode too.
-      const readers = runtime === 'opencode' ? ['opencode'] : [runtime, 'opencode'];
+      // Who reads a project's folders (lib/skills/roots.js): .claude/skills and .agents/skills are read by OpenCode too,
+      // .agents/skills by Antigravity as well (it has no project folder of its own).
+      const readers = runtime === 'opencode' ? ['opencode'] : runtime === 'codex' ? ['codex', 'opencode', 'antigravity'] : [runtime, 'opencode'];
       push({ key: targetKey(target), target, runtime, scope: 'project', accountId: 'default', projectPath: p.path, projectLabel: p.label || p.path, path: `${p.path.replace(/[\\/]+$/, '')}/${sub}`, status: null, policy: null, shared: false, off: false, runtimes: readers });
     }
   }
-  const order = { claude: 0, codex: 1, opencode: 2, agents: 3 };
+  const order = { claude: 0, codex: 1, opencode: 2, antigravity: 3, agents: 4 };
   return out.sort((a, b) => (a.scope === b.scope ? 0 : a.scope === 'user' ? -1 : 1) || (a.projectLabel || '').localeCompare(b.projectLabel || '') || (order[a.runtime] - order[b.runtime]) || a.accountId.localeCompare(b.accountId));
 }
 
@@ -221,11 +222,11 @@ export function defaultTargets(targets, { skill = null, row = null, assistants =
   const there = targets.filter((t) => !t.off && ['installed', 'outdated', 'present'].includes(targetState(t, { skill, row }).state));
   if (there.length) return new Set(there.map((t) => t.key));
   const own = (runtime) => targets.find((t) => t.runtime === runtime && t.scope === 'user' && t.accountId === 'default' && !t.off) || null;
-  const wanted = Array.isArray(assistants) && assistants.length ? assistants.filter((r) => ['claude', 'codex', 'opencode'].includes(r)) : ['claude'];
+  const wanted = Array.isArray(assistants) && assistants.length ? assistants.filter((r) => ['claude', 'codex', 'opencode', 'antigravity'].includes(r)) : ['claude'];
   // Every assistant gets its own folder: a terminal OpenCode reads Claude Code's folder, but SynaBun's own OpenCode
   // serves (the panel, an Assistant brain) start with OPENCODE_DISABLE_CLAUDE_CODE=1 and never see it (checked with
   // opencode 2.1.4), so an OpenCode among the assistants is ticked for a real copy.
-  const picked = ['claude', 'codex', 'opencode'].filter((runtime) => wanted.includes(runtime)).map(own).filter(Boolean);
+  const picked = ['claude', 'codex', 'opencode', 'antigravity'].filter((runtime) => wanted.includes(runtime)).map(own).filter(Boolean);
   if (!picked.length) { const claude = own('claude'); return new Set(claude ? [claude.key] : []); }
   return new Set(picked.map((t) => t.key));
 }

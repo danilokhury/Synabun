@@ -13,7 +13,8 @@ import { CREATION_LIMITS, DRAFT_PROVIDERS, isActiveCreation, normalizeCreationRe
 export const AI_FORM_KEY = 'skills-studio-create-ai';
 /** The places a source is added from (describe is the prompt itself). */
 export const AI_SOURCE_KINDS = Object.freeze(['conversation', 'url', 'repo', 'memory', 'import']);
-export const DRAFT_RUNTIMES = Object.freeze(['claude', 'codex', 'opencode']);
+/** The runtimes a drafted skill is meant for (its install targets, ss-creation.js CREATION_TARGET_RUNTIMES), not who drafts it. */
+export const DRAFT_RUNTIMES = Object.freeze(['claude', 'codex', 'opencode', 'antigravity']);
 export const WORK_MINUTES = Object.freeze([20, 30, 45, 60, 90]);
 /** The steps a creation shows, in order. */
 export const CREATION_STEPS = Object.freeze(['sources', 'drafting', 'checking', 'review']);

@@ -27,6 +27,12 @@ const _outcomes = createOutcomeNotifications();
 
 function _fireOutcomeNotify(store, type) {
   const s = store.getState();
+  // A sub-agent finishing is an intermediate step of its parent's task, not
+  // news on its own: ensureChildSpawn gives every Task/subagent call its own
+  // panel and store, so without this a multi-step turn popped one "done" per
+  // sub-agent plus one for the task itself. Its own errors still surface —
+  // those need attention wherever they happen.
+  if (type !== NOTIF_TYPE.ERROR && s.parentSessionId) return;
   if (!_outcomes.take(s, type === NOTIF_TYPE.ERROR ? 'error' : 'done')) return;
   const baseLabel = s.sessionInfo?.title || s.sessionInfo?.info?.title || 'OpenCode';
   const label = s.parentSessionId ? `↳ ${baseLabel}` : baseLabel;

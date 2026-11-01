@@ -34,7 +34,7 @@ const day = (at) => {
   if (at == null) return '';
   try { return new Date(at).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' }); } catch { return ''; }
 };
-const AGENTS = Object.freeze({ assistant: 'the SynaBun Assistant', 'claude-code': 'Claude Code', codex: 'Codex', opencode: 'OpenCode' });
+const AGENTS = Object.freeze({ assistant: 'the SynaBun Assistant', 'claude-code': 'Claude Code', codex: 'Codex', opencode: 'OpenCode', antigravity: 'Antigravity' });
 
 /** The records block: every fact on one line, each a datum (never an instruction). */
 export function greetingRecords(facts) {

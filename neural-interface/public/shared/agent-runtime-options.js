@@ -6,16 +6,36 @@ import { fetchOpencodeProviders, opencodeProviders } from './opencode-providers.
 export const CLI_PROFILES = [
   { id: 'claude-code', label: 'Claude Code', desc: 'Anthropic' },
   { id: 'codex', label: 'Codex CLI', desc: 'OpenAI' },
-  { id: 'gemini', label: 'Gemini CLI', desc: 'Google' },
+  { id: 'antigravity', label: 'Antigravity CLI', desc: 'Google' },
   { id: 'opencode', label: 'OpenCode CLI', desc: 'Multi-provider' },
 ];
 
-const STATIC_MODELS = {
-  gemini: [
-    { id: 'gemini-2.5-pro', label: '2.5 Pro', desc: 'Most capable', tier: 'default' },
-    { id: 'gemini-2.5-flash', label: '2.5 Flash', desc: 'Lightweight' },
-  ],
-};
+// Google Antigravity replaced the Gemini CLI (provider id `gemini` → `antigravity`). What was saved before
+// (a launch profile, a resume tab, a template's CLI or icon) can still say `gemini`: it reads as Antigravity.
+// The server moves its own files the same way (lib/antigravity/migrate-gemini.js).
+export function migrateProviderId(id) { return id === 'gemini' ? 'antigravity' : id; }
+
+// The Gemini CLI's own model ids (gemini-1.x, gemini-2.x) are not Antigravity's: one saved for it reads as
+// none, so Antigravity's default runs (the same rule as isGeminiCliModel in lib/antigravity/migrate-gemini.js).
+const GEMINI_CLI_MODEL_RE = /^gemini-[12](?:[.-]|$)/i;
+export function migrateProviderModel(profileId, model) {
+  return migrateProviderId(profileId) === 'antigravity' && typeof model === 'string' && GEMINI_CLI_MODEL_RE.test(model.trim()) ? null : model;
+}
+
+/** Saved launch records (loop templates, schedules, groups, timers) with a Gemini CLI profile or icon read as Antigravity's. */
+export function migrateLaunchRecords(list) {
+  if (!Array.isArray(list)) return list;
+  return list.map((record) => {
+    if (!record || typeof record !== 'object' || (record.profile !== 'gemini' && record.icon !== 'gemini')) return record;
+    const next = { ...record };
+    if (next.icon === 'gemini') next.icon = migrateProviderId(next.icon);
+    if (next.profile === 'gemini') {
+      next.profile = migrateProviderId(next.profile);
+      if (migrateProviderModel(next.profile, next.model) !== next.model) next.model = null;
+    }
+    return next;
+  });
+}
 
 // Claude Code models are discovered live from the installed CLI via
 // /api/claude/models (see lib/claude-model-catalog.js) — the CLI is the only
@@ -58,6 +78,15 @@ export const EFFORT_LEVELS_BY_PROFILE = {
     { id: 'xhigh', label: 'XHigh', desc: 'Very deep' },
     { id: 'max', label: 'Max', desc: 'Maximum' },
     { id: 'ultra', label: 'Ultra', desc: 'Maximum, with delegation', tier: 'top' },
+  ],
+  // The levels `agy --effort` takes; `off` passes none, so Antigravity uses its own default.
+  antigravity: [
+    { id: 'off', label: 'Default', desc: 'Model default' },
+    { id: 'low', label: 'Low', desc: 'Light' },
+    { id: 'medium', label: 'Med', desc: 'Balanced' },
+    { id: 'high', label: 'High', desc: 'Deep' },
+    { id: 'xhigh', label: 'XHigh', desc: 'Very deep' },
+    { id: 'max', label: 'Max', desc: 'Maximum', tier: 'top' },
   ],
 };
 
@@ -145,14 +174,16 @@ let _opencodeModelsCache = null;
 let _opencodeModelsLoading = null;
 let _claudeModelsCache = null;
 let _claudeModelsLoading = null;
+let _antigravityModelsCache = null;
+let _antigravityModelsLoading = null;
 let _toolCatalog = null;
 const _toolCatalogLoads = new Map();
 const _toolCatalogByCwd = new Map();
 const _toolCatalogAt = new Map();
 let _toolCatalogEpoch = 0;
 
-// The verified Claude and Codex lists are also kept in sessionStorage (this tab only): after a reload the
-// pickers paint from them at once (a list read back is due, so the first load still asks the server).
+// The verified Claude, Codex and Antigravity lists are also kept in sessionStorage (this tab only): after a reload
+// the pickers paint from them at once (a list read back is due, so the first load still asks the server).
 const LIST_STORE_PREFIX = 'synabun:runtime-models:v1:';
 function keepList(key, list) {
   try { if (typeof sessionStorage !== 'undefined') sessionStorage.setItem(LIST_STORE_PREFIX + key, JSON.stringify(list)); } catch { /* full or unavailable */ }
@@ -169,6 +200,8 @@ function keptList(key) {
   if (claude && !_claudeModelsCache) _claudeModelsCache = claude;
   const codex = keptList('codex:default');
   if (codex && !_codexModelsCache.has('default')) _codexModelsCache.set('default', codex);
+  const antigravity = keptList('antigravity');
+  if (antigravity && !_antigravityModelsCache) _antigravityModelsCache = antigravity;
 })();
 
 function localJsonArray(key) {
@@ -538,16 +571,59 @@ export async function fetchClaudeModels(force = false) {
   return _claudeModelsLoading;
 }
 
+// GET /api/antigravity/models answers { models: [{ id, label, description?, default? }], source: 'live' | 'unavailable' }.
+function antigravityModelOption(model) {
+  const id = String(model?.id || '').trim();
+  if (!id) return null;
+  return {
+    id,
+    provider: 'antigravity',
+    cliReady: true,
+    label: String(model.label || id),
+    desc: String(model.description || ''),
+    ...(model.default === true ? { tier: 'default', isDefault: true } : {}),
+  };
+}
+
+// Antigravity's models come only from the installed `agy`: there is no list of SynaBun's own to fall back on,
+// so until it answers the pickers are empty and a launch runs Antigravity's default. A list it gave once is
+// kept through a failed or unavailable answer.
+export async function fetchAntigravityModels(force = false) {
+  if (!force && _antigravityModelsCache?.length && modelListIsFresh('antigravity')) return _antigravityModelsCache;
+  if (_antigravityModelsLoading) return _antigravityModelsLoading;
+  _antigravityModelsLoading = (async () => {
+    try {
+      const resp = await fetch('/api/antigravity/models');
+      const data = await resp.json().catch(() => ({}));
+      const models = resp.ok && data?.source !== 'unavailable' && Array.isArray(data?.models)
+        ? data.models.map(antigravityModelOption).filter(Boolean)
+        : [];
+      if (models.length) {
+        _antigravityModelsCache = models;
+        _modelListAt.set('antigravity', Date.now());
+        keepList('antigravity', models);
+      }
+      return _antigravityModelsCache || [];
+    } catch {
+      return _antigravityModelsCache || [];
+    } finally {
+      _antigravityModelsLoading = null;
+    }
+  })();
+  return _antigravityModelsLoading;
+}
+
 // Profiles whose model list is fetched at runtime rather than baked in. Callers use
 // this to decide whether to kick off an async load and re-render when it lands.
 export function isDynamicModelProfile(profileId) {
-  return profileId === 'opencode' || profileId === 'codex' || profileId === 'claude-code';
+  return profileId === 'opencode' || profileId === 'codex' || profileId === 'claude-code' || profileId === 'antigravity';
 }
 
 export async function ensureModelsForProfile(profileId, force = false, accountId = 'default') {
   if (profileId === 'codex') return fetchCodexModels(force, accountId);
   if (profileId === 'opencode') return fetchOpencodeModels(force);
   if (profileId === 'claude-code') return fetchClaudeModels(force);
+  if (profileId === 'antigravity') return fetchAntigravityModels(force);
   return getModelsForProfile(profileId, accountId);
 }
 
@@ -565,7 +641,8 @@ export function getModelsForProfile(profileId, accountId = 'default') {
   if (profileId === 'codex') return _codexModelsCache.get(String(accountId || 'default')) || [];
   if (profileId === 'opencode') return _opencodeModelsCache || keptOpencodeModels() || [];
   if (profileId === 'claude-code') return _claudeModelsCache || [];
-  return STATIC_MODELS[profileId] || [];
+  if (profileId === 'antigravity') return _antigravityModelsCache || [];
+  return [];
 }
 
 // Live Claude and Codex options are spawn-ready ids. Only legacy Claude options
@@ -678,6 +755,7 @@ export function clearRuntimeOptionCaches() {
   _opencodeModelsCache = null;
   opencodeProviders.invalidate('');
   _claudeModelsCache = null;
+  _antigravityModelsCache = null;
   _modelListAt.clear();
   invalidateToolCatalog(); _toolCatalog = null; _toolCatalogByCwd.clear(); _toolCatalogAt.clear();
   _claudeAccountsCache = null;

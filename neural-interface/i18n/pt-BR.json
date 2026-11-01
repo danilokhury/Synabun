@@ -97,7 +97,7 @@
       "assistant": "Assistente",
       "claudeCode": "Claude Code",
       "codexCli": "Codex CLI",
-      "geminiCli": "Gemini CLI",
+      "antigravityCli": "Antigravity CLI",
       "openCode": "OpenCode",
       "shell": "Terminal shell",
       "browser": "Navegador",
@@ -182,6 +182,7 @@
       "claudePanel": "Painel do Claude Code",
       "codexPanel": "Painel do Codex",
       "opencodePanel": "Painel do OpenCode",
+      "antigravityPanel": "Painel do Antigravity",
       "terminal": "Novo terminal",
       "claudeTerminal": "Terminal do Claude Code",
       "browser": "Navegador",
@@ -1593,7 +1594,7 @@
           },
           "your_assistants": {
             "title": "Seus assistentes",
-            "purpose": "Conecte Claude, Gemini, Codex e OpenCode e confira as regras de cada um."
+            "purpose": "Conecte Claude, Antigravity, Codex e OpenCode e confira as regras de cada um."
           },
           "manual_setup": {
             "title": "Configuração manual",
@@ -1741,7 +1742,7 @@
         "tool_access": {
           "skills": {
             "title": "Skills",
-            "purpose": "Comandos de barra que dão mais recursos ao Claude Code, Codex e OpenCode. Escolha quais cada assistente recebe."
+            "purpose": "Comandos de barra que dão mais recursos ao Claude Code, Codex, OpenCode e Antigravity. Escolha quais cada assistente recebe."
           },
           "tool_permissions": {
             "title": "Permissões de ferramentas",
@@ -2031,8 +2032,8 @@
           "help": "O comando ou caminho completo que o SynaBun executa para iniciar o Codex."
         },
         "cli004": {
-          "label": "Comando do Gemini",
-          "help": "O comando ou caminho completo que o SynaBun executa para iniciar o Gemini."
+          "label": "Comando da CLI do Antigravity",
+          "help": "O comando ou caminho completo que o SynaBun executa para iniciar a CLI do Antigravity."
         },
         "cli005": {
           "label": "Comando do OpenCode",
@@ -2603,24 +2604,24 @@
           "help": "Copia as instruções para a área de transferência."
         },
         "set010": {
-          "label": "Conectar Gemini ao SynaBun",
-          "help": "Permite que o Gemini use a memória e as ferramentas do SynaBun. Desativar remove apenas a entrada do SynaBun."
+          "label": "Conectar Antigravity ao SynaBun",
+          "help": "Permite que o Antigravity use a memória e as ferramentas do SynaBun. Desativar remove apenas a entrada do SynaBun."
         },
         "set011": {
           "label": "Copiar configuração",
-          "help": "Copia o texto para colar no arquivo de configuração do Gemini."
+          "help": "Copia o texto para colar no arquivo de configuração do Antigravity."
         },
         "set012": {
           "label": "Instalar regras",
-          "help": "Instala ou atualiza as instruções do SynaBun para o Gemini."
+          "help": "Instala ou atualiza as instruções do SynaBun para o Antigravity."
         },
         "set013": {
           "label": "Remover regras",
-          "help": "Remove as instruções do SynaBun do Gemini. As regras que você editou são mantidas."
+          "help": "Remove as instruções do SynaBun do Antigravity. As regras que você editou são mantidas."
         },
         "set014": {
           "label": "Ver regras",
-          "help": "Mostra as instruções que o Gemini recebe do SynaBun."
+          "help": "Mostra as instruções que o Antigravity recebe do SynaBun."
         },
         "set015": {
           "label": "Copiar regras",
@@ -3416,7 +3417,7 @@
         },
         "aut058": {
           "label": "Me cumprimentar quando eu voltar",
-          "help": "No Assistente, nos painéis do Claude Code, Codex e OpenCode e em uma sessão do Claude Code no terminal: depois de uma hora fora, e só quando há algo novo a dizer. O SynaBun escreve antes, então o modelo da própria sessão não gasta nada com isso. Desligado: toda sessão abre em silêncio."
+          "help": "No Assistente, nos painéis do Claude Code, Codex, OpenCode e Antigravity e em uma sessão do Claude Code no terminal: depois de uma hora fora, e só quando há algo novo a dizer. O SynaBun escreve antes, então o modelo da própria sessão não gasta nada com isso. Desligado: toda sessão abre em silêncio."
         },
         "aut059": {
           "label": "Como uma nova sessão abriria",
@@ -3428,7 +3429,7 @@
         },
         "aut061": {
           "label": "Proteger workers",
-          "help": "O que um worker que o Assistente despacha com capacidade somente leitura ou workspace pode tocar, no Claude Code, no Codex e no OpenCode igualmente: escritas só dentro da pasta de trabalho, da pasta temporária e da sua própria pasta de rascunho; nunca em ~/.claude, ~/.codex, ~/.agents, ~/.config/opencode, ~/.synabun ou outro projeto; um worker somente leitura só executa comandos de leitura. A capacidade completa nunca é limitada."
+          "help": "O que um worker que o Assistente despacha com capacidade somente leitura ou workspace pode tocar, no Claude Code, no Codex, no OpenCode e no Antigravity igualmente: escritas só dentro da pasta de trabalho, da pasta temporária e da sua própria pasta de rascunho; nunca em ~/.claude, ~/.codex, ~/.agents, ~/.config/opencode, ~/.gemini, ~/.synabun ou outro projeto; um worker somente leitura só executa comandos de leitura. A capacidade completa nunca é limitada."
         },
         "edt001": {
           "label": "Sugerir código enquanto digito",
@@ -4239,6 +4240,7 @@
         "failedToLoadMoreloginProfiles": "Falha ao carregar perfis do MoreLogin.",
         "moreloginNotInstalled": "— MoreLogin não instalado —",
         "moreloginDesktopAppIsNotInstalled": "O app MoreLogin não está instalado.",
+        "loadingProfiles": "Carregando perfis…",
         "startMorelogin": "— iniciar MoreLogin —",
         "moreloginNotRunningOpenTheApp": "MoreLogin não está em execução — abra o app (porta da API local {port}).",
         "noProfiles": "— nenhum perfil —",
@@ -4268,7 +4270,8 @@
         "chromeIsRunningSynabunOpensAn": "O Chrome está em execução — o SynaBun abre uma cópia espelhada isolada deste perfil. A cópia mantém seus próprios cookies/autenticação e nunca altera seu Chrome real.",
         "detected": "Detectado: {detectedPath}",
         "error2": "Erro:",
-        "profileSApiPort": "{count} perfil(is) · porta da API {port}"
+        "profileSApiPort": "{count} perfil(is) · porta da API {port}",
+        "moreloginCustomPathHint": "Instalado em outra pasta? Defina MORELOGIN_APP_PATH com o caminho completo do MoreLogin.exe no .env do SynaBun."
       },
       "mcp": {
         "tab": {
@@ -4276,10 +4279,10 @@
           "tools": "Ferramentas padrão"
         },
         "noteTitle": "Escopo",
-        "noteBody": "OpenCode e Gemini carregam os grupos selecionados. Claude Code e Codex acessam todas as ferramentas do SynaBun sob demanda.",
+        "noteBody": "OpenCode e Antigravity carregam os grupos selecionados. Claude Code e Codex acessam todas as ferramentas do SynaBun sob demanda.",
         "externalServers": "Seus outros servidores MCP",
         "externalServersHelp": "Aplica-se a workers e automações do Codex, OpenCode e Claude, incluindo FleetView, e ao seletor de ferramentas do OpenCode. Outras sessões controladas por você mantêm seus servidores.",
-        "installedHelp": "Todos os servidores de ferramentas de terceiros registrados no Claude Code, OpenCode, Codex, Gemini ou SynaBun. Os grupos de ferramentas do SynaBun não são listados aqui.",
+        "installedHelp": "Todos os servidores de ferramentas de terceiros registrados no Claude Code, OpenCode, Codex, Antigravity ou SynaBun. Os grupos de ferramentas do SynaBun não são listados aqui.",
         "plugins": "Plugins do Claude Code",
         "pluginsHelp": "Plugins instalados de repositórios do GitHub com uma pasta .claude-plugin. São vinculados em ~/.claude/plugins.",
         "source": {
@@ -4337,7 +4340,7 @@
         "claudeCode": "Claude Code",
         "opencode": "OpenCode",
         "codex": "Codex",
-        "gemini": "Gemini",
+        "antigravity": "Antigravity",
         "cursor": "Cursor",
         "claude": "Claude",
         "openclaw": "OpenClaw"
@@ -4354,6 +4357,9 @@
         "moreloginNotInstalled": "MoreLogin não instalado",
         "notInstalled": "não instalado",
         "installedApiNotRunningPort": "Instalado · API não está em execução (porta {port})",
+        "runningApiRejected": "Em execução · a API local respondeu com um erro (porta {port}): {reason}",
+        "apiError": "erro da API",
+        "customPathHint": "Instalou o MoreLogin em outra pasta? Adicione MORELOGIN_APP_PATH=<caminho completo do MoreLogin.exe> ao .env do SynaBun e reinicie o SynaBun, para que ele encontre o app e o abra quando estiver fechado.",
         "appClosed": "app fechado",
         "connectedProfileSPort": "Conectado · {profileCount} perfil(is) · porta {port}",
         "connected": "conectado",
@@ -4495,7 +4501,7 @@
         "hooksPurpose": "Para sessões do Claude Code fora do Assistente: comportamentos de memória e os momentos em que o SynaBun intervém. Mantenha-os ativados, a menos que esteja investigando um problema.",
         "compat": {
           "claude": "Compatível com Claude",
-          "gemini": "Compatível com Gemini",
+          "antigravity": "Compatível com Antigravity",
           "openai": "Compatível com OpenAI",
           "viaAddress": "pelo endereço público"
         },
@@ -5967,7 +5973,7 @@
         },
         "keywords": {
           "page": {
-            "ai_connections": "assistente, claude, codex, gemini, opencode, modelo, provedor, chave de api, api key, cli, instalar, conectar, llm",
+            "ai_connections": "assistente, claude, codex, antigravity, agy, opencode, modelo, provedor, chave de api, api key, cli, instalar, conectar, llm",
             "memory_backups": "banco de dados, sqlite, armazenamento, backup, restaurar, exportar, importar, embeddings, recall, vetor",
             "ai_decisions": "jev, typesafe, avaliações, julgamentos, chave de api, api key, custo, tokens, registro",
             "projects": "área de trabalho, workspace, pasta, repositório, repo, caminho, cache, espaço em disco",
@@ -5984,7 +5990,7 @@
           },
           "section": {
             "ai_connections": {
-              "your_assistants": "claude code, codex, gemini, opencode, conectar, instalar, mcp, cli, entrar, login, agente",
+              "your_assistants": "claude code, codex, antigravity, agy, opencode, conectar, instalar, mcp, cli, entrar, login, agente",
               "synabun_rules": "instruções, CLAUDE.md, AGENTS.md, ruleset, prompt, atualizar",
               "manual_setup": "cursor, windsurf, copiar configuração, json, config mcp, outras ferramentas",
               "executable_paths": "terminal, binário, comando, cli, shell, executável",
@@ -6709,6 +6715,7 @@
       "claude": "Claude Code",
       "codex": "Codex",
       "opencode": "OpenCode",
+      "antigravity": "Antigravity",
       "agents": "Pasta compartilhada"
     },
     "runtimeState": {
@@ -6773,7 +6780,9 @@
       "review": "Em revisão",
       "draft": "Rascunho",
       "readonly": "Somente leitura",
-      "ok": "Sem problemas"
+      "ok": "Sem problemas",
+      "duplicate-record": "Registro duplicado",
+      "stale-install": "Instalação antiga"
     },
     "library": {
       "title": "Biblioteca",
@@ -6836,7 +6845,7 @@
       "loading": "Lendo cada pasta de assistente…",
       "loadFailed": "Não foi possível ler as skills",
       "emptyTitle": "Nenhuma skill ainda",
-      "emptyHelp": "Skills, agentes e comandos do Claude Code, do Codex e do OpenCode aparecem aqui. Crie a primeira ou importe um pacote.",
+      "emptyHelp": "Skills, agentes e comandos do Claude Code, do Codex, do OpenCode e do Antigravity aparecem aqui. Crie a primeira ou importe um pacote.",
       "noMatchTitle": "Nada corresponde a estes filtros",
       "noMatchHelp": "Limpe os filtros ou busque outras palavras.",
       "clearFilters": "Limpar filtros",
@@ -6916,7 +6925,12 @@
         "deleted": {
           "one": "{count} item excluído.",
           "other": "{count} itens excluídos."
-        }
+        },
+        "deleteListLabel": "O que será excluído",
+        "deleteInLibrary": "Na biblioteca do SynaBun",
+        "deleteEffectDisk": "Excluído do disco",
+        "deleteEffectLibrary": "Sai da biblioteca",
+        "deleteMore": "e mais {count}"
       },
       "install": "Instalar",
       "installHelp": "Aprovada em Revisão: abra Publicar para instalá-la.",
@@ -7601,7 +7615,8 @@
         "portable": "Agent Skills",
         "claude": "Lista do Claude Code",
         "codex": "Codex",
-        "opencode": "OpenCode"
+        "opencode": "OpenCode",
+        "antigravity": "Antigravity"
       },
       "budgetCount": "{used} / {limit}",
       "saysWhat": "Diz o que faz",
@@ -8245,7 +8260,7 @@
         "command": "Comando · legado"
       },
       "kindHelp": {
-        "skill": "Uma pasta com SKILL.md que o Claude Code, o Codex e o OpenCode carregam. A escolha comum.",
+        "skill": "Uma pasta com SKILL.md que o Claude Code, o Codex, o OpenCode e o Antigravity carregam. A escolha comum.",
         "agent": "Um subagente a quem o Claude Code delega, com contexto próprio. Um arquivo.",
         "command": "Um arquivo de comando de barra do Claude Code. As skills os substituem; mantido para configurações antigas."
       },
@@ -8305,7 +8320,7 @@
       "descriptionLabel": "Descrição",
       "descriptionPlaceholder": "O que ela faz, e quando usar",
       "descriptionHelp": "Gravada no frontmatter. Os modelos a leem para decidir quando usar a skill: diga o quê e quando.",
-      "whereSkill": "Ela começa como rascunho na biblioteca do SynaBun e só chega ao Claude Code, ao Codex ou ao OpenCode quando você a publica.",
+      "whereSkill": "Ela começa como rascunho na biblioteca do SynaBun e só chega ao Claude Code, ao Codex, ao OpenCode ou ao Antigravity quando você a publica.",
       "whereLabel": "Onde",
       "whereGlobal": {
         "agent": "Todos os projetos (~/.claude/agents)",
@@ -8319,7 +8334,7 @@
       },
       "paste": "Colar um SKILL.md…",
       "import": "Importar…",
-      "explain": "Você recebe uma pasta de skill: SKILL.md, mais referências ou scripts só quando ajudam, verificada enquanto você escreve. Nada chega ao Claude Code, ao Codex ou ao OpenCode até você publicar.",
+      "explain": "Você recebe uma pasta de skill: SKILL.md, mais referências ou scripts só quando ajudam, verificada enquanto você escreve. Nada chega ao Claude Code, ao Codex, ao OpenCode ou ao Antigravity até você publicar.",
       "examplesTitle": "Ideias",
       "example1": "\"Escrever mensagens de Conventional Commit a partir do diff preparado\"",
       "example2": "\"Uma lista de verificação para preparar uma versão do SynaBun, a partir do CHANGELOG.md\"",
@@ -8741,6 +8756,94 @@
       "moved": "Movido: agora tem uma pasta de skill; o arquivo-ponte fica guardado no registro da mudança.",
       "movedPartly": "Movido em parte: veja Configurações → Skills → Pastas de skills.",
       "failed": "Isso não funcionou: {error}"
+    },
+    "fix": {
+      "open": "Corrigir estes problemas: {problems}",
+      "title": "Corrigir {name}",
+      "intro": "Cada problema diz o que significa e o que cada opção faz. Nada muda até você escolher uma.",
+      "none": "Nada a corrigir aqui.",
+      "nothingHere": "Não há o que fazer sobre isso daqui.",
+      "mode": {
+        "auto": "Um clique",
+        "guided": "Sua escolha"
+      },
+      "explain": {
+        "not-text": "O arquivo principal não é texto UTF-8 (pode estar salvo em UTF-16), então nenhum assistente consegue lê-lo. Abra para vê-lo, ou exclua se não precisar dele.",
+        "invalid": "Tem erros que um assistente vai ler errado. Alguns, como frontmatter ou descrição ausentes, podem ser adicionados por você; o resto se corrige no editor.",
+        "warnings": "Um assistente lê, mas algo provavelmente está errado (sem descrição, um nome diferente da pasta). Corrija no editor, adicione o que pode ser adicionado por você, ou deixe como está.",
+        "update": "O SynaBun traz uma versão mais nova que a instalada. Revise as mudanças e atualize, ou mantenha sua cópia como está.",
+        "shadowed": "{runtime} usa outra skill com este nome no lugar desta. Renomeie uma delas no editor, ou deixe assim se for o que você quer.",
+        "twice": "{runtime} lista duas skills com este nome, então um modelo pode escolher qualquer uma. Renomeie uma delas, ou deixe assim.",
+        "same-description": "Tem a mesma descrição de {names}, então um modelo não consegue diferenciá-las. Mude uma das descrições no editor, ou deixe assim.",
+        "bridge": "Um assistente só chega a ela por um arquivo de ponte antigo. Configurações → Skills → Pastas de skills a move para uma pasta própria.",
+        "duplicate-record": "A biblioteca tem esta skill duas vezes; {original} é o registro que fica com o nome.",
+        "stale-install": "Está instalada a partir de uma versão mais antiga que a última. Publicar instala a última.",
+        "unreadable": "Estas pastas ficam fora da Biblioteca. Corrija-as no disco (um SKILL.md ausente, um link, uma permissão) e leia as pastas de novo, ou deixe-as de fora."
+      },
+      "duplicateWhy": {
+        "installed": "Este registro está instalado, então você escolhe qual fica com o nome.",
+        "review": "Este registro tem uma revisão aberta, então você escolhe qual fica com o nome.",
+        "different": "As versões são diferentes, então você escolhe qual fica com o nome."
+      },
+      "action": {
+        "auto-text": "Adicionar o que falta",
+        "archive-duplicate": "Arquivar este registro",
+        "choose-copy": "Escolher qual manter…",
+        "open-edit": "Abrir no editor",
+        "open-publish": "Abrir Publicar",
+        "open-update": "Revisar a atualização",
+        "keep-mine": "Manter a minha",
+        "move-bridges": "Abrir pastas de skills",
+        "rescan": "Ler as pastas de novo",
+        "delete": "Excluir…",
+        "dismiss": "Deixar assim"
+      },
+      "dismissed": "Deixado como está. Volta a aparecer se mudar.",
+      "reading": "Lendo os arquivos a corrigir…",
+      "previewTitle": "Corrigir problemas seguros",
+      "previewIntro": "Estas mudanças são feitas, e nada mais:",
+      "previewNothing": "Nada pode ser corrigido com segurança em um clique. O resto precisa da sua escolha: abra cada problema pelo seu indicador de saúde.",
+      "step": {
+        "text": "{name}: adicionar {added}",
+        "archive": "{name}: arquivar o segundo registro da biblioteca ({original} fica com o nome; Restaurar em Arquivadas o traz de volta)"
+      },
+      "apply": {
+        "one": "Aplicar {count} mudança",
+        "other": "Aplicar {count} mudanças"
+      },
+      "resultDone": {
+        "one": "{count} problema corrigido.",
+        "other": "{count} problemas corrigidos."
+      },
+      "resultPartial": "{done} corrigidos, {failed} não: {first}",
+      "textNothing": "Não há nada aqui que possa ser adicionado com segurança. Abra no editor para corrigir à mão.",
+      "textToDraft": "A mudança vai para o rascunho da skill: as cópias instaladas só mudam quando você publica.",
+      "textInPlace": "O arquivo é salvo onde está, sobre a versão que acabou de ser lida.",
+      "failed": "A correção não funcionou: {error}",
+      "chooseTitle": "Qual registro fica com o nome?",
+      "chooseIntro": "O outro é arquivado; Restaurar em Arquivadas o traz de volta. Um registro instalado não pode ser arquivado: remova as instalações dele em Publicar antes.",
+      "chooseNone": "Os dois registros estão instalados ou em revisão, então nenhum pode ser arquivado. Remova antes as instalações de um deles em Publicar.",
+      "keepThis": "Manter {name} · {versions} · {installs}",
+      "versions": {
+        "one": "{count} versão",
+        "other": "{count} versões"
+      },
+      "installs": {
+        "one": "{count} instalação",
+        "other": "{count} instalações"
+      },
+      "keepConfirm": "Manter",
+      "notice": {
+        "one": "{count} problema precisa de atenção.",
+        "other": "{count} problemas precisam de atenção."
+      },
+      "noticeSafe": {
+        "one": "Até {count} pode ser corrigido em um clique.",
+        "other": "Até {count} podem ser corrigidos em um clique."
+      },
+      "fixAll": "Corrigir problemas seguros…",
+      "showIssues": "Mostrar",
+      "rescanned": "As pastas foram lidas de novo."
     }
   },
   "context": {
@@ -8825,8 +8928,11 @@
     "toggleExplorer": "Alternar explorador (F)"
   },
   "toolbar": {
+    "more": "Mais ferramentas",
     "hideTools": "Ocultar ferramentas do workspace",
     "showTools": "Mostrar ferramentas do workspace",
+    "hideWhiteboardToolbar": "Ocultar barra de ferramentas",
+    "showWhiteboardToolbar": "Mostrar barra de ferramentas",
     "workspaceNone": "Workspaces: nenhum carregado",
     "workspaceActive": "Workspace: {name}",
     "quickSave": "Salvar agora",
@@ -9019,6 +9125,7 @@
         "codex-no-records": "O Codex terminou sem registros finais de uso.",
         "codex-rollout-missing": "Registros de uso do Codex ausentes; foram usados os totais do próprio turno.",
         "opencode-not-reconciled": "A verificação da mensagem final do OpenCode não terminou.",
+        "antigravity-total-mismatch": "O total de tokens do Antigravity não bateu com suas classes de tokens; as classes foram contadas como informadas.",
         "interrupted": "Um turno foi interrompido; a chamada cortada é contada pela transmissão.",
         "no-result": "Uma execução terminou no meio de um turno; suas últimas chamadas são contadas pela transmissão.",
         "other": "Contagem final de tokens indisponível."
@@ -9774,6 +9881,7 @@
       "noResult": "Ainda sem resultado",
       "readFailed": "Não foi possível ler o resultado",
       "awaitingRoute": "aguardando sua escolha de modelo",
+      "routedHere": "não iniciado: feito aqui",
       "needsApproval": "precisa de aprovação",
       "needsInput": "precisa de informações",
       "waitingInput": "aguardando sua resposta",
@@ -9918,8 +10026,9 @@
       "help": "Mostrar comandos",
       "needsQuery": "Uso: /recall <query>",
       "needsText": "Uso: /remember <text>",
-      "dispatchProvider": "Uso: /dispatch <claude|codex|opencode> [flags] <task>",
-      "dispatchInvalidProvider": "Provedor desconhecido \"{provider}\". Use claude, codex ou opencode.",
+      "dispatchProvider": "Uso: /dispatch <claude|codex|opencode|antigravity> [flags] <task>",
+      "dispatchInvalidProvider": "Provedor desconhecido \"{provider}\". Use claude, codex, opencode ou antigravity.",
+      "notBrain": "O {provider} executa apenas trabalho despachado, nunca o próprio Assistente. Envie uma tarefa para ele com /dispatch {id} <task>.",
       "dispatchUnknownFlag": "Opção desconhecida --{flag}",
       "dispatchFlagValue": "A opção --{flag} precisa de um valor",
       "dispatchTask": "Adicione o texto da tarefa após as opções",
@@ -10053,8 +10162,14 @@
       "planDesc": {
         "claude-code": "Planejar primeiro; aprovar o plano continua no modo de aprovação abaixo",
         "codex": "Modo de planejamento nativo do Codex (ambiente isolado somente leitura)",
-        "opencode": "Agente de planejamento do OpenCode (sem edições de arquivos)"
-      }
+        "opencode": "Agente de planejamento do OpenCode (sem edições de arquivos)",
+        "antigravity": "O Antigravity explora e propõe um plano; as mudanças no código esperam sua aprovação"
+      },
+      "antigravitySignIn": "Login do Antigravity",
+      "antigravitySignedIn": "Conectado com o Google",
+      "antigravitySignedInTier": "Conectado com o Google ({tier})",
+      "antigravitySignedOut": "Sem login: abra o painel do Antigravity para entrar",
+      "antigravitySignInUnknown": "Login ainda não verificado: o Antigravity faz login no próprio painel"
     },
     "tests": {
       "title": "Densidade de testes",
@@ -10208,7 +10323,8 @@
       "ineligible": {
         "no_models": "Nenhum modelo disponível",
         "signed_out": "Sem conexão com a conta",
-        "limited": "Limite de uso do provedor atingido"
+        "limited": "Limite de uso do provedor atingido",
+        "unpriced": "Informa tokens, não preços"
       },
       "fallback": {
         "jev_off": "Jev desativado",
@@ -10220,6 +10336,7 @@
     "routes": {
       "budgetDecision": "redirecionado pelo orçamento",
       "budgetProvider": "Orçamento: a cota do {provider} nesta sessão se esgotou.",
+      "budgetUnpriced": "Orçamento: o {provider} informa tokens, não preços, então uma sessão com orçamento não pode executá-lo. Escolha outra opção ou mude o orçamento para Sem limite.",
       "budgetSpent": "Orçamento: o valor desta sessão se esgotou.",
       "budgetDryOne": "Orçamento: a cota do {list} se esgotou.",
       "budgetDryMany": "Orçamento: as cotas de {list} se esgotaram.",
@@ -10248,7 +10365,9 @@
       },
       "correction": {
         "remembered": "sua rota salva {to} substituiu {from}",
-        "rememberedDisabled": "rota salva {from} desativada; escolha mantida"
+        "rememberedDisabled": "rota salva {from} desativada; escolha mantida",
+        "accountWorker": "{to}: roda em um agente, porque esta conversa pertence a outra conta",
+        "otherProvider": "{provider} não é o provedor desta conversa, então roda em um agente"
       },
       "reason": {
         "always": "você pediu para confirmar rotas",
@@ -10265,15 +10384,39 @@
         "suggested": "Sugerido",
         "suggestedPct": "Sugerido · {pct}",
         "remembered": "Sua escolha",
+        "saved": "Rota salva",
         "current": "Atual",
         "cheaper": "Mais barato",
         "stronger": "Mais capaz",
         "other": "Sua escolha",
         "makesImages": "Gera imagens",
         "makesVideo": "Gera vídeo",
-        "canSee": "Pode ver"
+        "canSee": "Pode ver",
+        "sameModel": "Mesmo modelo",
+        "canRun": "Pode executar"
       },
       "doHere": "Fazer aqui com {model}",
+      "side": {
+        "label": "Onde executar",
+        "here": "Aqui",
+        "dispatch": "Agente",
+        "hereDesc": "Roda nesta conversa.",
+        "dispatchDesc": "Um agente executa; o resultado volta aqui.",
+        "workerOnly": "{taskClass} sempre roda em um agente.",
+        "noWorker": "Nenhum modelo de agente pode executar esta tarefa.",
+        "noHere": "Nada nesta conversa pode executar esta tarefa.",
+        "pickWorker": "Escolha um modelo de agente para executar.",
+        "accountWorker": "A conta desta conversa não pode assumir agora, então roda em um agente."
+      },
+      "kind": {
+        "here": "aqui",
+        "dispatch": "agente",
+        "computer": "computador"
+      },
+      "runHere": "Executar aqui",
+      "runDispatch": "Enviar ao agente",
+      "keysSides": "← → Aqui ou Agente · 1–9 escolher · Enter executar · Esc cancelar",
+      "otherHereTitle": "Continuar aqui em outro modelo",
       "computerNote": "Pedido pelo WhatsApp: no celular, um sim para “{option}” também permite que o assistente controle este Mac nesta tarefa. Aprovado aqui, só decide onde a tarefa roda; o celular é então perguntado sobre o Mac.",
       "task": "tarefa",
       "state": {
@@ -10383,7 +10526,7 @@
       },
       "behavior": {
         "always-ask": {
-          "saved": "Orienta a sugestão do modelo e aparece no cartão de rota.",
+          "saved": "O cartão de rota começa nela; você ainda pode escolher outra.",
           "unsaved": "O modelo sugere uma rota; você confirma antes da execução.",
           "note": "Toda tarefa que exige uma ação pede sua escolha. Uma tarefa sem modelo capaz de executá-la não pode começar."
         },
@@ -11378,7 +11521,8 @@
       "assistant": "Assistente",
       "claude-code": "Claude Code",
       "codex": "Codex",
-      "opencode": "OpenCode"
+      "opencode": "OpenCode",
+      "antigravity": "Antigravity"
     },
     "open": "Abrir memória",
     "source": {
@@ -11567,6 +11711,7 @@
       "claude-panel": "uma resposta no painel do Claude Code",
       "codex-panel": "uma resposta no painel do Codex",
       "opencode-panel": "uma resposta no painel do OpenCode",
+      "antigravity-panel": "uma resposta no painel do Antigravity",
       "claude-cli": "uma sessão do Claude Code em uso",
       "loop": "um loop",
       "schedule": "um agendamento",
@@ -11632,6 +11777,7 @@
     "stepPathAdded": "Adicionado {dir} ao seu PATH",
     "bodyMissing": "Instale com um clique pelo instalador oficial de {vendor} ou execute:",
     "bodyMissingManual": "Instale com este comando e depois verifique novamente:",
+    "bodyMissingGuide": "Siga o guia de instalação e depois verifique novamente.",
     "bodyBroken": "{label} foi encontrado em {path}, mas não conseguiu iniciar:",
     "bodyBrokenVersion": "{label} {version} foi encontrado em {path}, mas não conseguiu iniciar:",
     "bodyBrokenLatched": "{label} está instalado, mas não conseguiu iniciar:",
@@ -12116,8 +12262,10 @@
       },
       "groupUpdateFailed": "Falha ao atualizar o grupo: {error}",
       "reorderFailed": "Falha ao reordenar: {error}",
-      "comingSoon": "Em breve — por enquanto, só o Claude Code",
+      "comingSoon": "Em breve — por enquanto, só o Claude Code e o Antigravity",
       "panelFailed": "Falha ao abrir o painel do Claude: {error}",
+      "antigravityPanelFailed": "Falha ao abrir o painel do Antigravity: {error}",
+      "restartForAntigravity": "Reinicie o SynaBun para criar um agendamento pelo painel do Antigravity",
       "chooseAutomation": "Escolha uma automação primeiro",
       "chooseDelay": "Escolha um intervalo ou digite os minutos",
       "runningNow": "Executando agora: {name}",
@@ -12361,6 +12509,310 @@
       "label": "Jogo da velha",
       "purpose": "Jogue o jogo da velha no tabuleiro"
     }
+  },
+  "antigravityPanel": {
+    "title": "Antigravity",
+    "toolbar": "Painel lateral do Antigravity",
+    "transcript": "Conversa do Antigravity",
+    "newSession": "Nova sessão",
+    "newTab": "Nova aba",
+    "closeTab": "Fechar aba",
+    "minimize": "Minimizar em pílula",
+    "rename": "Renomear sessão",
+    "sessions": "Sessões",
+    "sessionsEmpty": "Ainda não há conversas do Antigravity neste projeto.",
+    "sessionsLoading": "Carregando conversas…",
+    "sessionsFailed": "Não foi possível listar as conversas: {error}",
+    "sessionsSearch": "Buscar conversas",
+    "sessionsMore": "Carregar mais",
+    "delete": "Excluir",
+    "deleteConfirm": "Excluir \"{title}\"?",
+    "cancel": "Cancelar",
+    "fork": "Bifurcar",
+    "forkTitle": "Bifurcação de {title}",
+    "project": "Projeto",
+    "chooseProject": "Escolha um projeto",
+    "branch": "Branch",
+    "branchStopFirst": "Interrompa o turno em andamento antes de trocar de branch.",
+    "branchSwitched": "A árvore de trabalho agora está em {branch}.",
+    "branchConfirm": "Trocar de {from} para {to} com {count} alterações não commitadas? O Git as mantém quando possível.",
+    "branchFailed": "Não foi possível trocar de branch: {error}",
+    "noProject": "Escolha uma pasta de projeto para começar.",
+    "folderAdd": "Adicionar uma pasta a esta sessão",
+    "folderHelp": "O Antigravity também pode ler e editar estes projetos registrados nesta sessão.",
+    "folderNone": "Todos os projetos registrados já estão nesta sessão.",
+    "folderRemove": "Remover {name} desta sessão",
+    "foldersApplied": "A sessão agora inclui as pastas escolhidas.",
+    "foldersNext": "As pastas valem quando a próxima sessão começar.",
+    "placeholder": "Pergunte ao Antigravity…",
+    "placeholderQueue": "Enfileirar uma mensagem…",
+    "placeholderAutomation": "Uma execução despachada está usando esta aba.",
+    "send": "Enviar",
+    "stop": "Parar",
+    "attach": "Anexar arquivos",
+    "attachmentRemove": "Remover {name}",
+    "attachmentTooMany": "No máximo {count} anexos por mensagem.",
+    "attachmentTooLarge": "{name} tem mais de {size} MB.",
+    "attachmentType": "{name} é um tipo de arquivo que o Antigravity não aceita.",
+    "mic": "Gravar uma mensagem de voz",
+    "micFailed": "Não foi possível iniciar o microfone: {error}",
+    "model": "Modelo",
+    "thinking": "Raciocínio",
+    "mode": "Modo",
+    "modelDefault": "Padrão",
+    "permissions": "Permissões",
+    "permDefault": "Padrão",
+    "permDefaultHint": "Perguntar antes de cada ferramenta que o Antigravity quer aprovar",
+    "permBypass": "Ignorar permissões",
+    "permBypassHint": "Executar tudo sem perguntar",
+    "permBypassRestart": "Ignorar permissões precisa reiniciar o servidor do SynaBun: até lá, escolher aqui não faz nada.",
+    "permBypassWaiting": "Ignorar permissões · indisponível: a escolha desta aba espera o servidor do SynaBun reiniciar e, até lá, o Antigravity pergunta como sempre.",
+    "permBypassOnTitle": "Ignorar permissões: toda ferramenta roda sem perguntar nesta aba, até você escolher outro modo. O SynaBun continua recusando navegadores que não sejam o dele e as pastas protegidas.",
+    "permBypassStrip": "Ignorar permissões está ligado: o Antigravity roda toda ferramenta nesta aba sem perguntar.",
+    "permBypassConfirmTitle": "Ligar Ignorar permissões nesta aba?",
+    "permBypassConfirmBody": "O Antigravity vai editar arquivos, rodar comandos e chamar ferramentas sem perguntar, até você escolher Padrão de novo. O SynaBun continua recusando navegadores que não sejam o dele e tudo nas pastas protegidas (credenciais, os dados do SynaBun, as configurações dos runtimes).",
+    "permBypassConfirmYes": "Ligar Ignorar permissões",
+    "permBypassFailed": "Não foi possível mudar Ignorar permissões: {error}",
+    "permAutoAllowed": "Ignorar permissões permitiu: {tool}",
+    "permAutoRefused": "Ignorar permissões recusou {tool}: {reason}",
+    "permTool": "uma ferramenta",
+    "working": "Trabalhando…",
+    "workingFor": "Trabalhando… {seconds}s",
+    "needsYou": "Aguardando você",
+    "thought": "Raciocínio",
+    "thoughtFor": "Pensou por {duration}",
+    "thinkingNow": "Pensando…",
+    "plan": "Plano",
+    "planProgress": "{done} de {total} concluídos",
+    "planDone": "Concluído",
+    "priorityHigh": "Alta",
+    "toolPending": "Aguardando",
+    "toolRunning": "Executando",
+    "toolDone": "Concluído",
+    "toolFailed": "Falhou",
+    "kind_read": "Leitura",
+    "kind_edit": "Edição",
+    "kind_delete": "Exclusão",
+    "kind_move": "Mover",
+    "kind_search": "Busca",
+    "kind_execute": "Comando",
+    "kind_think": "Raciocínio",
+    "kind_fetch": "Download",
+    "kind_switch_mode": "Troca de modo",
+    "kind_other": "Ferramenta",
+    "rawInput": "Entrada",
+    "rawOutput": "Saída",
+    "diffFor": "Alterações em {path}",
+    "diffAdded": "Arquivo novo",
+    "diffModified": "Modificado",
+    "diffDeleted": "Excluído",
+    "diffIdentical": "Nenhuma alteração no texto.",
+    "diffTooLarge": "Alterações demais para comparar linha a linha: o texto antigo aparece removido e o novo adicionado.",
+    "diffTruncated": "O arquivo é maior do que a parte comparada aqui.",
+    "diffShowAll": "Mostrar o diff inteiro ({count} linhas)",
+    "copyPatch": "Copiar patch",
+    "terminalWaiting": "Aguardando a saída…",
+    "terminalRunning": "Executando",
+    "terminalExit": "Código de saída {code}",
+    "terminalSignal": "Interrompido por {signal}",
+    "terminalTruncated": "A saída anterior foi cortada.",
+    "compaction": "Resumo da conversa",
+    "compactionRunning": "Resumindo",
+    "compactionDone": "Resumida",
+    "compactionFailed": "Falhou",
+    "compactionCancelled": "Cancelado",
+    "compact": "Compactar",
+    "subagent": "Subagente",
+    "subagentRunning": "Executando",
+    "subagentIdle": "Ocioso",
+    "subagentNeedsYou": "Precisa de você",
+    "subagentUnknown": "Desconhecido",
+    "relayedMessage": "Mensagem entre sessões",
+    "usage_in": "{value} de entrada",
+    "usage_out": "{value} de saída",
+    "usage_thinking": "{value} de raciocínio",
+    "usage_cached": "{value} em cache",
+    "copy": "Copiar",
+    "copied": "Copiado",
+    "copyAnswer": "Copiar resposta",
+    "copyCommand": "Copiar o comando",
+    "retry": "Tentar de novo",
+    "permissionTitle": "O Antigravity quer {verb}",
+    "verb_read": "ler um arquivo",
+    "verb_edit": "editar um arquivo",
+    "verb_delete": "excluir um arquivo",
+    "verb_move": "mover um arquivo",
+    "verb_search": "buscar",
+    "verb_execute": "executar um comando",
+    "verb_think": "pensar",
+    "verb_fetch": "baixar da web",
+    "verb_switch_mode": "trocar de modo",
+    "verb_other": "usar uma ferramenta",
+    "permissionDeny": "Negar",
+    "permissionAnswered": "Respondido",
+    "permissionCancelled": "Não é mais necessário",
+    "permissionSending": "Enviando…",
+    "permissionKeys": "Enter permite uma vez · Esc nega",
+    "elicitTitle": "O Antigravity pergunta",
+    "elicitSubmit": "Enviar",
+    "elicitDecline": "Recusar",
+    "elicitCancel": "Cancelar",
+    "elicitOpen": "Abrir o link",
+    "elicitDone": "Concluído",
+    "elicitAnswered": "Respondido",
+    "elicitDeclined": "Recusado",
+    "elicitBadUrl": "O link não é um endereço que o painel abre (apenas https).",
+    "elicitUnsupported": "Este campo não pode ser respondido aqui.",
+    "elicitUnsupportedMode": "O painel não consegue mostrar este tipo de pergunta.",
+    "elicitRequired": "Obrigatório.",
+    "elicitNumber": "Digite um número.",
+    "elicitRange": "O número está fora do intervalo.",
+    "elicitLength": "O tamanho está fora do intervalo.",
+    "elicitEmail": "Digite um endereço de e-mail.",
+    "elicitUrl": "Digite um endereço.",
+    "elicitChoices": "Escolha outra quantidade de opções.",
+    "signIn": "Entrar",
+    "signInTitle": "Entrar no Antigravity",
+    "signInBody": "O Antigravity precisa do seu login Google antes de iniciar uma sessão.",
+    "signInTerminal": "Entrar por um terminal",
+    "signInTerminalBody": "Conclua o login no terminal que abriu e verifique de novo.",
+    "signInCheck": "Verificar novamente",
+    "signInWaiting": "Conclua o login na janela do navegador que abriu…",
+    "signInFailed": "O login não foi concluído: {error}",
+    "signOut": "Sair",
+    "setupMissingTitle": "O Antigravity CLI não está instalado",
+    "setupMissingBody": "Instale o Antigravity CLI do Google para usá-lo aqui. O SynaBun executa o instalador oficial e depois faz o seu login.",
+    "setupMissingBodyBrew": "Instale o Antigravity CLI do Google para usá-lo aqui. O SynaBun o instala com o Homebrew e depois faz o seu login.",
+    "setupMissingManual": "Instale com este comando e depois verifique novamente.",
+    "setupMissingGuide": "Siga o guia de instalação e depois verifique novamente.",
+    "setupInstallingTitle": "Instalando o Antigravity…",
+    "setupStep_check": "Verificando este computador…",
+    "setupStep_install": "Instalando o Antigravity CLI…",
+    "setupStep_verify": "Verificando se o agy inicia…",
+    "setupBrewRunning": "O Homebrew está instalando o antigravity-cli…",
+    "setupFailedTitle": "Não foi possível instalar o Antigravity",
+    "setupBrokenTitle": "O Antigravity CLI não iniciou",
+    "setupUpdateTitle": "Atualize o Antigravity CLI",
+    "setupUpdateBody": "Esta versão do agy não tem o servidor ACP (agy acp), que o painel usa. Atualize com este comando (ou brew upgrade --cask antigravity-cli) e verifique de novo.",
+    "setupConnectingTitle": "Iniciando o Antigravity…",
+    "setupConnectingBody": "O CLI está instalado. O SynaBun está iniciando-o.",
+    "setupReadyTitle": "O Antigravity está pronto",
+    "setupReadyBody": "Pergunte qualquer coisa sobre este projeto para começar.",
+    "setupPathTitle": "Use o agy nos seus outros terminais",
+    "setupInstall": "Instalar o Antigravity",
+    "setupRetry": "Tentar de novo",
+    "setupRecheck": "Verificar novamente",
+    "setupChecking": "Verificando…",
+    "setupDismiss": "Dispensar",
+    "setupLog": "Saída do instalador",
+    "setupStepsLabel": "Etapas da instalação",
+    "step_check": "Verificação",
+    "step_install": "Instalação",
+    "step_verify": "Validação",
+    "step_signin": "Login",
+    "stepState_todo": "não iniciada",
+    "stepState_active": "em andamento",
+    "stepState_done": "concluída",
+    "stepState_failed": "falhou",
+    "addToPath": "Adicionar ao PATH",
+    "installGuide": "Guia de instalação",
+    "cliReference": "Referência do Antigravity CLI",
+    "blockedMissing": "Instale o Antigravity primeiro",
+    "blockedInstalling": "O Antigravity está sendo instalado",
+    "blockedBroken": "O Antigravity não iniciou",
+    "blockedSignIn": "Faça login primeiro",
+    "blockedConnecting": "O Antigravity está iniciando",
+    "blockedConnection": "Sem conexão com o SynaBun",
+    "agentStopped": "O Antigravity parou{detail}. Envie de novo para iniciá-lo.",
+    "disconnected": "A conexão com o SynaBun caiu. Reconectando…",
+    "connOffline": "O SynaBun não está respondendo. Tentando de novo…",
+    "connRetryNow": "Reconectar agora",
+    "connRetry": "Tentar de novo",
+    "connAutomation": "O navegador de automação do SynaBun não pode abrir o painel do Antigravity. Abra-o no seu próprio navegador ou no app do SynaBun.",
+    "connGuest": "O painel do Antigravity é do dono deste SynaBun.",
+    "connRefused": "O SynaBun recusou a conexão desta janela com o painel do Antigravity. Se o seu navegador chega ao SynaBun por um proxy, adicione localhost à lista de exceções dele.",
+    "connRestart": "Este servidor do SynaBun foi iniciado antes do painel do Antigravity existir. Reinicie o SynaBun para usá-lo.",
+    "errorPrefix": "Erro: {message}",
+    "stopped": "Parado.",
+    "refusal": "O modelo se recusou a continuar.",
+    "maxTokens": "A resposta atingiu o limite de saída do modelo.",
+    "maxTurns": "O turno atingiu o limite de requisições.",
+    "context": "Contexto {label}",
+    "contextUnknown": "Ainda não informado",
+    "automation": "Execução despachada",
+    "automationBanner": "Uma execução despachada do Assistente está trabalhando nesta aba.",
+    "automationEnded": "Esta execução terminou. Envie uma mensagem para continuar aqui.",
+    "commands": "Comandos e arquivos",
+    "hintsPanel": "Painel",
+    "hintsAgent": "Antigravity",
+    "mentionLoading": "Procurando arquivos…",
+    "queueTitle": "Fila",
+    "queueAdd": "Adicionar à fila",
+    "queuePause": "Pausar a fila",
+    "queueResume": "Retomar a fila",
+    "queueClear": "Limpar a fila",
+    "queueEdit": "Editar",
+    "queueRemove": "Remover",
+    "queueFull": "A fila comporta no máximo {count} mensagens.",
+    "jumpLatest": "Mais recente",
+    "emptyTitle": "Antigravity",
+    "emptyBody": "O agente de programação do Google, com a memória do SynaBun. Pergunte sobre este projeto ou cole uma imagem.",
+    "emptyKeyCommands": "comandos",
+    "emptyKeyFiles": "arquivos",
+    "loadingHistory": "Carregando a conversa…",
+    "historyFailed": "Não foi possível carregar esta conversa: {error}",
+    "runHomePruned": "A pasta de conversa desta execução despachada já foi limpa, então a conversa não pode mais continuar aqui. Abra uma nova aba.",
+    "cmdNew": "Iniciar uma nova sessão",
+    "cmdSessions": "Abrir a lista de sessões",
+    "cmdRename": "Renomear esta sessão",
+    "cmdFork": "Bifurcar esta sessão em uma nova aba",
+    "cmdRetry": "Enviar a última mensagem de novo",
+    "cmdCopy": "Copiar a última resposta",
+    "cmdModel": "Escolher o modelo",
+    "cmdMode": "Escolher o modo",
+    "cmdThinking": "Escolher o nível de raciocínio",
+    "cmdDetail": "Mudar quanto de cada turno é mostrado",
+    "cmdSettings": "Abrir as configurações da sessão",
+    "cmdLogin": "Entrar no Antigravity",
+    "cmdLogout": "Sair do Antigravity",
+    "cmdHelp": "Listar comandos e atalhos",
+    "helpPanel": "Comandos do painel:",
+    "helpAgent": "Comandos do Antigravity:",
+    "helpKeys": "Teclas: Enter envia · Shift+Enter adiciona uma linha · ↑ recupera a última mensagem · Esc interrompe um turno em andamento · @ anexa um arquivo",
+    "settingsTitle": "Configurações da sessão",
+    "settingsContext": "Contexto",
+    "settingsTokens": "Tokens no contexto",
+    "settingsSession": "Sessão",
+    "settingsSessionId": "ID da sessão",
+    "settingsNoSession": "Não iniciada",
+    "settingsFolders": "Pastas extras",
+    "settingsTurns": "Turnos",
+    "settingsOptions": "Opções da sessão",
+    "settingsNoOptions": "O Antigravity não oferece opções para esta sessão.",
+    "settingsStartSession": "As opções aparecem quando a sessão começa.",
+    "settingsPanel": "Painel",
+    "settingsDetail": "Detalhe",
+    "detail_compact": "Compacto",
+    "detail_standard": "Padrão",
+    "detail_verbose": "Detalhado",
+    "detailHelp_compact": "Só as respostas: raciocínio oculto, todas as chamadas de ferramenta fechadas.",
+    "detailHelp_standard": "Raciocínio recolhido; alterações de arquivo abertas, outras chamadas fechadas.",
+    "detailHelp_verbose": "Tudo aberto, com a entrada e a saída brutas de cada chamada de ferramenta.",
+    "settingsClientFs": "Arquivos pelo SynaBun",
+    "settingsClientFsHelp": "O Antigravity lê e grava arquivos pelo SynaBun. Vale quando o agente reinicia, o que esta opção faz.",
+    "settingsClientTerminal": "Comandos no SynaBun",
+    "settingsClientTerminalHelp": "O Antigravity executa os comandos pelo SynaBun, com a saída ao vivo no cartão da ferramenta. Vale quando o agente reinicia.",
+    "settingsNeedsRestart": "Precisa reiniciar o servidor do SynaBun.",
+    "settingsAccount": "Conta",
+    "settingsSignIn": "Login",
+    "settingsSignedIn": "Conectado",
+    "settingsSignedOut": "Desconectado",
+    "settingsAgentOff": "O Antigravity não está em execução",
+    "settingsMethods": "Métodos",
+    "settingsAbout": "Sobre",
+    "settingsAgent": "Agente",
+    "settingsProtocol": "Protocolo",
+    "settingsLinks": "Documentação"
   },
   "codexPanel": {
     "newSession": "Nova sessão",

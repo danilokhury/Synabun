@@ -2,8 +2,8 @@
 // SynaBun — Greeting: the card every surface mounts
 // ═══════════════════════════════════════════
 //
-// One renderer for the greeting: the Assistant and the Claude Code, Codex and
-// OpenCode panels mount it inside the empty state they already have, Settings
+// One renderer for the greeting: the Assistant and the Claude Code, Codex,
+// OpenCode and Antigravity panels mount it inside the empty state they already have, Settings
 // shows the same card as its preview. greeting-view.js decides the words; this
 // file asks the server (`POST /api/greeting/open`) and draws.
 //

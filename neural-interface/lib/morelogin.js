@@ -47,7 +47,8 @@ export function isMoreLoginInstalled() {
   } else if (process.platform === 'win32') {
     const { LOCALAPPDATA, ProgramFiles } = process.env;
     const PF86 = process.env['ProgramFiles(x86)'];
-    if (LOCALAPPDATA) candidates.push(`${LOCALAPPDATA}\\Programs\\MoreLogin\\MoreLogin.exe`, `${LOCALAPPDATA}\\MoreLogin\\MoreLogin.exe`);
+    if (process.env.MORELOGIN_APP_PATH) candidates.push(process.env.MORELOGIN_APP_PATH);
+    if (LOCALAPPDATA) candidates.push(`${LOCALAPPDATA}\\Programs\\MoreLogin\\MoreLogin.exe`, `${LOCALAPPDATA}\\Programs\\morelogin\\MoreLogin.exe`, `${LOCALAPPDATA}\\MoreLogin\\MoreLogin.exe`);
     if (ProgramFiles) candidates.push(`${ProgramFiles}\\MoreLogin\\MoreLogin.exe`);
     if (PF86) candidates.push(`${PF86}\\MoreLogin\\MoreLogin.exe`);
   } else {
@@ -100,40 +101,147 @@ function buildHeaders(opts = {}) {
 
 /**
  * Low-level POST to the MoreLogin local API. Returns the `data` payload.
- * Throws with a `.code` of MORELOGIN_UNREACHABLE | MORELOGIN_HTTP | MORELOGIN_API.
+ * Throws with a `.code` of MORELOGIN_UNREACHABLE | MORELOGIN_HTTP | MORELOGIN_API | MORELOGIN_SHAPE
+ * (answered 2xx with a body that is not JSON).
+ */
+// Loopback hosts to try, in order. MoreLogin's local server may listen on IPv6 only
+// (an Electron server bound to "localhost" resolves to ::1 first on Windows), so a
+// refused 127.0.0.1 is retried on [::1]. The host that answered is remembered.
+const LOOPBACK_HOSTS = ['127.0.0.1', '[::1]'];
+let _preferredHost = LOOPBACK_HOSTS[0];
+let _lastAnswerAt = 0; // when the local API last answered anything (any status, any body)
+export function _resetMoreLoginHostForTests() { _preferredHost = LOOPBACK_HOSTS[0]; _lastAnswerAt = 0; }
+export function _preferredMoreLoginHostForTests() { return _preferredHost; }
+
+/** Whether the local API answered within the last `withinMs` (no request is made). */
+export function moreLoginApiAnsweredRecently(withinMs = 120000) {
+  return _lastAnswerAt > 0 && Date.now() - _lastAnswerAt <= withinMs;
+}
+
+/**
+ * Cheap, synchronous "is MoreLogin here": the exe is in a known folder (or
+ * MORELOGIN_APP_PATH) or its local API answered recently. Callers that need a
+ * fresh answer probe first (probeMoreLoginApi).
+ */
+export function isMoreLoginPresent(withinMs = 120000) {
+  let exe = false;
+  try { exe = isMoreLoginInstalled().installed; } catch { exe = false; }
+  return exe || moreLoginApiAnsweredRecently(withinMs);
+}
+
+// Error codes that prove the connection never opened, so the request was never
+// delivered and the other loopback host may be tried even for a call that changes
+// state (create, start). Anything else (a reset after sending, a malformed answer)
+// may have reached MoreLogin: it is thrown, never sent a second time.
+const NEVER_CONNECTED_CODES = new Set([
+  'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EADDRNOTAVAIL', 'EAFNOSUPPORT', 'ENOTFOUND',
+  'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_CONNECT',
+]);
+export function _neverConnected(err) {
+  for (let e = err, i = 0; e && i < 4; e = e.cause, i++) {
+    if (NEVER_CONNECTED_CODES.has(e.code)) return true;
+    if (Array.isArray(e.errors) && e.errors.some(x => NEVER_CONNECTED_CODES.has(x?.code))) return true;
+  }
+  return false;
+}
+
+/**
+ * One deadline for the whole call (opts.timeout, default 15 s): each loopback host
+ * gets what is left of it, so two hosts never double the budget. The other host is
+ * tried while time remains when the first one provably never connected; a timeout
+ * is tried on the other host only for a read (opts.idempotent), since a timed-out
+ * write may have been received.
  */
 async function request(path, body, opts = {}) {
   const port = opts.port || getMoreLoginPort(opts.savedCfg);
-  const url = `http://127.0.0.1:${port}${path}`;
+  const fetchImpl = opts.fetch || fetch;
+  const idempotent = opts.idempotent ?? (path === '/api/env/page' || path === '/api/env/status');
+  const budget = opts.timeout || 15000;
+  const deadline = Date.now() + budget;
+  const hosts = [_preferredHost, ...LOOPBACK_HOSTS.filter(h => h !== _preferredHost)];
   let res;
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: buildHeaders(opts),
-      body: JSON.stringify(body || {}),
-      signal: AbortSignal.timeout(opts.timeout || 15000),
-    });
-  } catch (err) {
-    const e = new Error(`MoreLogin API unreachable on :${port} (${err?.message || err})`);
+  let lastErr = null;
+  for (const host of hosts) {
+    const left = deadline - Date.now();
+    if (left <= 0) break;
+    try {
+      res = await fetchImpl(`http://${host}:${port}${path}`, {
+        method: 'POST',
+        headers: buildHeaders(opts),
+        body: JSON.stringify(body || {}),
+        signal: AbortSignal.timeout(left),
+      });
+      _preferredHost = host;
+      _lastAnswerAt = Date.now();
+      break;
+    } catch (err) {
+      lastErr = err;
+      const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError';
+      const retry = _neverConnected(err) || (timedOut && idempotent);
+      if (!retry) break;
+    }
+  }
+  if (!res) {
+    const err = lastErr;
+    const reason = !err ? `no time left of ${budget} ms` : (err?.cause?.code || err?.code || err?.message || err);
+    const e = new Error(`MoreLogin API unreachable on :${port} (${reason})`);
     e.code = 'MORELOGIN_UNREACHABLE';
     throw e;
   }
   let json = null;
+  let unparsable = false;
   try { json = await res.json(); }
-  catch { try { await res.body?.cancel(); } catch { /* ignore */ } }
+  catch { unparsable = true; try { await res.body?.cancel(); } catch { /* ignore */ } }
   if (!res.ok) {
-    const e = new Error(`MoreLogin API ${path} → HTTP ${res.status}`);
+    const detail = json && (json.msg || json.message);
+    const e = new Error(`MoreLogin API ${path} → HTTP ${res.status}${detail ? ` (${detail})` : ''}${res.status === 401 || res.status === 403 ? ' (set the API ID and API Key from MoreLogin → Settings → API in SynaBun Settings → MoreLogin)' : ''}`);
     e.code = 'MORELOGIN_HTTP';
     e.status = res.status;
     throw e;
   }
   if (json && json.code !== undefined && json.code !== 0) {
-    const e = new Error(`MoreLogin API ${path}: ${json.msg || `code ${json.code}`}`);
+    const msg = json.msg || json.message || `code ${json.code}`;
+    const e = new Error(`MoreLogin API ${path}: ${msg}${looksLikeAuthError(json.code, msg) ? ' (set the API ID and API Key from MoreLogin → Settings → API in SynaBun Settings → MoreLogin)' : ''}`);
     e.code = 'MORELOGIN_API';
     e.apiCode = json.code;
     throw e;
   }
-  return json ? json.data : null;
+  if (unparsable || !json || typeof json !== 'object') {
+    const type = res.headers?.get?.('content-type') || 'no content type';
+    const e = new Error(`MoreLogin API ${path} answered HTTP ${res.status} with a body that is not JSON (${type}); is something else listening on port ${port}?`);
+    e.code = 'MORELOGIN_SHAPE';
+    throw e;
+  }
+  return json.data;
+}
+
+function looksLikeAuthError(code, msg) {
+  return /auth|sign|api.?key|api.?id|nonce|unauthori[sz]ed|forbidden|permission|token/i.test(String(msg || ''))
+    || code === 401 || code === 403;
+}
+
+const PROFILE_LIST_KEYS = ['dataList', 'list', 'records', 'rows'];
+
+/** Profile rows across response shapes: data.dataList | data.list | data.records | data.rows | data (array). A non-empty array wins over an empty one. */
+export function profileRows(data) {
+  if (Array.isArray(data)) return data;
+  if (!data || typeof data !== 'object') return [];
+  const arrays = PROFILE_LIST_KEYS.map(k => data[k]).filter(Array.isArray);
+  return arrays.find(a => a.length) || arrays[0] || [];
+}
+
+/** Whether a profile-page answer has a shape SynaBun reads (an array, a known list key, or a total). */
+export function hasProfileShape(data) {
+  if (Array.isArray(data)) return true;
+  if (!data || typeof data !== 'object') return false;
+  return PROFILE_LIST_KEYS.some(k => Array.isArray(data[k])) || (data.total != null && Number.isFinite(Number(data.total)));
+}
+
+function shapeError(data) {
+  const keys = data && typeof data === 'object' ? Object.keys(data).slice(0, 8).join(', ') : typeof data;
+  const e = new Error(`MoreLogin API /api/env/page answered in a shape SynaBun does not read (data: ${keys || 'empty'}); a newer MoreLogin may have changed its API`);
+  e.code = 'MORELOGIN_SHAPE';
+  return e;
 }
 
 /**
@@ -171,19 +279,29 @@ function normalizeProfile(e = {}) {
 /** List browser profiles (environments). Returns normalized rows. */
 export async function listProfiles(opts = {}) {
   const data = await request('/api/env/page', { pageNo: opts.pageNo || 1, pageSize: opts.pageSize || 100 }, opts);
-  const list = (data && (data.dataList || data.list)) || [];
-  return list.map(normalizeProfile).filter(p => p.id);
+  if (!hasProfileShape(data)) throw shapeError(data);
+  return profileRows(data).map(normalizeProfile).filter(p => p.id);
 }
 
-/** Lightweight reachability probe. Never throws — returns {running, count}. */
+/**
+ * Lightweight reachability probe. Never throws — returns {running, count}.
+ * `running` means the local API answered at all: an answer that is an HTTP or API
+ * error (signature required, API disabled, ...) still proves MoreLogin is up, and its
+ * reason is returned in `apiError` instead of being reported as "not running".
+ */
 export async function probeMoreLoginApi(opts = {}) {
   try {
     const data = await request('/api/env/page', { pageNo: 1, pageSize: 1 }, { ...opts, timeout: opts.timeout || 4000 });
-    const total = data && data.total != null ? Number(data.total)
-      : (data && (data.dataList || data.list) ? (data.dataList || data.list).length : 0);
+    if (!hasProfileShape(data)) throw shapeError(data);
+    const total = data && !Array.isArray(data) && data.total != null ? Number(data.total) : profileRows(data).length;
     return { running: true, count: Number.isFinite(total) ? total : 0 };
   } catch (err) {
-    return { running: false, count: 0, error: err?.message || String(err), errCode: err?.code || null };
+    const answered = err?.code === 'MORELOGIN_HTTP' || err?.code === 'MORELOGIN_API' || err?.code === 'MORELOGIN_SHAPE';
+    return {
+      running: answered, count: 0,
+      error: err?.message || String(err), errCode: err?.code || null,
+      ...(answered ? { apiError: err?.message || String(err) } : {}),
+    };
   }
 }
 
@@ -221,13 +339,17 @@ export async function getMoreLoginStatus(opts = {}) {
   const port = getMoreLoginPort(opts.savedCfg);
   const probe = await probeMoreLoginApi({ ...opts, port });
   return {
-    installed: inst.installed,
+    // An answering local API is proof of an install, wherever it lives (a custom
+    // install folder on Windows is not among the known paths).
+    installed: inst.installed || probe.running,
     appPath: inst.path,
     port,
     running: probe.running,
+    apiError: probe.apiError || null,
     profileCount: probe.count || 0,
     signed: !!((opts.appId || process.env.MORELOGIN_API_ID) && (opts.secretKey || process.env.MORELOGIN_SECRET)),
-    error: probe.error || null,
+    // Transport failures only: an API that answered with an error is running, and says why in apiError.
+    error: probe.running ? null : (probe.error || null),
   };
 }
 
@@ -259,7 +381,7 @@ export async function startProfile(envId, opts = {}) {
   try {
     data = await request('/api/env/start', { envId: String(envId), ...(opts.startArgs || {}) }, opts);
   } catch (err) {
-    if (err?.code === 'MORELOGIN_UNREACHABLE' || err?.code === 'MORELOGIN_HTTP') throw err;
+    if (err?.code === 'MORELOGIN_UNREACHABLE' || err?.code === 'MORELOGIN_HTTP' || err?.code === 'MORELOGIN_SHAPE') throw err;
     // MORELOGIN_API (e.g. "already running") → fall through to status recovery.
   }
   let port = extractDebugPort(data);

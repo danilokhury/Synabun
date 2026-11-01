@@ -26,6 +26,7 @@ export const SURFACES = Object.freeze({
   'claude-panel': 'Claude Code (side panel)',
   'codex-panel': 'Codex (side panel)',
   'opencode-panel': 'OpenCode (side panel)',
+  'antigravity-panel': 'Antigravity (side panel)',
   'claude-cli': 'Claude Code (terminal)',
 });
 

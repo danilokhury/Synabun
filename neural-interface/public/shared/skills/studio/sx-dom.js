@@ -97,7 +97,8 @@ export function healthIcon(code) {
     case 'invalid': case 'not-text': return ICONS.err;
     case 'warnings': return ICONS.warn;
     case 'update': return ICONS.update;
-    case 'shadowed': case 'twice': case 'same-description': return ICONS.flag;
+    case 'shadowed': case 'twice': case 'same-description': case 'duplicate-record': return ICONS.flag;
+    case 'stale-install': return ICONS.update;
     case 'bridge': return ICONS.bridge;
     case 'readonly': return ICONS.lock;
     case 'draft': return ICONS.draft;

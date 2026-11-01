@@ -41,6 +41,8 @@ const hosts = createAssistantHosts({
 export const registerAssistantHost = (adapter) => hosts.register(adapter);
 export const assistantOwnerOf = (sessionId) => hosts.ownerOf(sessionId);
 export const fetchLiveAssistantSessions = () => hosts.fetchLive();
+/** The same, or null when the list could not be read (the server is starting): saved tabs are kept then. */
+export const readLiveAssistantSessions = () => hosts.readLive();
 export const isAssistantSessionLive = (meta) => hosts.isLive(meta);
 /** opts: { host, brain, resume, label, floating, prompt } */
 export const openAssistant = (opts = {}) => hosts.open(opts);

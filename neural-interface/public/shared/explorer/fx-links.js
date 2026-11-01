@@ -110,13 +110,13 @@ export function createEditorLink({ openFile, save, tabs, repoint, subscribe, onC
 
 // ── The agents ──
 
-export const SEND_TARGETS = Object.freeze(['claude', 'codex', 'opencode', 'assistant']);
-const TARGET_NAMES = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode' };
+export const SEND_TARGETS = Object.freeze(['claude', 'codex', 'opencode', 'antigravity', 'assistant']);
+const TARGET_NAMES = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', antigravity: 'Antigravity' };
 
 /**
  * @param {object} o
  * @param {object} o.deps what each panel offers: `sendToFocusedSession(kind, data)`, `claude(path)`, `codex(path)`,
- *   `opencode(path)`, `assistant(path)`, and `lastActive()` (the panel used last)
+ *   `opencode(path)`, `antigravity(path)`, `assistant(path)`, and `lastActive()` (the panel used last)
  * @param {(key: string, params?: object) => string} o.t
  */
 export function createSender({ deps, t }) {

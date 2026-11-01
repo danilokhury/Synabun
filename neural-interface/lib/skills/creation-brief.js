@@ -82,7 +82,7 @@ const literal = (value, max) => { const s = String(value ?? ''); return JSON.str
  */
 export function buildDraftingBrief({ jobId, request, sources = [] }) {
   const name = request?.name || '';
-  const runtimes = [...new Set((request?.targets || []).map((t) => ({ claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', agents: 'Codex and OpenCode (shared folder)' }[t.runtime])).filter(Boolean))];
+  const runtimes = [...new Set((request?.targets || []).map((t) => ({ claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', antigravity: 'Antigravity', agents: 'Codex and OpenCode (shared folder)' }[t.runtime])).filter(Boolean))];
   const prompt = request?.prompt ? quoteBounded(request.prompt, PROMPT_IN_BRIEF) : null;
   const example = request?.example ? quoteBounded(request.example, EXAMPLE_IN_BRIEF) : null;
   const lines = [

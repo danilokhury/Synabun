@@ -1030,7 +1030,7 @@ export function wireJudgmentsTab(overlay, { toast = () => {}, initial = null } =
     return { line: p == null ? '' : flagged(kit.tx('settings.redesign.judgments.pGoalMet', { pct: pct(p) }), p >= knob('loop-goal', 'minConfidence', 0.8)) };
   }
   function budgetSplitLine(row, answers) {
-    const names = { share_claude_code: 'Claude Code', share_codex: 'Codex', share_opencode: 'OpenCode' };
+    const names = { share_claude_code: 'Claude Code', share_codex: 'Codex', share_opencode: 'OpenCode', share_antigravity: 'Antigravity' };
     const parts = Object.entries(names).filter(([key]) => answers[key]?.type === 'score').map(([key, label]) => {
       const a = answers[key];
       return escapeHtml(kit.tx('settings.redesign.judgments.budgetShareScore', { provider: label, score: num(a.score ?? a.value), confidence: pct(a.confidence) }));

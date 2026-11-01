@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════
-// SynaBun — where the user's Claude Code, Codex and OpenCode are
+// SynaBun — where the user's Claude Code, Codex, OpenCode and Antigravity (agy) are
 // ═══════════════════════════════════════════
 //
 // One answer for every place that looks for one of these CLIs: the version
@@ -55,7 +55,7 @@ export const CLI_TOOLS = Object.freeze({
   'claude-code': Object.freeze({ key: 'claude-code', command: 'claude', label: 'Claude Code' }),
   codex: Object.freeze({ key: 'codex', command: 'codex', label: 'Codex' }),
   opencode: Object.freeze({ key: 'opencode', command: 'opencode', label: 'OpenCode' }),
-  gemini: Object.freeze({ key: 'gemini', command: 'gemini', label: 'Gemini CLI' }),
+  antigravity: Object.freeze({ key: 'antigravity', command: 'agy', label: 'Antigravity CLI' }),
 });
 
 const PROBE_TIMEOUT_MS = 15_000;
@@ -134,6 +134,10 @@ function wingetPackageFiles({ localAppData, prefixes, exe, readdir, pathImpl }) 
  *   OpenCode      install script: ~/.opencode/bin/opencode (older scripts:
  *                 $OPENCODE_INSTALL_DIR, $XDG_BIN_DIR); on Windows the folder
  *                 SynaBun's own install uses, %USERPROFILE%\.opencode\bin
+ *   Antigravity   Google's installer (antigravity.google/cli/install.sh, checked
+ *                 2026-10-30): ~/.local/bin/agy; install.ps1 on Windows:
+ *                 %LOCALAPPDATA%\agy\bin\agy.exe. Homebrew's cask links agy
+ *                 into Homebrew's bin, which the package-manager folders cover.
  */
 export function toolSpecificFiles(toolKey, {
   platform = process.platform,
@@ -167,6 +171,9 @@ export function toolSpecificFiles(toolKey, {
       if (env.OPENCODE_INSTALL_DIR) add(join(env.OPENCODE_INSTALL_DIR, exe('opencode')), 'standalone');
       if (env.XDG_BIN_DIR) add(join(env.XDG_BIN_DIR, exe('opencode')), 'standalone');
       if (windows) for (const file of wingetPackageFiles({ localAppData, prefixes: ['sst.opencode', 'anomalyco.opencode', 'opencode.'], exe: 'opencode.exe', readdir, pathImpl })) add(file, 'winget');
+      break;
+    case 'antigravity':
+      add(windows ? join(localAppData, 'agy', 'bin', 'agy.exe') : join(home, '.local', 'bin', 'agy'), 'standalone');
       break;
     default:
       break;

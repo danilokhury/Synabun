@@ -13,9 +13,12 @@ function codexConfigString(value) {
   return JSON.stringify(String(value));
 }
 
+/** The reasoning levels `agy --effort` accepts (agy --help). */
+const ANTIGRAVITY_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+
 /**
  * Split the configurable CLI command into an executable and fixed arguments.
- * Settings intentionally supports prefixes such as `wsl -d Ubuntu gemini`.
+ * Settings intentionally supports prefixes such as `wsl -d Ubuntu agy`.
  * An existing path wins before tokenization so unquoted executable paths with
  * spaces keep working; quoted paths are handled by the tokenizer.
  */
@@ -107,8 +110,12 @@ export function buildExecInvocation({
       args.push('-');
       break;
     }
-    case 'gemini':
+    case 'antigravity':
+      // Print mode with the task on stdin (the wrapper redirects it), unattended like every exec loop: Antigravity
+      // asks before edits and commands, and there is nobody to answer in a terminal that runs a loop.
+      args.push('--output-format', 'text', '--dangerously-skip-permissions');
       if (model) args.push('--model', String(model));
+      if (effort && ANTIGRAVITY_EFFORTS.has(String(effort))) args.push('--effort', String(effort));
       break;
     case 'opencode':
       // A private server for this run (`--standalone`; without it the CLI uses

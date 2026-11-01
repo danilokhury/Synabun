@@ -23,13 +23,12 @@
 // last card, so one stray click or key there must not end the session's work.
 
 import { on } from '../state.js';
-import { getProviderMeta } from '../provider-icons.js';
 import { listAssistantRuns } from './asst-api.js';
 import { buildRunCard, tickRunCard, updateRunCard } from './asst-render.js';
 import { awaitsAnswer, compactActivity, isLivePhase, phaseLine, sceneFor, sceneSvg, stageLabel, stagePhase, stepLine } from './asst-scenes.js';
 import { injectSceneStyles } from './asst-scene-styles.js';
 import { plural } from './asst-tool-kinds.js';
-import { isRemovableRun, isRunIdle, isTerminalRunStatus, mergeRunDescriptor, runFromPayload, runNeedsAttention, sortRuns } from './asst-state.js';
+import { isRemovableRun, isRunIdle, isTerminalRunStatus, mergeRunDescriptor, providerMeta, runFromPayload, runNeedsAttention, sortRuns } from './asst-state.js';
 import { createConfirmGate } from './asst-stop.js';
 
 const TICK_MS = 5000;
@@ -166,8 +165,8 @@ export function createAgentsDock(hostEl, hooks = {}) {
     return {
       t: hooks.t,
       compact: true,
-      providerIcon: (p) => getProviderMeta(p).icon,
-      providerColor: (p) => getProviderMeta(p).color,
+      providerIcon: (p) => providerMeta(p).icon,
+      providerColor: (p) => providerMeta(p).color,
       onFocus: hooks.onFocus,
       onStop: hooks.onStop,
       onRead: hooks.onRead,

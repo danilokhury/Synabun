@@ -3,10 +3,12 @@
 // ═══════════════════════════════════════════
 //
 // What the side panels' Install button runs (POST /api/cli/install/:tool,
-// lib/cli-install-api.js) when Claude Code, Codex or OpenCode is not installed.
-// Each tool is installed the way its vendor documents for the system, from the
-// vendor's own source, with nothing else needed (no Node, npm, Homebrew or
-// Scoop). The sources are fixed here; a request only names the tool.
+// lib/cli-install-api.js) when Claude Code, Codex, OpenCode or the Antigravity
+// CLI is not installed. Each tool is installed the way its vendor documents for
+// the system, from the vendor's own source, with nothing else needed (no Node,
+// npm or Scoop; Homebrew only where it is installed already, for the
+// Antigravity CLI's cask on macOS). The sources are fixed here; a request only
+// names the tool.
 //
 //   Claude Code  Anthropic's native installer: https://claude.ai/install.sh
 //                (bash) on macOS and Linux, https://claude.ai/install.ps1
@@ -24,21 +26,32 @@
 //                runs (it puts opencode in ~/.opencode/bin). Windows has no
 //                one-click install: OpenCode 2 comes from WinGet there
 //                (Anomaly.OpenCode), and the banner shows that command.
+//   Antigravity  Google's Antigravity CLI (agy). On a Mac with Homebrew, the
+//                cask antigravity-cli (Google's signed binary, linked as agy):
+//                `brew install --cask antigravity-cli`. Otherwise Google's
+//                installer https://antigravity.google/cli/install.sh (bash) on
+//                macOS and Linux, https://antigravity.google/cli/install.ps1
+//                (powershell.exe -NoProfile -ExecutionPolicy Bypass -File) on
+//                Windows, from antigravity.google only. The script checks the
+//                binary against the SHA-512 of Google's release manifest and
+//                puts agy in ~/.local/bin (%LOCALAPPDATA%\agy\bin on Windows).
 //
 // Every download is HTTPS, every redirect too, and only to the vendor's own
-// hosts. Nothing runs as administrator; everything lands in the user's own
+// hosts (Homebrew downloads a cask itself and checks it against the cask's
+// SHA-256). Nothing runs as administrator; everything lands in the user's own
 // folders. Install consents to adding the resolved CLI's folder to persistent
 // PATH when the vendor did not do so. That is a visible final step, using the
 // same writer as Add to PATH; a failed PATH write leaves the CLI installed and
 // reports a warning. Installers run without a terminal and without questions
-// (CODEX_NON_INTERACTIVE=1, PowerShell -NonInteractive).
+// (CODEX_NON_INTERACTIVE=1, PowerShell -NonInteractive; NONINTERACTIVE=1 and
+// no auto-update for Homebrew).
 //
 // One install per tool at a time. Every failure is a CliInstallError with a
 // `code` the page has words for. Nothing here throws to a caller of start().
 
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, rmSync } from 'node:fs';
+import { accessSync, constants as fsConstants, existsSync, rmSync, statSync } from 'node:fs';
 import { mkdtemp, open } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -74,7 +87,7 @@ export const CLI_INSTALL_GUIDES = Object.freeze({
   'claude-code': 'https://code.claude.com/docs/en/setup',
   codex: 'https://learn.chatgpt.com/docs/codex/cli',
   opencode: 'https://opencode.ai/v2/docs',
-  gemini: 'https://github.com/google-gemini/gemini-cli',
+  antigravity: 'https://antigravity.google/docs/getting-started',
 });
 
 const GITHUB_DOWNLOAD_HOSTS = ['github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com', 'github-releases.githubusercontent.com'];
@@ -88,10 +101,13 @@ const hostIs = (...hosts) => (url) => hosts.includes(url.hostname);
 
 /**
  * The one-click method for a tool on this system, or null when there is none
- * (Gemini CLI, OpenCode on Windows, a 32-bit or other system). Pure: tests ask
- * it for every OS.
+ * (OpenCode on Windows, a 32-bit or other system). `brew` is the path of a
+ * Homebrew this process can run (findBrew), or null: on macOS the Antigravity
+ * CLI is installed through it (its cask), else with Google's installer.
+ * `manualCommand`, when a plan has one, is what to type for the same install.
+ * Pure: tests ask it for every OS.
  */
-export function installPlanFor(toolKey, { platform = process.platform, arch = process.arch, env = process.env, home } = {}) {
+export function installPlanFor(toolKey, { platform = process.platform, arch = process.arch, env = process.env, home, brew = null } = {}) {
   if (!(SUPPORTED[platform] || []).includes(arch)) return null;
   const windows = platform === 'win32';
   switch (toolKey) {
@@ -131,17 +147,75 @@ export function installPlanFor(toolKey, { platform = process.platform, arch = pr
         label: 'OpenCode 2 install script',
         env: {},
       };
+    case 'antigravity':
+      // Homebrew's cask on a Mac that has Homebrew: the CLI then updates with the user's other casks.
+      if (platform === 'darwin' && brew) {
+        return {
+          tool: toolKey,
+          kind: 'brew',
+          brew,
+          args: ['install', '--cask', 'antigravity-cli'],
+          source: 'https://formulae.brew.sh/cask/antigravity-cli',
+          label: 'Homebrew cask antigravity-cli',
+          manualCommand: 'brew install --cask antigravity-cli',
+          env: { HOMEBREW_NO_AUTO_UPDATE: '1', HOMEBREW_NO_ENV_HINTS: '1', NONINTERACTIVE: '1' },
+        };
+      }
+      return {
+        tool: toolKey,
+        kind: 'script',
+        interpreter: windows ? 'powershell' : 'bash',
+        url: windows ? 'https://antigravity.google/cli/install.ps1' : 'https://antigravity.google/cli/install.sh',
+        allow: hostIs('antigravity.google'),
+        source: windows ? 'https://antigravity.google/cli/install.ps1' : 'https://antigravity.google/cli/install.sh',
+        label: 'Google Antigravity CLI installer',
+        manualCommand: windows ? 'irm https://antigravity.google/cli/install.ps1 | iex' : 'curl -fsSL https://antigravity.google/cli/install.sh | bash',
+        env: {},
+      };
     default:
       return null;
   }
 }
 
+/** A file this process may run (a link is followed). */
+function isExecutableFile(file) {
+  try {
+    if (!statSync(file).isFile()) return false;
+    accessSync(file, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Homebrew's brew on macOS: /opt/homebrew/bin (Apple silicon), /usr/local/bin
+ * (Intel), then each folder of PATH; the first executable file. A relative
+ * PATH folder is never looked in. Null on any other system, and on a Mac
+ * without Homebrew.
+ */
+export function findBrew({ platform = process.platform, env = process.env, isExecutable = isExecutableFile } = {}) {
+  if (platform !== 'darwin') return null;
+  const asked = new Set();
+  for (const folder of ['/opt/homebrew/bin', '/usr/local/bin', ...String(env.PATH || '').split(':')]) {
+    if (!folder || !path.posix.isAbsolute(folder)) continue;
+    const file = path.posix.join(folder, 'brew');
+    if (asked.has(file)) continue;
+    asked.add(file);
+    if (isExecutable(file)) return file;
+  }
+  return null;
+}
+
+function describePlan(plan) {
+  return plan
+    ? { available: true, method: plan.kind, source: plan.source, interpreter: plan.interpreter || null, label: plan.label }
+    : { available: false, method: null, source: null, interpreter: null, label: null };
+}
+
 /** What the status of a tool says about its one-click install. */
 export function describeInstall(toolKey, options) {
-  const plan = installPlanFor(toolKey, options);
-  return plan
-    ? { available: true, method: plan.kind, source: plan.source, interpreter: plan.interpreter, label: plan.label }
-    : { available: false, method: null, source: null, interpreter: null, label: null };
+  return describePlan(installPlanFor(toolKey, options));
 }
 
 // ── Transfers ───────────────────────────────────────────────────────────────
@@ -353,6 +427,19 @@ export function createLineSplitter(onLine) {
   };
 }
 
+/**
+ * The step a line of Homebrew's output begins, or null: its download (and its
+ * download queue's "Fetching"), the check of what it downloaded against the
+ * cask's checksum, and the install itself (moving and linking the binary).
+ */
+export function brewStepOf(line) {
+  const text = String(line ?? '').trim();
+  if (/^==> (?:Downloading|Fetching)\b/.test(text)) return 'download';
+  if (/^==> Verifying\b/.test(text) || /checksum|sha-?256/i.test(text)) return 'verify';
+  if (/^==> (?:Installing|Moving|Linking)\b/.test(text)) return 'run';
+  return null;
+}
+
 function sameDir(a, b, platform) {
   const clean = (value) => {
     const text = String(value || '').replace(/[\\/]+$/, '');
@@ -372,6 +459,7 @@ export function onPathList(dir, entries, platform = process.platform) {
  * @param {object} deps
  * @param {{ resolve: Function }} deps.resolver  cli-resolver.js: the final check (force)
  * @param {() => Promise<string[]>} [deps.readOsPath]  the OS PATH a new terminal gets, read afresh
+ * @param {(o: { platform: string, env: object }) => string|null} [deps.findBrew]  Homebrew's brew, or null (findBrew)
  * @param {(tool: string, ok: boolean, status: object|null) => void} [deps.onFinished]
  */
 export function createCliInstaller({
@@ -383,6 +471,7 @@ export function createCliInstaller({
   tmpRoot = os.tmpdir(),
   fetchImpl = fetch,
   spawnImpl = spawn,
+  findBrew: lookForBrew = findBrew,
   readOsPath = async () => [],
   addToPath = null,
   installerPath = null,
@@ -394,9 +483,12 @@ export function createCliInstaller({
   if (!resolver?.resolve) throw new Error('createCliInstaller needs the CLI resolver');
   const jobs = new Map();
   const windows = platform === 'win32';
-  const planFor = (toolKey) => installPlanFor(toolKey, { platform, arch, env, home });
+  // Homebrew is looked for at every ask: one installed meanwhile counts from the next check on.
+  const brewOf = () => { try { return lookForBrew({ platform, env }) || null; } catch { return null; } };
+  const planFor = (toolKey) => installPlanFor(toolKey, { platform, arch, env, home, brew: brewOf() });
   const guideOf = (toolKey) => CLI_INSTALL_GUIDES[toolKey] || null;
-  const manualOf = (toolKey) => buildInstallCommand(toolKey, 'unknown', { platform });
+  // The command for the very install the button runs here, when its plan names one; else the vendor's for this system.
+  const manualOf = (toolKey) => planFor(toolKey)?.manualCommand || buildInstallCommand(toolKey, 'unknown', { platform });
 
   function publicJob(job) {
     return {
@@ -510,15 +602,19 @@ export function createCliInstaller({
     return file;
   }
 
-  function runScript(job, plan, scriptFile, workDir, osEntries, { line }) {
-    const interpreter = interpreterFor(plan);
+  /**
+   * Run an installer to its end: no stdin, every line of its output to `onLine`, stopped with everything it
+   * started when it runs longer than timeoutMs or the job is stopped. Resolves on exit code 0. `name` is what
+   * the sentence of a failure calls it (`slowName`, the one of a timeout).
+   */
+  function runChild(job, plan, { file, args, cwd, osEntries, onLine, name, slowName = name }) {
     const childEnv = { ...withPathEnv({ ...env, ...plan.env }, installerPathValue(osEntries), platform), TERM: 'dumb', NO_COLOR: '1' };
     delete childEnv.FORCE_COLOR;
     return new Promise((resolve, reject) => {
       let child;
       try {
-        child = spawnImpl(interpreter.file, interpreter.args(scriptFile), {
-          cwd: workDir,
+        child = spawnImpl(file, args, {
+          cwd,
           env: childEnv,
           stdio: ['ignore', 'pipe', 'pipe'],
           windowsHide: true,
@@ -527,18 +623,18 @@ export function createCliInstaller({
           detached: !windows,
         });
       } catch (error) {
-        reject(asInstallError(error, 'installer-failed', `${interpreter.file} could not be started.`));
+        reject(asInstallError(error, 'installer-failed', `${file} could not be started.`));
         return;
       }
       job.child = child;
-      const out = createLineSplitter(line);
-      const err = createLineSplitter(line);
+      const out = createLineSplitter(onLine);
+      const err = createLineSplitter(onLine);
       child.stdout?.on('data', chunk => out.push(chunk.toString('utf8')));
       child.stderr?.on('data', chunk => err.push(chunk.toString('utf8')));
       let settled = false;
       const timer = setTimeout(() => {
         stopChild(child, windows, spawnImpl);
-        finish(new CliInstallError('timeout', `The installer was still running after ${Math.round(timeoutMs / 60_000)} minutes and was stopped.`));
+        finish(new CliInstallError('timeout', `${slowName} was still running after ${Math.round(timeoutMs / 60_000)} minutes and was stopped.`));
       }, timeoutMs);
       timer.unref?.();
       const onAbort = () => { stopChild(child, windows, spawnImpl); finish(new CliInstallError('cancelled', 'The install was stopped.')); };
@@ -552,11 +648,40 @@ export function createCliInstaller({
         err.end();
         job.child = null;
         if (error) reject(error);
-        else if (code !== 0) reject(new CliInstallError('installer-failed', `The ${plan.label} stopped with exit code ${code}.`, { detail: code }));
+        else if (code !== 0) reject(new CliInstallError('installer-failed', `${name} stopped with exit code ${code}.`, { detail: code }));
         else resolve();
       }
-      child.on('error', error => finish(asInstallError(error, 'installer-failed', `${interpreter.file} could not be started (${errorCode(error) || error?.message}).`)));
+      child.on('error', error => finish(asInstallError(error, 'installer-failed', `${file} could not be started (${errorCode(error) || error?.message}).`)));
       child.on('close', (code, signal) => finish(null, code ?? (signal ? 128 : 1)));
+    });
+  }
+
+  function runScript(job, plan, scriptFile, workDir, osEntries, { line }) {
+    const interpreter = interpreterFor(plan);
+    return runChild(job, plan, {
+      file: interpreter.file, args: interpreter.args(scriptFile), cwd: workDir, osEntries, onLine: line,
+      name: `The ${plan.label}`, slowName: 'The installer',
+    });
+  }
+
+  /**
+   * Homebrew installs the cask (`brew install --cask …`, never auto-updating first). It downloads and checks the
+   * cask itself: its own lines move the steps (brewStepOf), from 'run' on.
+   */
+  function runBrew(job, plan, workDir, osEntries, { step, line }) {
+    let at = 'run';
+    step(at);
+    return runChild(job, plan, {
+      file: plan.brew, args: plan.args, cwd: workDir, osEntries,
+      onLine: (text) => {
+        const next = brewStepOf(text);
+        if (next && next !== at) {
+          at = next;
+          step(next);
+        }
+        line(text);
+      },
+      name: `brew ${plan.args.join(' ')}`,
     });
   }
 
@@ -569,9 +694,13 @@ export function createCliInstaller({
       emit(job, { type: 'start', tool, method: plan.kind, source: plan.source, label: plan.label, platform, arch });
       try { before = await readOsPath(); } catch { before = []; }
       workDir = await mkdtemp(path.join(tmpRoot, `synabun-cli-install-${tool}-`));
-      const script = await fetchScript(job, plan, workDir, io);
-      io.step('run');
-      await runScript(job, plan, script, workDir, before, io);
+      if (plan.kind === 'brew') {
+        await runBrew(job, plan, workDir, before, io);
+      } else {
+        const script = await fetchScript(job, plan, workDir, io);
+        io.step('run');
+        await runScript(job, plan, script, workDir, before, io);
+      }
       io.step('check');
       const status = await resolver.resolve(tool, { force: true });
       if (status?.state !== 'installed') {
@@ -618,7 +747,7 @@ export function createCliInstaller({
   }
 
   return {
-    describe: (toolKey) => describeInstall(toolKey, { platform, arch, env, home }),
+    describe: (toolKey) => describePlan(planFor(toolKey)),
     guideUrl: guideOf,
     manualCommand: manualOf,
     jobs() {

@@ -8,9 +8,23 @@
 import { KEYS } from '../constants.js';
 import { isNewerRunDescriptor } from '../ui-native-loop-router-state.js';
 import { modelEffortIds } from '../agent-runtime-options.js';
+import { getProviderMeta } from '../provider-icons.js';
 import { usagePacketIsStale } from './asst-usage.js';
 
-export const PROVIDERS = ['claude-code', 'codex', 'opencode'];
+// The providers the Assistant itself can run on (its brain): the brain picker, /model and /new.
+// Antigravity runs over ACP (lib/assistant-brains/antigravity.js), like a worker.
+export const BRAIN_PROVIDERS = ['claude-code', 'codex', 'opencode', 'antigravity'];
+// Providers that only ever run dispatched work. None any more (Antigravity became a brain too); kept so a module
+// or a test that still imports the list reads it as empty.
+export const WORKER_ONLY_PROVIDERS = [];
+// Every provider the Assistant lists models for and can route a task to.
+export const PROVIDERS = [...BRAIN_PROVIDERS, ...WORKER_ONLY_PROVIDERS];
+// Providers that report tokens and no prices (Antigravity bills through its Google sign-in): a budget gives them no
+// share, so a dry share never names them (asst-route.js), and their rows read "unpriced".
+export const UNPRICED_PROVIDERS = ['antigravity'];
+// Providers an older server may not list in its catalog yet: a model section without rows and without an archive
+// for them stays hidden rather than showing an empty provider.
+export const OPTIONAL_PROVIDERS = ['antigravity'];
 
 export const PROVIDER_ALIASES = {
   'claude-code': 'claude-code',
@@ -22,24 +36,38 @@ export const PROVIDER_ALIASES = {
   openai: 'codex',
   opencode: 'opencode',
   oc: 'opencode',
+  antigravity: 'antigravity',
+  agy: 'antigravity',
+  'google antigravity': 'antigravity',
+  // Antigravity's CLI took the place of Gemini CLI: an old name or saved route means it.
+  gemini: 'antigravity',
 };
 
 export const PROVIDER_SHORT_LABELS = {
   'claude-code': 'Claude',
   codex: 'Codex',
   opencode: 'OpenCode',
+  antigravity: 'Antigravity',
+};
+
+export const PROVIDER_LABELS = {
+  'claude-code': 'Claude Code',
+  codex: 'Codex',
+  opencode: 'OpenCode',
+  antigravity: 'Antigravity',
 };
 
 // Providers whose brain carries an account profile picker.
 export const ACCOUNT_PROVIDERS = new Set(['claude-code', 'codex']);
 
 // Approval modes are sent as `permissionMode` (`set_permission_mode {mode}` /
-// `query.permissionMode`). Claude uses the SDK enum; Codex/OpenCode brains only
-// distinguish "ask me" from "auto-approve". Plan mode is a separate flag
-// (`planMode`) that combines with any approval mode, each provider in its own
-// way: Claude runs the SDK 'plan' mode and returns to the approval mode once
+// `query.permissionMode`). Claude uses the SDK enum; Codex/OpenCode/Antigravity
+// brains only distinguish "ask me" from "auto-approve". Plan mode is a separate
+// flag (`planMode`) that combines with any approval mode, each provider in its
+// own way: Claude runs the SDK 'plan' mode and returns to the approval mode once
 // the plan is approved; Codex runs its native plan collaboration mode (read-only
-// sandbox); OpenCode runs its own `plan` agent.
+// sandbox); OpenCode runs its own `plan` agent; Antigravity refuses code changes
+// through SynaBun's hook and proposes the plan in a <proposed_plan> block.
 export const PERMISSION_MODES = {
   'claude-code': [
     { id: 'default', label: 'Default' },
@@ -54,9 +82,13 @@ export const PERMISSION_MODES = {
     { id: 'default', label: 'Default' },
     { id: 'auto', label: 'Auto-accept' },
   ],
+  antigravity: [
+    { id: 'default', label: 'Default' },
+    { id: 'auto', label: 'Auto-accept' },
+  ],
 };
 
-export const PLAN_MODE_PROVIDERS = new Set(['claude-code', 'codex', 'opencode']);
+export const PLAN_MODE_PROVIDERS = new Set(['claude-code', 'codex', 'opencode', 'antigravity']);
 
 export const DEFAULT_BRAIN = Object.freeze({
   provider: 'claude-code',
@@ -80,8 +112,40 @@ export function normalizeProvider(value, fallback = null) {
   return PROVIDER_ALIASES[key] || fallback;
 }
 
+/** Can the Assistant itself run on `provider` (a canonical id)? */
+export function isBrainProvider(provider) {
+  return BRAIN_PROVIDERS.includes(provider);
+}
+
+/** Does `provider` report tokens and no prices (Antigravity)? */
+export function isUnpricedProvider(provider) {
+  return UNPRICED_PROVIDERS.includes(provider);
+}
+
+/** `value` as a brain provider, else `fallback`: an unknown name (or a worker-only provider) is never a brain. */
+export function normalizeBrainProvider(value, fallback = null) {
+  const provider = normalizeProvider(value);
+  return provider && isBrainProvider(provider) ? provider : fallback;
+}
+
 export function providerShortLabel(provider) {
   return PROVIDER_SHORT_LABELS[provider] || String(provider || '');
+}
+
+/** "Claude Code", "Antigravity": a provider's full name ('' for none). */
+export function providerLabel(provider) {
+  return PROVIDER_LABELS[provider] || String(provider || '');
+}
+
+/**
+ * The icon, colour and name of a provider (provider-icons.js). A provider that file does not know
+ * yet keeps its own name and shows no icon, never another provider's (getProviderMeta falls back to
+ * Claude Code's for an unknown id).
+ */
+export function providerMeta(provider) {
+  const meta = getProviderMeta(provider || undefined);
+  if (!provider || meta?.id === provider) return meta;
+  return { id: provider, label: providerLabel(provider), shortLabel: providerShortLabel(provider), icon: '', color: '' };
 }
 
 function str(value) {
@@ -93,16 +157,19 @@ function str(value) {
 export function normalizeBrain(raw, fallback = DEFAULT_BRAIN) {
   const base = { ...DEFAULT_BRAIN, ...(fallback || {}) };
   const src = raw && typeof raw === 'object' ? raw : {};
-  const provider = normalizeProvider(src.provider ?? src.brain, base.provider) || 'claude-code';
+  // A provider that cannot be the brain (an unknown name) falls back like any unknown one.
+  const provider = normalizeBrainProvider(src.provider ?? src.brain, normalizeBrainProvider(base.provider)) || 'claude-code';
   const modes = PERMISSION_MODES[provider] || PERMISSION_MODES['claude-code'];
   const rawMode = str(src.permissionMode);
   // 'plan' used to be one of Claude's permission modes: it is the plan flag now.
   const legacyPlan = rawMode === 'plan';
   const mode = legacyPlan ? 'default' : rawMode;
+  const effort = str(src.effort) || null;
   return {
     provider,
     model: str(src.model),
-    effort: str(src.effort) || null,
+    // Antigravity's thinking levels have no "off": no level is the model's own default (null).
+    effort: provider === 'antigravity' && effort === 'off' ? null : effort,
     agent: provider === 'opencode' ? (str(src.agent) || null) : null,
     project: str(src.project ?? src.cwd) || null,
     tools: provider === 'opencode' ? (Array.isArray(src.tools) ? [...src.tools] : null) : ['all'],

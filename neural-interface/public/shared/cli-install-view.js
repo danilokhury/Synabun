@@ -2,7 +2,8 @@
 // SynaBun Neural Interface — the CLI banner of the side panels: what it says
 // ═══════════════════════════════════════════
 //
-// What the Claude Code, Codex and OpenCode panels show above their transcript
+// What the Claude Code, Codex and OpenCode panels show above their transcript (and the Antigravity panel's setup
+// card words its install steps with)
 // for one CLI: nothing while it is installed, "not installed" with a one-click
 // Install (the vendor's own installer, run by the server: POST
 // /api/cli/install/:tool) and the command to run by hand, the progress of an
@@ -35,6 +36,7 @@ export const CLI_INSTALL_COPY = Object.freeze({
   stepPathAdded: 'Added {dir} to your PATH',
   bodyMissing: 'Install it with one click from {vendor}\'s official installer, or run:',
   bodyMissingManual: 'Install it with this command, then re-check:',
+  bodyMissingGuide: 'Follow its install guide, then re-check.',
   bodyBroken: '{label} was found at {path}, but it could not be started:',
   bodyBrokenVersion: '{label} {version} was found at {path}, but it could not be started:',
   bodyBrokenLatched: '{label} is installed, but it could not be started:',
@@ -80,11 +82,11 @@ export const CLI_VENDORS = Object.freeze({
   'claude-code': 'Anthropic',
   codex: 'OpenAI',
   opencode: 'OpenCode',
-  gemini: 'Google',
+  antigravity: 'Google',
 });
 
 /** The CLIs a server can install with one click (POST /api/cli/install/:tool). */
-export const INSTALLABLE_CLIS = Object.freeze(['claude-code', 'codex', 'opencode']);
+export const INSTALLABLE_CLIS = Object.freeze(['claude-code', 'codex', 'opencode', 'antigravity']);
 
 /** The steps an install reports (`{ type: 'step' }`), in the order they can come. */
 export const INSTALL_STEPS = Object.freeze(['start', 'download', 'verify', 'run', 'check', 'path']);
@@ -371,9 +373,10 @@ export function cliBannerView({ toolKey, label = '', info = null, forced = null,
         recheck: true,
       });
     }
+    // No command at all (none from the server, and none on the page either): the guide only.
     const text = offer
       ? t('bodyMissing', { vendor: CLI_VENDORS[toolKey] || name, label: name })
-      : t('bodyMissingManual');
+      : t(command ? 'bodyMissingManual' : 'bodyMissingGuide');
     return Object.assign(view, {
       show: true, blocked: true, kind: 'missing', tone: 'warn', icon: '!',
       title: t('titleMissing', { label: name }),

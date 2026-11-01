@@ -387,8 +387,8 @@ global bin before it (`lib/packaged-runtime.js` `packagedChildEnv`).
   from such a copy is registered without hooks; they are written once the
   hooks are turned on from the installed copy.
 - **Not included.** The Playwright browser is downloaded on first start, as with
-  the npm install. Claude Code, Codex, OpenCode and Gemini CLI are never
-  included: see [External tools](#external-tools).
+  the npm install. Claude Code, Codex, OpenCode and the Antigravity CLI (`agy`)
+  are never included: see [External tools](#external-tools).
 - **Included: the tunnel program.** The public address (invite links, remote
   MCP) works without a download: see [cloudflared](#cloudflared).
 
@@ -651,15 +651,22 @@ licenses; `THIRD-PARTY-LICENSES.md` names it.
 
 ## External tools
 
-Claude Code, Codex, OpenCode and Gemini CLI are programs of their own. The user
-installs them, each the way its publisher documents; SynaBun finds what is
-installed and talks to it. No application build contains one, and SynaBun never
-installs or updates one on its own (the update buttons in Settings act only
-when pressed, and on the user's installation).
+Claude Code, Codex, OpenCode and the Antigravity CLI (`agy`) are programs of
+their own. The user installs them, each the way its publisher documents;
+SynaBun finds what is installed and talks to it. No application build contains
+one, and SynaBun never installs or updates one on its own (the update buttons
+in Settings act only when pressed, and on the user's installation). The
+Antigravity CLI is Google's signed binary, not an npm package: on macOS with
+Homebrew `brew install --cask antigravity-cli`, otherwise Google's installer
+script (`https://antigravity.google/cli/install.sh`, on Windows `install.ps1`);
+`agy` updates itself with `agy update`.
 
 What a build does contain is the JavaScript client of each tool that has one:
 `@anthropic-ai/claude-agent-sdk`, `@openai/codex-sdk` (OpenCode 2 has none:
-SynaBun speaks to its serve itself, `neural-interface/lib/opencode2-client.js`). As
+SynaBun speaks to its serve itself, `neural-interface/lib/opencode2-client.js`;
+Antigravity has none either: SynaBun speaks the Agent Client Protocol to
+`agy acp` through the protocol's own SDK, `@agentclientprotocol/sdk`, which
+holds no program). As
 published, the first brings the Claude Code executable as a per-platform
 optional package and the second depends on the whole Codex CLI. npm cannot
 express "the client without the program", so the rule lives in one list,
@@ -683,7 +690,7 @@ to search its own packages:
 | Claude Code | `lib/cli-resolver.js` (through `getClaudeBin()`): the path in Settings > Terminal, else the first `claude` on PATH or the OS PATH, else a known install folder; never one inside SynaBun or from a `node_modules/.bin` folder. On Windows an npm `claude.cmd` is followed to the `claude.exe` (or `cli.js`) it runs (`lib/claude-executable.js`) | `pathToClaudeCodeExecutable`, for the side panel, the Assistant, native loops and session titles; the same file answers the model list |
 | Codex | `lib/cli-resolver.js` (through `getCodexBin` / `getNativeCodexBin` in `server.js`), on Windows the native `codex.exe` of the global npm package (`lib/codex-runtime-path.js`) | `codexPathOverride`; the side panel and the model list start that executable themselves |
 | OpenCode | `lib/cli-resolver.js` (through `opencodeServeLaunch` in `server.js`), started through the user's login shell by its full path (on Windows the `.exe` directly) | `opencode serve` (OpenCode 2), which SynaBun's own client (`neural-interface/lib/opencode2-client.js`) then talks to over HTTP |
-| Gemini CLI | the command from Settings > Terminal | a terminal tab |
+| Antigravity | `lib/cli-resolver.js` (through `antigravityLaunch()` in `server.js`): the path in Settings > Terminal, else the first `agy` on PATH or the OS PATH, else a known install folder (`~/.local/bin`, `%LOCALAPPDATA%\agy\bin`) | `agy acp` (the Agent Client Protocol over stdio), for the side panel, the Assistant's brain and workers and the model list; `agy` itself for exec loops and terminal tabs |
 
 PATH here is the process's PATH, then the OS PATH a new terminal would have
 (`lib/os-path.js`: the registry on Windows, the login shell and `/etc/paths` on

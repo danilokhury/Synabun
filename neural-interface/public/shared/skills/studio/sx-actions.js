@@ -165,7 +165,7 @@ export async function deleteFromLibrary(ctx, ws) {
   if (!ctx.alive(gen)) return;
   const installs = skill.installations || [];
   if (installs.length) {
-    const where = installs.slice(0, 6).map((i) => `• ${t(`skillsStudio.runtime.${['claude', 'codex', 'opencode', 'agents'].includes(i.runtime) ? i.runtime : 'claude'}`)} · ${i.destination || ''}`);
+    const where = installs.slice(0, 6).map((i) => `• ${t(`skillsStudio.runtime.${['claude', 'codex', 'opencode', 'antigravity', 'agents'].includes(i.runtime) ? i.runtime : 'claude'}`)} · ${i.destination || ''}`);
     const answer = await ctx.ask({
       title: t('skillsStudio.ws.libraryDeleteInstalledTitle', { name: ws.label }),
       lines: [tp('skillsStudio.ws.libraryDeleteInstalled', installs.length), ...where],

@@ -83,7 +83,8 @@
       "assistant": "Assistant",
       "claude-code": "Claude Code",
       "codex": "Codex",
-      "opencode": "OpenCode"
+      "opencode": "OpenCode",
+      "antigravity": "Antigravity"
     },
     "open": "Open memory",
     "source": {
@@ -150,7 +151,7 @@
       "assistant": "Assistant",
       "claudeCode": "Claude Code",
       "codexCli": "Codex CLI",
-      "geminiCli": "Gemini CLI",
+      "antigravityCli": "Antigravity CLI",
       "openCode": "OpenCode",
       "shell": "Shell",
       "browser": "Browser",
@@ -235,6 +236,7 @@
       "claudePanel": "Claude Code panel",
       "codexPanel": "Codex panel",
       "opencodePanel": "OpenCode panel",
+      "antigravityPanel": "Antigravity panel",
       "terminal": "New terminal",
       "claudeTerminal": "Claude Code terminal",
       "browser": "Browser",
@@ -1646,7 +1648,7 @@
           },
           "your_assistants": {
             "title": "Your assistants",
-            "purpose": "Connect Claude, Gemini, Codex and OpenCode, and check each one's rules."
+            "purpose": "Connect Claude, Antigravity, Codex and OpenCode, and check each one's rules."
           },
           "manual_setup": {
             "title": "Manual setup",
@@ -1794,7 +1796,7 @@
         "tool_access": {
           "skills": {
             "title": "Skills",
-            "purpose": "Slash commands that give Claude Code, Codex and OpenCode extra abilities. Choose which assistant gets each one."
+            "purpose": "Slash commands that give Claude Code, Codex, OpenCode and Antigravity extra abilities. Choose which assistant gets each one."
           },
           "tool_permissions": {
             "title": "Tool permissions",
@@ -2084,8 +2086,8 @@
           "help": "The command or full path SynaBun runs to start Codex."
         },
         "cli004": {
-          "label": "Gemini command",
-          "help": "The command or full path SynaBun runs to start Gemini."
+          "label": "Antigravity CLI command",
+          "help": "The command or full path SynaBun runs to start the Antigravity CLI."
         },
         "cli005": {
           "label": "OpenCode command",
@@ -2656,24 +2658,24 @@
           "help": "Copies the instructions to the clipboard."
         },
         "set010": {
-          "label": "Connect Gemini to SynaBun",
-          "help": "Lets Gemini use SynaBun's memory and tools. Turning it off removes only SynaBun's entry."
+          "label": "Connect Antigravity to SynaBun",
+          "help": "Lets Antigravity use SynaBun's memory and tools. Turning it off removes only SynaBun's entry."
         },
         "set011": {
           "label": "Copy configuration",
-          "help": "Copies the text to paste into Gemini's own configuration file."
+          "help": "Copies the text to paste into Antigravity's own configuration file."
         },
         "set012": {
           "label": "Install rules",
-          "help": "Installs or updates SynaBun's instructions for Gemini."
+          "help": "Installs or updates SynaBun's instructions for Antigravity."
         },
         "set013": {
           "label": "Remove rules",
-          "help": "Removes SynaBun's instructions from Gemini. Rules you edited yourself are left in place."
+          "help": "Removes SynaBun's instructions from Antigravity. Rules you edited yourself are left in place."
         },
         "set014": {
           "label": "View rules",
-          "help": "Shows the instructions Gemini receives from SynaBun."
+          "help": "Shows the instructions Antigravity receives from SynaBun."
         },
         "set015": {
           "label": "Copy rules",
@@ -3469,7 +3471,7 @@
         },
         "aut058": {
           "label": "Greet me when I come back",
-          "help": "In the Assistant, the Claude Code, Codex and OpenCode panels and a terminal Claude Code session: after an hour away, and only when there is something new to say. SynaBun writes it ahead of time, so the session's own model spends nothing on it. Off: every session opens quietly."
+          "help": "In the Assistant, the Claude Code, Codex, OpenCode and Antigravity panels and a terminal Claude Code session: after an hour away, and only when there is something new to say. SynaBun writes it ahead of time, so the session's own model spends nothing on it. Off: every session opens quietly."
         },
         "aut059": {
           "label": "What a new session would open with",
@@ -3481,7 +3483,7 @@
         },
         "aut061": {
           "label": "Protect workers",
-          "help": "What a worker the Assistant dispatches with capability read-only or workspace may touch, on Claude Code, Codex and OpenCode alike: writes inside its working directory, the temp folder and its own scratch folder only; never ~/.claude, ~/.codex, ~/.agents, ~/.config/opencode, ~/.synabun or another project; a read-only worker runs read-only commands only. Capability full is never limited."
+          "help": "What a worker the Assistant dispatches with capability read-only or workspace may touch, on Claude Code, Codex, OpenCode and Antigravity alike: writes inside its working directory, the temp folder and its own scratch folder only; never ~/.claude, ~/.codex, ~/.agents, ~/.config/opencode, ~/.gemini, ~/.synabun or another project; a read-only worker runs read-only commands only. Capability full is never limited."
         },
         "edt001": {
           "label": "Suggest code as I type",
@@ -4292,6 +4294,7 @@
         "failedToLoadMoreloginProfiles": "Failed to load MoreLogin profiles.",
         "moreloginNotInstalled": "— MoreLogin not installed —",
         "moreloginDesktopAppIsNotInstalled": "MoreLogin desktop app is not installed.",
+        "loadingProfiles": "Loading profiles…",
         "startMorelogin": "— start MoreLogin —",
         "moreloginNotRunningOpenTheApp": "MoreLogin not running — open the app (local API port {port}).",
         "noProfiles": "— no profiles —",
@@ -4321,7 +4324,8 @@
         "chromeIsRunningSynabunOpensAn": "Chrome is running — SynaBun opens an isolated mirrored copy of this profile. The mirror keeps its own cookies/auth and never touches your real Chrome.",
         "detected": "Detected: {detectedPath}",
         "error2": "Error:",
-        "profileSApiPort": "{count} profile(s) · API port {port}"
+        "profileSApiPort": "{count} profile(s) · API port {port}",
+        "moreloginCustomPathHint": "Installed in another folder? Set MORELOGIN_APP_PATH to the full path of MoreLogin.exe in SynaBun's .env."
       },
       "mcp": {
         "tab": {
@@ -4329,10 +4333,10 @@
           "tools": "Default tools"
         },
         "noteTitle": "Scope",
-        "noteBody": "OpenCode and Gemini load the selected groups. Claude Code and Codex reach every SynaBun tool on demand.",
+        "noteBody": "OpenCode and Antigravity load the selected groups. Claude Code and Codex reach every SynaBun tool on demand.",
         "externalServers": "Your other MCP servers",
         "externalServersHelp": "Applies to task workers and automations on Codex, OpenCode and Claude, including FleetView, plus the OpenCode tools picker. Other sessions you drive keep their servers.",
-        "installedHelp": "Every tool server from another maker that is registered with Claude Code, OpenCode, Codex, Gemini or SynaBun. SynaBun's own tool groups are not listed here.",
+        "installedHelp": "Every tool server from another maker that is registered with Claude Code, OpenCode, Codex, Antigravity or SynaBun. SynaBun's own tool groups are not listed here.",
         "plugins": "Claude Code plugins",
         "pluginsHelp": "Plugins installed from GitHub repositories that ship a .claude-plugin folder. They are linked into ~/.claude/plugins.",
         "source": {
@@ -4390,7 +4394,7 @@
         "claudeCode": "Claude Code",
         "opencode": "OpenCode",
         "codex": "Codex",
-        "gemini": "Gemini",
+        "antigravity": "Antigravity",
         "cursor": "Cursor",
         "claude": "Claude",
         "openclaw": "OpenClaw"
@@ -4407,6 +4411,9 @@
         "moreloginNotInstalled": "MoreLogin not installed",
         "notInstalled": "not installed",
         "installedApiNotRunningPort": "Installed · API not running (port {port})",
+        "runningApiRejected": "Running · the local API answered with an error (port {port}): {reason}",
+        "apiError": "API error",
+        "customPathHint": "Installed MoreLogin in another folder? Add MORELOGIN_APP_PATH=<full path to MoreLogin.exe> to SynaBun's .env and restart SynaBun, so it can find the app and open it when it is closed.",
         "appClosed": "app closed",
         "connectedProfileSPort": "Connected · {profileCount} profile(s) · port {port}",
         "connected": "connected",
@@ -4548,7 +4555,7 @@
         "hooksPurpose": "For Claude Code sessions outside the Assistant: memory behaviors and the moments when SynaBun steps in. Leave them on unless you are tracking down a problem.",
         "compat": {
           "claude": "Works with Claude",
-          "gemini": "Works with Gemini",
+          "antigravity": "Works with Antigravity",
           "openai": "Works with OpenAI",
           "viaAddress": "through the public address"
         },
@@ -6020,7 +6027,7 @@
         },
         "keywords": {
           "page": {
-            "ai_connections": "assistant, claude, codex, gemini, opencode, model, provider, api key, cli, install, connect, llm",
+            "ai_connections": "assistant, claude, codex, antigravity, agy, opencode, model, provider, api key, cli, install, connect, llm",
             "memory_backups": "database, sqlite, storage, backup, restore, export, import, embeddings, recall, vector",
             "ai_decisions": "jev, typesafe, judgments, api key, cost, tokens, log",
             "projects": "workspace, folder, repository, repo, path, cache, disk space",
@@ -6037,7 +6044,7 @@
           },
           "section": {
             "ai_connections": {
-              "your_assistants": "claude code, codex, gemini, opencode, connect, install, mcp, cli, sign in, login, agent",
+              "your_assistants": "claude code, codex, antigravity, agy, opencode, connect, install, mcp, cli, sign in, login, agent",
               "synabun_rules": "instructions, CLAUDE.md, AGENTS.md, ruleset, prompt, update",
               "manual_setup": "cursor, windsurf, copy configuration, json, mcp config, other tools",
               "executable_paths": "terminal, binary, command, cli, shell, executable",
@@ -6762,6 +6769,7 @@
       "claude": "Claude Code",
       "codex": "Codex",
       "opencode": "OpenCode",
+      "antigravity": "Antigravity",
       "agents": "Shared folder"
     },
     "runtimeState": {
@@ -6826,7 +6834,9 @@
       "review": "In review",
       "draft": "Draft",
       "readonly": "Read-only",
-      "ok": "No problems"
+      "ok": "No problems",
+      "duplicate-record": "Duplicate record",
+      "stale-install": "Older install"
     },
     "library": {
       "title": "Library",
@@ -6889,7 +6899,7 @@
       "loading": "Reading every runtime folder…",
       "loadFailed": "The skills could not be read",
       "emptyTitle": "No skills yet",
-      "emptyHelp": "Skills, agents and commands from Claude Code, Codex and OpenCode show here. Create the first one, or import a bundle.",
+      "emptyHelp": "Skills, agents and commands from Claude Code, Codex, OpenCode and Antigravity show here. Create the first one, or import a bundle.",
       "noMatchTitle": "Nothing matches these filters",
       "noMatchHelp": "Clear the filters or search for other words.",
       "clearFilters": "Clear filters",
@@ -6969,7 +6979,12 @@
         "deleted": {
           "one": "{count} item deleted.",
           "other": "{count} items deleted."
-        }
+        },
+        "deleteListLabel": "What will be deleted",
+        "deleteInLibrary": "In the SynaBun library",
+        "deleteEffectDisk": "Deleted from disk",
+        "deleteEffectLibrary": "Leaves the library",
+        "deleteMore": "and {count} more"
       },
       "install": "Install",
       "installHelp": "Approved in Review: open Publish to install it.",
@@ -7654,7 +7669,8 @@
         "portable": "Agent Skills",
         "claude": "Claude Code list",
         "codex": "Codex",
-        "opencode": "OpenCode"
+        "opencode": "OpenCode",
+        "antigravity": "Antigravity"
       },
       "budgetCount": "{used} / {limit}",
       "saysWhat": "Says what it does",
@@ -8298,7 +8314,7 @@
         "command": "Command · legacy"
       },
       "kindHelp": {
-        "skill": "A folder with SKILL.md that Claude Code, Codex and OpenCode load. The usual choice.",
+        "skill": "A folder with SKILL.md that Claude Code, Codex, OpenCode and Antigravity load. The usual choice.",
         "agent": "A subagent Claude Code delegates to, in its own context. One file.",
         "command": "A Claude Code slash command file. Skills replace these; kept for older setups."
       },
@@ -8358,7 +8374,7 @@
       "descriptionLabel": "Description",
       "descriptionPlaceholder": "What it does, and when to use it",
       "descriptionHelp": "Written into the frontmatter. Models read it to decide when to use the skill: say what and when.",
-      "whereSkill": "It starts as a draft in SynaBun's library, and reaches Claude Code, Codex or OpenCode only when you publish it.",
+      "whereSkill": "It starts as a draft in SynaBun's library, and reaches Claude Code, Codex, OpenCode or Antigravity only when you publish it.",
       "whereLabel": "Where",
       "whereGlobal": {
         "agent": "All projects (~/.claude/agents)",
@@ -8372,7 +8388,7 @@
       },
       "paste": "Paste a SKILL.md…",
       "import": "Import…",
-      "explain": "You get a skill folder: SKILL.md, plus references or scripts only when they help, checked as you write it. Nothing reaches Claude Code, Codex or OpenCode until you publish it.",
+      "explain": "You get a skill folder: SKILL.md, plus references or scripts only when they help, checked as you write it. Nothing reaches Claude Code, Codex, OpenCode or Antigravity until you publish it.",
       "examplesTitle": "Ideas",
       "example1": "\"Write Conventional Commit messages from the staged diff\"",
       "example2": "\"A checklist for preparing a SynaBun release, from CHANGELOG.md\"",
@@ -8794,6 +8810,94 @@
       "moved": "Moved: it has a skill folder now; the bridge file is kept in the move's record.",
       "movedPartly": "Moved in part: see Settings → Skills → Skill folders.",
       "failed": "That did not work: {error}"
+    },
+    "fix": {
+      "open": "Fix these problems: {problems}",
+      "title": "Fix {name}",
+      "intro": "Each problem says what it means and what each choice does. Nothing changes until you press one.",
+      "none": "Nothing to fix here.",
+      "nothingHere": "Nothing can be done about this from here.",
+      "mode": {
+        "auto": "One press",
+        "guided": "Your choice"
+      },
+      "explain": {
+        "not-text": "Its head file is not UTF-8 text (it may be saved as UTF-16), so no assistant can read it. Open it to see it, or delete it if it is not needed.",
+        "invalid": "It has errors an assistant will misread. Some, like missing frontmatter or a missing description, can be added for you; the rest are fixed in the editor.",
+        "warnings": "An assistant reads it, but something is likely wrong (no description, a name unlike its folder). Fix it in the editor, add what can be added for you, or leave it.",
+        "update": "SynaBun ships a newer version than the one installed. Review the changes and update, or keep your copy as it is.",
+        "shadowed": "{runtime} uses another skill with this name instead of this one. Rename one of them in the editor, or leave it if that is what you want.",
+        "twice": "{runtime} lists two skills with this name, so a model may pick either. Rename one of them, or leave it.",
+        "same-description": "It has the same description as {names}, so a model cannot tell them apart. Change one description in the editor, or leave it.",
+        "bridge": "An assistant reaches it only through an old bridge file. Settings → Skills → Skill folders moves it into a skill folder of its own.",
+        "duplicate-record": "The library holds this skill twice; {original} is the record that keeps the name.",
+        "stale-install": "It is installed from an older version than its latest one. Publish installs the latest.",
+        "unreadable": "These folders are left out of the Library. Fix them on disk (a missing SKILL.md, a link, a permission), then read the folders again, or leave them out."
+      },
+      "duplicateWhy": {
+        "installed": "This record is installed, so you choose which one keeps the name.",
+        "review": "This record has an open review, so you choose which one keeps the name.",
+        "different": "Their versions differ, so you choose which one keeps the name."
+      },
+      "action": {
+        "auto-text": "Add what is missing",
+        "archive-duplicate": "Archive this record",
+        "choose-copy": "Choose which to keep…",
+        "open-edit": "Open in the editor",
+        "open-publish": "Open Publish",
+        "open-update": "Review the update",
+        "keep-mine": "Keep mine",
+        "move-bridges": "Open skill folders",
+        "rescan": "Read the folders again",
+        "delete": "Delete…",
+        "dismiss": "Leave it"
+      },
+      "dismissed": "Left as it is. It is said again if it changes.",
+      "reading": "Reading the files to fix…",
+      "previewTitle": "Fix safe issues",
+      "previewIntro": "These changes are made, and nothing else:",
+      "previewNothing": "Nothing can be fixed safely in one press. The rest need your choice: open each problem from its health pill.",
+      "step": {
+        "text": "{name}: add {added}",
+        "archive": "{name}: archive the second library record ({original} keeps the name; Restore in Archived brings it back)"
+      },
+      "apply": {
+        "one": "Apply {count} change",
+        "other": "Apply {count} changes"
+      },
+      "resultDone": {
+        "one": "{count} problem fixed.",
+        "other": "{count} problems fixed."
+      },
+      "resultPartial": "{done} fixed, {failed} not: {first}",
+      "textNothing": "There is nothing here that can be added safely. Open it in the editor to fix it by hand.",
+      "textToDraft": "The change goes to the skill's draft: installed copies change only when you publish.",
+      "textInPlace": "The file is saved where it is, over the version just read.",
+      "failed": "The fix did not work: {error}",
+      "chooseTitle": "Which record keeps the name?",
+      "chooseIntro": "The other one is archived; Restore in Archived brings it back. An installed record cannot be archived: remove its installations in Publish first.",
+      "chooseNone": "Both records are installed or in review, so neither can be archived. Remove the installations of one in Publish first.",
+      "keepThis": "Keep {name} · {versions} · {installs}",
+      "versions": {
+        "one": "{count} version",
+        "other": "{count} versions"
+      },
+      "installs": {
+        "one": "{count} installation",
+        "other": "{count} installations"
+      },
+      "keepConfirm": "Keep it",
+      "notice": {
+        "one": "{count} problem needs attention.",
+        "other": "{count} problems need attention."
+      },
+      "noticeSafe": {
+        "one": "Up to {count} can be fixed in one press.",
+        "other": "Up to {count} can be fixed in one press."
+      },
+      "fixAll": "Fix safe issues…",
+      "showIssues": "Show them",
+      "rescanned": "The folders were read again."
     }
   },
   "context": {
@@ -8878,8 +8982,11 @@
     "toggleExplorer": "Toggle Explorer (F)"
   },
   "toolbar": {
+    "more": "More tools",
     "hideTools": "Hide workspace tools",
     "showTools": "Show workspace tools",
+    "hideWhiteboardToolbar": "Hide toolbar",
+    "showWhiteboardToolbar": "Show toolbar",
     "workspaceNone": "Workspaces: none loaded",
     "workspaceActive": "Workspace: {name}",
     "quickSave": "Quick save",
@@ -9072,6 +9179,7 @@
         "codex-no-records": "Codex ended without final usage records.",
         "codex-rollout-missing": "Codex usage records were missing; the turn's own totals were used.",
         "opencode-not-reconciled": "OpenCode's final message check did not finish.",
+        "antigravity-total-mismatch": "Antigravity's token total did not match its token classes; the classes were counted as reported.",
         "interrupted": "A turn was interrupted; the call it cut off is counted from the stream.",
         "no-result": "A run ended mid-turn; its last calls are counted from the stream.",
         "other": "A final token count was unavailable."
@@ -9827,6 +9935,7 @@
       "noResult": "No result yet",
       "readFailed": "Could not read result",
       "awaitingRoute": "waiting for your model choice",
+      "routedHere": "not started: done here instead",
       "needsApproval": "needs approval",
       "needsInput": "needs input",
       "waitingInput": "waiting for your answer",
@@ -9971,8 +10080,9 @@
       "help": "Show commands",
       "needsQuery": "Usage: /recall <query>",
       "needsText": "Usage: /remember <text>",
-      "dispatchProvider": "Usage: /dispatch <claude|codex|opencode> [flags] <task>",
-      "dispatchInvalidProvider": "Unknown provider \"{provider}\". Use claude, codex or opencode.",
+      "dispatchProvider": "Usage: /dispatch <claude|codex|opencode|antigravity> [flags] <task>",
+      "dispatchInvalidProvider": "Unknown provider \"{provider}\". Use claude, codex, opencode or antigravity.",
+      "notBrain": "{provider} runs dispatched work only, never the Assistant itself. Send it a task with /dispatch {id} <task>.",
       "dispatchUnknownFlag": "Unknown flag --{flag}",
       "dispatchFlagValue": "Flag --{flag} needs a value",
       "dispatchTask": "Add the task text after the flags",
@@ -10106,8 +10216,14 @@
       "planDesc": {
         "claude-code": "Plan first; approving the plan continues in the approval mode below",
         "codex": "Native Codex plan mode (read-only sandbox)",
-        "opencode": "OpenCode plan agent (no file edits)"
-      }
+        "opencode": "OpenCode plan agent (no file edits)",
+        "antigravity": "Antigravity explores and proposes a plan; code changes wait for your approval"
+      },
+      "antigravitySignIn": "Antigravity sign-in",
+      "antigravitySignedIn": "Signed in with Google",
+      "antigravitySignedInTier": "Signed in with Google ({tier})",
+      "antigravitySignedOut": "Not signed in: open the Antigravity panel to sign in",
+      "antigravitySignInUnknown": "Sign-in not checked yet: Antigravity signs in inside its own panel"
     },
     "tests": {
       "title": "Test density",
@@ -10261,7 +10377,8 @@
       "ineligible": {
         "no_models": "No available models",
         "signed_out": "Signed out",
-        "limited": "Provider usage limit reached"
+        "limited": "Provider usage limit reached",
+        "unpriced": "Reports tokens, not prices"
       },
       "fallback": {
         "jev_off": "Jev is off",
@@ -10273,6 +10390,7 @@
     "routes": {
       "budgetDecision": "budget re-route",
       "budgetProvider": "Budget: the {provider} share of this session's budget is used up.",
+      "budgetUnpriced": "Budget: {provider} reports tokens, not prices, so a session with a budget cannot run it. Pick another option, or switch the budget to No limit.",
       "budgetSpent": "Budget: this session's budget is spent.",
       "budgetDryOne": "Budget: the {list} share is used up.",
       "budgetDryMany": "Budget: the {list} shares are used up.",
@@ -10301,7 +10419,9 @@
       },
       "correction": {
         "remembered": "your saved route {to} replaced {from}",
-        "rememberedDisabled": "saved route {from} is disabled, kept the pick"
+        "rememberedDisabled": "saved route {from} is disabled, kept the pick",
+        "accountWorker": "{to}: runs on a worker, because this conversation belongs to another account",
+        "otherProvider": "{provider} is not this conversation's provider, so it runs on a worker"
       },
       "reason": {
         "always": "you asked to confirm routes",
@@ -10318,15 +10438,39 @@
         "suggested": "Suggested",
         "suggestedPct": "Suggested · {pct}",
         "remembered": "Your choice",
+        "saved": "Saved route",
         "current": "Current",
         "cheaper": "Cheaper",
         "stronger": "Stronger",
         "other": "Your choice",
         "makesImages": "Makes images",
         "makesVideo": "Makes video",
-        "canSee": "Can see"
+        "canSee": "Can see",
+        "sameModel": "Same model",
+        "canRun": "Can run it"
       },
       "doHere": "Do it here with {model}",
+      "side": {
+        "label": "Where it runs",
+        "here": "Here",
+        "dispatch": "Dispatch",
+        "hereDesc": "Runs in this conversation.",
+        "dispatchDesc": "A worker runs it; the result comes back here.",
+        "workerOnly": "{taskClass} always runs on a worker.",
+        "noWorker": "No worker model can run this task.",
+        "noHere": "Nothing in this conversation can run this task.",
+        "pickWorker": "Pick a worker model to run it.",
+        "accountWorker": "This conversation's account can't take it now, so it runs on a worker."
+      },
+      "kind": {
+        "here": "here",
+        "dispatch": "dispatch",
+        "computer": "computer"
+      },
+      "runHere": "Run here",
+      "runDispatch": "Dispatch",
+      "keysSides": "← → Here or Dispatch · 1–9 choose · Enter runs · Esc cancels",
+      "otherHereTitle": "Continue here on another model",
       "computerNote": "Asked from WhatsApp: on the phone, a yes to “{option}” also lets the assistant control this Mac for the task. Approved here, it only decides where the task runs; the phone is then asked about the Mac.",
       "task": "task",
       "state": {
@@ -10436,7 +10580,7 @@
       },
       "behavior": {
         "always-ask": {
-          "saved": "Guides the brain’s suggestion and is offered on the route card.",
+          "saved": "The route card starts on it; you can still pick another.",
           "unsaved": "The brain suggests a route; you confirm before it runs.",
           "note": "Every actionable task asks for your choice. A task with no capable model cannot run."
         },
@@ -11567,6 +11711,7 @@
       "claude-panel": "a Claude Code panel reply",
       "codex-panel": "a Codex panel reply",
       "opencode-panel": "an OpenCode panel reply",
+      "antigravity-panel": "an Antigravity panel reply",
       "claude-cli": "a Claude Code session in use",
       "loop": "a loop",
       "schedule": "a schedule",
@@ -11632,6 +11777,7 @@
     "stepPathAdded": "Added {dir} to your PATH",
     "bodyMissing": "Install it with one click from {vendor}'s official installer, or run:",
     "bodyMissingManual": "Install it with this command, then re-check:",
+    "bodyMissingGuide": "Follow its install guide, then re-check.",
     "bodyBroken": "{label} was found at {path}, but it could not be started:",
     "bodyBrokenVersion": "{label} {version} was found at {path}, but it could not be started:",
     "bodyBrokenLatched": "{label} is installed, but it could not be started:",
@@ -12116,8 +12262,10 @@
       },
       "groupUpdateFailed": "Group update failed: {error}",
       "reorderFailed": "Reorder failed: {error}",
-      "comingSoon": "Coming soon — Claude Code only for now",
+      "comingSoon": "Coming soon — Claude Code and Antigravity only for now",
       "panelFailed": "Failed to open Claude panel: {error}",
+      "antigravityPanelFailed": "Failed to open the Antigravity panel: {error}",
+      "restartForAntigravity": "Restart SynaBun to start a schedule from the Antigravity panel",
       "chooseAutomation": "Choose an automation first",
       "chooseDelay": "Choose a delay or enter minutes",
       "runningNow": "Running now: {name}",
@@ -12361,6 +12509,310 @@
       "label": "TicTacToe",
       "purpose": "Play TicTacToe on the board"
     }
+  },
+  "antigravityPanel": {
+    "title": "Antigravity",
+    "toolbar": "Antigravity side panel",
+    "transcript": "Antigravity conversation",
+    "newSession": "New session",
+    "newTab": "New tab",
+    "closeTab": "Close tab",
+    "minimize": "Minimize to pill",
+    "rename": "Rename session",
+    "sessions": "Sessions",
+    "sessionsEmpty": "No Antigravity conversations in this project yet.",
+    "sessionsLoading": "Loading conversations…",
+    "sessionsFailed": "Could not list conversations: {error}",
+    "sessionsSearch": "Search conversations",
+    "sessionsMore": "Load more",
+    "delete": "Delete",
+    "deleteConfirm": "Delete \"{title}\"?",
+    "cancel": "Cancel",
+    "fork": "Fork",
+    "forkTitle": "Fork of {title}",
+    "project": "Project",
+    "chooseProject": "Choose a project",
+    "branch": "Branch",
+    "branchStopFirst": "Stop the running turn before switching branches.",
+    "branchSwitched": "Switched the working tree to {branch}.",
+    "branchConfirm": "Switch from {from} to {to} with {count} uncommitted changes? Git keeps them when it can.",
+    "branchFailed": "Could not switch branches: {error}",
+    "noProject": "Choose a project folder to start.",
+    "folderAdd": "Add a folder to this session",
+    "folderHelp": "Antigravity can also read and edit these registered projects in this session.",
+    "folderNone": "Every registered project is already in this session.",
+    "folderRemove": "Remove {name} from this session",
+    "foldersApplied": "The session now includes the folders you chose.",
+    "foldersNext": "The folders apply when the next session starts.",
+    "placeholder": "Ask Antigravity…",
+    "placeholderQueue": "Queue a follow-up…",
+    "placeholderAutomation": "A dispatched run is using this tab.",
+    "send": "Send",
+    "stop": "Stop",
+    "attach": "Attach files",
+    "attachmentRemove": "Remove {name}",
+    "attachmentTooMany": "At most {count} attachments per message.",
+    "attachmentTooLarge": "{name} is larger than {size} MB.",
+    "attachmentType": "{name} is a file type Antigravity cannot take.",
+    "mic": "Record a voice message",
+    "micFailed": "The microphone could not start: {error}",
+    "model": "Model",
+    "thinking": "Thinking",
+    "mode": "Mode",
+    "modelDefault": "Default",
+    "permissions": "Permissions",
+    "permDefault": "Default",
+    "permDefaultHint": "Ask before each tool Antigravity wants approved",
+    "permBypass": "Bypass",
+    "permBypassHint": "Run everything without asking",
+    "permBypassRestart": "Bypass needs the SynaBun server restart: until then choosing it here does nothing.",
+    "permBypassWaiting": "Bypass · unavailable: this tab's Bypass pick waits for the SynaBun server restart, and until then Antigravity asks as usual.",
+    "permBypassOnTitle": "Bypass: every tool runs without asking in this tab, until you pick another mode. SynaBun still refuses browsers other than its own and its protected folders.",
+    "permBypassStrip": "Bypass is on: Antigravity runs every tool in this tab without asking.",
+    "permBypassConfirmTitle": "Turn on Bypass for this tab?",
+    "permBypassConfirmBody": "Antigravity will edit files, run commands and call tools without asking, until you pick Default again. SynaBun still refuses other browsers than its own and anything in its protected folders (credentials, SynaBun's data, the runtimes' settings).",
+    "permBypassConfirmYes": "Turn on Bypass",
+    "permBypassFailed": "Could not change Bypass: {error}",
+    "permAutoAllowed": "Bypass allowed: {tool}",
+    "permAutoRefused": "Bypass refused {tool}: {reason}",
+    "permTool": "a tool",
+    "working": "Working…",
+    "workingFor": "Working… {seconds}s",
+    "needsYou": "Waiting for you",
+    "thought": "Thinking",
+    "thoughtFor": "Thought for {duration}",
+    "thinkingNow": "Thinking…",
+    "plan": "Plan",
+    "planProgress": "{done} of {total} done",
+    "planDone": "Done",
+    "priorityHigh": "High",
+    "toolPending": "Waiting",
+    "toolRunning": "Running",
+    "toolDone": "Done",
+    "toolFailed": "Failed",
+    "kind_read": "Read",
+    "kind_edit": "Edit",
+    "kind_delete": "Delete",
+    "kind_move": "Move",
+    "kind_search": "Search",
+    "kind_execute": "Command",
+    "kind_think": "Think",
+    "kind_fetch": "Fetch",
+    "kind_switch_mode": "Mode switch",
+    "kind_other": "Tool",
+    "rawInput": "Input",
+    "rawOutput": "Output",
+    "diffFor": "Changes to {path}",
+    "diffAdded": "New file",
+    "diffModified": "Modified",
+    "diffDeleted": "Deleted",
+    "diffIdentical": "No changes in the text.",
+    "diffTooLarge": "Too many changes to compare line by line: the old text is shown removed and the new text added.",
+    "diffTruncated": "The file is longer than the part compared here.",
+    "diffShowAll": "Show the whole diff ({count} lines)",
+    "copyPatch": "Copy patch",
+    "terminalWaiting": "Waiting for output…",
+    "terminalRunning": "Running",
+    "terminalExit": "Exit code {code}",
+    "terminalSignal": "Stopped by {signal}",
+    "terminalTruncated": "Earlier output was cut.",
+    "compaction": "Conversation summary",
+    "compactionRunning": "Summarizing",
+    "compactionDone": "Summarized",
+    "compactionFailed": "Failed",
+    "compactionCancelled": "Cancelled",
+    "compact": "Compact",
+    "subagent": "Subagent",
+    "subagentRunning": "Running",
+    "subagentIdle": "Idle",
+    "subagentNeedsYou": "Needs you",
+    "subagentUnknown": "Unknown",
+    "relayedMessage": "Message between sessions",
+    "usage_in": "{value} in",
+    "usage_out": "{value} out",
+    "usage_thinking": "{value} thinking",
+    "usage_cached": "{value} cached",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyAnswer": "Copy answer",
+    "copyCommand": "Copy the command",
+    "retry": "Retry",
+    "permissionTitle": "Antigravity wants to {verb}",
+    "verb_read": "read a file",
+    "verb_edit": "edit a file",
+    "verb_delete": "delete a file",
+    "verb_move": "move a file",
+    "verb_search": "search",
+    "verb_execute": "run a command",
+    "verb_think": "think",
+    "verb_fetch": "fetch from the web",
+    "verb_switch_mode": "switch mode",
+    "verb_other": "use a tool",
+    "permissionDeny": "Deny",
+    "permissionAnswered": "Answered",
+    "permissionCancelled": "No longer needed",
+    "permissionSending": "Sending…",
+    "permissionKeys": "Enter allows once · Esc denies",
+    "elicitTitle": "Antigravity asks",
+    "elicitSubmit": "Send",
+    "elicitDecline": "Decline",
+    "elicitCancel": "Cancel",
+    "elicitOpen": "Open the link",
+    "elicitDone": "Done",
+    "elicitAnswered": "Answered",
+    "elicitDeclined": "Declined",
+    "elicitBadUrl": "The link is not an address the panel opens (https only).",
+    "elicitUnsupported": "This field cannot be answered here.",
+    "elicitUnsupportedMode": "The panel cannot show this kind of question.",
+    "elicitRequired": "Required.",
+    "elicitNumber": "Enter a number.",
+    "elicitRange": "The number is out of range.",
+    "elicitLength": "The length is out of range.",
+    "elicitEmail": "Enter an email address.",
+    "elicitUrl": "Enter an address.",
+    "elicitChoices": "Pick a different number of options.",
+    "signIn": "Sign in",
+    "signInTitle": "Sign in to Antigravity",
+    "signInBody": "Antigravity needs your Google sign-in before it can start a session.",
+    "signInTerminal": "Sign in from a terminal",
+    "signInTerminalBody": "Finish signing in in the terminal that opened, then check again.",
+    "signInCheck": "Check again",
+    "signInWaiting": "Finish signing in in the browser window that opened…",
+    "signInFailed": "Sign-in did not finish: {error}",
+    "signOut": "Sign out",
+    "setupMissingTitle": "Antigravity CLI is not installed",
+    "setupMissingBody": "Install Google's Antigravity CLI to use it here. SynaBun runs the official installer, then signs you in.",
+    "setupMissingBodyBrew": "Install Google's Antigravity CLI to use it here. SynaBun installs it with Homebrew, then signs you in.",
+    "setupMissingManual": "Install it with this command, then check again.",
+    "setupMissingGuide": "Follow the install guide, then check again.",
+    "setupInstallingTitle": "Installing Antigravity…",
+    "setupStep_check": "Checking this computer…",
+    "setupStep_install": "Installing the Antigravity CLI…",
+    "setupStep_verify": "Checking that agy starts…",
+    "setupBrewRunning": "Homebrew is installing antigravity-cli…",
+    "setupFailedTitle": "Antigravity could not be installed",
+    "setupBrokenTitle": "Antigravity CLI failed to start",
+    "setupUpdateTitle": "Update the Antigravity CLI",
+    "setupUpdateBody": "This version of agy has no ACP server (agy acp), which the panel needs. Update it with this command (or brew upgrade --cask antigravity-cli), then check again.",
+    "setupConnectingTitle": "Starting Antigravity…",
+    "setupConnectingBody": "The CLI is installed. SynaBun is starting it.",
+    "setupReadyTitle": "Antigravity is ready",
+    "setupReadyBody": "Ask anything about this project to start.",
+    "setupPathTitle": "Use agy in your other terminals",
+    "setupInstall": "Install Antigravity",
+    "setupRetry": "Try again",
+    "setupRecheck": "Check again",
+    "setupChecking": "Checking…",
+    "setupDismiss": "Dismiss",
+    "setupLog": "Installer output",
+    "setupStepsLabel": "Setup steps",
+    "step_check": "Checking",
+    "step_install": "Installing",
+    "step_verify": "Verifying",
+    "step_signin": "Sign in",
+    "stepState_todo": "not started",
+    "stepState_active": "in progress",
+    "stepState_done": "done",
+    "stepState_failed": "failed",
+    "addToPath": "Add to PATH",
+    "installGuide": "Install guide",
+    "cliReference": "Antigravity CLI reference",
+    "blockedMissing": "Install Antigravity first",
+    "blockedInstalling": "Antigravity is being installed",
+    "blockedBroken": "Antigravity failed to start",
+    "blockedSignIn": "Sign in first",
+    "blockedConnecting": "Antigravity is starting",
+    "blockedConnection": "Not connected to SynaBun",
+    "agentStopped": "Antigravity stopped{detail}. Send again to start it.",
+    "disconnected": "The connection to SynaBun dropped. Reconnecting…",
+    "connOffline": "SynaBun is not answering. Retrying…",
+    "connRetryNow": "Reconnect now",
+    "connRetry": "Try again",
+    "connAutomation": "SynaBun's automation browser cannot open the Antigravity panel. Open it from your own browser or the SynaBun app.",
+    "connGuest": "The Antigravity panel is for the owner of this SynaBun.",
+    "connRefused": "SynaBun refused this window's connection to the Antigravity panel. If your browser reaches SynaBun through a proxy, add localhost to its bypass list.",
+    "connRestart": "This SynaBun server started before the Antigravity panel existed. Restart SynaBun to use it.",
+    "errorPrefix": "Error: {message}",
+    "stopped": "Stopped.",
+    "refusal": "The model declined to continue.",
+    "maxTokens": "The reply reached the model's output limit.",
+    "maxTurns": "The turn reached its request limit.",
+    "context": "Context {label}",
+    "contextUnknown": "Not reported yet",
+    "automation": "Dispatched run",
+    "automationBanner": "A dispatched run of the Assistant is working in this tab.",
+    "automationEnded": "This run has ended. Send a message to continue here.",
+    "commands": "Commands and files",
+    "hintsPanel": "Panel",
+    "hintsAgent": "Antigravity",
+    "mentionLoading": "Looking for files…",
+    "queueTitle": "Queue",
+    "queueAdd": "Add to queue",
+    "queuePause": "Pause the queue",
+    "queueResume": "Resume the queue",
+    "queueClear": "Clear the queue",
+    "queueEdit": "Edit",
+    "queueRemove": "Remove",
+    "queueFull": "The queue holds at most {count} messages.",
+    "jumpLatest": "Latest",
+    "emptyTitle": "Antigravity",
+    "emptyBody": "Google's coding agent, with SynaBun's memory. Ask about this project, or paste a picture.",
+    "emptyKeyCommands": "commands",
+    "emptyKeyFiles": "files",
+    "loadingHistory": "Loading the conversation…",
+    "historyFailed": "Could not load this conversation: {error}",
+    "runHomePruned": "This dispatched run's conversation folder was already cleaned up, so the conversation can no longer be continued here. Start a new tab instead.",
+    "cmdNew": "Start a new session",
+    "cmdSessions": "Open the session list",
+    "cmdRename": "Rename this session",
+    "cmdFork": "Fork this session into a new tab",
+    "cmdRetry": "Send the last message again",
+    "cmdCopy": "Copy the last answer",
+    "cmdModel": "Choose the model",
+    "cmdMode": "Choose the mode",
+    "cmdThinking": "Choose the thinking level",
+    "cmdDetail": "Change how much of each turn is shown",
+    "cmdSettings": "Open Session settings",
+    "cmdLogin": "Sign in to Antigravity",
+    "cmdLogout": "Sign out of Antigravity",
+    "cmdHelp": "List commands and keys",
+    "helpPanel": "Panel commands:",
+    "helpAgent": "Antigravity commands:",
+    "helpKeys": "Keys: Enter sends · Shift+Enter adds a line · ↑ recalls the last message · Esc stops a running turn · @ attaches a file",
+    "settingsTitle": "Session settings",
+    "settingsContext": "Context",
+    "settingsTokens": "Tokens in context",
+    "settingsSession": "Session",
+    "settingsSessionId": "Session id",
+    "settingsNoSession": "Not started",
+    "settingsFolders": "Extra folders",
+    "settingsTurns": "Turns",
+    "settingsOptions": "Session options",
+    "settingsNoOptions": "Antigravity offers no options for this session.",
+    "settingsStartSession": "The options appear once the session starts.",
+    "settingsPanel": "Panel",
+    "settingsDetail": "Detail",
+    "detail_compact": "Compact",
+    "detail_standard": "Standard",
+    "detail_verbose": "Verbose",
+    "detailHelp_compact": "Answers only: thoughts hidden, every tool call closed.",
+    "detailHelp_standard": "Thoughts folded; file changes open, other tool calls closed.",
+    "detailHelp_verbose": "Everything open, with each tool call's raw input and output.",
+    "settingsClientFs": "Files through SynaBun",
+    "settingsClientFsHelp": "Antigravity reads and writes files through SynaBun. Applies when the agent restarts, which this switch does.",
+    "settingsClientTerminal": "Commands in SynaBun",
+    "settingsClientTerminalHelp": "Antigravity runs its commands through SynaBun, with their output live in the tool card. Applies when the agent restarts.",
+    "settingsNeedsRestart": "Needs a restart of the SynaBun server.",
+    "settingsAccount": "Account",
+    "settingsSignIn": "Sign-in",
+    "settingsSignedIn": "Signed in",
+    "settingsSignedOut": "Signed out",
+    "settingsAgentOff": "Antigravity is not running",
+    "settingsMethods": "Methods",
+    "settingsAbout": "About",
+    "settingsAgent": "Agent",
+    "settingsProtocol": "Protocol",
+    "settingsLinks": "Docs"
   },
   "codexPanel": {
     "newSession": "New session",

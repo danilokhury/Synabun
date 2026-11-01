@@ -10,7 +10,7 @@ metadata:
 
 # skill-forge
 
-The workflow for making or improving a skill (a folder with `SKILL.md` that Claude Code, Codex and OpenCode load)
+The workflow for making or improving a skill (a folder with `SKILL.md` that Claude Code, Codex, OpenCode and Antigravity load)
 through SynaBun's Skills Service. You draft; SynaBun checks; the owner reviews and installs. You never install,
 approve or publish, and nothing you make reaches a runtime until the owner says so in Skills Studio.
 
@@ -32,9 +32,9 @@ If unsure, say what you think it is and why, in one line, and go on with the ski
 
 | Capability | How you know | Without it |
 |---|---|---|
-| The `skill` tool | It is in your tool list (the SynaBun Assistant has it) | Write the folder in a scratch place outside every runtime's skill folders and tell the owner to import it in Skills Studio (Create → Import). Never write into `~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`, `~/.config/opencode/skills` or a project's `.claude` / `.agents` / `.opencode` / `.codex` folders. |
+| The `skill` tool | It is in your tool list (the SynaBun Assistant has it) | Write the folder in a scratch place outside every runtime's skill folders and tell the owner to import it in Skills Studio (Create → Import). Never write into `~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`, `~/.config/opencode/skills`, `~/.gemini/config/skills` (Antigravity's) or a project's `.claude` / `.agents` / `.opencode` / `.codex` folders. |
 | Memory | `recall` and `remember` are listed | Skip steps 3 and 9's memory parts and say so. |
-| Asking the user | An interactive session with the question tool of your runtime (Claude Code: `AskUserQuestion`; Codex: its own `request_user_input`, or SynaBun's `choice`; OpenCode: its `question` tool) or a chat channel | Unattended: assume, record the assumption, and finish with the draft. Ask nothing. |
+| Asking the user | An interactive session with the question tool of your runtime (Claude Code: `AskUserQuestion`; Codex: its own `request_user_input`, or SynaBun's `choice`; OpenCode: its `question` tool; Antigravity: SynaBun's `choice`) or a chat channel | Unattended: assume, record the assumption, and finish with the draft. Ask nothing. |
 | A web page as a source | The `skill` action `create` with a `url` source (SynaBun reads the page with its own browser before the worker starts), or the SynaBun browser tools (`browser_navigate`, `browser_content`) when you draft yourself | Stop that source and say "needs the SynaBun browser". Never fetch a page another way. |
 | A worker to draft | The `skill` action `create` (a Claude Code worker, held to its drafting folder with file tools only) | Draft it yourself (step 5). |
 | A budget | `agent_usage` shows your session's budget and what is spent | Use the defaults (30 minutes, $3) and say so. |
@@ -157,7 +157,7 @@ When the owner says it is installed (or asks you to check), verify what is on di
    approved: tell the owner to re-check or reinstall it in Skills Studio.
 3. Discovery and eligibility: each runtime can find it ("discoverable: yes") and may use it ("eligibility:
    enabled"); "unknown" stays unknown, never reported as fine.
-4. Refresh: say what a running session needs (for example `/reload-skills` in Claude Code, a new OpenCode session).
+4. Refresh: say what a running session needs (for example `/reload-skills` in Claude Code, a new OpenCode session, a new Antigravity conversation).
 5. Report each place as it is: a partial outcome (one runtime finds it, another does not) is said as partial.
 
 ## 10. Remember the outcome

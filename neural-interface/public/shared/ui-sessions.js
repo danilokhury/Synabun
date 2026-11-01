@@ -16,6 +16,8 @@ import { getProviderMeta } from './provider-icons.js';
 import { sendToPanel as sendToClaudePanel, isClaudePanelOpen } from './ui-claude-panel.js';
 import { toggleCodexPanel, isCodexPanelOpen } from './cdx/cdx-panel.js';
 import { openOpencodeWithPrompt } from './ui-opencode-panel-v2.js';
+import { openAntigravityWithPrompt } from './ui-antigravity-panel.js';
+import { dropdownHTML, wireDropdowns } from './cc-dropdown.js';
 import { fetchRulesStatus, installAllRules, ackRulesNotice } from './api.js';
 import { centeredInFrame } from './app-frame.js';
 
@@ -34,7 +36,8 @@ let isVisible = false;
 let _stalledTickerTimer = null;
 
 // ── Pending-Remember picker state ──
-const PROVIDER_LABELS = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode' };
+const PROVIDER_LABELS = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', antigravity: 'Antigravity' };
+const PR_PROVIDERS = Object.keys(PROVIDER_LABELS);
 let _prPicker = { open: false, provider: 'claude', model: '', modelsByProvider: {}, loading: null };
 
 // ── Notifications state ──
@@ -45,7 +48,7 @@ const RULES_HOSTS = {
   claude:   { label: 'Claude Code', provider: 'claude-code', section: 'setup-claude' },
   codex:    { label: 'Codex',       provider: 'codex',       section: 'setup-codex' },
   opencode: { label: 'OpenCode',    provider: 'opencode',    section: 'setup-opencode' },
-  gemini:   { label: 'Gemini',      provider: 'gemini',      section: 'setup-gemini' },
+  antigravity: { label: 'Antigravity', provider: 'antigravity', section: 'setup-antigravity' },
 };
 // The host states that need the user: each one opens Settings > Setup.
 const RULES_ATTENTION = { outdated: 'Update available', modified: 'Edited copy', conflict: 'Needs repair' };
@@ -976,20 +979,18 @@ function renderPendingRememberPicker() {
   const models = _prPicker.modelsByProvider[provider] || [];
   const loading = _prPicker.loading === provider;
 
-  const providerBtns = ['claude', 'codex', 'opencode'].map(p => `
+  const providerBtns = PR_PROVIDERS.map(p => `
     <button class="sm-btn sm-pr-prov${p === provider ? ' active' : ''}" data-pr-provider="${p}">
       ${esc(PROVIDER_LABELS[p])}
     </button>
   `).join('');
 
-  let modelOptions = '<option value="">— select model —</option>';
-  if (loading) modelOptions = '<option value="">Loading…</option>';
-  else if (models.length === 0) modelOptions = '<option value="">No models found</option>';
-  else {
-    modelOptions += models.map(m =>
-      `<option value="${esc(m.id)}"${m.id === _prPicker.model ? ' selected' : ''}>${esc(m.label || m.id)}</option>`
-    ).join('');
-  }
+  // The app's styled dropdown (cc-dropdown.js), wired once on the drawer's body (openPanel).
+  let modelEntries = [{ value: '', label: '— select model —', selected: !_prPicker.model }];
+  if (loading) modelEntries = [{ value: '', label: 'Loading…', selected: true }];
+  else if (models.length === 0) modelEntries = [{ value: '', label: 'No models found', selected: true }];
+  else modelEntries = modelEntries.concat(models.map(m => ({ value: m.id, label: m.label || m.id, selected: m.id === _prPicker.model })));
+  const modelPicker = dropdownHTML('sm-pr-model', modelEntries, { label: 'Model', classes: 'sm-pr-dropdown', disabled: loading || models.length === 0 });
 
   return `<div class="sm-cleanup-bar sm-pr-picker">
     <div class="sm-pr-row">
@@ -998,7 +999,7 @@ function renderPendingRememberPicker() {
     </div>
     <div class="sm-pr-row">
       <span class="sm-pr-label">Model</span>
-      <select id="sm-pr-model" class="sm-pr-select"${loading || models.length === 0 ? ' disabled' : ''}>${modelOptions}</select>
+      ${modelPicker}
     </div>
     <div class="sm-pr-row sm-pr-actions">
       <button class="sm-btn" id="sm-pr-cancel">Cancel</button>
@@ -1033,6 +1034,10 @@ async function loadProviderModels(provider) {
         }
       }
       models = flat;
+    } else if (provider === 'antigravity') {
+      // What an Antigravity session offers (lib/antigravity/catalog.js: one row per model, its thinking levels apart).
+      const r = await fetch('/api/antigravity/models').then(r => r.json()).catch(() => null);
+      models = (Array.isArray(r?.models) ? r.models : []).filter(m => m && m.id).map(m => ({ id: String(m.id), label: String(m.label || m.id) }));
     } else if (provider === 'codex') {
       // Codex models come from the running CLI (WebSocket). Provide a sensible static list.
       models = [
@@ -1101,6 +1106,9 @@ async function runPendingRemembers() {
     } else if (provider === 'opencode') {
       try { localStorage.setItem('ocp:lastModel', model); } catch {}
       await openOpencodeWithPrompt(res.prompt, { autoSend: true });
+    } else if (provider === 'antigravity') {
+      // A tab of its own, on the chosen model when its session offers it, sent at once.
+      await openAntigravityWithPrompt(res.prompt, { newTab: true, send: true, model });
     } else if (provider === 'codex') {
       try { localStorage.setItem('cxp:model', model); } catch {}
       if (!isCodexPanelOpen()) await toggleCodexPanel();
@@ -1187,6 +1195,8 @@ function openPanel() {
   // ESC key to close (removed with the panel, however it closes)
   _panelLife?.abort();
   _panelLife = new AbortController();
+  // The styled dropdowns of whatever the body draws (the Pending-Remember model picker), once for the panel's life.
+  wireDropdowns(_panel.querySelector('#sm-body'), { signal: _panelLife.signal });
   const onEsc = (e) => {
     if (e.key === 'Escape' && _panel) closePanel();
   };

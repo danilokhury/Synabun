@@ -2457,7 +2457,7 @@ on('opencode-panel:request-show', async () => {
 on('opencode-panel:request-new-session', () => { beginNewSession(); });
 
 // Whiteboard "Send to Panel" → attach image to compose footer if OCP v2 is the
-// active sidepanel. Mirrors the gating used by Claude/Codex/OCP v1 so the event
+// active sidepanel. Mirrors the gating used by Claude/Codex/Antigravity so the event
 // is consumed by exactly one panel.
 on('wb:send-to-panel', async ({ dataUrl }) => {
   if (!dataUrl) return;

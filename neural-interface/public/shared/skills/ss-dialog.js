@@ -30,9 +30,11 @@ export function closeDialog() { _open?.giveUp(); }
  * @param {string|null} [o.cancelId] what Escape and a click outside answer; null: they answer null
  * @param {HTMLElement|null} [o.extra] more content after the text (a checkbox, a list)
  * @param {(answer: string, ui: object) => boolean} [o.accept] called before the answer is given: false keeps it open
+ * @param {(ui: object) => void} [o.onOpen] called once it is drawn, with { box, body, bar, byId, setDisabled, done }
+ * @param {string} [o.className] one more class on the dialog (a variant: `ss-dlg--confirm`)
  * @returns {Promise<string|null>} the id of the button, or `cancelId` / null
  */
-export function askInPanel({ host, title, lines = [], buttons, focus = null, cancelId = 'cancel', extra = null, accept = null, wide = false }) {
+export function askInPanel({ host, title, lines = [], buttons, focus = null, cancelId = 'cancel', extra = null, accept = null, wide = false, onOpen = null, className = '' }) {
   return new Promise((resolve) => {
     _open?.giveUp();
     const before = document.activeElement;
@@ -41,7 +43,7 @@ export function askInPanel({ host, title, lines = [], buttons, focus = null, can
     const backdrop = document.createElement('div');
     backdrop.className = 'ss-fd-backdrop';
     const box = document.createElement('div');
-    box.className = `ss-file-dialog ss-dlg${wide ? ' ss-dlg--wide' : ''}`;
+    box.className = `ss-file-dialog ss-dlg${wide ? ' ss-dlg--wide' : ''}${className ? ` ${className}` : ''}`;
     const uid = `ss-dlg-${Math.random().toString(36).slice(2, 8)}`;
     box.setAttribute('role', 'alertdialog');
     box.setAttribute('aria-modal', 'true');
@@ -126,5 +128,6 @@ export function askInPanel({ host, title, lines = [], buttons, focus = null, can
     const start = (focus && byId.get(focus)) || [...buttons].reverse().map((b) => byId.get(b.id)).find((n) => n && !n.disabled && !n.classList.contains('ss-dlg-btn--danger')) || enabled()[0];
     start?.focus({ preventScroll: true });
     ui.done = done;
+    if (typeof onOpen === 'function') onOpen(ui);
   });
 }

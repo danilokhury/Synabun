@@ -2,8 +2,8 @@
 // SynaBun Neural Interface — File links in agent messages: the page side
 // ═══════════════════════════════════════════
 //
-// One click handler for the links in the messages of the four side panels
-// (Assistant, Claude, Codex, OpenCode). A link that points at a file the code
+// One click handler for the links in the messages of the five side panels
+// (Assistant, Claude, Codex, OpenCode, Antigravity). A link that points at a file the code
 // editor can open opens it there (`open-file-editor`), at its line and column;
 // every other link keeps what its panel did with it. What a target means and
 // what a click does are decided in file-links.js; this module gives it the

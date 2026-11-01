@@ -28,11 +28,13 @@ import { judge, score, readScore, type Answer } from './typesafe.js';
 import { redactCredentials } from './typesafe-config.js';
 import type { JudgeContext } from './memory-judgments.js';
 
-export const BUDGET_PROVIDERS = ['claude-code', 'codex', 'opencode'] as const;
+// Antigravity reports tokens, never prices: the caller never asks about it nor puts it in the state (no budget can
+// hold its spend, so it takes no share), and the questions below keep the wording they were tuned on.
+export const BUDGET_PROVIDERS = ['claude-code', 'codex', 'opencode', 'antigravity'] as const;
 export type BudgetProvider = typeof BUDGET_PROVIDERS[number];
-const NAMES: Record<BudgetProvider, string> = { 'claude-code': 'Claude Code', codex: 'Codex', opencode: 'OpenCode' };
+const NAMES: Record<BudgetProvider, string> = { 'claude-code': 'Claude Code', codex: 'Codex', opencode: 'OpenCode', antigravity: 'Antigravity' };
 /** Question ids (code only; never sent as meaning). */
-const QUESTION_IDS: Record<BudgetProvider, string> = { 'claude-code': 'share_claude_code', codex: 'share_codex', opencode: 'share_opencode' };
+const QUESTION_IDS: Record<BudgetProvider, string> = { 'claude-code': 'share_claude_code', codex: 'share_codex', opencode: 'share_opencode', antigravity: 'share_antigravity' };
 
 /** The ordered levels of every provider's question, lowest first. */
 export const SHARE_LEVELS = [

@@ -8,14 +8,14 @@
 // one reading of a request for the page and the server. No DOM and no imports.
 //
 //   describe      the owner's words only
-//   conversation  one session transcript of Claude Code, Codex or OpenCode (read by the server, as data)
+//   conversation  one session transcript of Claude Code, Codex, OpenCode or Antigravity (read by the server, as data)
 //   url           a web page, read by the server with the SynaBun browser before the worker starts (as data)
 //   repo          a registered project, read by the server: its file tree, docs, manifests and the files named
 //   memory        a recall over SynaBun's memory
 //   import        an imported skill (a staged import), or a skill of the catalog or the library, as the starting point
 
 export const SOURCE_KINDS = Object.freeze(['describe', 'conversation', 'url', 'repo', 'memory', 'import']);
-export const CONVERSATION_PROVIDERS = Object.freeze(['claude-code', 'codex', 'opencode']);
+export const CONVERSATION_PROVIDERS = Object.freeze(['claude-code', 'codex', 'opencode', 'antigravity']);
 /**
  * Who drafts: Claude Code only. A drafting worker reads hostile sources, so it is held to its folder with file tools
  * only (lib/skills/draft-confinement.js), which Claude Code enforces before any permission mode; Codex starts MCP
@@ -23,7 +23,8 @@ export const CONVERSATION_PROVIDERS = Object.freeze(['claude-code', 'codex', 'op
  */
 /** The providers a drafting run can be held to its folder on (lib/skills/draft-confinement.js draftConfinementSupport). */
 export const DRAFT_PROVIDERS = Object.freeze(['claude-code', 'codex', 'opencode']);
-export const CREATION_TARGET_RUNTIMES = Object.freeze(['claude', 'codex', 'opencode', 'agents']);
+/** Where a drafted skill may be installed later (a deploy.js target): Antigravity too, though no Antigravity worker drafts. */
+export const CREATION_TARGET_RUNTIMES = Object.freeze(['claude', 'codex', 'opencode', 'antigravity', 'agents']);
 
 /** The stages of a creation, in order; the last four end it. */
 export const CREATION_STAGES = Object.freeze(['queued', 'gathering', 'drafting', 'checking', 'submitting', 'done', 'failed', 'cancelled', 'interrupted']);
@@ -184,6 +185,8 @@ export function normalizeCreationRequest(body, { submitDefault = true } = {}) {
     const scope = t.scope === undefined || t.scope === null || t.scope === '' ? 'user' : t.scope;
     if (scope !== 'user' && scope !== 'project') { problems.push({ field: `${at}.scope`, code: 'targets-scope' }); return; }
     if (t.runtime === 'agents' && scope !== 'user') { problems.push({ field: `${at}.scope`, code: 'targets-agents-scope' }); return; }
+    // Antigravity reads a project's .agents/skills, which is the codex target with scope project.
+    if (t.runtime === 'antigravity' && scope !== 'user') { problems.push({ field: `${at}.scope`, code: 'targets-antigravity-scope' }); return; }
     const accountId = t.accountId === undefined || t.accountId === null || t.accountId === '' ? 'default' : t.accountId;
     if (typeof accountId !== 'string' || !ACCOUNT_RE.test(accountId)) { problems.push({ field: `${at}.accountId`, code: 'targets-account' }); return; }
     let projectPath = null;

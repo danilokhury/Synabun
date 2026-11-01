@@ -18,6 +18,7 @@ import { registerAction } from './ui-keybinds.js';
 import { storage } from './storage.js';
 import { sendToPanel as sendToClaudePanel } from './ui-claude-panel.js';
 import { attachPathToOpencode } from './ui-opencode-panel-v2.js';
+import { attachPathToAntigravity, isAntigravityPanelOpen, toggleAntigravityPanel } from './ui-antigravity-panel.js';
 import { isCodexPanelOpen, toggleCodexPanel } from './cdx/cdx-panel.js';
 import { addPathChip as addCodexPathChip } from './cdx/cdx-tabs.js';
 import { on, emit, state } from './state.js';
@@ -35,6 +36,7 @@ const SEND = {
   claude: (path) => sendToClaudePanel(path, { asFile: true }),
   codex: async (path) => { if (!isCodexPanelOpen()) await toggleCodexPanel(); addCodexPathChip(path); },
   opencode: (path) => attachPathToOpencode(path),
+  antigravity: async (path) => { if (!isAntigravityPanelOpen()) await toggleAntigravityPanel(); return attachPathToAntigravity(path); },
   assistant: (path) => attachToAssistant('assistant', path),
 };
 function attachToAssistant(target, filePath) {

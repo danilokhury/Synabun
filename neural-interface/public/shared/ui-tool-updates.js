@@ -14,7 +14,7 @@ const TOOL_ELEMENTS = {
   'claude-code': { toolbar: 'claude-update-badge',   menu: 'claude-menu-update-badge' },
   'codex':       { toolbar: 'codex-update-badge',    menu: 'codex-menu-update-badge' },
   'opencode':    { toolbar: 'opencode-update-badge', menu: 'opencode-menu-update-badge' },
-  'gemini':      { toolbar: null,                    menu: 'gemini-menu-update-badge' },
+  'antigravity': { toolbar: 'antigravity-update-badge', menu: 'antigravity-menu-update-badge' },
 };
 
 // Parent elements whose tooltips are updated when an update badge is visible.
@@ -22,14 +22,14 @@ const PARENT_ELEMENTS = {
   'claude-code': { toolbar: 'topright-claude-panel-btn', menu: 'menu-terminal-claude' },
   'codex':       { toolbar: 'topright-codex-panel-btn',  menu: 'menu-terminal-codex' },
   'opencode':    { toolbar: 'topright-opencode-panel-btn', menu: 'menu-terminal-opencode' },
-  'gemini':      { toolbar: null,                         menu: 'menu-terminal-gemini' },
+  'antigravity': { toolbar: 'topright-antigravity-panel-btn', menu: 'menu-terminal-antigravity' },
 };
 
 const TOOL_LABELS = {
   'claude-code': 'Claude Code',
   'codex':       'Codex',
   'opencode':    'OpenCode',
-  'gemini':      'Gemini CLI',
+  'antigravity': 'Antigravity CLI',
 };
 
 // Cached server response so click handlers can read per-tool updateCommand

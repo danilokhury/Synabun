@@ -49,7 +49,7 @@ const RANK = Object.freeze({ 'read-only': 0, ask: 1, autonomous: 2 });
 
 /** Brain providers that can hold a remote session at Ask and Autonomous (the in-process hook). */
 export const REMOTE_ENFORCING_PROVIDERS = Object.freeze(['claude-code']);
-const PROVIDER_LABELS = Object.freeze({ 'claude-code': 'Claude', codex: 'Codex', opencode: 'OpenCode' });
+const PROVIDER_LABELS = Object.freeze({ 'claude-code': 'Claude', codex: 'Codex', opencode: 'OpenCode', antigravity: 'Antigravity' });
 export function providerLabel(provider) { return PROVIDER_LABELS[provider] || String(provider || 'this brain'); }
 /** True for a known brain other than Claude: a remote session on it is read-only. */
 export function remoteBrainLimited(provider) {

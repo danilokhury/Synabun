@@ -1,3 +1,33 @@
+# SynaBun v.2.1.1
+
+A fix-focused release: Skills Studio gets a one-click fix panel, Antigravity conversations join Resume and memory, and a batch of Windows and panel bugs are cleaned up.
+
+## ✨ New
+
+- **Skills Studio fix panel** — A new "Fix" view from the health pill lists detected problems with one-click fixes, a preview before applying, and the option to dismiss or keep specific issues.
+- **Antigravity conversations in Resume and memory** — Antigravity conversations now show up in Resume's search (previously only titles matched) and are captured as memory sessions, the same as the other assistants.
+
+## 🛠 Fixed
+
+- **Assistant route cards always offer both options** — Every route card now shows a "Here" and a "Dispatch" choice, whatever the assistant proposed.
+- **MoreLogin detection on Windows** — The profile picker could come up empty when MoreLogin was installed outside its default folder, or silently show nothing on an unexpected response from MoreLogin's local API. Both are fixed.
+- **Skills Studio: false "duplicate" warning** — Installing the same skill into more than one folder a tool reads from no longer shows a spurious duplicate warning; a real name clash with a different skill still does.
+- **Skills Studio delete confirmation** — The delete dialog was redesigned for clarity.
+- **Assistant: duplicate follow-up cards** — A turn that mixed text and tool calls no longer shows a repeated follow-up or question card for each text segment.
+- **Renamed Assistant sessions on Windows** — A session renamed in the side panel no longer reverts to "SynaBun" after a file lock, server restart, or reload on Windows.
+- **Claude panel: "Think off" on models with effort levels** — Turning thinking off now actually turns it off, instead of falling back to the model's effort setting.
+- **Codex: effort level "none"** — Selecting "none" now behaves as its own choice instead of silently mapping to the model's default.
+- **Release publication: URL reputation checks** — Retries now read fresh evidence for the exact URL before submitting a new analysis, instead of reusing a stale one.
+- **Guarded workers on the newest macOS** — A protected worker's isolated network connection back to SynaBun could fail to come up on the latest macOS release; fixed, with no change in behavior on earlier macOS versions.
+
+## ⚙️ Changed
+
+- **Settings: last native dropdown removed** — The MoreLogin profile picker now uses SynaBun's own styled dropdown.
+- **Skills Studio status pills** — The library list and workspace header now share one consistent status pill style.
+- **Workspace toolbar layout** — The top-right toolbar no longer crops its buttons when space is tight.
+
+---
+
 # SynaBun v.2.1.0
 
 SynaBun 2.1.0 adds downloadable release verification reports, improves automated package publishing, and changes Windows clipboard images to explicit paste.

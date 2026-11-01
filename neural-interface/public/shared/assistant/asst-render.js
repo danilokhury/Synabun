@@ -50,7 +50,7 @@ import { closeMenu, isMenuOpen } from './asst-menu.js';
 import { computerToolName, describeComputerAction, frameUrls, markerPercent, openFrameLightbox, parseComputerResult, swapImage } from './asst-computer.js';
 import * as mascotLib from '../synabun-mascot.js';
 import { isReducedMotion, subscribe } from '../synabun-ticker.js';
-import { KIND_SPECS, callOutcome, commandOf, editDiff, editPaths, fmtDuration, groupSubject, headEllipsis, kindOf, maskEcho, mcpServerOf, middleEllipsis, planState, plural, prettyServer, receiptSentence, redactInput, resultDetail, sayCall, shouldFoldNarration, stationAggregate, stationKey, targetKey, toolWords, verbText, wrapRuns } from './asst-tool-kinds.js';
+import { KIND_SPECS, callOutcome, canonicalToolInput, commandOf, editDiff, editPaths, fmtDuration, groupSubject, headEllipsis, kindOf, maskEcho, mcpServerOf, middleEllipsis, planState, plural, prettyServer, receiptSentence, redactInput, resultDetail, sayCall, shouldFoldNarration, stationAggregate, stationKey, targetKey, toolWords, verbText, wrapRuns } from './asst-tool-kinds.js';
 import { injectRackStyles } from './asst-rack-styles.js';
 import { injectSceneStyles } from './asst-scene-styles.js';
 import { activityScene, compactActivity, isLivePhase, runChip, sceneOfClass, sceneSvg, stagePhase } from './asst-scenes.js';
@@ -963,6 +963,10 @@ export function createRenderer(transcriptEl, hooks = {}) {
   function attachFollowups(row, set) {
     if (!row || !set?.items?.length) return null;
     if (row._followups?.el.isConnected) return row._followups;
+    // One turn, one card: a set offered earlier in this turn (another text segment between tool calls, a
+    // streamed row the final message replaced) is superseded by this one. `offers` holds only this turn's:
+    // the user's prompt and a new turn settle and drop the earlier ones (settleOffers), which stay as history.
+    supersedeFollowups(row);
     const card = createFollowupsCard(set, {
       t,
       // A card drawn from the journal comes in quietly; a live one with a nod.
@@ -972,12 +976,26 @@ export function createRenderer(transcriptEl, hooks = {}) {
       onFocusComposer: () => hooks.onFollowupOther?.(),
     });
     row._followups = card;
+    card._row = row;
     (row.querySelector('.asst-msg-content') || row).appendChild(card.el);
     offers.add(card);
     registerAsk(card);
     enterRow(card.el);
     scrollEnd();
     return card;
+  }
+
+  /** Take out this turn's open follow-ups cards that belong to a row other than `row`. */
+  function supersedeFollowups(row) {
+    for (const offer of [...offers]) {
+      if (!offer._row || offer._row === row) continue;
+      offers.delete(offer);
+      askCards.delete(offer);
+      try { offer.presenter?.destroy?.(); } catch { /* gone */ }
+      if (offer._row._followups === offer) offer._row._followups = null;
+      offer.el?.remove();
+    }
+    askTail.sync();
   }
 
   /**
@@ -987,6 +1005,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
   function guessOffer() {
     const row = lastTextRow;
     if (!row?.isConnected || row._followups || row._guessed || row.classList.contains('asst-msg-error')) return;
+    // The turn already offered a set from its block: a guess from the prose would be a second card.
+    for (const offer of offers) if (offer._row && offer.el?.isConnected) return;
     row._guessed = true;
     const set = guessFollowups(row._text || '');
     if (set) attachFollowups(row, set);
@@ -1368,7 +1388,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     const kind = kindOf(block.name, block.input);
     const step = {
       type: 'call', id: block.id || `call-${++stepSeq}`, seq: ++stepSeq, name: block.name || 'tool', kind, key: stationKey(kind, block.name),
-      input: block.input || {}, state: 'running', result: '', detail: '', code: null, startedAt: nowMs(), endedAt: 0, progress: 0,
+      input: canonicalToolInput(block.input), state: 'running', result: '', detail: '', code: null, startedAt: nowMs(), endedAt: 0, progress: 0,
       timed: isTimed(), ghost, stale: false, rack, station: null, card: null, parent: parentOf(rack.scope), bodyBuilt: false,
       ...(extra || {}),
     };
@@ -1383,7 +1403,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
   /** The final block of a streamed call, or the same block replayed: the step learns its input, nothing is added. */
   function updateCall(step, block) {
     if (block.name) step.name = block.name;
-    if (block.input && typeof block.input === 'object' && Object.keys(block.input).length) step.input = block.input;
+    if (block.input && typeof block.input === 'object' && Object.keys(block.input).length) step.input = canonicalToolInput(block.input);
     step.ghost = false;
     if (step.card?._computer) { step.card._computer.input = step.input; step.card._computer.description = describeComputerAction(step.input, step.name); }
     refreshStep(step);
@@ -3833,8 +3853,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
       }
       case 'result': {
         flushStream(scope);
-        // Codex/OpenCode also send an `error` packet; the SDK reports only here.
-        const errorText = !parentId && ev.brain !== 'codex' && ev.brain !== 'opencode' ? resultErrorText(ev, t) : '';
+        // Codex/OpenCode/Antigravity also send an `error` packet; the SDK reports only here.
+        const errorText = !parentId && ev.brain !== 'codex' && ev.brain !== 'opencode' && ev.brain !== 'antigravity' ? resultErrorText(ev, t) : '';
         if (errorText && !muted) turn.errored = true;
         // The stage on screen waits for the turn's verdict (onResult → finishTurn) before it folds.
         if (!parentId && !muted) grace = newestStage();

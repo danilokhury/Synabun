@@ -11,6 +11,7 @@ import { getProviderMeta } from './provider-icons.js';
 import { toggleClaudePanel, isClaudePanelOpen, bootClaudePanel } from './ui-claude-panel.js';
 import { toggleCodexPanel, isCodexPanelOpen, bootCodexPanel } from './ui-codex-panel.js';
 import { toggleOpencodePanel, isOpencodePanelOpen, bootOpencodePanel } from './ui-opencode-panel-v2.js';
+import { toggleAntigravityPanel, isAntigravityPanelOpen, bootAntigravityPanel } from './ui-antigravity-panel.js';
 import { nativeLoopWindowId } from './ui-native-window-id.js';
 
 const PLACEHOLDER_CLASS = 'sidepanel-tray-placeholder';
@@ -52,6 +53,15 @@ const PROVIDERS = {
     pillClass: 'ocpv2-session-pill',
     eventName: 'opencode-panel:show',
   },
+  antigravity: {
+    providerId: 'antigravity',
+    windowKey: 'agy-window-id',
+    tabsKeyPrefix: 'synabun-antigravity-panel-tabs',
+    pillClass: 'agy-session-pill',
+    // A tab saved while a permission card waited on the user (agy-panel.js renderPills).
+    attentionClass: 'agy-pill-attention',
+    eventName: 'antigravity-panel:show',
+  },
 };
 
 // How each panel boots without showing itself, and whether it should: OpenCode only
@@ -60,6 +70,9 @@ const PROVIDERS = {
 const BOOT_HIDDEN = {
   claude: { boot: () => bootClaudePanel() },
   codex: { boot: () => bootCodexPanel() },
+  // An Antigravity turn ends with the page that ran it (its `agy acp` belongs to the panel socket), so a saved tab is
+  // never working after a reload: booting would only start Antigravity to say so.
+  antigravity: { boot: () => bootAntigravityPanel(), ready: async () => false },
   opencode: {
     boot: () => bootOpencodePanel(),
     ready: async () => (await (await fetch('/api/opencode-v2/status')).json())?.running === true,
@@ -152,8 +165,24 @@ function hasOpenCodeState(tab) {
   );
 }
 
+function hasAntigravityState(tab) {
+  const label = normalizeLabel(tab.title || tab.label);
+  return !!(
+    tab.sessionId
+    || tab.running
+    || tab.automationRunId
+    || normalizeLabel(tab.draft)
+    || !isDefaultLabel(label, ['new session', 'antigravity'])
+  );
+}
+
 function tabLabel(provider, tab) {
   if (provider === 'claude') return normalizeLabel(tab.label) || 'New chat';
+  if (provider === 'antigravity') {
+    const title = normalizeLabel(tab.title || tab.label);
+    if (title && !isDefaultLabel(title, ['new session'])) return title;
+    return tab.sessionId ? `Antigravity · ${String(tab.sessionId).slice(0, 8)}` : 'New session';
+  }
   if (provider === 'codex') return normalizeLabel(tab.pendingSessionLabel || tab.title || tab.sessionLabel) || 'New session';
   const title = normalizeLabel(tab.sessionTitle || tab.title);
   if (title) return title;
@@ -169,6 +198,7 @@ function tabId(provider, tab, index) {
   if (provider === 'claude' && tab.sessionId) return String(tab.sessionId);
   if (provider === 'codex' && tab.threadId) return String(tab.threadId);
   if (provider === 'opencode' && tab.sessionId) return String(tab.sessionId);
+  if (provider === 'antigravity' && tab.sessionId) return String(tab.sessionId);
   return `${provider}-${index}`;
 }
 
@@ -338,12 +368,14 @@ function cleanupLegacyV1Once(meta) {
 function statePredicate(provider) {
   if (provider === 'claude') return hasClaudeState;
   if (provider === 'codex') return hasCodexState;
+  if (provider === 'antigravity') return hasAntigravityState;
   return hasOpenCodeState;
 }
 
 function dedupeKeyForTab(provider, tab) {
   if (provider === 'claude') return tab.sessionId ? `cp:${tab.sessionId}` : null;
   if (provider === 'codex') return tab.threadId ? `cxp:${tab.threadId}` : null;
+  if (provider === 'antigravity') return tab.sessionId ? `agy:${tab.sessionId}` : null;
   return tab.sessionId ? `ocp:${tab.sessionId}` : null;
 }
 
@@ -511,6 +543,8 @@ async function openProvider(provider, tabIdValue, sourceKey) {
     if (!isCodexPanelOpen()) await toggleCodexPanel();
   } else if (provider === 'opencode') {
     if (!isOpencodePanelOpen()) await toggleOpencodePanel();
+  } else if (provider === 'antigravity') {
+    if (!isAntigravityPanelOpen()) await toggleAntigravityPanel();
   }
   emit(PROVIDERS[provider]?.eventName, { tabId: tabIdValue });
 }

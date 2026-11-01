@@ -50,22 +50,42 @@ export function buildClaudeMcpEntry(config) {
 }
 
 /**
- * Registry config → a `~/.gemini/settings.json` mcpServers entry.
- * Gemini CLI addresses streamable HTTP as `httpUrl` and SSE as `url`.
+ * Registry config → an entry of Antigravity's `~/.gemini/config/mcp_config.json` mcpServers
+ * (the file `agy mcp add` writes, shared by the CLI and the Antigravity app): a local server is
+ * `{ command, args, env, disabled }`, a remote one `{ serverUrl, headers, disabled }` whatever
+ * its transport (Antigravity tells streamable HTTP and SSE apart by itself).
  */
-export function buildGeminiMcpEntry(config) {
+export function buildAntigravityMcpEntry(config) {
   const source = asObject(config);
   if (!isRemoteMcp(source)) {
     const entry = { command: source.command || '' };
     if (source.args?.length) entry.args = [...source.args];
     const env = hasKeys(source.env);
     if (env) entry.env = { ...env };
+    entry.disabled = false;
     return entry;
   }
-  const entry = source.type === 'sse' ? { url: source.url } : { httpUrl: source.url };
+  const entry = { serverUrl: source.url };
   const headers = hasKeys(source.headers);
   if (headers) entry.headers = { ...headers };
+  entry.disabled = false;
   return entry;
+}
+
+/** The transport and address of an Antigravity mcp_config.json entry ({ transport, url? , command? }), for the installed list. */
+export function describeAntigravityMcpEntry(entry) {
+  const source = asObject(entry);
+  if (typeof source.serverUrl === 'string' && source.serverUrl) return { transport: 'http', url: source.serverUrl, disabled: source.disabled === true };
+  return { transport: 'stdio', command: typeof source.command === 'string' ? source.command : '', args: Array.isArray(source.args) ? source.args : [], disabled: source.disabled === true };
+}
+
+/** An Antigravity mcp_config.json's text as an object: an empty file (as Antigravity creates it) is `{}`. Throws on JSON that is not an object. */
+export function parseAntigravityMcpConfig(text) {
+  const raw = String(text ?? '').replace(/^\uFEFF/, '');
+  if (!raw.trim()) return {};
+  const value = JSON.parse(raw);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('mcp_config.json does not hold a JSON object');
+  return value;
 }
 
 /**
@@ -87,7 +107,8 @@ export function buildCodexMcpKv(config) {
   return kv;
 }
 
-export function mergeGeminiMcpConfig(existing, definition) {
+/** SynaBun's own entry in Antigravity's mcp_config.json; every other server and key is kept as it was. */
+export function mergeAntigravityMcpConfig(existing, definition) {
   const config = asObject(existing);
   return {
     ...config,
@@ -97,8 +118,18 @@ export function mergeGeminiMcpConfig(existing, definition) {
         command: definition.command,
         args: [...(definition.args || [])],
         env: { ...asObject(definition.env) },
-        trust: true,
+        disabled: false,
       },
     },
   };
+}
+
+/** Antigravity's mcp_config.json without SynaBun's entry (and without an emptied `mcpServers`). */
+export function removeAntigravityMcpServer(existing, name = 'SynaBun') {
+  const config = { ...asObject(existing) };
+  const servers = { ...asObject(config.mcpServers) };
+  delete servers[name];
+  if (Object.keys(servers).length) config.mcpServers = servers;
+  else delete config.mcpServers;
+  return config;
 }

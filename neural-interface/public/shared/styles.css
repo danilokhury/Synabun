@@ -3165,7 +3165,7 @@
   }
   .kb-cli-claude { color: #D4A27F; }
   .kb-cli-codex  { color: #74c7a5; }
-  .kb-cli-gemini { color: #669DF6; }
+  .kb-cli-antigravity { color: #669DF6; }
 
   /* Keycap-style buttons */
   .kb-key-btn {
@@ -4448,7 +4448,7 @@
 
   /* Setup tab: provider icon accents when section expanded */
   #setup-claude:not(.collapsed) .gfx-group-title .cc-provider-icon { color: #d97757; }
-  #setup-gemini:not(.collapsed) .gfx-group-title .cc-provider-icon { color: #4285f4; }
+  #setup-antigravity:not(.collapsed) .gfx-group-title .cc-provider-icon { color: #4285f4; }
   #setup-codex:not(.collapsed) .gfx-group-title .cc-provider-icon { color: #10a37f; }
 
   /* Setup tab: status badge */
@@ -6118,7 +6118,8 @@
   html.sp-resizing .claude-panel,
   html.sp-resizing .codex-panel,
   html.sp-resizing .ocp-panel,
-  html.sp-resizing .ocpv2-panel {
+  html.sp-resizing .ocpv2-panel,
+  html.sp-resizing .agy-panel {
     backdrop-filter: none !important;
     -webkit-backdrop-filter: none !important;
     background: rgba(18, 18, 20, 0.985) !important;
@@ -6130,18 +6131,18 @@
     top: calc(var(--navbar-height, 48px) + 20px);
     right: calc(20px + var(--right-panel-width, var(--claude-panel-width, 0px)));
     /* One row in the band between the left panels (Memory Explorer, File Explorer) and the right one, 20px clear of
-       each, never over a left panel: where the band is narrower than the row, the dock takes a line of its own under
-       the buttons (wrap-reverse: the buttons' line stays on top; see "Fit" below). What still reaches left of the
+       each, never over a left panel: where the band is narrower than the row, the lowest-priority buttons leave it
+       for the ⋯ menu (ui-topright-overflow.js; see "Fit" below), so the row never wraps. What still reaches left of the
        band (no band at all between wide panels, a dropdown that opens leftwards) is cut off at the band's edge:
        nothing of the toolbar is drawn, or takes a click, over a left panel. */
-    max-width: var(--topright-band);
+    max-width: calc(var(--topright-band) - var(--topright-tray-inset));
     min-height: 40px;   /* the dock's height: the buttons and the pills stay where they are when it hides */
     justify-content: flex-end;
     clip-path: inset(-100vh -100vw -200vh calc(var(--sidebar-total-width, 0px) + var(--right-panel-width, var(--claude-panel-width, 0px)) + 40px + 100% - 100vw));
     transition: right 0.3s cubic-bezier(0.22, 1, 0.36, 1);
     z-index: 400;
     display: flex;
-    flex-wrap: wrap-reverse;
+    flex-wrap: nowrap;
     align-items: center;
     gap: 6px;
     font-family: inherit;
@@ -6172,6 +6173,8 @@
     display: flex;
     align-items: center;
     flex-shrink: 0;
+    /* One line, always: what does not fit the band goes into the ⋯ menu (ui-topright-overflow.js). */
+    flex-wrap: nowrap;
     gap: 2px;
     overflow: visible;
     background: rgba(18, 18, 22, 0.65);
@@ -6189,13 +6192,123 @@
     box-shadow: var(--shadow-lg), var(--shadow-highlight);
   }
 
-  /* The tools toggle and the agent side panels: one row of their own that never wraps, at the bar's right edge. */
+  /* The ⋯, the tools toggle and the agent side panels: one row at the bar's right edge that never wraps. */
   #topright-buttons {
+    position: relative;
     display: flex;
     align-items: center;
     flex-shrink: 0;
+    flex-wrap: nowrap;
     gap: 6px;
-    min-height: 40px;   /* the dock's height: a bar that wraps keeps its lines 40px apart, the buttons where they were */
+    min-height: 40px;   /* the dock's height: the buttons stay where they are when it hides */
+  }
+
+  /* ── Overflow: a button that does not fit the band leaves the row for the ⋯ menu (ui-topright-overflow.js) ── */
+  #topright-controls .tr-overflowed {
+    display: none !important;
+  }
+  #topright-overflow-btn {
+    display: none;
+  }
+  #topright-controls.has-overflow #topright-overflow-btn {
+    display: flex;
+  }
+  /* The menu hangs from the bar's right edge, over the session pills (z-index inside the row's stacking context),
+     opaque like the dock's other menus since its blur cannot reach the pills. */
+  #topright-overflow-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 3;
+    min-width: 200px;
+    max-width: calc(var(--topright-band) - var(--topright-tray-inset));
+    max-height: calc(100vh - var(--navbar-height, 48px) - 90px);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px;
+    box-sizing: border-box;
+    background: rgb(18, 18, 22);
+    border: 1px solid var(--b-subtle, rgba(255, 255, 255, 0.06));
+    border-radius: 10px;
+    box-shadow: var(--shadow-lg), var(--shadow-highlight);
+  }
+  #topright-overflow-menu[hidden] {
+    display: none;
+  }
+  .topright-overflow-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 30px;
+    padding: 0 10px 0 8px;
+    background: transparent;
+    border: none;
+    border-radius: 5px;
+    color: var(--t-muted);
+    font: 400 13px/1.45 inherit;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .topright-overflow-item:hover,
+  .topright-overflow-item:focus-visible {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--t-bright);
+    outline: none;
+  }
+  .topright-overflow-item.active {
+    color: var(--t-bright);
+  }
+  .topright-overflow-item.active::before {
+    content: '';
+    position: absolute;
+    left: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 2.5px;
+    height: 12px;
+    border-radius: 2px;
+    background: var(--accent-blue);
+  }
+  .topright-overflow-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    flex-shrink: 0;
+  }
+  .topright-overflow-icon svg {
+    width: 14px;
+    height: 14px;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    fill: none;
+  }
+  .topright-overflow-icon svg[fill="currentColor"] {
+    fill: currentColor;
+    stroke: none;
+  }
+  .topright-overflow-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .topright-overflow-item .topright-overflow-badge {
+    position: static;
+    font-size: 10px;
+    min-width: 16px;
+    height: 16px;
+    line-height: 16px;
+    padding: 0 4px;
+    border-radius: 8px;
+    text-align: center;
+    font-weight: 600;
   }
 
   /* Hidden by the tools toggle (#topright-tools-btn, ui-navbar.js): the buttons and the pills stay where they are. */
@@ -6203,14 +6316,82 @@
     display: none;
   }
 
-  /* ── Fit: the buttons one row in any band, nothing hidden, nothing over a left panel ──
+  /* ── The whiteboard rail toggle (ui-navbar.js): #wb-hide-btn at the rail's foot hides the rail (#wb-toolbar,
+     pickers included: they are its children); the SynaBun logo button (#toolbar-show-btn) above the console button
+     (#term-peek-dock) brings it back. Shown only while the whiteboard is (#static-bg.visible, Focus Mode). The
+     workspace toolbar and the session pills are never touched. ── */
+  #wb-toolbar {
+    transition: opacity 0.22s ease, translate 0.22s cubic-bezier(0.22, 1, 0.36, 1), visibility 0s linear 0s;
+  }
+  #wb-toolbar.wb-rail-hidden {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    translate: -12px 0;
+    transition: opacity 0.22s ease, translate 0.22s cubic-bezier(0.22, 1, 0.36, 1), visibility 0s linear 0.22s;
+  }
+  #toolbar-show-btn {
+    position: fixed;
+    left: calc(var(--sidebar-total-width, 0px) + 16px);
+    bottom: 64px;   /* directly above the console button (#term-peek-dock: 40px at bottom 16px), 8px between */
+    z-index: 149;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    background: rgba(18, 18, 20, 0.85);
+    backdrop-filter: blur(var(--blur-heavy)) saturate(1.4);
+    -webkit-backdrop-filter: blur(var(--blur-heavy)) saturate(1.4);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    box-shadow: var(--shadow-md), var(--shadow-highlight);
+    cursor: pointer;
+    animation: toolbar-show-in 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+    transition: background 0.2s, border-color 0.2s;
+  }
+  #toolbar-show-btn[hidden],
+  body:not(:has(#static-bg.visible)) #toolbar-show-btn,
+  body.fe-editor-open #toolbar-show-btn {
+    display: none;
+  }
+  #toolbar-show-btn img {
+    width: 22px;
+    height: 22px;
+    object-fit: contain;
+    opacity: 0.75;
+    pointer-events: none;
+    transition: opacity 0.2s;
+  }
+  #toolbar-show-btn:hover {
+    background: rgba(24, 24, 28, 0.95);
+    border-color: rgba(255, 255, 255, 0.16);
+  }
+  #toolbar-show-btn:hover img,
+  #toolbar-show-btn:focus-visible img {
+    opacity: 1;
+  }
+  #toolbar-show-btn:focus-visible {
+    outline: 1px solid rgba(255, 255, 255, 0.4);
+    outline-offset: 2px;
+  }
+  @keyframes toolbar-show-in {
+    from { opacity: 0; transform: translateY(6px) scale(0.92); }
+    to { opacity: 1; transform: none; }
+  }
+  #wb-hide-btn svg {
+    stroke-width: 2;
+  }
+
+  /* ── Fit: one row in any band, nothing out of reach, nothing over a left panel ──
      --topright-row is the row at its widest without the workspace name: the dock (the switcher with its save button,
      50px; seven tools of 30px and the update button; two dividers; the dock's gaps and edges: 298px in all, 266px
      while the update button is hidden), then --topright-buttons, the tools toggle and the four agent buttons with
-     the gaps before them (190px). Below row + 45px of band the workspace name goes into the switcher's tooltip
+     the gaps before them (222px: six 32px buttons, five 6px gaps). Below row + 45px of band the workspace name goes into the switcher's tooltip
      (--topright-compact; it shows from 40px on, up to 120px, and takes what the band leaves it). Below the row itself
-     the bar wraps (#topright-controls: flex-wrap: wrap-reverse): the toggle and the agent buttons stay on top, in one
-     row, and the dock takes a line of its own right under them, right-aligned, still one row. --topright-compact is
+     nothing wraps: the buttons that do not fit leave the row for the ⋯ menu, lowest priority first
+     (ui-topright-overflow.js OVERFLOW_ORDER, measured live). --topright-compact is
      1 below its width and 0 from it up (tan(atan2()) divides a length by a length); it lives on :root so that a
      style query reaches the name. Change --topright-row (or --topright-buttons) with the controls of the row. */
   @property --topright-compact {
@@ -6220,7 +6401,7 @@
   }
   :root {
     --topright-band: calc(100vw - var(--sidebar-total-width, 0px) - var(--right-panel-width, var(--claude-panel-width, 0px)) - 40px);
-    --topright-buttons: 190px;
+    --topright-buttons: 222px;
     --topright-row: calc(298px + var(--topright-buttons));
     --topright-compact: clamp(0, tan(atan2(calc(var(--topright-row) + 45px - var(--topright-band)), 0.01px)), 1);
   }
@@ -6389,11 +6570,13 @@
   }
 
   /* ── Standalone buttons outside the unified bar (the tools toggle, the side panels) ── */
+  #topright-overflow-btn,
   #topright-tools-btn,
   #topright-assistant-panel-btn,
   #topright-claude-panel-btn,
   #topright-codex-panel-btn,
-  #topright-opencode-panel-btn {
+  #topright-opencode-panel-btn,
+  #topright-antigravity-panel-btn {
     background: rgba(18, 18, 22, 0.65);
     backdrop-filter: blur(var(--blur-heavy)) saturate(1.3);
     -webkit-backdrop-filter: blur(var(--blur-heavy)) saturate(1.3);
@@ -6403,11 +6586,13 @@
     width: 32px;
     height: 32px;
   }
+  #topright-overflow-btn:hover,
   #topright-tools-btn:hover,
   #topright-assistant-panel-btn:hover,
   #topright-claude-panel-btn:hover,
   #topright-codex-panel-btn:hover,
-  #topright-opencode-panel-btn:hover {
+  #topright-opencode-panel-btn:hover,
+  #topright-antigravity-panel-btn:hover {
     background: rgba(24, 24, 30, 0.8);
     border-color: rgba(255, 255, 255, 0.1);
   }
@@ -7666,7 +7851,7 @@
     .ocpv2-session-pill, .ocpv2-part-tool, .ocpv2-input-wrap, .ocpv2-compose-btn,
     .ocp-session-pill, .ocp-tool-card, .ocp-input-shell, .term-minimized-pill-label)::before,
   body.ui-interacting :is(.wb-tool.locked, .cp-session-pill,
-    .cxp-session-pill, .ocpv2-session-pill,
+    .cxp-session-pill, .ocpv2-session-pill, .agy-session-pill,
     .ocp-session-pill, .term-minimized-pill-label)::after { animation-play-state: paused !important; }
 
   /* Hidden tab: freeze the 30+ infinite glow/pulse animations so a background
@@ -14011,8 +14196,8 @@
   .settings-panel .stg-card .stg-mcp-form-grid .stg-field { margin-bottom: 0; }
   /* a field of the Add-a-server form is half the form wide: a popup or a number stacks under its label like the text
      fields beside it, instead of taking the label's line and squeezing the label and the help into what is left */
-  .settings-panel .stg-card .stg-mcp-form-grid .stg-field:has(> :is(select, input[type="number"])) { display: block; }
-  .settings-panel .stg-card .stg-mcp-form-grid .stg-field:has(> :is(select, input[type="number"])) > label { margin: 0 0 6px; }
+  .settings-panel .stg-card .stg-mcp-form-grid .stg-field:has(> :is(select, .cc-dropdown, input[type="number"])) { display: block; }
+  .settings-panel .stg-card .stg-mcp-form-grid .stg-field:has(> :is(select, .cc-dropdown, input[type="number"])) > label { margin: 0 0 6px; }
   .settings-panel .stg-card .stg-mcp-form-label { font-size: 12px; color: var(--stg-help); }
   .settings-panel .stg-card .stg-mcp-env-add { font-size: 12px; color: var(--stg-body); }
   .settings-panel .stg-card .stg-mcp-gh-optrun { font-size: 13px; color: var(--stg-text); }
@@ -19463,7 +19648,7 @@
   .sx .sx-menu-item--danger:hover { color: var(--sx-err); }
 
   /* ── Workspace ── */
-  .sx-ws-head { flex: none; padding: 8px 16px 0; display: grid; gap: 8px; position: relative; }
+  .sx-ws-head { flex: none; padding: 12px 16px 0; display: grid; gap: 8px; position: relative; }
   .sx-crumb { display: flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--t-secondary); }
   .sx-ws-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .sx-ws-name { margin: 0; font: 600 calc(18px * var(--font-scale, 1))/1.3 var(--ff-heading); color: var(--t-bright); overflow-wrap: anywhere; }
@@ -19739,7 +19924,14 @@
   .sx .sx-status--review, .sx .sx-status--changes { color: var(--sx-info); border-color: var(--b-visible); }
   .sx .sx-status--draft { color: var(--sx-gold); border-color: color-mix(in oklab, var(--sx-gold) 40%, transparent); }
   .sx .sx-status--none { color: var(--t-secondary); }
-  .sx-health-cell { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; max-width: 100%; }
+  /* One pill box for every pill of the Studio (kind tag, status, health): the same height as a small button, so a
+     row of pills and buttons lines up in the Library cell and in the workspace head. */
+  .sx .sx-tag, .sx .sx-status, .sx .sx-health {
+    display: inline-flex; align-items: center; gap: 6px; box-sizing: border-box;
+    min-height: 24px; padding: 2px 8px; border-radius: 6px; line-height: 1.3;
+  }
+  .sx .sx-tag { display: inline-block; line-height: 18px; }
+  .sx-health-cell { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: 100%; }
   .sx-health-cell .sx-status { white-space: normal; }
   .sx-health-cell .sx-status > span { white-space: normal; overflow: visible; }
   .sx .sx-banner-lines { display: grid; gap: 2px; margin-top: 4px; color: var(--t-primary); }
@@ -20156,6 +20348,87 @@
   .ss-dlg-form { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
   .ss-dlg-error { margin: 4px 0 0; min-height: 1em; color: hsla(0, 70%, 72%, 1); font-size: var(--fs-xs); }
   .ss-dlg-error:empty { display: none; }
+
+  /* ── A delete that is typed to confirm (sx-library-view.js deleteConfirmBox) ──
+     One row per item, the consequence, then the field; Delete stays off until the word matches. */
+  .ss-dlg.ss-dlg--confirm { width: min(480px, calc(100% - 32px)); max-height: calc(100% - 40px); padding: 20px 20px 16px; }
+  .ss-dlg--confirm .ss-dlg-title { font-size: var(--fs-md, 15px); margin-bottom: 12px; }
+  .ss-dlg--confirm .ss-dlg-actions { margin-top: 16px; gap: 8px; align-items: stretch; }
+  .ss-dlg--confirm .ss-dlg-btn { min-width: 88px; height: 30px; padding: 0 14px; display: inline-flex; align-items: center; justify-content: center; }
+  .ss-dlg--confirm .ss-dlg-btn--danger:disabled { opacity: 0.45; }
+  .sx-del { display: flex; flex-direction: column; gap: 12px; }
+  .sx-del-list {
+    list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column;
+    border: 1px solid var(--b-subtle); border-radius: 9px; background: var(--s-light); overflow: hidden;
+  }
+  .sx-del-item {
+    display: grid; grid-template-columns: 18px minmax(0, 1fr) auto auto; align-items: center; gap: 4px 10px;
+    padding: 8px 12px; min-height: 40px; box-sizing: border-box;
+  }
+  .sx-del-item + .sx-del-item, .sx-del-more { border-top: 1px solid var(--b-subtle); }
+  .sx-del-icon { display: inline-grid; place-items: center; color: var(--t-secondary); }
+  .sx-del-icon svg { width: 15px; height: 15px; }
+  .sx-del-main { display: flex; flex-direction: column; min-width: 0; }
+  .sx-del-name { color: var(--t-bright); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sx-del-path {
+    color: var(--t-secondary); font: 400 var(--sx-meta, 11px)/1.4 var(--ff-mono, 'JetBrains Mono', monospace);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .sx-del-kind, .sx-del-effect {
+    font-size: var(--sx-meta, 11px); line-height: 1; padding: 4px 7px; border-radius: 5px; white-space: nowrap;
+    border: 1px solid var(--b-light); color: var(--t-primary);
+  }
+  .sx-del-effect--disk { color: var(--sx-err); border-color: color-mix(in oklab, var(--sx-err) 35%, transparent); background: color-mix(in oklab, var(--sx-err) 8%, transparent); }
+  .sx-del-effect--library { color: var(--t-primary); background: var(--s-medium); }
+  .sx-del-more { padding: 6px 12px 8px 40px; color: var(--t-secondary); font-size: var(--sx-meta, 11px); }
+  .ss-dlg-body p.sx-del-note { display: flex; gap: 8px; align-items: flex-start; margin: 0; color: var(--t-primary); }
+  .sx-del-note svg { flex: none; width: 14px; height: 14px; margin-top: 2px; color: var(--t-secondary); }
+  .sx-del-note--danger svg { color: var(--sx-err); }
+  .sx-del-field { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
+  .sx-del-label { color: var(--t-primary); }
+  .sx-del-word {
+    font: 500 var(--fs-xs)/1 var(--ff-mono, 'JetBrains Mono', monospace); color: var(--t-bright);
+    padding: 2px 6px; margin: 0 2px; border-radius: 4px; background: var(--s-medium); border: 1px solid var(--b-light);
+  }
+  .sx-del-input {
+    width: 100%; height: 32px; padding: 0 10px; box-sizing: border-box;
+    background: var(--sx-field, rgba(255,255,255,0.04)); border: 1px solid var(--b-light); border-radius: 5px;
+    color: var(--t-bright); font: 400 var(--fs-xs)/1 var(--ff-mono, 'JetBrains Mono', monospace);
+    transition: border-color 0.12s, box-shadow 0.12s;
+  }
+  .sx-del-input:hover { border-color: var(--b-visible); }
+  .sx-del-input:focus { outline: none; border-color: color-mix(in oklab, var(--sx-err) 55%, transparent); box-shadow: 0 0 0 3px color-mix(in oklab, var(--sx-err) 14%, transparent); }
+  @media (max-width: 520px) {
+    .sx-del-item { grid-template-columns: 18px minmax(0, 1fr) auto; }
+    .sx-del-kind { display: none; }
+  }
+
+  /* ── The fix panel (sx-fixes-view.js): a card per problem, its meaning and its buttons ── */
+  .sx .sx-health--fix { cursor: pointer; font-family: inherit; transition: filter 0.12s, border-color 0.12s; }
+  .sx .sx-health--fix:hover { filter: brightness(1.15); border-color: currentColor; }
+  .sx .sx-health--fix:focus-visible { outline: 2px solid var(--sx-focus); outline-offset: 1px; }
+  .sx-fix-panel { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+  .sx-fix-card { padding: 10px 12px; border: 1px solid var(--b-subtle); border-left-width: 3px; border-radius: 9px; background: var(--s-light); }
+  .sx-fix-card--err { border-left-color: var(--sx-err); }
+  .sx-fix-card--warn { border-left-color: var(--sx-warn); }
+  .sx-fix-card--info { border-left-color: var(--b-visible); }
+  .sx-fix-card-head { display: flex; align-items: center; gap: 8px; color: var(--t-bright); }
+  .sx-fix-card-head svg { width: 14px; height: 14px; flex: none; }
+  .sx-fix-card--err .sx-fix-card-head svg { color: var(--sx-err); }
+  .sx-fix-card--warn .sx-fix-card-head svg { color: var(--sx-warn); }
+  .sx-fix-mode { margin-left: auto; font-size: var(--sx-meta, 11px); line-height: 1; padding: 4px 7px; border-radius: 5px; border: 1px solid var(--b-light); color: var(--t-secondary); white-space: nowrap; }
+  .sx-fix-mode--auto { color: var(--sx-ok); border-color: color-mix(in oklab, var(--sx-ok) 35%, transparent); }
+  .ss-dlg-body p.sx-fix-explain { margin: 6px 0 8px; color: var(--t-primary); }
+  .sx-fix-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .sx-fix-actions .sx-dim { margin: 0; }
+  .sx-fix-preview { margin: 4px 0 0; padding: 0; list-style: none; border: 1px solid var(--b-subtle); border-radius: 9px; background: var(--s-light); }
+  .sx-fix-preview-row { padding: 7px 12px; color: var(--t-primary); }
+  .sx-fix-preview-row + .sx-fix-preview-row { border-top: 1px solid var(--b-subtle); }
+  .sx-fix-choose { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+  .sx-fix-choice { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--b-subtle); border-radius: 9px; cursor: pointer; }
+  .sx-fix-choice:has(input:checked) { border-color: var(--b-visible); background: var(--s-light); }
+  .sx-fix-choice:has(input:disabled) { opacity: 0.5; cursor: default; }
+  .sx .sx-fix-notice .sx-btn { flex: none; }
 
   /* ── An import's review ── */
   .ss-review { display: flex; flex-direction: column; gap: 8px; }
@@ -22009,7 +22282,7 @@
   .as-launch-profile[data-profile="codex"].active .as-launch-profile-name {
     color: hsla(160, 45%, 72%, 0.95);
   }
-  .as-launch-profile[data-profile="gemini"].active .as-launch-profile-name {
+  .as-launch-profile[data-profile="antigravity"].active .as-launch-profile-name {
     color: hsla(210, 55%, 78%, 0.95);
   }
   .as-launch-profile-name {
@@ -28029,16 +28302,8 @@
   color: #000;
   border-color: var(--c-accent, #6aa9ff);
 }
-.sm-pr-select {
-  flex: 1;
-  background: var(--s-subtle, rgba(255,255,255,0.04));
-  color: var(--t-primary, #fff);
-  border: 1px solid var(--b-subtle, rgba(255,255,255,0.1));
-  border-radius: var(--r-small, 6px);
-  padding: 6px 8px;
-  font-size: 11px;
-}
-.sm-pr-select:disabled { opacity: 0.5; }
+/* The model list is the app's styled dropdown (cc-dropdown.js): it takes the row's width. */
+.sm-pr-row > .cc-dropdown.sm-pr-dropdown { flex: 1; min-width: 0; }
 
 /* ── Section labels ── */
 .sm-section-label {
