@@ -537,16 +537,23 @@ function migrateSourceToCurrentWindow(provider, sourceKey) {
 
 async function openProvider(provider, tabIdValue, sourceKey) {
   migrateSourceToCurrentWindow(provider, sourceKey);
-  if (provider === 'claude') {
-    if (!isClaudePanelOpen()) await toggleClaudePanel();
-  } else if (provider === 'codex') {
-    if (!isCodexPanelOpen()) await toggleCodexPanel();
-  } else if (provider === 'opencode') {
-    if (!isOpencodePanelOpen()) await toggleOpencodePanel();
-  } else if (provider === 'antigravity') {
-    if (!isAntigravityPanelOpen()) await toggleAntigravityPanel();
+  if (tabIdValue) globalThis.__synabunPendingTab = { provider, tabId: String(tabIdValue) };
+  try {
+    if (provider === 'claude') {
+      if (!isClaudePanelOpen()) await toggleClaudePanel();
+    } else if (provider === 'codex') {
+      if (!isCodexPanelOpen()) await toggleCodexPanel();
+    } else if (provider === 'opencode') {
+      if (!isOpencodePanelOpen()) await toggleOpencodePanel();
+    } else if (provider === 'antigravity') {
+      if (!isAntigravityPanelOpen()) await toggleAntigravityPanel();
+    }
+    emit(PROVIDERS[provider]?.eventName, { tabId: tabIdValue });
+  } finally {
+    if (globalThis.__synabunPendingTab?.provider === provider) {
+      globalThis.__synabunPendingTab = null;
+    }
   }
-  emit(PROVIDERS[provider]?.eventName, { tabId: tabIdValue });
 }
 
 function createPlaceholder(provider, payload, tab, index) {

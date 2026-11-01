@@ -125,6 +125,10 @@ export function injectStyles() {
       opacity: 1;
       overflow: visible;
     }
+    /* Windows: the shell is 92% opaque, so the blur behind it barely shows, yet Chromium recomputes it on every
+       repaint inside the panel (a transcript rendering, a stream). There it goes; the colour stays. */
+    html.platform-win32 .codex-panel,
+    html.desktop-titlebar--win32 .codex-panel { backdrop-filter: none; -webkit-backdrop-filter: none; }
     /* A floating terminal is promoted above the panel when focused. Raise the
        whole stacking context while a footer menu is open so it stays visible. */
     .codex-panel:has(.cxp-dropdown.open) {

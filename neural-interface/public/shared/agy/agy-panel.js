@@ -196,7 +196,11 @@ function saveTabs() {
 function loadTabs() {
   const { tabs, activeIdx } = restoreTabs(storage.getItem(STOR.tabs));
   _tabs = tabs;
-  _activeIdx = activeIdx;
+  const pendingTabId = globalThis.__synabunPendingTab?.provider === 'antigravity'
+    ? String(globalThis.__synabunPendingTab.tabId || '')
+    : '';
+  const pendingIdx = pendingTabId ? _tabs.findIndex((tab) => String(tab.id) === pendingTabId) : -1;
+  _activeIdx = pendingIdx >= 0 ? pendingIdx : activeIdx;
 }
 
 // ── The socket ──
@@ -2327,15 +2331,20 @@ function applyVisibility(next) {
   window.dispatchEvent(new Event('resize'));
 }
 
+let _projectsPromise = null;
 async function ensureProjects() {
   if (_projects.length) return;
-  try {
-    const data = await fetchProjects();
-    _projects = Array.isArray(data?.projects) ? data.projects.filter((p) => p && typeof p.path === 'string') : [];
-  } catch { _projects = []; }
-  for (const tab of _tabs) if (!tab.project && _projects[0]) tab.project = storage.getItem(STOR.project) || _projects[0].path;
-  renderProjectBar();
-  scheduleRender();
+  if (_projectsPromise) return _projectsPromise;
+  _projectsPromise = (async () => {
+    try {
+      const data = await fetchProjects();
+      _projects = Array.isArray(data?.projects) ? data.projects.filter((p) => p && typeof p.path === 'string') : [];
+    } catch { _projects = []; }
+    for (const tab of _tabs) if (!tab.project && _projects[0]) tab.project = storage.getItem(STOR.project) || _projects[0].path;
+    renderProjectBar();
+    scheduleRender();
+  })().finally(() => { _projectsPromise = null; });
+  return _projectsPromise;
 }
 
 function ensurePanel() {
@@ -2376,8 +2385,8 @@ export function bootAntigravityPanel() { ensurePanel(); }
 export async function toggleAntigravityPanel() {
   ensurePanel();
   if (_visible) { setVisible(false); return; }
-  await ensureProjects();
   setVisible(true);
+  await ensureProjects();
 }
 /**
  * Opens the panel with text in the composer (and a file path attached, when given). `newTab`: in a tab of its own;

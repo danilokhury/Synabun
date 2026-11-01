@@ -1799,6 +1799,12 @@
                 0 8px 20px rgba(0,0,0,0.25),
                 0 24px 48px rgba(0,0,0,0.18);
   }
+  html.platform-win32 .menubar-dropdown,
+  html.platform-win32 .menubar-submenu {
+    background: rgba(28, 28, 32, 0.98);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 
   /* Arrow caret — seamless extension of the container */
   .menubar-dropdown::before {
@@ -6448,6 +6454,7 @@
   #topright-controls > #term-minimized-tray > .term-minimized-pill .term-minimized-pill-label,
   #topright-controls > #term-minimized-tray > .term-minimized-pill:hover .term-minimized-pill-label {
     max-width: clamp(28px, calc(var(--topright-band) - var(--topright-tray-inset) - 62px), 100px);
+    transition: none;
   }
 
   /* ── Thin divider between groups ── */
@@ -8705,9 +8712,8 @@
     z-index: 500000;
     padding: 5px 10px;
     border-radius: 6px;
-    background: rgba(30, 34, 44, 0.92);
+    background: rgba(26, 30, 40, 0.96);
     border: 1px solid rgba(255,255,255,0.08);
-    backdrop-filter: blur(12px);
     color: rgba(255,255,255,0.85);
     font-size: 12.5px;
     font-family: inherit;
@@ -9974,7 +9980,14 @@
   .sm-backdrop.backdrop-hidden,
   .ig-backdrop.backdrop-hidden {
     opacity: 0 !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
     pointer-events: none;
+  }
+  html.platform-win32 .studio-backdrop {
+    background: rgba(5, 5, 8, 0.62);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 
   /* ── Settings Panel (draggable/pinnable) ── */
@@ -24843,6 +24856,16 @@
       animation: none !important;
       transition: none !important;
     }
+  }
+  html.platform-win32 .term-minimized-pill,
+  html.desktop-titlebar--win32 .term-minimized-pill {
+    background: rgba(20, 20, 26, 0.94);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  html.platform-win32 .term-minimized-pill:hover,
+  html.desktop-titlebar--win32 .term-minimized-pill:hover {
+    background: rgba(30, 30, 38, 0.96);
   }
 
   /* Genie minimize/restore animation on floating tabs (class toggled by

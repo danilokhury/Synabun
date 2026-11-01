@@ -3264,7 +3264,10 @@ export function resolveHistoryRenderSource(thread, fallbackItems = null, storedS
 // `authoritative`: the thread's turns are its whole history (a revert reply),
 // so the saved rendering is never used in their place, even when none remain.
 export function renderHistory(thread, fallbackItems = null, { authoritative = false } = {}) {
-  _ctx.flushThreadSnapshotSave(_ctx.boundTab);
+  // A save still pending for what is on screen is written before the transcript is rebuilt; with nothing
+  // pending there is nothing to keep (no forced serialisation of the whole transcript on every open).
+  const pendingTab = _ctx.boundTab;
+  if (pendingTab?.snapshotTimer || pendingTab?.snapshotIdleHandle) _ctx.flushThreadSnapshotSave(pendingTab);
   const preservedTokenUsage = thread?.id && _ctx.threadId && thread.id === _ctx.threadId
     ? _ctx.threadTokenUsage
     : null;
@@ -3341,7 +3344,7 @@ export function renderHistory(thread, fallbackItems = null, { authoritative = fa
   });
   _ctx.hideEmpty();
   _ctx.scrollEnd(true);
-  _ctx.flushThreadSnapshotSave(_ctx.boundTab);
+  _ctx.scheduleThreadSnapshotSave(_ctx.boundTab);
   renderPostPlanActions(_ctx.boundTab);
   renderPostCompactionActions(_ctx.boundTab);
 }

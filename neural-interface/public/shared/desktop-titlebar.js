@@ -27,7 +27,7 @@
 
 import { desktopWindow } from './desktop-bridge.js';
 import { colorSender, textTone } from './desktop-titlebar-page.js';
-import { barCovered, changedClasses, drawnUnderBar, fallbackTitlebarArea, overlayColorsFor, stackLevel, styleChange, titleBarActive } from './desktop-titlebar-view.js';
+import { barCovered, changedClasses, drawnUnderBar, fallbackTitlebarArea, isPassiveOverlay, overlayColorsFor, stackLevel, styleChange, titleBarActive } from './desktop-titlebar-view.js';
 import { t } from './i18n.js';
 
 const MENU_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg>';
@@ -52,6 +52,7 @@ export function initDesktopTitleBar({ doc = document, view = window } = {}) {
   const facts = api.titleBar;
   const html = doc.documentElement;
   html.classList.add('desktop-titlebar', `desktop-titlebar--${facts.platform}`);
+  if (facts.platform === 'win32') html.classList.add('platform-win32');
   const wco = view.navigator?.windowControlsOverlay || null;
   let state = { maximized: false, fullScreen: false, focused: true };
   const send = colorSender(api, doc);
@@ -168,14 +169,22 @@ export function initDesktopTitleBar({ doc = document, view = window } = {}) {
     return null;
   };
   const hasElement = (nodes) => { for (const node of nodes || []) if (node?.nodeType === 1) return true; return false; };
+  const onlyPassiveElements = (nodes) => {
+    for (const node of nodes || []) if (node?.nodeType === 1 && !isPassiveOverlay(node)) return false;
+    return true;
+  };
   // Each change → [IGNORE | SOON | NOW, whether the bar has to be measured].
   const QUIET = [IGNORE, false];
   const childListChange = (record) => {
     if (!hasElement(record.addedNodes) && !hasElement(record.removedNodes)) return QUIET; // text
     const target = record.target;
-    if (target === body) { judgeAgain(); return [NOW, true]; } // an overlay's root; a sibling selector may match anew
+    if (target === body) {
+      if (onlyPassiveElements(record.addedNodes) && onlyPassiveElements(record.removedNodes)) return QUIET;
+      judgeAgain();
+      return [NOW, true]; // an overlay's root; a sibling selector may match anew
+    }
     const part = partOf(target);
-    if (!part || part === bar) return QUIET; // off the page, or what the bar holds: that counts as the bar
+    if (!part || part === bar || isPassiveOverlay(part)) return QUIET; // off the page, passive tooltip, or inside the bar
     toJudge.add(part);
     if (target === part) return [NOW, true]; // an overlay's root got or lost a child (:empty, :has() can show it)
     return [SOON, !underBar.has(part)];
@@ -189,7 +198,7 @@ export function initDesktopTitleBar({ doc = document, view = window } = {}) {
       return [NOW, true];
     }
     const part = partOf(target);
-    if (!part) return QUIET;
+    if (!part || isPassiveOverlay(part)) return QUIET;
     if (part === bar) return target === bar ? [NOW, true] : QUIET;
     toJudge.add(part);
     // Shown, hidden or restacked: on the next frame; only moved, sized or repainted: at the throttled pace. Inside a

@@ -197,3 +197,15 @@ export function drawnUnderBar(style, barLevel) {
   const level = Number.isFinite(z) ? (positioned ? z : Math.max(z, 0)) : 0;
   return level < barLevel;
 }
+
+/**
+ * True for a body-level overlay that never receives pointer events on itself or any child (such as `.ui-tooltip` or
+ * `#synabun-desktop-drag-strip`), so its hover/move mutations can never cover the bar's drag region.
+ */
+export function isPassiveOverlay(node) {
+  if (!node || typeof node !== 'object') return false;
+  if (node.id === 'synabun-desktop-drag-strip') return true;
+  if (typeof node.classList?.contains === 'function' && node.classList.contains('ui-tooltip')) return true;
+  const cls = typeof node.className === 'string' ? node.className : '';
+  return /(?:^|\s)ui-tooltip(?:\s|$)/.test(cls);
+}

@@ -19,13 +19,15 @@ export class PathConfineError extends Error {
 export const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const isSessionId = (id) => typeof id === 'string' && SESSION_ID_RE.test(id);
 
-const fold = process.platform === 'win32' ? (s) => s.toLowerCase() : (s) => s;
+const foldForPlatform = (platform = process.platform) => (platform === 'win32' ? (s) => s.toLowerCase() : (s) => s);
+const fold = foldForPlatform();
 
 /** True when `target` is below `root` (or is `root` itself, with allowRoot). Lexical: both are resolved first. */
-export function isInside(root, target, { allowRoot = false } = {}) {
+export function isInside(root, target, { allowRoot = false, platform = process.platform } = {}) {
   if (!root || !target) return false;
-  const r = fold(resolve(String(root)));
-  const t = fold(resolve(String(target)));
+  const f = platform === process.platform ? fold : foldForPlatform(platform);
+  const r = f(resolve(String(root)));
+  const t = f(resolve(String(target)));
   if (t === r) return allowRoot;
   return t.startsWith(r.endsWith(sep) ? r : r + sep);
 }
@@ -83,28 +85,29 @@ export function isInsideReal(root, target, { allowRoot = false, fs = realFs } = 
  * @param o.projectsDir <config dir>/projects of the account
  * @param o.pathToKey   (projectPath) => the folder name Claude Code uses for it
  */
-export function findSessionTranscript({ sessionId, project = '', projects = [], projectsDir, pathToKey, exists = existsSync, realpath = realpathSync } = {}) {
+export function findSessionTranscript({ sessionId, project = '', projects = [], projectsDir, pathToKey, exists = existsSync, realpath = realpathSync, platform = process.platform } = {}) {
   if (!isSessionId(sessionId)) throw new PathConfineError(400, 'Not a session id');
   if (!projectsDir || typeof pathToKey !== 'function') return null;
+  const foldPath = platform === process.platform ? fold : foldForPlatform(platform);
   const known = (Array.isArray(projects) ? projects : []).filter(p => p?.path);
-  const wanted = typeof project === 'string' && project ? resolve(project) : '';
+  const wanted = typeof project === 'string' && project ? foldPath(resolve(project)) : '';
   let order = known;
   if (wanted) {
-    const named = known.find(p => resolve(p.path) === wanted);
+    const named = known.find(p => foldPath(resolve(p.path)) === wanted);
     if (!named) throw new PathConfineError(400, 'Not a registered project');
     order = [named];
   }
   for (const proj of order) {
     const key = String(pathToKey(proj.path) || '');
     // Claude Code has written the drive letter in both cases on Windows.
-    const keys = [...new Set([key.replace(/^([A-Z])/, m => m.toLowerCase()), key])].filter(isPlainName);
+    const keys = [...new Set([key.replace(/^([A-Z])/, m => m.toLowerCase()), key.replace(/^([a-z])/, m => m.toUpperCase()), key])].filter(isPlainName);
     for (const k of keys) {
       const folder = join(projectsDir, k);
       const candidate = join(folder, `${sessionId}.jsonl`);
       if (!exists(candidate)) continue;
       let realFile; let realFolder;
       try { realFile = realpath(candidate); realFolder = realpath(folder); } catch { continue; }
-      if (!isInside(realFolder, realFile)) continue;
+      if (!isInside(realFolder, realFile, { platform })) continue;
       // `realPath` / `realFolder`: the canonical paths that were just checked.
       // The transcript is read from those (lib/confined-fs.js), not from the
       // name it was found under, which could be swapped for a link afterwards.

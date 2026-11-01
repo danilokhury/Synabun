@@ -927,11 +927,12 @@ function wireEvents() {
 
 
   on('codex-panel:show', async (data) => {
-    setVisible(true);
     if (data?.tabId) {
       const idx = _tabs.findIndex((entry) => entry.id === data.tabId);
       if (idx >= 0) switchTab(idx);
     }
+    setVisible(true);
+    ensureProjectsLoaded().catch(() => {});
   });
 
   const findPlanEditorTab = ({ source, tabId, planId, accountId, threadId } = {}) => {
@@ -1108,8 +1109,8 @@ export async function toggleCodexPanel() {
     setVisible(false);
     return;
   }
-  await ensureProjectsLoaded();
   setVisible(true);
+  await ensureProjectsLoaded();
 }
 
 export async function attachCodexAutomation(run, {

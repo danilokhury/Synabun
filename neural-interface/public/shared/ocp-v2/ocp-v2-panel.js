@@ -1616,7 +1616,12 @@ async function boot() {
         // the session on screen stays.
         renderPill();
       } else if (liveTabs.length) {
-        const targetSid = liveTabs[liveTabs.length - 1];
+        const pendingSid = globalThis.__synabunPendingTab?.provider === 'opencode'
+          ? String(globalThis.__synabunPendingTab.tabId || '')
+          : '';
+        const targetSid = (pendingSid && liveTabs.includes(pendingSid))
+          ? pendingSid
+          : liveTabs[liveTabs.length - 1];
         const targetInfo = _tabInfoCache.get(targetSid) || null;
         bootNav.apply(() => {
           setSession(targetSid, targetInfo);
@@ -2436,9 +2441,13 @@ async function handlePillClose(sessionId, { byUser = false } = {}) {
 }
 
 // Sub-agent child panel coordination ─────────────────────────────────────────
-on('opencode-panel:show', async () => {
+on('opencode-panel:show', async (data) => {
   try {
+    const requestedId = typeof data?.tabId === 'string' ? data.tabId : '';
     await showPrimaryOpencodePanel();
+    if (requestedId && _tabSessionIds.includes(requestedId)) {
+      await switchToSession(requestedId, _tabInfoCache.get(requestedId) || null);
+    }
   } catch (err) {
     console.warn('[ocp-v2-panel] show request failed', err);
   }

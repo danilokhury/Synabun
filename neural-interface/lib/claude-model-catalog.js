@@ -324,7 +324,7 @@ export function queryClaudeCliModels(claudeBin, { cwd, timeoutMs = DISCOVERY_TIM
 // re-discovers. A list that is merely old is still given at once, and the CLI is
 // asked again in the background (one discovery at a time): only a first read, a
 // changed key or `force` waits for the CLI.
-export async function discoverClaudeModels(claudeBin, { force = false, cwd, query = queryClaudeCliModels, account = '' } = {}) {
+export async function discoverClaudeModels(claudeBin, { force = false, nonBlocking = false, cwd, query = queryClaudeCliModels, account = '' } = {}) {
   const bin = String(claudeBin || '');
   const key = cacheKeyOf(bin, account);
   adoptStoredModels(key);
@@ -332,6 +332,10 @@ export async function discoverClaudeModels(claudeBin, { force = false, cwd, quer
   if (!force && known) {
     if (Date.now() - _cache.at >= CACHE_TTL_MS) discover(bin, key, cwd, query).catch(() => {});
     return { source: 'cache', models: _cache.models };
+  }
+  if (!force && nonBlocking) {
+    discover(bin, key, cwd, query).catch(() => {});
+    return { source: 'fallback', models: [...CLAUDE_FALLBACK_MODELS] };
   }
   return discover(bin, key, cwd, query);
 }

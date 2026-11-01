@@ -284,20 +284,29 @@ export async function rehydratePanelSession(store, api, {
   const left = () => { out.moved = true; return out; };
   if (!current()) return left();
 
-  if (refreshInfo) {
+  if (refreshInfo && requireInfo) {
     let res;
     try { res = await api.sessionGet(sessionId); } catch (err) { res = { ok: false, error: err?.message || String(err) }; }
     if (!current()) return left();
     if (!replyFailed(res) && res.data) { store.setSession(sessionId, res.data); out.info = true; }
-    else if (requireInfo) {
+    else {
       out.unavailable = true;
       out.error = (typeof res?.error === 'string' && res.error) || `Session ${String(sessionId).slice(0, 8)} is unavailable`;
       return out;
     }
-    // Otherwise the transcript may still answer.
   }
+  const infoTask = (refreshInfo && !requireInfo)
+    ? (async () => {
+        let res;
+        try { res = await api.sessionGet(sessionId); } catch (err) { res = { ok: false, error: err?.message || String(err) }; }
+        if (!current()) return false;
+        if (!replyFailed(res) && res.data) { store.setSession(sessionId, res.data); out.info = true; }
+        return true;
+      })()
+    : null;
   const transcript = await hydrateTranscript(store, api, { sessionId, isCurrent: current });
-  if (transcript.superseded) return left();
+  if (infoTask) await infoTask;
+  if (!current() || transcript.superseded) return left();
   out.transcript = transcript.applied;
   if (!transcript.applied) out.error = transcript.error;
   const s = store.getState();

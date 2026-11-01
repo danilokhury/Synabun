@@ -45,6 +45,10 @@ const CSS = `
   opacity: 1;
   overflow: visible;
 }
+/* Windows: the shell is 92% opaque, so the blur behind it barely shows, yet Chromium recomputes it on every
+   repaint inside the panel (a transcript rendering, a stream). There it goes; the colour stays. */
+html.platform-win32 .ocpv2-panel,
+html.desktop-titlebar--win32 .ocpv2-panel { backdrop-filter: none; -webkit-backdrop-filter: none; }
 /* Keep footer menus above focused floating terminal windows. */
 .ocpv2-panel:has(.ocpv2-dropdown.open) {
   z-index: 99999;
@@ -463,6 +467,19 @@ const CSS = `
     rgba(232,224,220,0.75) 75%,
     rgba(232,224,220,0.0) 100%
   );
+}
+html.platform-win32 .ocpv2-session-pill.ocpv2-pill-running,
+html.desktop-titlebar--win32 .ocpv2-session-pill.ocpv2-pill-running {
+  border-color: rgba(232, 224, 220, 0.38);
+}
+html.platform-win32 .ocpv2-session-pill.ocpv2-pill-running:hover,
+html.desktop-titlebar--win32 .ocpv2-session-pill.ocpv2-pill-running:hover {
+  border-color: rgba(232, 224, 220, 0.58);
+}
+html.platform-win32 .ocpv2-session-pill.ocpv2-pill-running::before,
+html.desktop-titlebar--win32 .ocpv2-session-pill.ocpv2-pill-running::before {
+  animation: none;
+  opacity: 0;
 }
 .ocpv2-session-pill.ocpv2-pill-running .term-minimized-pill-label::before {
   content: '';

@@ -4,6 +4,7 @@
 // ═══════════════════════════════════════════
 
 import { boundsForPoint, frameRect } from './app-frame.js';
+import { isWindowsPlatform } from './desktop-bridge.js';
 
 /**
  * Initialize the tooltip system.
@@ -11,9 +12,16 @@ import { boundsForPoint, frameRect } from './app-frame.js';
  * mouseover/mouseout on any [data-tooltip] elements.
  */
 export function initTooltip() {
+  if (document.documentElement?.classList) {
+    document.documentElement.classList.toggle('platform-win32', isWindowsPlatform(globalThis.window));
+  }
   const tip = document.createElement('div');
   tip.className = 'ui-tooltip';
-  tip.innerHTML = '<span class="ui-tooltip-arrow"></span><span class="ui-tooltip-text"></span>';
+  const arrowEl = document.createElement('span');
+  arrowEl.className = 'ui-tooltip-arrow';
+  const textEl = document.createElement('span');
+  textEl.className = 'ui-tooltip-text';
+  tip.append(arrowEl, textEl);
   document.body.appendChild(tip);
 
   let showTimer = null;
@@ -29,7 +37,12 @@ export function initTooltip() {
   // control's tooltip over the open menu: while one is open, the control stays
   // quiet.
   const OPEN_MENU_INSIDE = '.cp-dropdown.open > .cp-dd-menu, .cxp-dropdown.open > .cxp-dd-menu, .ocpv2-dropdown.open > .ocpv2-dd-menu';
-  function openMenuInside(el) { return !!el.querySelector(OPEN_MENU_INSIDE); }
+  function openMenuInside(el) {
+    if (el.classList?.contains('term-minimized-pill') || el.classList?.contains('term-minimized-pill-close')) return false;
+    return !!el.querySelector(OPEN_MENU_INSIDE);
+  }
+
+  const rectKey = (r) => r.left + ',' + r.top + ',' + r.width + ',' + r.height;
 
   // Swap the placement class only: a reposition (the follow loop below) must keep .visible.
   function setPlacement(placement) {
@@ -37,8 +50,8 @@ export function initTooltip() {
     tip.classList.add(placement);
   }
 
-  function positionTip(el) {
-    const r = el.getBoundingClientRect();
+  function positionTip(el, knownRect = null) {
+    const r = knownRect || el.getBoundingClientRect();
     const tw = tip.offsetWidth;
     const th = tip.offsetHeight;
     const gap = 8;
@@ -57,7 +70,7 @@ export function initTooltip() {
         tip.style.top = (r.top + r.height / 2 - th / 2) + 'px';
         tip.style.left = (anchorLeft - gap - tw) + 'px';
         tip.style.setProperty('--arrow-y', (th / 2) + 'px');
-        return;
+        return { rect: r, width: tw };
       }
     }
 
@@ -70,7 +83,7 @@ export function initTooltip() {
       tip.style.top = (r.top + r.height / 2 - th / 2) + 'px';
       tip.style.left = (anchorRight + gap) + 'px';
       tip.style.setProperty('--arrow-y', (th / 2) + 'px');
-      return;
+      return { rect: r, width: tw };
     }
 
     // Elements near the top (title bar) → force below
@@ -90,6 +103,7 @@ export function initTooltip() {
     const arrowLeft = r.left + r.width / 2 - left;
     tip.style.setProperty('--arrow-x', arrowLeft + 'px');
     tip.style.setProperty('--arrow-y', '');
+    return { rect: r, width: tw };
   }
 
   function suppressTitle(el) {
@@ -98,10 +112,16 @@ export function initTooltip() {
       el._savedTitle = el.getAttribute('title');
       el.removeAttribute('title');
     }
-    el.querySelectorAll('[title]').forEach(child => {
-      child._savedTitle = child.getAttribute('title');
-      child.removeAttribute('title');
-    });
+    const titledChildren = [...el.querySelectorAll('[title]')];
+    if (titledChildren.length) {
+      el._savedTitleNodes = titledChildren;
+      for (const child of titledChildren) {
+        child._savedTitle = child.getAttribute('title');
+        child.removeAttribute('title');
+      }
+    } else {
+      delete el._savedTitleNodes;
+    }
   }
 
   function restoreTitle(el) {
@@ -109,12 +129,15 @@ export function initTooltip() {
       el.setAttribute('title', el._savedTitle);
       delete el._savedTitle;
     }
-    el.querySelectorAll('*').forEach(child => {
-      if (child._savedTitle !== undefined) {
-        child.setAttribute('title', child._savedTitle);
-        delete child._savedTitle;
+    if (el._savedTitleNodes) {
+      for (const child of el._savedTitleNodes) {
+        if (child._savedTitle !== undefined) {
+          child.setAttribute('title', child._savedTitle);
+          delete child._savedTitle;
+        }
       }
-    });
+      delete el._savedTitleNodes;
+    }
   }
 
   function show(el) {
@@ -122,7 +145,6 @@ export function initTooltip() {
     if (!text || openMenuInside(el)) return;
     clearTimeout(hideTimer);
     suppressTitle(el);
-    const textEl = tip.querySelector('.ui-tooltip-text');
     const nlIdx = text.indexOf('\n');
     if (nlIdx !== -1) {
       let main = text.slice(0, nlIdx);
@@ -141,37 +163,22 @@ export function initTooltip() {
     }
     currentTarget = el;
     tip.style.display = 'block';
-    tip.offsetHeight; // force reflow so dimensions are measurable
-    positionTip(el);
+    const { rect: initialRect, width: initialWidth } = positionTip(el);
     tip.classList.add('visible');
-    // Re-position on next frame — first show after display:none can mis-measure
-    requestAnimationFrame(() => {
-      if (currentTarget === el) {
-        positionTip(el);
-        tip.classList.add('visible');
-      }
-    });
-    // Some targets resize on hover (e.g. tray pill label expands max-width
-    // 100→300px over ~300ms). Without follow-up positioning, the tooltip
-    // stays anchored to the un-expanded rect and the pill grows leftward
-    // over it. Drive a rAF loop for the duration of any size/position
-    // transition so the tooltip tracks the target.
-    const followFor = 360; // ms — upper bound, slightly longer than the longest pill transition
-    const stopAt = performance.now() + followFor;
-    // Self-terminate once the target stops moving: a static target (the vast
-    // majority of tooltips) settles in ~2 frames instead of running the full
-    // 360ms rAF/getBoundingClientRect loop, while an animating pill keeps being
-    // followed until it settles or the cap is hit.
-    let lastRectKey = '';
+
+    // Follow targets that actually animate their geometry on hover (via transitionrun),
+    // without polling static targets across multiple rAFs.
+    const followFor = 360;
+    let stopAt = 0;
+    let lastRectKey = rectKey(initialRect);
     let stableTicks = 0;
     const tick = () => {
       repositionRafId = 0;
       if (currentTarget !== el) return;
-      positionTip(el);
-      const r = el.getBoundingClientRect();
-      const key = r.left + ',' + r.top + ',' + r.width + ',' + r.height;
+      const { rect: r } = positionTip(el);
+      const key = rectKey(r);
       if (key === lastRectKey) {
-        if (++stableTicks >= 2) return; // target settled — stop early
+        if (++stableTicks >= 2) return;
       } else {
         stableTicks = 0;
         lastRectKey = key;
@@ -184,6 +191,8 @@ export function initTooltip() {
       if (currentTarget !== el) return;
       if (event.target !== el && !el.contains(event.target)) return;
       if (!/width|max-width|transform|margin|padding|left|right|top|bottom/.test(event.propertyName || '')) return;
+      stopAt = performance.now() + followFor;
+      stableTicks = 0;
       if (!repositionRafId) repositionRafId = requestAnimationFrame(tick);
     };
     repositionEndHandler = (event) => {
@@ -193,9 +202,25 @@ export function initTooltip() {
     };
     el.addEventListener('transitionrun', repositionRunHandler);
     el.addEventListener('transitionend', repositionEndHandler);
-    // Kick off one immediate rAF in case the transition already started on
-    // mouseenter before our listeners attached.
-    if (!repositionRafId) repositionRafId = requestAnimationFrame(tick);
+
+    // One check on the next frame (a single rect read): metrics that settle after display:none, or a
+    // hover transition that began before the listeners above were attached (the 16-20 ms show delay).
+    if (!repositionRafId) {
+      repositionRafId = requestAnimationFrame(() => {
+        repositionRafId = 0;
+        if (currentTarget !== el) return;
+        const r = el.getBoundingClientRect();
+        const key = rectKey(r);
+        if (key !== lastRectKey || tip.offsetWidth !== initialWidth) {
+          lastRectKey = key;
+          positionTip(el, r);
+          if (key !== rectKey(initialRect)) {
+            stopAt = performance.now() + followFor;
+            repositionRafId = requestAnimationFrame(tick);
+          }
+        }
+      });
+    }
   }
 
   function hide() {
@@ -230,7 +255,7 @@ export function initTooltip() {
     clearTimeout(hideTimer);
     if (currentTarget) {
       hide();
-      show(el);
+      showTimer = setTimeout(() => show(el), 16);
     } else {
       showTimer = setTimeout(() => show(el), 20);
     }

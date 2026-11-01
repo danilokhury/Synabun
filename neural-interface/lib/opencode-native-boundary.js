@@ -2,14 +2,23 @@
 // listen time. This is a capability allowlist, not a generic OpenCode version
 // check: 2.1.4's HTTP/upgrade authentication and stdout password path were
 // inspected and tested. Unknown binaries/command wrappers keep the old guard.
+// 2.2.5 (Homebrew anomalyco/tap/opencode-v2) checked 2026-11-01 against throwaway
+// serves on 127.0.0.1: no password variable → it prints "server password <secret>"
+// on stdout; every /api route (session, config, event, pty, shell, file, mcp, and
+// the new tunnel and pairing) answers 401 without it, both plain and as a
+// WebSocket upgrade, and 200 with it; one listener, bound to 127.0.0.1 only.
+// Non-/api paths serve the static web UI (HTML), as before.
+export const NATIVE_SERVE_VERSIONS = Object.freeze(['2.1.4', '2.2.5']);
+
 export function nativeServeCapability({ version, commandLine = false, passwordFrom } = {}) {
-  return !commandLine && passwordFrom === 'stdout' && /^(?:opencode\s+)?v?2\.1\.4$/.test(String(version || '').trim());
+  const bare = String(version || '').trim().replace(/^opencode\s+/, '').replace(/^v/, '');
+  return !commandLine && passwordFrom === 'stdout' && NATIVE_SERVE_VERSIONS.includes(bare);
 }
 
 export function createNativeServeBoundary() {
   const processes = new Map();
   const contexts = new Map();
-  const error = () => new Error('Native browser WebSockets require authenticated OpenCode 2.1.4 serves with private stdout credentials; wait for startup, stop unverified serves or use the verified executable path.');
+  const error = () => new Error(`Native browser WebSockets require authenticated OpenCode ${NATIVE_SERVE_VERSIONS.join(' or ')} serves with private stdout credentials; wait for startup, stop unverified serves or use the verified executable path.`);
   return {
     assertLaunch(safe) { if (!safe && contexts.size) throw error(); },
     track(proc, { port, safe = false }) {

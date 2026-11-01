@@ -1,4 +1,5 @@
 import { cxpText, cxpSessionLabel } from './cdx-copy.js';
+import { codexWantsRolloutPreview, rolloutPreviewApplies } from './cdx-preview.js';
 import { mountCodexSettings } from './cdx-settings.js';
 import { t } from '../i18n.js';
 import { getCliState, isCliInstalling } from '../cli-status.js';
@@ -277,6 +278,16 @@ function closeAutomationHistorySocket(tab) {
   }
 }
 
+// The rollout read before Codex's app-server is up (server.js sendEarlyCodexRolloutPreview): shown only for
+// the thread this tab shows, and only while nothing else (a stored snapshot) is on screen. The real history
+// replaces it.
+function paintRolloutPreview(tab, msg) {
+  const shownThread = String(_boundTab?.threadId || _threadId || '');
+  if (!rolloutPreviewApplies(msg, shownThread, _transcriptSourceType)) return;
+  renderHistory(msg.thread, msg.fallbackItems || null);
+  placeWorkerEnd(tab);
+}
+
 function buildWsCallbacks(tab, options = {}) {
   return {
     onConnecting() {
@@ -309,6 +320,8 @@ function buildWsCallbacks(tab, options = {}) {
           userVerification: true,
           windowId: windowId,
           threadId: _threadId || null,
+          // The early rollout preview only for the tab on screen (server.js sendEarlyCodexRolloutPreview).
+          preview: codexWantsRolloutPreview(tab, _boundTab, _threadId),
           cwd: _project || null,
           accountId: _accountId || 'default',
           ...codexRuntimeSelection(tab),
@@ -450,6 +463,7 @@ function buildWsCallbacks(tab, options = {}) {
       // which rebuilds the transcript: they go back onto it afterwards.
       const heldRequests = heldServerRequests();
       if (msg.thread) {
+        if (msg.preview) { paintRolloutPreview(tab, msg); return; }
         if (_boundTab) {
           _boundTab.expectedThreadId = null;
           _boundTab.expectedThreadRequestId = null;
@@ -757,6 +771,7 @@ let _projectThreads = parseStoredJson(STOR.projectThreads, {});
 // async; getThreadSnapshot returns null pre-hydration and renderHistory falls
 // back to SDK/JSONL items.
 let _threadSnapshots = {};
+let _threadSnapshotsHydrated = false;
 const _threadSnapshotsReady = fetchBlobNamespace('codex-snapshots')
   .then((map) => {
     const valid = {};
@@ -772,7 +787,8 @@ const _threadSnapshotsReady = fetchBlobNamespace('codex-snapshots')
     _threadSnapshots = { ...valid, ..._threadSnapshots };
     try { if (storage.getItem(STOR.threadSnapshots)) storage.removeItem(STOR.threadSnapshots); } catch {}
   })
-  .catch(() => {});
+  .catch(() => {})
+  .finally(() => { _threadSnapshotsHydrated = true; });
 let _tabs = [];
 let _activeTabIdx = -1;
 let _boundTab = null;
@@ -2719,9 +2735,37 @@ export function renderProjects() {
   ddPopulate(projectDropdown, projectItemsForValue(_project), _project);
 }
 
+function paintInitialThreadSnapshot(tab) {
+  if (!tab || tab.closed || !tab.threadId || tab.transcriptSourceType || tab.automationRunId) return false;
+  const expectedThreadId = String(tab.threadId);
+  let painted = false;
+  withTab(tab, () => {
+    const snap = getThreadSnapshot(expectedThreadId);
+    if (!snap) return;
+    painted = renderStoredTranscript(snap, 'Continue this Codex thread or start a fresh one.');
+    if (painted) {
+      updateThreadTokenUsage(tab.threadTokenUsage || snap.threadTokenUsage || null);
+      renderPostPlanActions(tab);
+      renderPostCompactionActions(tab);
+      placeWorkerEnd(tab);
+    }
+  });
+  if (!painted && !_threadSnapshotsHydrated && !tab._pendingSnapshotPaint) {
+    tab._pendingSnapshotPaint = true;
+    _threadSnapshotsReady.finally(() => {
+      tab._pendingSnapshotPaint = false;
+      if (!tab.closed && tab.threadId === expectedThreadId && !tab.transcriptSourceType) {
+        paintInitialThreadSnapshot(tab);
+      }
+    });
+  }
+  return painted;
+}
+
 export function updateActiveTabView() {
   const tab = activeTab();
   if (!_getPanelEl() || !tab) return;
+  paintInitialThreadSnapshot(tab);
   bindTabState(tab);
   _onActiveTabChanged?.(tab);
   _tabs.forEach((entry) => {
@@ -3165,7 +3209,13 @@ export function restoreTabs() {
           if (tab && !tab.automationRunId && (saved.running || saved.startingThread || saved.needsYou)) wereWorking.push(tab);
         }
         if (!_tabs.length) throw new Error('No restorable Codex tabs');
-        _activeTabIdx = Math.min(Math.max(Number(data.activeIdx) || 0, 0), _tabs.length - 1);
+        const pendingTabId = globalThis.__synabunPendingTab?.provider === 'codex'
+          ? String(globalThis.__synabunPendingTab.tabId || '')
+          : '';
+        const pendingIdx = pendingTabId ? _tabs.findIndex((entry) => String(entry.id) === pendingTabId) : -1;
+        _activeTabIdx = pendingIdx >= 0
+          ? pendingIdx
+          : Math.min(Math.max(Number(data.activeIdx) || 0, 0), _tabs.length - 1);
         pruneDiscardableTabs({ keepTab: activeTab(), persist: false });
         if (!_tabs.length) throw new Error('No restorable Codex tabs');
         updateActiveTabView();

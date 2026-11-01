@@ -93,6 +93,10 @@ export function injectAntigravityStyles() {
       color: var(--agy-text);
     }
     .agy-panel.open { transform: translateX(0); opacity: 1; overflow: visible; }
+    /* Windows: the shell is 92% opaque, so the blur behind it barely shows, yet Chromium recomputes it on every
+       repaint inside the panel (a transcript rendering, a stream). There it goes; the colour stays. */
+    html.platform-win32 .agy-panel,
+    html.desktop-titlebar--win32 .agy-panel { backdrop-filter: none; -webkit-backdrop-filter: none; }
     .agy-panel:has(.cc-dropdown.open) { z-index: 99999; }
     .agy-panel :is(a, button, input, textarea, summary, [tabindex]):focus-visible,
     .agy-pop :is(a, button, input, textarea, summary, [tabindex]):focus-visible,

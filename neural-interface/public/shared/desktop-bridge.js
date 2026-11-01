@@ -48,3 +48,20 @@ export function desktopWindow(win = globalThis.window) {
   if (!facts || facts.style !== 'overlay' || !['darwin', 'win32', 'linux'].includes(facts.platform)) return null;
   return api;
 }
+
+/** True on Windows (desktop bridge platform `'win32'`, or Windows browser/window navigator). */
+export function isWindowsPlatform(win = globalThis.window) {
+  const platform = desktopBridge(win)?.platform;
+  if (typeof platform === 'string' && platform) return platform === 'win32';
+  try {
+    const nav = win?.navigator ?? globalThis.navigator;
+    if (!nav || typeof nav !== 'object') return false;
+    const uaPlatform = nav.userAgentData?.platform;
+    if (typeof uaPlatform === 'string' && uaPlatform) return /^win/i.test(uaPlatform);
+    if (typeof nav.platform === 'string' && nav.platform) return /^win/i.test(nav.platform);
+    if (typeof nav.userAgent === 'string' && nav.userAgent) return /\bwindows\b/i.test(nav.userAgent);
+  } catch {
+    return false;
+  }
+  return false;
+}

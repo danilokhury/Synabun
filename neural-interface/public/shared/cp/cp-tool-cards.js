@@ -3,6 +3,7 @@
 // puts that on the card. Live tool results and replayed history take the same
 // path, so a reopened session looks like the live one did.
 
+import { taskResultAppliesTodos } from './cp-restore.js';
 import { cpCtx } from './cp-ctx.js';
 import { escapeHtml } from './cp-markdown.js';
 import {
@@ -212,11 +213,12 @@ export function applyStructuredResult(tab, card, ev) {
     body.appendChild(stats);
   }
   // The task tools keep the list the todo dock shows (root conversation only).
-  if (!tab._agentScope && !ev.is_error) {
+  // A replayed result is already in the list the replay computed; a live one is applied over it.
+  if (taskResultAppliesTodos(tab, ev)) {
     const next = applyTaskTool(tab.todos, name, input, ev.tool_use_result);
     if (next) {
       tab.todos = next;
-      try { cpCtx.renderTodoWidget(tab); } catch {}
+      if (!tab._replaying) { try { cpCtx.renderTodoWidget(tab); } catch {} }
     }
   }
   return { view, content: view.content };
@@ -285,7 +287,12 @@ export function buildHistoryPlanCard(block) {
 
 /** A replayed result for one of the two cards above. True when it was one of them. */
 export function fillHistoryCard($msgs, row) {
-  const card = $msgs.querySelector(`.cp-history-card[data-tool-id="${CSS.escape(String(row.toolUseId || ''))}"]`);
+  const id = String(row.toolUseId || '');
+  let card = null;
+  // A replay indexes the cards it builds (no selector scan per result); a card it did not build is looked up.
+  const indexed = $msgs?._replayCards instanceof Map ? $msgs._replayCards.get(id) : null;
+  if (indexed) card = indexed.classList?.contains('cp-history-card') ? indexed : null;
+  else card = $msgs.querySelector(`.cp-history-card[data-tool-id="${CSS.escape(id)}"]`);
   if (!card) return false;
   if (card.classList.contains('cp-ask-history')) {
     const rows = askAnswerRows(card._toolInput, row.structured, row.isError ? '' : (row.text || ''));

@@ -6,6 +6,7 @@
 
 import { normalizeSession } from './cp-session-model.js';
 import { TOOL_POLICIES, BYPASS_MODE } from './cp-permission-model.js';
+import { applyTaskTool } from './cp-tool-results.js';
 
 const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const PERMISSION_MODES = new Set(['default', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk', 'auto']);
@@ -221,4 +222,165 @@ export function pagerState(dataset, labelText = '') {
   }
   if (!Number.isInteger(start) || !Number.isInteger(total) || start <= 0 || total <= start) return null;
   return { start, total };
+}
+
+/**
+ * Split a history page into `{ head, tail }` so the visible tail (~40 rows) can
+ * paint and scroll immediately while earlier rows prepend in chunked tasks.
+ * Never splits an `assistant` `tool_use` from its matching `tool_result`.
+ */
+export function splitHistoryTail(messages, tailSize = 40) {
+  const list = Array.isArray(messages) ? messages : [];
+  const cap = Math.max(1, Number(tailSize) || 40);
+  if (list.length <= Math.ceil(cap * 1.5)) return { head: [], tail: list };
+  let cut = list.length - cap;
+  const indexOfToolUse = new Map();
+  for (let i = 0; i < list.length; i++) {
+    const m = list[i];
+    if (m?.role === 'assistant' && Array.isArray(m.tools)) {
+      for (const t of m.tools) if (t?.id) indexOfToolUse.set(String(t.id), i);
+    }
+  }
+  for (let i = cut; i < list.length; i++) {
+    const m = list[i];
+    if (m?.role === 'tool_result' && m.toolUseId) {
+      const ownerIdx = indexOfToolUse.get(String(m.toolUseId));
+      if (ownerIdx !== undefined && ownerIdx < cut) cut = ownerIdx;
+    }
+  }
+  while (cut > 0 && list[cut]?.role === 'tool_result') cut--;
+  if (cut <= 0) return { head: [], tail: list };
+  return { head: list.slice(0, cut), tail: list.slice(cut) };
+}
+
+/**
+ * Chronologically replay TaskCreate / TaskUpdate / TaskList results from a
+ * history page so tail-first DOM rendering still preserves exact todo order.
+ */
+export function replayTodosFromMessages(messages, initialTodos = []) {
+  const list = Array.isArray(messages) ? messages : [];
+  const calls = new Map();
+  for (const m of list) {
+    if (m?.role === 'assistant' && Array.isArray(m.tools)) {
+      for (const t of m.tools) {
+        if (t?.id && (t.name === 'TaskCreate' || t.name === 'TaskUpdate' || t.name === 'TaskList')) {
+          calls.set(String(t.id), t);
+        }
+      }
+    }
+  }
+  if (!calls.size) return null;
+  let todos = Array.isArray(initialTodos) ? initialTodos : [];
+  let changed = false;
+  for (const m of list) {
+    if (m?.role !== 'tool_result' || m.isError || !m.toolUseId) continue;
+    const call = calls.get(String(m.toolUseId));
+    if (!call) continue;
+    const next = applyTaskTool(todos, call.name, call.input || {}, m.structured);
+    if (next) {
+      todos = next;
+      changed = true;
+    }
+  }
+  return changed ? todos : null;
+}
+
+// ── One transcript container, several history loads ──
+// A container can be asked for its history more than once while a load is still
+// running (a restored tab shown while its reattach says "resynced", an in-tab
+// session switch). Loads of one container run one after the other, and only the
+// newest asked for renders; rows a rebuild put in are marked so the next one
+// takes them out instead of appending a second copy after them. Rows that came
+// live stay, after the history.
+
+/** The property a history row carries: the load (ticket) that rendered it. */
+export const HISTORY_ROW = '_cpHistoryRow';
+
+export function markHistoryRows(nodes, ticket) {
+  for (const n of nodes || []) if (n && typeof n === 'object') n[HISTORY_ROW] = ticket;
+}
+
+/** Rows an earlier rebuild (finished, aborted, or a snapshot put back) left in the container. */
+export function earlierHistoryRows(children, ticket) {
+  return [...(children || [])].filter((n) => n && n[HISTORY_ROW] != null && n[HISTORY_ROW] !== ticket);
+}
+
+/** Rows that came live: no history mark and not the empty-state placeholder. */
+export function liveRows(children) {
+  return [...(children || [])].filter((n) => n && n[HISTORY_ROW] == null && !n.classList?.contains?.('cp-empty'));
+}
+
+/**
+ * Starts a load of `$msgs`: it waits for the one running there and is skipped when
+ * a newer load was asked for meanwhile. `run(isStale)` does the work; `isStale()`
+ * is true as soon as a newer load was asked for (the running one stops at its next
+ * yield). Returns the promise of this load.
+ */
+export function queueHistoryLoad(container, run) {
+  const ticket = (container._historyTicket || 0) + 1;
+  container._historyTicket = ticket;
+  const isStale = () => container._historyTicket !== ticket;
+  const prev = container._historyChain || Promise.resolve();
+  const job = prev.catch(() => {}).then(() => (isStale() ? undefined : run(isStale, ticket)));
+  container._historyChain = job;
+  return job;
+}
+
+// Messages that put rows in a transcript. One of these for a restored tab whose
+// history is still deferred loads that history first; while any history load of
+// the tab runs, they wait in the tab's buffer, so the history always comes first.
+const TRANSCRIPT_MESSAGES = new Set(['event', 'turn_started', 'stderr', 'done', 'aborted', 'error']);
+
+/** 'load' (start the deferred history, then hold the message), 'hold', or 'pass'. */
+export function historyGate(tab, msg, bypass = false) {
+  if (!tab || bypass) return 'pass';
+  const deferred = !!tab._historyDeferred && tab._historyDeferred === tab.sessionId && !tab.automationRunId;
+  if (deferred && TRANSCRIPT_MESSAGES.has(msg?.type)) return 'load';
+  if (tab._historyHold > 0) return 'hold';
+  return 'pass';
+}
+
+/**
+ * A live tool result whose card a running replay has not rendered yet (it sits in
+ * a head chunk still to come) is kept here and applied when the card is built.
+ */
+export function holdPendingResult(tab, ev) {
+  if (!tab || !ev?.tool_use_id || !(tab._historyRendering > 0) || tab._replayRow) return false;
+  if (!(tab._pendingResults instanceof Map)) tab._pendingResults = new Map();
+  tab._pendingResults.set(String(ev.tool_use_id), ev);
+  return true;
+}
+
+export function takePendingResult(tab, toolUseId) {
+  const map = tab?._pendingResults;
+  if (!(map instanceof Map) || !toolUseId) return null;
+  const ev = map.get(String(toolUseId)) || null;
+  if (ev) map.delete(String(toolUseId));
+  return ev;
+}
+
+/** Whether a task tool's result may change the todo list now (a replayed one is in the precomputed list). */
+export function taskResultAppliesTodos(tab, ev) {
+  if (!tab || tab._agentScope || ev?.is_error) return false;
+  return !(tab._skipReplayTodos && tab._replayRow);
+}
+
+/**
+ * Renders `rows` with `render(row)` (which appends to `container`), marks the
+ * nodes it added as load `ticket`'s and moves them before `before` (a live row,
+ * or the first row of the tail already shown), so rows already on screen are
+ * never moved or rebuilt: the browser's scroll anchoring keeps a reader who
+ * scrolled up where they were while older rows go in above. `skip` holds nodes
+ * that are never taken as added (the live rows). Returns the added nodes.
+ */
+export function renderHistoryRowsInto(container, rows, render, { before = null, ticket = null, skip = null } = {}) {
+  const marker = container.lastElementChild;
+  for (const row of rows || []) render(row);
+  const added = [];
+  for (let n = marker ? marker.nextElementSibling : container.firstElementChild; n; n = n.nextElementSibling) {
+    if (!skip || !skip.has(n)) added.push(n);
+  }
+  markHistoryRows(added, ticket);
+  if (before && before.parentNode === container) for (const n of added) container.insertBefore(n, before);
+  return added;
 }

@@ -104,6 +104,8 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlink
 import * as fsp from 'fs/promises';
 import { createInterface as createReadlineInterface } from 'readline';
 import { jsonlLines } from './lib/jsonl-lines.js';
+import { createHistoryCache } from './lib/claude-history-cache.js';
+import { createRolloutReader } from './lib/codex-rollout-reader.js';
 import { randomBytes, randomUUID, createHash, pbkdf2Sync, createDecipheriv } from 'crypto';
 import { exec, execFile, execSync, spawn, spawnSync } from 'child_process';
 import { promisify } from 'util';
@@ -5660,10 +5662,10 @@ CRITICAL — When you need clarification during planning:
     return item;
   }
 
-  function loadCodexThreadHistoryFallback(threadId) {
-    if (!threadId) return [];
+  function codexRolloutPathFor(threadId) {
+    if (!threadId) return '';
     const dbPath = resolve(activeCodexHome, 'state_5.sqlite');
-    if (!existsSync(dbPath)) return [];
+    if (!existsSync(dbPath)) return '';
 
     let db = null;
     let rolloutPath = '';
@@ -5676,20 +5678,27 @@ CRITICAL — When you need clarification during planning:
     } finally {
       try { db?.close(); } catch {}
     }
-    if (!rolloutPath || !existsSync(rolloutPath)) return [];
+    return rolloutPath && existsSync(rolloutPath) ? rolloutPath : '';
+  }
 
-    let raw = '';
+  // The rollout as history items: read as a stream, parsed once while the file is unchanged
+  // (lib/codex-rollout-reader.js), so the early preview and the fallback that follows share one read.
+  async function loadCodexThreadHistoryFallback(threadId) {
+    const rolloutPath = codexRolloutPathFor(threadId);
+    if (!rolloutPath) return [];
     try {
-      raw = readFileSync(rolloutPath, 'utf-8');
+      return await codexRolloutReader.items(rolloutPath, parseCodexRolloutLines);
     } catch (err) {
       console.warn('[codex-skin] Failed to read rollout history:', err.message);
       return [];
     }
+  }
 
+  async function parseCodexRolloutLines(lines) {
     const items = [];
     const calls = new Map();
     let seq = 0;
-    for (const line of raw.split('\n')) {
+    for await (const line of lines) {
       if (!line.trim()) continue;
       let entry;
       try {
@@ -6212,7 +6221,29 @@ CRITICAL — When you need clarification during planning:
   }
 
 
-  async function bootstrapThread(threadId, cwd = PACKAGE_ROOT) {
+  // Only for the thread the client shows (it asks with `preview: true`), only before the app-server is up, read
+  // without blocking its start; dropped once the real history went out. The read is reused by the fallback.
+  function sendEarlyCodexRolloutPreview(threadId, state) {
+    if (!threadId || initialized) return null;
+    const job = loadCodexThreadHistoryFallback(threadId);
+    job.then((previewItems) => {
+      if (state.historySent || !Array.isArray(previewItems) || !previewItems.length) return;
+      const previewThreadId = String(threadId);
+      sendToClient({
+        type: 'history',
+        preview: true,
+        threadId: previewThreadId,
+        thread: { id: previewThreadId, turns: [] },
+        fallbackItems: previewItems,
+        historyMode: 'read',
+      });
+    }).catch(() => {});
+    return job;
+  }
+
+  async function bootstrapThread(threadId, cwd = PACKAGE_ROOT, { preview = false } = {}) {
+    const previewState = { historySent: false };
+    if (preview) sendEarlyCodexRolloutPreview(threadId, previewState);
     await ensureInitialized();
     if (!threadId) {
       displayedThreadId = activeThreadId;
@@ -6227,11 +6258,13 @@ CRITICAL — When you need clarification during planning:
       const historyMode = activeThreadId && effectiveThreadId && activeThreadId === effectiveThreadId
         ? 'resume'
         : 'read';
+      const fallbackItems = await loadCodexThreadHistoryFallback(effectiveThreadId);
+      previewState.historySent = true;
       sendToClient({
         type: 'history',
         threadId: effectiveThreadId,
         thread: sanitizeCodexThreadForClient(thread),
-        fallbackItems: loadCodexThreadHistoryFallback(effectiveThreadId),
+        fallbackItems,
         historyMode,
       });
       // `history` and `ready` must describe the same displayed thread. Returning
@@ -6240,6 +6273,7 @@ CRITICAL — When you need clarification during planning:
       sendToClient({ type: 'ready', threadId: effectiveThreadId });
     } catch (err) {
       console.warn('[codex-skin] Failed to resume thread:', threadId, err.message);
+      previewState.historySent = true;
       sendToClient({ type: 'history', thread: null, resumeFailed: true, threadId });
       sendToClient({ type: 'error', message: `Could not restore saved Codex thread. ${err.message}` });
       sendToClient({ type: 'ready', threadId });
@@ -6352,7 +6386,7 @@ CRITICAL — When you need clarification during planning:
     const runtime = opts.runtimeOptions || await resolveCodexThreadRuntimeOptions(opts);
     displayedThreadId = String(threadId);
     const readThread = await readThreadHistory(threadId).catch(() => null);
-    const fallbackItems = loadCodexThreadHistoryFallback(threadId);
+    const fallbackItems = await loadCodexThreadHistoryFallback(threadId);
     const previewThread = readThread || (fallbackItems.length ? { id: threadId, turns: [] } : null);
     if (previewThread) {
       sendToClient({
@@ -6817,7 +6851,7 @@ CRITICAL — When you need clarification during planning:
         }
         // Resolve the tab's account BEFORE first spawn so CODEX_HOME is correct.
         if (!child && msg.accountId) setActiveCodexAccount(msg.accountId);
-        await bootstrapThread(msg.threadId || null, msg.cwd || PACKAGE_ROOT);
+        await bootstrapThread(msg.threadId || null, msg.cwd || PACKAGE_ROOT, { preview: msg.preview === true });
         return;
       }
       if (msg.type === 'permission_roots_list') {
@@ -11059,7 +11093,7 @@ const _codexSettingsProbes = createLaunchCache({
 });
 setCodexSettingsStore({ get: (key) => _codexSettingsProbes.peek(key), set: (key, value) => _codexSettingsProbes.set(key, value) });
 
-async function getClaudeModelsForClient(force = false) {
+async function getClaudeModelsForClient(force = false, { nonBlocking = false } = {}) {
   try {
     const bin = getClaudeBin();
     // Sidepanel sessions and native loops run this same installation. The Agent
@@ -11068,8 +11102,9 @@ async function getClaudeModelsForClient(force = false) {
     // when the CLI changes).
     checkClaudeCliSkew(bin).catch(() => {});
     // Answered from the kept list at once (asked again in the background when it is old);
-    // only a first read, another binary or account, or ?refresh=1 waits for the CLI.
-    const result = await discoverClaudeModels(bin, { force, cwd: PACKAGE_ROOT, account: claudeModelAccountKey() });
+    // only a first read, another binary or account, or ?refresh=1 waits for the CLI, unless
+    // nonBlocking=true (e.g. cold /api/claude/config boot on Windows) warms it asynchronously.
+    const result = await discoverClaudeModels(bin, { force, nonBlocking, cwd: PACKAGE_ROOT, account: claudeModelAccountKey() });
     if (result?.models?.length) return result;
   } catch (err) {
     console.warn('[claude-models] discovery failed:', err.message);
@@ -11097,7 +11132,11 @@ app.get('/api/claude/config', async (req, res) => {
     // Model ids come straight from the CLI and are already spawn-ready (they carry
     // the `[1m]` suffix where applicable), so the client uses them verbatim — no
     // "<id>:<contextWindow>" composite. See toCliModelName() for the legacy form.
-    const { source, models } = await getClaudeModelsForClient();
+    // Default to non-blocking model discovery so cold panel opens on Windows never stall
+    // behind a 3–7s `claude.exe` spawn; ui-claude-panel.js refreshes fallback models async.
+    const { source, models } = await getClaudeModelsForClient(false, {
+      nonBlocking: req.query?.waitModels !== '1',
+    });
     res.json({ ok: true, config: cliCfg, projects, models, modelsSource: source, bootId: SERVER_BOOT_ID });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -21655,12 +21694,20 @@ app.post('/api/claude-code/sessions/:sessionId/fork', express.json(), claudeSess
 app.delete('/api/claude-code/sessions/:sessionId', express.json(), claudeSessionRoute((req) => {
   // Irreversible: the panel asks first, and says so here.
   if (req.body?.confirm !== true) { const e = new Error('Deleting a session needs confirm: true'); e.status = 400; throw e; }
-  return claudeSessionOps.remove(req.params.sessionId, req.body?.project);
+  // The transcript cache keeps parsed rows by path: a deleted session's go with it (also when the delete fails half way).
+  return Promise.resolve()
+    .then(() => claudeSessionOps.remove(req.params.sessionId, req.body?.project))
+    .finally(() => { try { claudeHistoryCache.forgetSession(req.params.sessionId); } catch {} });
 }));
 app.get('/api/claude-code/sessions/:sessionId/subagents', claudeSessionRoute(req => claudeSessionOps.subagents(req.params.sessionId, req.query.project)));
 app.get('/api/claude-code/sessions/:sessionId/subagents/:agentId/messages', claudeSessionRoute(req => claudeSessionOps.subagentMessages(req.params.sessionId, req.params.agentId, req.query.project)));
 
 // --- Session Messages (read JSONL for panel history) ---
+
+// The parsed transcripts of the last few sessions opened (lib/claude-history-cache.js).
+const claudeHistoryCache = createHistoryCache();
+// The Codex rollouts read last, parsed once for the early preview and the history fallback (lib/codex-rollout-reader.js).
+const codexRolloutReader = createRolloutReader();
 
 app.get('/api/claude-code/sessions/:sessionId/messages', async (req, res) => {
   try {
@@ -21701,22 +21748,17 @@ app.get('/api/claude-code/sessions/:sessionId/messages', async (req, res) => {
       return res.status(missing.status).json(missing.body);
     }
 
-    // Stream line-by-line — session JSONLs reach tens of MB and this endpoint
-    // fires on every session open; a whole-file readFileSync stalled the loop.
-    // Split on "\n" only: readline also breaks at U+2028 / U+2029, which are legal
-    // inside a JSON string, and the halves of such a line were silently dropped.
-    // Read from the canonical path that was checked, opened without following a link.
-    const rl = jsonlLines(openConfinedStream(found.realFolder, found.realPath, { encoding: 'utf-8' }));
+    // Session JSONLs reach tens of MB and one session open asks this route several times (the panel's
+    // snapshot probe, the rebuild, "load earlier", a clipped result): the collector of a transcript is
+    // kept, and a file that grew is parsed only from where the last read stopped (lib/claude-history-cache.js:
+    // whole lines split on "\n" only, read from the canonical path that was checked, opened without following
+    // a link).
     // Rows per transcript line: prompts (with their uuid), assistant text, thinking
     // and tool calls, tool results with their typed output (they live inside user
     // lines), compaction markers. The collector also follows the parentUuid chain,
     // so the branches a conversation rewind abandoned are left out: what is shown
     // is what the resumed model has. See lib/claude-history.js.
-    const collector = createHistoryCollector();
-    for await (const line of rl) {
-      if (!line.trim()) continue;
-      try { collector.add(JSON.parse(line)); } catch {}
-    }
+    const collector = await claudeHistoryCache.collectorFor(found);
 
     // `?tool=<tool_use_id>`: just that call's result (a restored snapshot holds
     // only the clipped text of a long result and asks for the rest).

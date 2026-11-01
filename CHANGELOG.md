@@ -1,3 +1,19 @@
+# SynaBun v.2.1.3
+
+Windows feels lighter in this release, and OpenCode 2.2.5 is now supported.
+
+## Fixed
+
+- **Smoother on Windows** — the window's title bar and overlay chrome no longer apply a blur effect there, since it cost noticeably more on Windows than elsewhere; browsing menus and dialogs should feel snappier.
+- **Conversations open faster** — reopening a past conversation now shows its most recent messages right away instead of waiting for the whole transcript to parse; earlier messages load in as you scroll back, in the order they happened.
+- **Fewer stalls right after launch** — a couple of background lookups (the model list, a few one-time checks) now warm up without holding up the window that is waiting on them, so the window and its panels appear sooner, especially on a slower machine.
+
+## Added
+
+- **OpenCode 2.2.5 support** — the side panel now recognizes and connects to OpenCode 2.2.5 the same way it already did for 2.1.4.
+
+---
+
 # SynaBun v.2.1.2
 
 2.1.2 is a routine maintenance build. There is nothing new to try and no behavior changes to expect; it keeps the release packaging current between larger updates.

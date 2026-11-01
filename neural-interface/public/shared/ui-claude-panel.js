@@ -52,7 +52,7 @@ import { sanitizeStoredHtml } from './assistant/asst-sanitize.js';
 import { escapeHtml, classToken } from './cp/cp-markdown.js';
 import { rehydrateStoredTranscript } from './cp/cp-rehydrate.js';
 import { compactHolds, compactQueue, isCompactCommand, newConversation, nextQueued, ownsQueued, queuedRefusal, restoredQueue, QUEUED_REFUSAL_LINES } from './cp/cp-compose.js';
-import { scrubSavedTab, historyProjectOf, shownUuids, shownTail, snapshotVerdict, withStartConfig, historyOutcome, transcriptOwner, historyNotFoundText } from './cp/cp-restore.js';
+import { scrubSavedTab, historyProjectOf, shownUuids, shownTail, snapshotVerdict, withStartConfig, historyOutcome, transcriptOwner, historyNotFoundText, splitHistoryTail, replayTodosFromMessages, markHistoryRows, earlierHistoryRows, HISTORY_ROW as HISTORY_ROW_KEY, liveRows, queueHistoryLoad, historyGate, renderHistoryRowsInto, holdPendingResult, takePendingResult } from './cp/cp-restore.js';
 import { hasCapability, slashCommandRoute, bypassesPromptBuffer, idleEndsTurn, describeResult, describeTurnFooter, localCommandOutput, splitAssistantBlocks, normalizeSlashCommands, matchSlashCommands, listSlashCommands, slashMenuMaxHeight, splitCommandsByCapability, readInit, statusRows } from './cp/cp-events.js';
 import {
   renderSdkEvent, noteUnhandledEvent, applyEngineHello, renderCompactBoundary, markDeniedFromResult, endTurnRows,
@@ -483,6 +483,10 @@ function injectStyles() {
       opacity: 1;
       overflow: visible;
     }
+    /* Windows: the shell is 92% opaque, so the blur behind it barely shows, yet Chromium recomputes it on every repaint
+       inside the panel (a transcript rendering, a stream). There it goes; the colour stays. */
+    html.platform-win32 .claude-panel,
+    html.desktop-titlebar--win32 .claude-panel { backdrop-filter: none; -webkit-backdrop-filter: none; }
     /* Raise panel above floating terminal windows while a dropdown is open
        so project/branch/recall menus aren't clipped behind them. */
     .claude-panel:has(.cp-dropdown.open) { z-index: 99999; }
@@ -1768,8 +1772,8 @@ function injectStyles() {
       pointer-events: auto;
       width: 0; opacity: 0; overflow: hidden;
       background: rgba(18, 18, 20, 0.92);
-      backdrop-filter: blur(60px) saturate(1.5);
-      -webkit-backdrop-filter: blur(60px) saturate(1.5);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
       border: 0.5px solid rgba(255,255,255,0.06);
       border-radius: 14px;
       box-shadow:
@@ -1782,7 +1786,19 @@ function injectStyles() {
       transition: width 0.22s cubic-bezier(0.2,0,0.2,1), opacity 0.18s;
       max-height: 100%;
     }
-    .cp-todo-dock.is-open .cp-todo-drawer { width: 260px; opacity: 1; }
+    .cp-todo-dock.is-open .cp-todo-drawer {
+      width: 260px; opacity: 1;
+      backdrop-filter: blur(60px) saturate(1.5);
+      -webkit-backdrop-filter: blur(60px) saturate(1.5);
+    }
+    html.platform-win32 .cp-todo-tag,
+    html.desktop-titlebar--win32 .cp-todo-tag,
+    html.platform-win32 .cp-todo-dock.is-open .cp-todo-drawer,
+    html.desktop-titlebar--win32 .cp-todo-dock.is-open .cp-todo-drawer {
+      background: rgba(18, 18, 20, 0.96);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
     .cp-todo-dock.is-open .cp-todo-tag { display: none; }
 
     .cp-todo-drawer .cp-todo-head {
@@ -2335,6 +2351,19 @@ function injectStyles() {
         rgba(212,162,127,0.8) 75%,
         rgba(212,162,127,0.0) 100%
       );
+    }
+    html.platform-win32 .cp-session-pill.cp-pill-running,
+    html.desktop-titlebar--win32 .cp-session-pill.cp-pill-running {
+      border-color: rgba(212, 162, 127, 0.42);
+    }
+    html.platform-win32 .cp-session-pill.cp-pill-running:hover,
+    html.desktop-titlebar--win32 .cp-session-pill.cp-pill-running:hover {
+      border-color: rgba(212, 162, 127, 0.62);
+    }
+    html.platform-win32 .cp-session-pill.cp-pill-running::before,
+    html.desktop-titlebar--win32 .cp-session-pill.cp-pill-running::before {
+      animation: none;
+      opacity: 0;
     }
     .cp-session-pill .term-minimized-pill-icon { color: rgba(212, 162, 127, 0.45); transition: color 0.2s; }
     .cp-session-pill.cp-pill-running .term-minimized-pill-icon { color: rgba(212, 162, 127, 1); }
@@ -2929,7 +2958,7 @@ function newTabState(sessionId = null, label = 'New chat', id = null) {
   };
 }
 
-function createTab(sessionId = null, label = 'New chat', { autoSwitch = true, id = null } = {}) {
+function createTab(sessionId = null, label = 'New chat', { autoSwitch = true, id = null, deferHistory = false } = {}) {
   if (_tabs.length >= MAX_TABS) return null;
   const tab = newTabState(sessionId, label, id);
   // Create messages div — kept DETACHED until the tab activates. Inactive
@@ -2944,14 +2973,17 @@ function createTab(sessionId = null, label = 'New chat', { autoSwitch = true, id
   msgDiv.innerHTML = `<div class="cp-empty"><div class="cp-empty-logo">${CLAUDE_ICON}</div><span class="cp-empty-name">Claude</span><span class="cp-empty-hint">Send a message to start</span></div>`;
   tab.messagesEl = msgDiv;
   tab.scrollController = createStickyScrollController(msgDiv, { active: false });
-  // Connect WebSocket
+  // Connect WebSocket (every tab, active or not: a restored tab reattaches to the background agents,
+  // shells and wakeups its session kept on the server).
   connectTab(tab);
   // Create pill (rendered in shared tray, not inside panel)
   tab.pillEl = _createTrayPill(tab);
   _paintTemporary(tab);
   _tabs.push(tab);
   if (autoSwitch) switchTab(_tabs.length - 1);
-  if (sessionId) loadSessionHistory(sessionId, tab.messagesEl);
+  // A restored background tab loads its transcript when it is first shown (switchTab), not all at once at panel open.
+  if (sessionId && deferHistory) tab._historyDeferred = sessionId;
+  if (sessionId && !deferHistory) loadSessionHistory(sessionId, tab.messagesEl);
   renderPills();
   if (autoSwitch) saveTabs();
   return tab;
@@ -3102,7 +3134,9 @@ function switchTab(idx) {
     const items = _models.map(m => ({ value: m.id, label: m.label }));
     const modelVal = _resolveModelValue(items, tab.model || _getDefaultModel());
     ddPopulateModels($model, items, modelVal);
-    if (modelVal && modelVal !== tab.model) { tab.model = modelVal; saveTabs(); }
+    // The unverified fallback list (the CLI not asked yet: /api/claude/config answers at once) never
+    // rewrites a tab's model; refreshModels() puts the real list in and settles it.
+    if (modelVal && modelVal !== tab.model && _modelsSource !== 'fallback') { tab.model = modelVal; saveTabs(); }
   }
   if ($think && tab.effort) _setEffort($think, tab.effort);
   _syncThinkAvailability();
@@ -3124,6 +3158,10 @@ function switchTab(idx) {
   populateModeDropdown(_panel?.querySelector('#cp-mode'), tab);
   _renderAccountMenu();
   _paintTemporary(tab);
+  if (tab._historyDeferred && tab._historyDeferred === tab.sessionId && !tab.automationRunId) {
+    tab._historyDeferred = false;
+    loadSessionHistory(tab.sessionId, tab.messagesEl);
+  }
   saveTabs();
 }
 
@@ -3421,8 +3459,23 @@ function _scrubStaleTabState(key) {
   }
 }
 
+// A restored tab that was working (a turn, a question, background agents or shells) can get live rows
+// as soon as its socket reattaches: its transcript loads at once, ahead of them. An idle one waits until
+// it is shown (switchTab), so opening the panel does not fetch and render every tab's transcript.
+function _loadHistoryIfWorking(tab, saved) {
+  if (!tab._historyDeferred || tab._historyDeferred !== tab.sessionId) return;
+  if (!(saved?.running || saved?.needsYou || Number(saved?.backgroundWork) > 0)) return;
+  tab._historyDeferred = false;
+  loadSessionHistory(tab.sessionId, tab.messagesEl);
+}
+
 function restoreTabs() {
   _cleanStaleWindows();
+  const pickRestoredTabIdx = (activeIdx) => {
+    const pendingId = globalThis.__synabunPendingTab?.provider === 'claude' ? globalThis.__synabunPendingTab.tabId : '';
+    const pendingIdx = pendingId ? _tabs.findIndex(t => t.id === pendingId || t.sessionId === pendingId) : -1;
+    return pendingIdx >= 0 ? pendingIdx : Math.min(activeIdx || 0, _tabs.length - 1);
+  };
   // Try window-scoped tabs first
   try {
     const raw = storage.getItem(STOR.tabs);
@@ -3431,7 +3484,7 @@ function restoreTabs() {
       if (data.tabs?.length) {
         for (const saved of data.tabs) {
           if (saved.automationActive && saved.automationOwnerId !== nativeLoopWindowId) continue;
-          const t = createTab(saved.automationRunId ? null : saved.sessionId, saved.label, { autoSwitch: false, id: saved.id });
+          const t = createTab(saved.automationRunId ? null : saved.sessionId, saved.label, { autoSwitch: false, id: saved.id, deferHistory: true });
           if (t && saved.automationRunId) t.sessionId = saved.sessionId || null;
           if (t && saved.sessionCost) t.sessionCost = saved.sessionCost;
           if (t && saved.running && !saved.automationRunId) t._wasRunning = true; // trigger reattach on WS open
@@ -3455,9 +3508,10 @@ function restoreTabs() {
           if (t && saved.automationRunId) t.automationActive = !!saved.automationActive;
           if (t && saved.automationRunId) t.automationOwnerId = saved.automationOwnerId || null;
           if (t && saved.releasedRunId && !saved.automationRunId) t.releasedRunId = saved.releasedRunId;
+          if (t) _loadHistoryIfWorking(t, saved);
         }
         if (_tabs.length) {
-          switchTab(Math.min(data.activeIdx || 0, _tabs.length - 1));
+          switchTab(pickRestoredTabIdx(data.activeIdx));
           return;
         }
       }
@@ -3471,7 +3525,7 @@ function restoreTabs() {
       if (data.tabs?.length) {
         for (const saved of data.tabs) {
           if (saved.automationActive && saved.automationOwnerId !== nativeLoopWindowId) continue;
-          const t = createTab(saved.automationRunId ? null : saved.sessionId, saved.label, { autoSwitch: false, id: saved.id });
+          const t = createTab(saved.automationRunId ? null : saved.sessionId, saved.label, { autoSwitch: false, id: saved.id, deferHistory: true });
           if (t && saved.automationRunId) t.sessionId = saved.sessionId || null;
           if (t && saved.sessionCost) t.sessionCost = saved.sessionCost;
           if (t && saved.running && !saved.automationRunId) t._wasRunning = true;
@@ -3482,9 +3536,10 @@ function restoreTabs() {
           if (t && saved.automationRunId) t.automationRunId = saved.automationRunId;
           if (t && saved.automationRunId) t.automationActive = !!saved.automationActive;
           if (t && saved.automationRunId) t.automationOwnerId = saved.automationOwnerId || null;
+          if (t) _loadHistoryIfWorking(t, saved);
         }
         if (_tabs.length) {
-          switchTab(Math.min(data.activeIdx || 0, _tabs.length - 1));
+          switchTab(pickRestoredTabIdx(data.activeIdx));
           // Don't remove legacy key — other windows may still need it during rollout
           return;
         }
@@ -4519,6 +4574,8 @@ function writeSessionSnapshot(tab) {
   const sid = tab?.sessionId || null;
   const $msgs = tab?.messagesEl || null;
   if (!sid || !$msgs) return;
+  // Not loaded yet (a restored tab not shown so far), or half rebuilt: what is on screen is not the transcript.
+  if (tab._historyDeferred || tab._historyRendering || tab._historyHold) return;
   const html = providerAuthSnapshot($msgs);
   if (!html.trim()) return;
   // Skip snapshot if the transcript only contains the empty-state placeholder
@@ -4693,9 +4750,14 @@ function _renderHistoryRow(tab, $msgs, m) {
       if (typeof t === 'object' && t.name) {
         // A question or a plan that was already answered: a record of it, not
         // the interactive card (and not a JSON dump).
-        if (t.name === 'AskUserQuestion') wrap.appendChild(buildHistoryAskCard(t));
-        else if (t.name === 'ExitPlanMode') wrap.appendChild(buildHistoryPlanCard(t));
-        else wrap.appendChild(buildTool(t, tab));
+        let card;
+        if (t.name === 'AskUserQuestion') card = buildHistoryAskCard(t);
+        else if (t.name === 'ExitPlanMode') card = buildHistoryPlanCard(t);
+        else card = buildTool(t, tab);
+        if (card) {
+          if (t.id && $msgs._replayCards instanceof Map) $msgs._replayCards.set(String(t.id), card);
+          wrap.appendChild(card);
+        }
       } else {
         // Legacy: tool name string only
         const tName = String(t);
@@ -4711,20 +4773,33 @@ function _renderHistoryRow(tab, $msgs, m) {
       }
     }
     el.appendChild(wrap); $msgs.appendChild(el);
+    // Live results that arrived for these cards while the replay had not built them.
+    if (live && tab._pendingResults instanceof Map && tab._pendingResults.size) {
+      for (const t of m.tools || []) {
+        const ev = t?.id ? takePendingResult(tab, t.id) : null;
+        if (ev) { try { updateToolResult(tab, ev); } catch {} }
+      }
+    }
     return;
   }
   if (m.role === 'tool_result' && m.toolUseId) {
     if (fillHistoryCard($msgs, m)) return;
+    const indexedCard = $msgs._replayCards instanceof Map ? $msgs._replayCards.get(String(m.toolUseId)) : null;
     if (live) {
-      updateToolResult(tab, { type: 'tool_result', tool_use_id: m.toolUseId, content: m.text || '', is_error: !!m.isError, tool_use_result: m.structured });
+      // Marked as a replayed result: it is not kept as pending, and its todos are already in the precomputed list.
+      tab._replayRow = true;
+      try { updateToolResult(tab, { type: 'tool_result', tool_use_id: m.toolUseId, content: m.text || '', is_error: !!m.isError, tool_use_result: m.structured }); }
+      finally { tab._replayRow = false; }
       // A subagent of a past session: its own transcript loads when the card is opened.
       const agentId = m.structured?.agentId;
-      const agentCard = agentId && sessionActionsAvailable(tab) ? $msgs.querySelector(`.cp-agent-card[data-tool-id="${CSS.escape(m.toolUseId)}"]`) : null;
+      const agentCard = agentId && sessionActionsAvailable(tab)
+        ? ((indexedCard?.classList?.contains('cp-agent-card') ? indexedCard : null) || $msgs.querySelector(`.cp-agent-card[data-tool-id="${CSS.escape(m.toolUseId)}"]`))
+        : null;
       if (agentCard) _wireSubagentTranscript(tab, agentCard, String(agentId));
       return;
     }
     // No tab behind this container: plain text into the card.
-    const card = $msgs.querySelector(`.tool-card[data-tool-id="${CSS.escape(m.toolUseId)}"]`);
+    const card = (indexedCard?.matches?.('.tool-card') ? indexedCard : null) || $msgs.querySelector(`.tool-card[data-tool-id="${CSS.escape(m.toolUseId)}"]`);
     const rLbl = card?.querySelector('.tool-result-label');
     const rSec = card?.querySelector('.tool-result-content');
     if (rSec && m.text) {
@@ -4829,12 +4904,19 @@ function _addHistoryPager(tab, $msgs, sid, project, data) {
       // Render at the end (the live renderers append), then move the block up.
       const tail = $msgs.lastElementChild;
       tab._replaying = (tab._replaying || 0) + 1;
+      const replayCards = new Map();
+      $msgs._replayCards = replayCards;
       try { for (const m of page.messages) _renderHistoryRow(tab, $msgs, m); }
-      finally { tab._replaying = Math.max(0, (tab._replaying || 1) - 1); }
+      finally {
+        if ($msgs._replayCards === replayCards) delete $msgs._replayCards;
+        tab._replaying = Math.max(0, (tab._replaying || 1) - 1);
+      }
       const added = [];
       for (let n = tail?.nextElementSibling; n; n = n.nextElementSibling) added.push(n);
+      markHistoryRows(added, 'earlier'); // history: a later rebuild replaces it
       const anchor = note.nextElementSibling;
       for (const n of added) $msgs.insertBefore(n, anchor);
+      try { collapseAdjacentMcpTools($msgs); } catch {}
       try { settleReplayedCards($msgs, tab); } catch {}
       // What the user asked to see must survive the next prune.
       $msgs._pruneCap = $msgs.childElementCount + MAX_MSG_CHILDREN;
@@ -4867,20 +4949,42 @@ function _dropSessionSnapshot(sid) {
   try { delete _sessionSnapshots[sid]; deleteBlob('claude-snapshots', sid); } catch {}
 }
 
-async function loadSessionHistory(sid, $msgs) {
+// Loads of one container run one at a time, the newest asked for wins (queueHistoryLoad, cp/cp-restore.js).
+// The tab that owns the container is taken once, here: per-tab state (todos, usage, the snapshot) never goes
+// to another tab, and a tab closed meanwhile stops the load. While any load of a tab runs, its live
+// transcript messages wait in its buffer (historyGate in handleTabMsg) and play after the history.
+function loadSessionHistory(sid, $msgs) {
   if (!$msgs) $msgs = activeTab()?.messagesEl;
-  if (!$msgs) return;
+  if (!$msgs) return Promise.resolve();
+  const ownerTab = _tabs.find(t => t.messagesEl === $msgs) || null;
+  if (ownerTab && ownerTab._historyDeferred === sid) ownerTab._historyDeferred = false;
+  if (ownerTab) ownerTab._historyHold = (ownerTab._historyHold || 0) + 1;
+  const job = queueHistoryLoad($msgs, (isStale, ticket) => {
+    const stale = () => isStale() || !!(ownerTab && (ownerTab.closed || ownerTab.messagesEl !== $msgs));
+    if (stale()) return;
+    return _loadSessionHistoryNow(sid, $msgs, ownerTab, stale, ticket);
+  });
+  return job.finally(() => {
+    if (!ownerTab) return;
+    ownerTab._historyHold = Math.max(0, (ownerTab._historyHold || 1) - 1);
+    if (!ownerTab._historyHold && ownerTab._msgBuffer?.length && !ownerTab.closed) _flushMsgBuffer(ownerTab);
+  });
+}
+
+async function _loadSessionHistoryNow(sid, $msgs, ownerTab, stale, ticket) {
   // Try local snapshot first — exact replay of the live render, lossless.
   // Snapshot hydration is async (blob store); wait for it so a fresh page
   // load doesn't miss its own snapshots and rebuild from JSONL needlessly.
   try { await _snapshotsReady; } catch {}
+  if (stale()) return;
   const snap = getSessionSnapshot(sid);
   let restored = null; // the rows the snapshot put back, when a rebuild follows it
   if (snap && snap.html) {
-    const tab = _tabs.find(t => t.messagesEl === $msgs) || activeTab();
+    const tab = ownerTab;
     $msgs._historySid = sid; // the session this transcript shows (a restored pager loads its earlier pages)
     if (renderStoredSession(snap, $msgs, tab)) {
       restored = [...$msgs.children];
+      markHistoryRows(restored, ticket); // the next rebuild replaces them
       scrollEnd();
       // Background refresh: pull latest JSONL in case the session continued in
       // another window, or was rewound there. The probe reads what the owning
@@ -4896,6 +5000,7 @@ async function loadSessionHistory(sid, $msgs) {
         if (tab?.accountId) params.set('account', tab.accountId);
         const probe = await fetch(`/api/claude-code/sessions/${encodeURIComponent(sid)}/messages?${params}`);
         const probeData = await probe.json();
+        if (stale()) return;
         // `visible` counts prompts and replies only (a server that predates it sends `total`).
         if ((probeData?.visible ?? probeData?.total ?? 0) > (snap.itemCount || 0) + 2) {
           // Upstream has materially more content — fall through to full rebuild
@@ -4911,8 +5016,8 @@ async function loadSessionHistory(sid, $msgs) {
       } catch { return; }
     }
   }
-  const accountTab = _tabs.find(t => t.messagesEl === $msgs);
-  let project = _historyProject(accountTab || activeTab()) || undefined;
+  const accountTab = ownerTab;
+  let project = _historyProject(ownerTab || activeTab()) || undefined;
   const readHistory = async (from) => {
     const params = new URLSearchParams({ limit: '500' });
     if (from) params.set('project', from);
@@ -4923,6 +5028,7 @@ async function loadSessionHistory(sid, $msgs) {
   };
   try {
     let data = await readHistory(project);
+    if (stale()) return;
     // The tab's Claude account was removed in Settings: say so. Its transcripts
     // are not looked for under the default account (another identity's folder).
     if (data.code === 'account_unavailable') {
@@ -4939,6 +5045,7 @@ async function loadSessionHistory(sid, $msgs) {
     if (historyOutcome(data) === 'not_in_project') {
       const owner = await _transcriptOwner(sid, project, accountTab?.accountId || '');
       const moved = owner ? await readHistory(owner) : null;
+      if (stale()) return;
       if (moved && historyOutcome(moved) !== 'not_in_project' && historyOutcome(moved) !== 'not_found' && historyOutcome(moved) !== 'refused') {
         data = moved;
         project = owner;
@@ -4970,29 +5077,66 @@ async function loadSessionHistory(sid, $msgs) {
       return;
     }
     // Chunked rebuild: rendering 500 messages in one task froze the UI during
-    // cold restore / orphan resync. The generation counter aborts a stale
-    // rebuild when a newer one starts (reattach resync, in-tab session switch,
-    // tab close) — the newer run owns the transcript.
-    const ownerTab = _tabs.find(t => t.messagesEl === $msgs) || activeTab();
-    const gen = ownerTab ? (ownerTab._historyGen = (ownerTab._historyGen || 0) + 1) : 0;
-    // The rebuild replaces the snapshot that was put back above (only those
-    // rows: what a live turn appended meanwhile stays).
+    // cold restore / orphan resync. A newer load of this container (reattach resync,
+    // in-tab session switch) or the tab closing stops this one at its next yield.
+    // What an earlier rebuild of this container left (finished, stopped half way, or
+    // the snapshot put back above) is taken out: never a second copy after it.
+    for (const node of earlierHistoryRows($msgs.children, ticket)) node.remove();
     if (restored) for (const node of restored) node.remove();
+    // Rows that came live before the load (the history goes before them: it is older).
+    const live = liveRows($msgs.children);
+    const liveAnchor = live[0] || null;
+    const liveSet = new Set(live);
+    const { head, tail } = !restored ? splitHistoryTail(data.messages, 40) : { head: [], tail: data.messages };
+    // Renders rows at the end, marks them as this load's, and moves them before `before`.
+    const renderRows = (rows, before) => renderHistoryRowsInto($msgs, rows, (m) => _renderHistoryRow(ownerTab, $msgs, m), { before, ticket, skip: liveSet });
     // Replay goes through the live renderers (tool cards, typed results), marked
     // so it leaves no activity behind: no hook-strip entries, no statusline verb.
     if (ownerTab) ownerTab._replaying = (ownerTab._replaying || 0) + 1;
+    if (ownerTab) ownerTab._historyRendering = (ownerTab._historyRendering || 0) + 1;
+    if (ownerTab && head.length) {
+      const precomputedTodos = replayTodosFromMessages(data.messages, ownerTab.todos);
+      if (precomputedTodos) ownerTab.todos = precomputedTodos;
+      ownerTab._skipReplayTodos = true;
+    }
+    const replayCards = new Map();
+    $msgs._replayCards = replayCards;
     try {
-      let processed = 0;
-      for (const m of data.messages) {
-        if (++processed % 40 === 0) {
+      if (head.length) {
+        const tailNodes = renderRows(tail, liveAnchor);
+        const firstTailNode = tailNodes[0] || liveAnchor;
+        scrollEnd();
+        const CHUNK = 50;
+        for (let offset = 0; offset < head.length; offset += CHUNK) {
           await new Promise(r => setTimeout(r, 0));
-          if (ownerTab && (ownerTab._historyGen !== gen || ownerTab.closed)) return;
+          if (stale()) return;
+          renderRows(head.slice(offset, offset + CHUNK), firstTailNode);
+          // Following the bottom: stay there. Scrolled up: the browser's scroll anchoring keeps the rows in view.
+          if (ownerTab === activeTab()) scrollEnd();
         }
-        _renderHistoryRow(ownerTab, $msgs, m);
+      } else {
+        const CHUNK = 40;
+        for (let offset = 0; offset < data.messages.length; offset += CHUNK) {
+          if (offset) {
+            await new Promise(r => setTimeout(r, 0));
+            if (stale()) return;
+          }
+          renderRows(data.messages.slice(offset, offset + CHUNK), liveAnchor);
+        }
       }
     } finally {
-      if (ownerTab) ownerTab._replaying = Math.max(0, (ownerTab._replaying || 1) - 1);
+      if ($msgs._replayCards === replayCards) delete $msgs._replayCards;
+      if (ownerTab) {
+        delete ownerTab._skipReplayTodos;
+        ownerTab._historyRendering = Math.max(0, (ownerTab._historyRendering || 1) - 1);
+        ownerTab._replaying = Math.max(0, (ownerTab._replaying || 1) - 1);
+        // Live results kept for cards this page never built (cut by the page) are dropped.
+        if (!ownerTab._historyRendering) ownerTab._pendingResults = null;
+      }
     }
+    try { collapseAdjacentMcpTools($msgs); } catch {}
+    // Always for the tab on screen: a list the page emptied must clear the dock too.
+    if (ownerTab && ownerTab === activeTab()) { try { renderTodoWidget(ownerTab); } catch {} }
     // Calls whose result is not in this page (interrupted, or cut by the page) stop looking busy.
     try { settleReplayedCards($msgs, ownerTab); } catch {}
     pruneMessages($msgs);
@@ -5008,6 +5152,8 @@ async function loadSessionHistory(sid, $msgs) {
       $msgs.appendChild(note);
     }
     if (ownerTab) ownerTab._historyResults = historyHasResultSupport(data);
+    // The pager and the notes are this load's too (a later rebuild replaces them).
+    markHistoryRows([...$msgs.children].filter(n => !liveSet.has(n) && n[HISTORY_ROW_KEY] == null), ticket);
     // Populate context gauge from session history usage
     const tab = ownerTab;
     if (tab && data.usage) {
@@ -5020,10 +5166,10 @@ async function loadSessionHistory(sid, $msgs) {
       renderGauge(tab);
     }
     scrollEnd();
-    // Cache the rebuilt transcript so the next resume on a fresh browser hits
-    // the snapshot path and avoids paying the JSONL → DOM cost again.
-    if (tab && tab.sessionId === sid) writeSessionSnapshot(tab);
+    // Cache the rebuilt transcript (debounced so DOM serialization never blocks session open).
+    if (tab && tab.sessionId === sid) scheduleSessionSnapshotSave(tab);
   } catch {
+    if (stale()) return;
     $msgs.innerHTML = '<div class="msg-status">Failed to load history</div>';
   }
 }
@@ -5277,6 +5423,14 @@ function handleTabMsg(tab, msg) {
   // An MCP server's elicitation_complete resolves the URL card that is waiting
   // (bypassesPromptBuffer in cp/cp-events.js lists what passes).
   const _bufferBypass = bypassesPromptBuffer(msg);
+  // A restored tab whose history is not loaded yet gets a live row (a wakeup, a background turn): its
+  // history loads first and the message waits for it; any running history load holds them the same way.
+  const gate = historyGate(tab, msg, _bufferBypass);
+  if (gate === 'load') { tab._historyDeferred = false; loadSessionHistory(tab.sessionId, tab.messagesEl); }
+  if (gate !== 'pass') {
+    if (tab._msgBuffer.length < 500) tab._msgBuffer.push(msg);
+    return;
+  }
   // Also buffer while a chunked drain is in progress (or older messages still
   // queue) — without this, live events overtake buffered ones between slices.
   if ((tab._activePerm || tab.pendingAskRequestId || tab._draining || tab._msgBuffer.length) && !_bufferBypass) {
@@ -5302,10 +5456,11 @@ function _flushMsgBuffer(tab) {
     while (tab._msgBuffer.length && n++ < budget) {
       // A drained message can re-arm a permission/ask prompt — stop and let
       // that flow's resolution resume the drain (its handlers call us again).
-      if (tab._activePerm || tab.pendingAskRequestId) break;
+      if (tab._activePerm || tab.pendingAskRequestId || tab._historyHold) break;
       _processTabMsg(tab, tab._msgBuffer.shift());
     }
-    if (tab._msgBuffer.length && !tab._activePerm && !tab.pendingAskRequestId) {
+    // A history load holds the rest: it drains them when it is done.
+    if (tab._msgBuffer.length && !tab._activePerm && !tab.pendingAskRequestId && !tab._historyHold) {
       setTimeout(step, 0);
     } else {
       tab._draining = false;
@@ -5420,6 +5575,11 @@ function _processTabMsg(tab, msg) {
         _sessionSaysMode(tab, msg.mode, 'reattach', msg);
         // Orphan buffer overflowed while detached — rebuild transcript from JSONL
         if (msg.resynced && tab.sessionId) {
+          tab._historyDeferred = false;
+          try { loadSessionHistory(tab.sessionId, tab.messagesEl); } catch {}
+        } else if (tab._historyDeferred && tab._historyDeferred === tab.sessionId) {
+          // A restored tab not shown yet whose session is still live on the server: its history first.
+          tab._historyDeferred = false;
           try { loadSessionHistory(tab.sessionId, tab.messagesEl); } catch {}
         }
         if (msg.running) {
@@ -7355,9 +7515,15 @@ function updateToolResult(tab, ev) {
   if (!$msgs) return;
   // Background task output (BashOutput results) routes back to the origin card
   try { handleBgToolResult(ev, tab); } catch {}
-  const escapedId = CSS.escape(ev.tool_use_id);
-  const card = $msgs.querySelector(`.tool-card[data-tool-id="${escapedId}"]`) || $msgs.querySelector(`.plan-card[data-tool-id="${escapedId}"]`);
-  if (!card) return;
+  // During a replay the cards it built are indexed by id (no selector scan of the transcript per result).
+  const indexed = $msgs._replayCards instanceof Map ? $msgs._replayCards.get(String(ev.tool_use_id)) : null;
+  let card = indexed?.matches?.('.tool-card, .plan-card') ? indexed : null;
+  if (!card) {
+    const escapedId = CSS.escape(ev.tool_use_id);
+    card = $msgs.querySelector(`.tool-card[data-tool-id="${escapedId}"]`) || $msgs.querySelector(`.plan-card[data-tool-id="${escapedId}"]`);
+  }
+  // A live result for a card the tail-first replay has not built yet: applied when it is built.
+  if (!card) { holdPendingResult(tab, ev); return; }
   // Synthetic PostToolUse hook event + SubagentStop
   const toolNm = card.dataset.toolName || '';
   recordHookEvent(tab, ev.is_error ? 'PostToolUseFailure' : 'PostToolUse', toolNm);
@@ -7382,8 +7548,10 @@ function updateToolResult(tab, ev) {
     finalizeDiffCard(card, ev, typed?.view);
     if (!ev.is_error) return; // success: stats in the header say it all — skip noisy RESULT text
   }
-  // Collapse adjacent repeated MCP tool calls (post-insert) — cheap, DOM-local
-  try { collapseAdjacentMcpTools($msgs); } catch {}
+  // Collapse adjacent repeated MCP tool calls inside this turn (replays batch once at the end)
+  if (!tab._replaying && toolNm.startsWith('mcp__')) {
+    try { collapseAdjacentMcpTools(card.parentElement || $msgs); } catch {}
+  }
   // Plan cards don't have result sections — just mark success/error via border
   if (card.classList.contains('plan-card')) {
     card.style.borderColor = ev.is_error ? 'rgba(255,82,82,0.3)' : 'rgba(100,200,120,0.3)';
@@ -8318,8 +8486,12 @@ function appendUser(tab, text, images, files) {
 function _stampUserMessageUuid(tab, uuid) {
   const $msgs = tab.messagesEl;
   if (!$msgs || !uuid) return;
-  const rows = [...$msgs.querySelectorAll('.msg-user')].reverse();
-  const row = rows.find(r => !r.dataset.uuid);
+  const last = $msgs.lastElementChild;
+  let row = (last?.classList?.contains('msg-user') && !last.dataset.uuid) ? last : null;
+  if (!row) {
+    const rows = [...$msgs.querySelectorAll('.msg-user')].reverse();
+    row = rows.find(r => !r.dataset.uuid);
+  }
   if (!row) return;
   row.dataset.uuid = uuid;
   if (!tab.sdkMode) return;
@@ -10359,29 +10531,36 @@ const _fileLinkOptions = {
 };
 
 // ── Public API ──
+let _readyPromise = null;
 async function _ensureClaudePanelReady() {
+  if (_readyPromise) return _readyPromise;
   if (!_panel) {
-    injectStyles();
-    _panel = buildPanel();
-    document.body.appendChild(_panel);
-    registerSidepanel({
-      owner: PANEL_OWNER, provider: 'claude', element: _panel,
-      header: _panel.querySelector('.cp-header'), actions: _panel.querySelector('.cp-header-actions'),
-      buttonClass: 'cp-header-btn', dockHandle: _panel.querySelector('.cp-resize-handle'),
-      applyVisibility: applyClaudeVisibility,
-    });
-    wireEvents();
-    _panel.querySelector('#cp-messages-container')?.addEventListener('click', _onMessagesClick);
-    wireFileLinks(_panel.querySelector('#cp-messages-container'), _fileLinkOptions);
-    await loadConfig();   // must complete before restoreTabs — checks server boot ID
-    loadSkills();
-    restoreTabs();
-    loadMonthlyCost();
-    syncSessionCosts();
-    _wireBrowserSync();
-    _startHeartbeat();
-    window.dispatchEvent(new CustomEvent('sidepanel-tray:provider-loaded', { detail: { provider: 'claude' } }));
-    _ensureCliSubscription();
+    _readyPromise = (async () => {
+      injectStyles();
+      _panel = buildPanel();
+      document.body.appendChild(_panel);
+      registerSidepanel({
+        owner: PANEL_OWNER, provider: 'claude', element: _panel,
+        header: _panel.querySelector('.cp-header'), actions: _panel.querySelector('.cp-header-actions'),
+        buttonClass: 'cp-header-btn', dockHandle: _panel.querySelector('.cp-resize-handle'),
+        applyVisibility: applyClaudeVisibility,
+      });
+      wireEvents();
+      _panel.querySelector('#cp-messages-container')?.addEventListener('click', _onMessagesClick);
+      wireFileLinks(_panel.querySelector('#cp-messages-container'), _fileLinkOptions);
+      await loadConfig();   // must complete before restoreTabs — checks server boot ID
+      loadSkills();
+      restoreTabs();
+      setTimeout(() => {
+        loadMonthlyCost();
+        syncSessionCosts();
+      }, 400);
+      _wireBrowserSync();
+      _startHeartbeat();
+      window.dispatchEvent(new CustomEvent('sidepanel-tray:provider-loaded', { detail: { provider: 'claude' } }));
+      _ensureCliSubscription();
+    })();
+    return _readyPromise;
   }
 }
 
@@ -12007,11 +12186,11 @@ function wireEvents() {
 // Side panel browser launch removed — all automations use floating browsers only.
 
 // Show panel without toggling it closed (used by notification click-through)
-on('claude-panel:show', (data) => {
-  if (!_visible) toggleClaudePanel();
+on('claude-panel:show', async (data) => {
+  if (!_visible) await toggleClaudePanel();
   if (data?.tabId) {
-    const idx = _tabs.findIndex(t => t.id === data.tabId);
-    if (idx >= 0) switchTab(idx);
+    const idx = _tabs.findIndex(t => t.id === data.tabId || t.sessionId === data.tabId);
+    if (idx >= 0 && idx !== _activeTabIdx) switchTab(idx);
   }
 });
 
