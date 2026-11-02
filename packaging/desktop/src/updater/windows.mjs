@@ -9,6 +9,7 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { INSTALL_WINDOW_FILES, writeInstallWindowFiles } from './install-window.mjs';
 import { SWAP_ENV } from './win-swap.mjs';
 
 /**
@@ -18,10 +19,14 @@ import { SWAP_ENV } from './win-swap.mjs';
  *   installer    the downloaded installer, checked by electron-updater (sha512)
  *   runtimeNode  SynaBun's node.exe (resources/runtime/node.exe)
  *   scriptSource the text of win-swap.mjs (read from the app's own files)
+ *   window       { config, scriptSource, logoFile } of the install window (install-window.mjs), or null: the update
+ *                then shows nothing once the app has quit (it was out of sight)
+ * The result names the window's files (`window`) when it was asked for: the app waits for its `shown` marker
+ * (waitForMarker) before it quits.
  */
 export function startWindowsSwap({
   pid = process.pid, instDir, installer, version, previous, stateDir, relaunch, runtimeNode, scriptSource, installId = null,
-  env = process.env, spawn = nodeSpawn, exe = 'SynaBun.exe', now = () => new Date(),
+  env = process.env, spawn = nodeSpawn, exe = 'SynaBun.exe', now = () => new Date(), window = null,
 }) {
   return new Promise((done, fail) => {
     try {
@@ -29,7 +34,14 @@ export function startWindowsSwap({
       if (!runtimeNode || !existsSync(runtimeNode)) throw new Error('SynaBun\'s own Node runtime is missing from this copy');
       const swapDir = join(stateDir, 'swap');
       mkdirSync(swapDir, { recursive: true });
-      for (const name of ['swap-failed', 'rolled-back', 'started', 'swapped']) rmSync(join(stateDir, name), { force: true });
+      for (const name of ['swap-failed', 'rolled-back', 'started', 'swapped', INSTALL_WINDOW_FILES.shown, INSTALL_WINDOW_FILES.up]) rmSync(join(stateDir, name), { force: true });
+      // The install window (install-window.mjs), when something is on screen: its files beside the watchdog's.
+      let windowFiles = null;
+      if (window?.config && window.scriptSource) {
+        try {
+          windowFiles = writeInstallWindowFiles({ stateDir, config: window.config, scriptSource: window.scriptSource, logoFile: window.logoFile || null });
+        } catch { windowFiles = null; }
+      }
       writeFileSync(join(stateDir, 'plan.json'), JSON.stringify({
         platform: 'win32', appPath: instDir, backup: `${instDir}.previous`, version, previous, relaunch: !!relaunch, installer, installId, at: now().toISOString(),
       }, null, 2) + '\n');
@@ -46,11 +58,12 @@ export function startWindowsSwap({
           ...env,
           [SWAP_ENV.pid]: String(pid), [SWAP_ENV.instDir]: instDir, [SWAP_ENV.installer]: installer, [SWAP_ENV.version]: String(version),
           [SWAP_ENV.previous]: previous ? String(previous) : '', [SWAP_ENV.stateDir]: stateDir, [SWAP_ENV.relaunch]: relaunch ? '1' : '0', [SWAP_ENV.exe]: exe,
+          [SWAP_ENV.window]: windowFiles ? windowFiles.dir : '',
         },
       });
       let settled = false;
       child.once('error', (error) => { if (!settled) { settled = true; fail(Object.assign(new Error(`the update could not start: ${error.message}`), { code: error.code })); } });
-      child.once('spawn', () => { if (!settled) { settled = true; child.unref(); done({ pid: child.pid, node, script }); } });
+      child.once('spawn', () => { if (!settled) { settled = true; child.unref(); done({ pid: child.pid, node, script, window: windowFiles }); } });
     } catch (error) {
       fail(error);
     }

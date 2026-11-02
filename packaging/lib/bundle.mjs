@@ -31,6 +31,7 @@ import { buildDesktopApp, desktopArtifacts, FEED_URL, feedFragment, shellLayoutF
 import { artifactNames, PACKAGING_ROOT } from './targets.mjs';
 import { toolchain } from './preflight.mjs';
 import { BuildError, fetchVerified, nativeFormat, note, removeTree, run, step, which } from './util.mjs';
+import { appUpdateYml, publisherNamesForBuild, windowsSigningPlan } from './win-sign.mjs';
 
 const LAUNCHER_SOURCE = join(PACKAGING_ROOT, 'launcher', 'launcher.c');
 const ICON_SOURCE = ['neural-interface', 'public', 'icon-512.png'];
@@ -119,16 +120,23 @@ export function placeCloudflared(ctx, resources) {
 }
 
 /**
- * Move the staged Git for Windows (git-bash.mjs provisionGitBash, Windows targets only) beside the runtime:
- * `<resources>/git/`, where the application looks for the copy that came with it
- * (neural-interface/lib/git-bash/pins.js bundledGitRoot). Its folder there, or null when none was staged.
+ * The staged Git for Windows (git-bash.mjs provisionGitBash, Windows targets only), as the installer carries it:
+ * the checked release file itself in `<resources>/git-archive/<file>`, where the application looks for it
+ * (neural-interface/lib/git-bash/pins.js bundledGitArchive) and unpacks it on first need. One file instead of the
+ * tree's ~9,600: an install and every update write and scan that many fewer. Its path there, or null when none
+ * was staged.
  */
 export function placeGitBash(ctx, resources) {
   if (!ctx.gitBash) return null;
-  const folder = join(resources, basename(ctx.gitBash.folder));
-  renameSync(ctx.gitBash.folder, folder);
-  return folder;
+  const folder = join(resources, GIT_ARCHIVE_FOLDER);
+  mkdirSync(folder, { recursive: true });
+  const file = join(folder, ctx.gitBash.pin.file);
+  copyFileSync(ctx.gitBash.archive, file);
+  return file;
 }
+
+/** The folder of a Windows bundle's Git for Windows release file (the application's pins.js ARCHIVE_FOLDER). */
+export const GIT_ARCHIVE_FOLDER = 'git-archive';
 
 function versionQuad(version) {
   const parts = String(version).split(/[.+-]/).slice(0, 3).map(part => (/^\d+$/.test(part) ? Math.min(Number(part), 65535) : 0));
@@ -355,7 +363,8 @@ export async function assembleBundle(ctx) {
   // One line for the native entry: the window it opens when it is run with no argument.
   writeFileSync(join(payload, 'synabun-shell'), `${layout.manifestWindow}\n`);
   // electron-updater's own settings (Windows and Linux): the public feed and where it keeps a download.
-  writeFileSync(join(payload, 'app-update.yml'), `provider: generic\nurl: ${FEED_URL}\nupdaterCacheDirName: synabun-updater\n`);
+  // A signed Windows build also names its publisher, so an installed copy checks the next update's signature (win-sign.mjs).
+  writeFileSync(join(payload, 'app-update.yml'), appUpdateYml({ feedUrl: FEED_URL, publisherNames: publisherNamesForBuild(windowsSigningPlan(process.env), ctx.target.platform) }));
 
   const manifest = {
     synabunPackage: 1,
@@ -368,7 +377,7 @@ export async function assembleBundle(ctx) {
     runtime: { node: ctx.runtime.version, bin: layout.runtimeBin },
     embeddingModel: ctx.report.embeddingModel,
     cloudflared: ctx.report.cloudflared ? { version: ctx.report.cloudflared.version, sha256: ctx.report.cloudflared.binary.sha256 } : null,
-    gitBash: ctx.report.gitBash?.packaged ? { version: ctx.report.gitBash.version, sha256: ctx.report.gitBash.sha256, tree: ctx.report.gitBash.tree.sha256 } : null,
+    gitBash: ctx.report.gitBash?.packaged ? { version: ctx.report.gitBash.version, sha256: ctx.report.gitBash.sha256, tree: ctx.report.gitBash.tree.sha256, archive: `${GIT_ARCHIVE_FOLDER}/${ctx.report.gitBash.file}` } : null,
     shell: { kind: 'electron', window: layout.manifestWindow, electron: ctx.pins.electron.version },
     builtAt: builtAt(),
     sourceCommit: ctx.sourceCommit || null,

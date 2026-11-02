@@ -7,23 +7,31 @@
 // Claude Code started by SynaBun get" (resolver.js) and, on a PC that has
 // none, puts SynaBun's own copy of Git for Windows in place:
 //
-//   bundled      inside an installed app: <resources>\git (the Windows x64
-//                installer carries it; packaging/lib/git-bash.mjs)
-//   downloaded   on an npm install: DATA_HOME/runtime/git/<version>/, fetched
-//                once from the pinned release (pins.js), checked and unpacked
-//                by install.js, outside data/ so no backup holds it
+//   bundled      inside an installed app of an earlier build: <resources>\git
+//   downloaded   DATA_HOME/runtime/git/<version>/, outside data/ so no backup
+//                holds it: on an npm install fetched once from the pinned
+//                release (pins.js); in an installed app unpacked from the
+//                release file the Windows x64 installer carries
+//                (<resources>\git-archive\<file>; packaging/lib/git-bash.mjs),
+//                which keeps ~9,600 files out of every install and update. Either
+//                way checked and unpacked by install.js, and kept across updates
+//                (an update from a build with the tree moves that tree here:
+//                packaging/desktop/src/updater/git-adopt.mjs)
 //
-// It downloads only on Windows, only for a processor a release is pinned for,
-// and only when neither the PC nor the app has a Git Bash: at the server's
-// start (ensure) or at the first Claude Code start that finds none (childEnv),
-// once per process. A failed download is not tried again by itself: Settings
+// It downloads (or unpacks the carried release file) only on Windows, only for
+// a processor a release is pinned for, and only when neither the PC nor the app
+// has a Git Bash: at the server's start (ensure) or at the first Claude Code
+// start that finds none (childEnv), once per process. Until it is in place a
+// Claude Code started by SynaBun runs as it does on a PC without Git Bash (its
+// PowerShell fallback); whenReady() waits for it, bounded. A failed download is not tried again by itself: Settings
 // shows why and has the button that tries again. SYNABUN_GIT_BASH=off turns all
 // of it off: no download, nothing added to any environment.
 //
 //   resolution()   the Git Bash in use (refreshed when older than half a minute)
 //   childEnv(env)  the environment of a Claude Code process SynaBun starts
 //   gitExecutable() git.exe of SynaBun's copy when it is the one in use (SynaBun's own git features)
-//   ensure()       download when there is no Git Bash at all; never rejects
+//   ensure()       download (or unpack the carried file) when there is no Git Bash at all; never rejects
+//   whenReady(ms)  resolves the status once no download or unpacking runs, or after `ms`
 //   status()       what Settings shows: missing / downloading / ready / failed, and the rest
 //   onChange(fn)   told when the Git Bash in use changes (the settings of the user's own `claude` follow it)
 //   housekeep()    what an earlier run left in the data home: a stopped attempt's work folder, a version the
@@ -37,7 +45,7 @@ import { packagedRuntime } from '../../../lib/packaged-runtime.js';
 import { pathEnvValue } from '../augmented-path.js';
 import { sweepStaleWork } from '../cloudflared/install.js';
 import { checkInstalled, GitBashError, installGitBash } from './install.js';
-import { BUNDLED_FOLDER, gitBashPinFor, inTree, MARKER, readGitBashPins } from './pins.js';
+import { ARCHIVE_FOLDER, BUNDLED_FOLDER, gitBashPinFor, inTree, MARKER, readGitBashPins } from './pins.js';
 import { gitBashChildEnv, resolveGitBash } from './resolver.js';
 
 const VERSION_FOLDER = /^\d+\.\d+\.\d+\.\d+$/;
@@ -100,6 +108,12 @@ export function createGitBashManager({
   const root = gitRoot(dataHome);
   const bundledRoot = platform === 'win32' && packaged?.resources ? join(packaged.resources, BUNDLED_FOLDER) : null;
   const downloadedRoot = pin ? join(root, pin.version) : null;
+  // The release file an installed Windows app carries (packaging/lib/git-bash.mjs), unpacked instead of a download.
+  const carriedArchive = platform === 'win32' && pin && packaged?.resources ? join(packaged.resources, ARCHIVE_FOLDER, pin.file) : null;
+  const archiveThere = () => {
+    if (!carriedArchive) return false;
+    try { return statSync(carriedArchive).isFile(); } catch { return false; }
+  };
   const ownRoots = [bundledRoot, root].filter(Boolean);
 
   const verified = new Map();   // copy root → { sig, result }: a copy is hashed again only when its marker changes
@@ -110,6 +124,7 @@ export function createGitBashManager({
   let lastError = null;
   let attempted = false;        // a download was started in this process (the first-need trigger fires once)
   let settings = null;          // what the last sync of the user's settings did (noteSettings)
+  let earlyStartLogged = false; // a Claude Code started while the copy was being put in place (said once)
 
   /** SynaBun's own copies, checked: the app's, then the data home's. */
   function copies() {
@@ -179,7 +194,7 @@ export function createGitBashManager({
     return { swept, removed: await pruneOtherVersions() };
   }
 
-  /** Download SynaBun's copy when there is no Git Bash at all. Resolves the status; never rejects. */
+  /** Download (or unpack the carried release file of) SynaBun's copy when there is no Git Bash at all. Resolves the status; never rejects. */
   function ensure({ reason = 'start' } = {}) {
     if (platform !== 'win32' || !pin || off) return Promise.resolve(status());
     if (download) return download.promise.then(() => status());
@@ -187,12 +202,23 @@ export function createGitBashManager({
     attempted = true;
     lastError = null;
     const stop = new AbortController();
-    const job = { stop, step: 'download', progress: { phase: 'download', received: 0, total: pin.size } };
-    log(`[git-bash] No Git Bash on this PC (${reason}): downloading Git for Windows ${pin.version} (${(pin.size / 1024 / 1024).toFixed(1)} MB) from ${pin.url}`);
-    job.promise = install({
-      pins, pin, root, fetchImpl, stallMs, worker, platform: host, signal: stop.signal,
+    const archive = archiveThere() ? carriedArchive : null;
+    const job = { stop, archive, step: archive ? 'extract' : 'download', progress: archive ? { phase: 'extract', consumed: 0, total: pin.size } : { phase: 'download', received: 0, total: pin.size } };
+    const run = (from) => install({
+      pins, pin, root, fetchImpl, stallMs, worker, platform: host, signal: stop.signal, archive: from,
       onStep: (step) => { job.step = step; },
       onProgress: (progress) => { job.progress = progress; },
+    });
+    if (archive) log(`[git-bash] No Git Bash on this PC (${reason}): unpacking Git for Windows ${pin.version} from the release file this app carries (${archive}) in the background`);
+    else log(`[git-bash] No Git Bash on this PC (${reason}): downloading Git for Windows ${pin.version} (${(pin.size / 1024 / 1024).toFixed(1)} MB) from ${pin.url}`);
+    job.promise = run(archive).catch((error) => {
+      // A carried file that cannot be used (damaged, unreadable): the pinned download is the same release.
+      if (!archive || stop.signal.aborted || error?.code === 'cancelled') throw error;
+      log(`[git-bash] The carried release file could not be used (${describe(error).code}): ${describe(error).message} Downloading it instead.`);
+      job.archive = null;
+      job.step = 'download';
+      job.progress = { phase: 'download', received: 0, total: pin.size };
+      return run(null);
     }).then(async (placed) => {
       log(`[git-bash] Git for Windows ${pin.version} is in place, release file and tree checked: ${placed.path}`);
       verified.delete(downloadedRoot);
@@ -209,10 +235,24 @@ export function createGitBashManager({
     return job.promise.then(() => status());
   }
 
+  /** The status once nothing is being put in place, or after `timeoutMs`, whichever comes first. Never rejects. */
+  function whenReady(timeoutMs = 120_000) {
+    if (!download) return Promise.resolve(status());
+    const job = download;
+    return new Promise((done) => {
+      const timer = setTimeout(() => done(status()), Math.max(0, timeoutMs));
+      job.promise.then(() => { clearTimeout(timer); done(status()); }, () => { clearTimeout(timer); done(status()); });
+    });
+  }
+
   function childEnv(base = env) {
     const r = resolution();
     // The first Claude Code start that finds no Git Bash at all fetches one (once per process; Settings retries).
     if (platform === 'win32' && pin && !off && !r.source && !download && !attempted) ensure({ reason: 'first-need' });
+    if (platform === 'win32' && !r.source && download && !earlyStartLogged) {
+      earlyStartLogged = true;
+      log('[git-bash] A Claude Code started while Git for Windows is still being put in place: it runs without Git Bash (its PowerShell fallback) until the next start.');
+    }
     return gitBashChildEnv(base, r, { platform });
   }
 
@@ -240,7 +280,7 @@ export function createGitBashManager({
     if (download) {
       const { phase, received = 0, consumed = 0, total = 0 } = download.progress || {};
       const done = phase === 'extract' ? consumed : received;
-      return { ...base, state: 'downloading', step: download.step, progress: { phase, done, total, percent: total ? Math.min(100, Math.floor((done / total) * 100)) : 0 } };
+      return { ...base, state: 'downloading', step: download.step, fromArchive: !!download.archive, progress: { phase, done, total, percent: total ? Math.min(100, Math.floor((done / total) * 100)) : 0 } };
     }
     if (r.source === 'bundled' || r.source === 'downloaded') return { ...base, state: 'ready' };
     if (r.source) return { ...base, state: 'system' };
@@ -259,7 +299,9 @@ export function createGitBashManager({
     childEnv,
     gitExecutable,
     ensure,
+    whenReady,
     status,
+    carriedArchive,
     housekeep,
     cancel: () => { if (!download) return false; download.stop.abort(); return true; },
     noteSettings: (result) => { settings = result || null; },

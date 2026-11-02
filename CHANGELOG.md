@@ -1,3 +1,18 @@
+# SynaBun v.2.1.4
+
+A Windows-focused release: updates now show a visible progress window, Git for Windows ships smaller and installs faster, and signed builds are supported when a certificate is configured.
+
+## Added
+
+- **Visible update progress on Windows** — checking for and installing an update now shows a window with its steps and a climbing percentage, then confirms the restart, instead of leaving you guessing.
+- **Optional code signing on Windows** — a release can now be signed with a configured certificate; builds made without one are unaffected and install exactly as before.
+
+## Changed
+
+- **Smaller, faster Windows installer** — Git for Windows (used for Claude Code's Bash tool and its hooks) now ships as a single packed file and is unpacked only on first use, instead of thousands of loose files in every installer and update.
+
+---
+
 # SynaBun v.2.1.3
 
 Windows feels lighter in this release, and OpenCode 2.2.5 is now supported.

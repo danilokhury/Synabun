@@ -17,16 +17,24 @@
  * GitHub release and compared with its pinned SHA-256 before anything reads
  * it; it is unpacked by the application's own reader (no tar program, the
  * same on every build machine), and what was unpacked is compared with the
- * pinned tree: every file's path, size and SHA-256. It waits in the work
- * folder; the bundle step puts it beside the runtime (bundle.mjs placeGitBash),
- * where the application looks for it, and the audit checks it there again
- * (verify.mjs).
+ * pinned tree: every file's path, size and SHA-256. What the installer carries
+ * is the release file itself, checked like that: one file in
+ * `<resources>/git-archive/` (bundle.mjs placeGitBash) instead of the ~9,600
+ * files of its tree, which every install and update would otherwise unpack
+ * and the virus scanner read one by one (about 40% of a Windows install's
+ * time). The application unpacks it into the data home on first need and keeps
+ * it across updates (neural-interface/lib/git-bash/manager.js); an update from
+ * a build that carried the tree moves that tree there instead
+ * (desktop/src/updater/git-adopt.mjs). The checked tree stays in the work
+ * folder, where a native Windows build starts its bash and git once
+ * (verify.mjs); the audit checks the carried file against the pin (verify.mjs).
  *
  *   fetchGitBashArchive  the verified release file, kept in the build cache
  *                        (also what `node packaging/fetch-git-for-windows.mjs`
  *                        runs, in CI before the build)
- *   provisionGitBash     the stage step: the checked tree in <work>/git, for a
- *                        Windows target; nothing for any other
+ *   provisionGitBash     the stage step: the checked release file (and its
+ *                        checked tree in <work>/git), for a Windows target;
+ *                        nothing for any other
  */
 
 import { mkdirSync } from 'node:fs';
@@ -98,9 +106,10 @@ export async function provisionGitBash(ctx) {
       throw new BuildError(`The pinned Git for Windows for ${ctx.target.id} has a ${rel} that is ${format ? `a ${FORMAT_PLATFORM[format.format]} ${format.archs.join('+')} program` : 'not a program'}, not one for ${platform}-${arch}. Nothing was packaged.`);
     }
   }
-  ctx.gitBash = { folder, pin };
+  ctx.gitBash = { folder, pin, archive };
   ctx.report.gitBash = {
     packaged: true,
+    carried: 'archive',
     version: pin.version, tag: pin.tag, file: pin.file, url: pin.url, sha256: pin.sha256,
     tree: result.digest, skipped: result.skipped,
     license: pins.license, source: pins.source, origin: pins.origin,

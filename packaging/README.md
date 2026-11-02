@@ -761,6 +761,7 @@ report says what was signed.
 | `APPLE_KEYCHAIN_PROFILE` (or `SYNABUN_MAC_NOTARY_PROFILE`), `APPLE_KEYCHAIN` | notarization with a `notarytool` keychain profile |
 | `WIN_CSC_LINK`, `WIN_CSC_KEY_PASSWORD` (or `SYNABUN_WIN_SIGN_PFX`, `SYNABUN_WIN_SIGN_PASSWORD`) | a Windows certificate file |
 | `SYNABUN_WIN_SIGN_THUMBPRINT` | a certificate in the Windows store (a Windows build machine) |
+| `SYNABUN_WIN_SIGN_PROVIDER` (`azure-artifact-signing`, `pkcs11`, `ssl-esigner`, `none`) and the `SYNABUN_WIN_SIGN_*` / `SYNABUN_WIN_PUBLISHER_NAME` settings | Windows signing from macOS (the cross build) with jsign, each signature verified with osslsigncode and the publisher written into `app-update.yml`: `lib/win-sign.mjs` (its `windowsSigningPlan` names every setting); `node packaging/lib/win-sign.mjs check` is the dry run |
 
 The certificate auto-discovery of electron-builder is off: only a certificate
 the environment names is used. An unsigned macOS build is stopped by

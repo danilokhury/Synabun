@@ -83,6 +83,8 @@ import { createDataGuard, runSnapshotCommand } from './updater/data-guard.mjs';
 import { createSplash } from './splash.mjs';
 import { splashOfSnapshot, stageOfSupervisorPhase } from './splash-model.mjs';
 import { cleanupWindowsSwap, startWindowsSwap } from './updater/windows.mjs';
+import { installWindowConfig, installWindowScript, markWindowUp, waitForMarker, WINDOW_SHOWN_WAIT_MS } from './updater/install-window.mjs';
+import { adoptPreviousGit } from './updater/git-adopt.mjs';
 import { prefsPathFor, readPrefChange, readPrefs, writePrefs } from './app-prefs.mjs';
 import {
   applyLoginArguments, createLoginItem, findNpmLoginEntry, LOGIN_DATA_FLAG, LOGIN_ENV, LOGIN_FLAG, LOGIN_PORT_FLAG, loginCarry, loginSupport,
@@ -210,6 +212,13 @@ function startApp() {
   // failed one left. How the window was when the old copy quit, for a start the
   // update made.
   const updateFiles = updateStateFiles(updateStateDir);
+  // Windows: the earlier copy's Git for Windows, moved into the data home before this copy says it runs (the
+  // watchdog removes the earlier copy right after), so it is not unpacked again (updater/git-adopt.mjs).
+  if (platform === 'win32') {
+    const adopted = adoptPreviousGit({ platform, stateDir: updateStateDir, dataHome, resources });
+    if (adopted.adopted) log(`Git for Windows ${adopted.version} of the earlier copy moved into ${adopted.to}`);
+    else if (!/^(not Windows|no update to take it from|this copy carries)/.test(adopted.reason || '')) log(`Git for Windows of the earlier copy not moved: ${adopted.reason}`);
+  }
   const pendingSwap = finishPendingSwap({ stateDir: updateStateDir, current: version });
   const updatedStart = pendingSwap.started || process.argv.includes('--synabun-updated') || process.argv.includes('--updated');
   const relaunch = relaunchWindow(updateFiles.relaunch.read(), { updatedStart });
@@ -1020,12 +1029,32 @@ function startApp() {
         autoUpdater: supported ? (platform === 'win32' ? new NsisUpdater() : new AppImageUpdater()) : null,
         platform, feed, current: version, log, supported,
         installWindows: async ({ installer, relaunch: reopen, version: next, previous, installId }) => {
+          // Something on screen (the splash took the window's place): the install window takes over from it while the
+          // installer replaces this copy's files (updater/install-window.mjs), so the update is visible to the end.
+          let window = null;
+          if (reopen && splash?.visible) {
+            try {
+              window = {
+                config: installWindowConfig({ locale, version: next, previous, bounds: splash.window?.getBounds?.() || null, logPath: join(updateStateDir, 'swap.log') }),
+                scriptSource: installWindowScript(APP_DIR),
+                logoFile: join(APP_DIR, 'assets', 'logo.png'),
+              };
+            } catch (error) {
+              log(`the install window cannot be prepared: ${error?.message || error}`);
+            }
+          }
           const started = await startWindowsSwap({
             instDir: dirname(process.execPath), exe: basename(process.execPath), installer, version: next, previous, stateDir: updateStateDir, relaunch: reopen, installId,
             runtimeNode: join(resources, String(manifest?.runtime?.bin || 'runtime'), 'node.exe'),
-            scriptSource: readFileSync(join(APP_DIR, 'src', 'updater', 'win-swap.mjs'), 'utf8'), env: helperEnvForUpdate(),
+            scriptSource: readFileSync(join(APP_DIR, 'src', 'updater', 'win-swap.mjs'), 'utf8'), env: helperEnvForUpdate(), window,
           });
           log(`install watchdog started (pid ${started.pid}): ${started.script}`);
+          if (started.window) {
+            // The splash stays until the install window's first frame is drawn: never a moment with neither.
+            const shownAt = Date.now();
+            const shown = await waitForMarker(started.window.shown, WINDOW_SHOWN_WAIT_MS);
+            log(shown ? `the install window is on screen (${Date.now() - shownAt} ms)` : `the install window did not appear within ${WINDOW_SHOWN_WAIT_MS} ms: the update goes on without it`);
+          }
         },
         installAppImage: async ({ downloaded, relaunch: reopen, version: next, previous, installId }) => {
           const image = env.APPIMAGE;
@@ -1487,6 +1516,11 @@ function startApp() {
     if (boot.show && !boot.minimized) {
       splash.show({ stage: updatedStart ? 'restarting' : 'checking' });
       log(`splash asked for ${Date.now() - processStart} ms after this copy started${updatedStart ? ' (after an update)' : ''}`);
+      // After an update: the install window of the earlier copy (Windows) goes once this splash is on screen.
+      if (pendingSwap.started) splash.whenShown(15000).then((shown) => { markWindowUp(updateStateDir, shown ? 'splash' : 'none'); }).catch(() => {});
+    } else if (pendingSwap.started) {
+      // Out of sight, or minimized: nothing of this copy takes the install window's place, so it goes now.
+      markWindowUp(updateStateDir, 'none');
     }
     app.setAboutPanelOptions({ applicationName: 'SynaBun', applicationVersion: version, version: '', copyright: 'The SynaBun Authors', website: 'https://synabun.ai' });
 

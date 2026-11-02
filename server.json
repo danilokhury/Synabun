@@ -16,13 +16,13 @@
       "sizes": ["512x512"]
     }
   ],
-  "version": "2.1.3",
+  "version": "2.1.4",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "synabun",
-      "version": "2.1.3",
+      "version": "2.1.4",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"

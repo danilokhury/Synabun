@@ -11,7 +11,10 @@
 //                   redirect too), stopped at the pinned size, compared with
 //                   the pinned SHA-256 (cloudflared/install.js downloadPinned).
 //                   A file that does not match is removed: nothing of it is
-//                   ever unpacked
+//                   ever unpacked. An installed app carries the release file
+//                   itself (<resources>\git-archive): it is copied into the
+//                   work folder and checked the same way (copyPinned), never
+//                   unpacked from where it lies
 //   extractArchive  the .tar.bz2 read by this application itself (bzip2.js,
 //                   then the tar reader below), never by a tar program: what a
 //                   Windows 10 tar.exe can read differs from build to build.
@@ -34,8 +37,10 @@
 // Only node: modules and this application's own files here (see pins.js).
 
 import { createHash, randomBytes } from 'node:crypto';
+import { pipeline } from 'node:stream/promises';
+import { Transform } from 'node:stream';
 import {
-  closeSync, constants, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync,
+  closeSync, constants, copyFileSync, createReadStream, createWriteStream, existsSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync,
   renameSync, rmSync, statSync, writeFileSync, writeSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -463,6 +468,40 @@ export function unpackInWorker(data, { signal, onProgress = () => {}, onStep = (
   });
 }
 
+/**
+ * The release file an installed app carries (`source`), copied into `destination` (the attempt's own work folder)
+ * and compared with the pin as it is copied: its size, then its SHA-256. What is unpacked is the copy, so nothing
+ * can change the file between the check and the read. A file that does not match is removed and named.
+ */
+export async function copyPinned({ source, pin, destination, signal, onProgress = () => {} }) {
+  const hash = createHash('sha256');
+  let size = 0;
+  const count = new Transform({
+    transform(chunk, encoding, done) {
+      size += chunk.length;
+      if (size > pin.size) { done(new GitBashError('checksum', `${source} is larger than the pinned ${pin.file}.`)); return; }
+      hash.update(chunk);
+      onProgress({ received: size, total: pin.size });
+      done(null, chunk);
+    },
+  });
+  try {
+    await pipeline(createReadStream(source, { signal }), count, createWriteStream(destination, { flags: 'wx', mode: 0o600 }), { signal });
+  } catch (error) {
+    // A file that was there already is not this attempt's to remove.
+    if (error?.code !== 'EEXIST') rmSync(destination, { force: true });
+    if (signal?.aborted) throw cancelled();
+    if (error instanceof GitBashError) throw error;
+    throw new GitBashError('disk', `The Git for Windows release file this app carries could not be read (${error?.code || error?.message || error}).`);
+  }
+  const sha256 = hash.digest('hex');
+  if (size !== pin.size || sha256 !== pin.sha256) {
+    rmSync(destination, { force: true });
+    throw new GitBashError('checksum', `${source} is not the pinned ${pin.file} (${size} bytes, sha256 ${sha256}).`, { detail: sha256 });
+  }
+  return { size, sha256 };
+}
+
 /** Renaming a folder on Windows can meet a file an antivirus scanner holds open for a moment: try again, briefly. */
 async function renameWithRetry(from, to, { tries = 6, wait = (ms) => new Promise((done) => setTimeout(done, ms)) } = {}) {
   for (let attempt = 1; ; attempt++) {
@@ -489,9 +528,10 @@ async function renameWithRetry(from, to, { tries = 6, wait = (ms) => new Promise
  * @param {(p: { phase: string, received?: number, total: number, consumed?: number }) => void} [o.onProgress]
  * @param {boolean} [o.worker] unpack in a worker thread (true for the server; tests and builds run it inline)
  * @param {Function} [o.unpack] what unpacks (data, { signal, onProgress, onStep }): unpackInWorker or unpackAndCheck
+ * @param {string|null} [o.archive] the release file an installed app carries: used instead of a download
  * @returns {Promise<{ path: string, version: string }>}
  */
-export async function installGitBash({ pins, pin, root, fetchImpl, signal, onStep = () => {}, onProgress = () => {}, stallMs, worker = true, unpack = null, platform = process.platform, licensesDir }) {
+export async function installGitBash({ pins, pin, root, fetchImpl, signal, onStep = () => {}, onProgress = () => {}, stallMs, worker = true, unpack = null, platform = process.platform, licensesDir, archive = null }) {
   const directory = join(root, pin.version);
   let work = null;
   try {
@@ -501,12 +541,18 @@ export async function installGitBash({ pins, pin, root, fetchImpl, signal, onSte
     work = join(root, `${WORK_PREFIX}${process.pid}-${randomBytes(6).toString('hex')}`);
     mkdirSync(work, { mode: 0o700 });
     const releaseFile = join(work, 'release.part');
-    onStep('download');
-    await downloadPinned({ pin, destination: releaseFile, fetchImpl, signal, stallMs, onProgress: ({ received, total }) => onProgress({ phase: 'download', received, total }) });
+    if (archive) {
+      // The release file this app carries: copied and checked, then unpacked like a download.
+      onStep('extract');
+      await copyPinned({ source: archive, pin, destination: releaseFile, signal });
+    } else {
+      onStep('download');
+      await downloadPinned({ pin, destination: releaseFile, fetchImpl, signal, stallMs, onProgress: ({ received, total }) => onProgress({ phase: 'download', received, total }) });
+    }
     if (signal?.aborted) throw cancelled();
     const tree = join(work, 'tree');
     mkdirSync(tree);
-    const options = { archive: releaseFile, destination: tree, pins, pin, source: 'downloaded', platform, licensesDir };
+    const options = { archive: releaseFile, destination: tree, pins, pin, source: archive ? 'archive' : 'downloaded', platform, licensesDir };
     const report = ({ consumed, total }) => onProgress({ phase: 'extract', consumed, total });
     const run = unpack || (worker
       ? unpackInWorker

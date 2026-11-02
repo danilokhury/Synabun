@@ -61,10 +61,16 @@
 ;            removed, so one SynaBun is listed and nothing old stays behind
 ;   links    synabun:// starts the server through the headless entry, as the
 ;            app writes it itself on every start (lib/start-launcher.js)
-;   git      the empty folders of Git for Windows' tree (resources\git, the Git
-;            Bash Claude Code needs): an installer of files carries none, and
-;            MSYS2 keeps /dev/shm and /dev/mqueue there. The list is `folders` of
-;            neural-interface/lib/git-bash/pins.json (packaging/tests/git-bash.test.mjs)
+;   git      Git for Windows (the Git Bash Claude Code needs) is carried as its
+;            pinned release file, resources\git-archive\<file>: one file instead
+;            of ~9,600, which the unpacking and the virus scanner would otherwise
+;            go through on every install and update. SynaBun unpacks it into
+;            %APPDATA%\synabun\runtime\git on first need and keeps it there
+;            (neural-interface/lib/git-bash/manager.js), with its empty folders
+;   progress a silent update run by the app's install watchdog names a file in
+;            SYNABUN_INSTALL_PROGRESS: the unpacking then writes "<done> <total>"
+;            bytes to it as it goes (synabun-extract.nsh, SynaProgress), which the
+;            install window shows (desktop/src/updater/install-window.mjs)
 
 ; This file is included in electron-builder's shared header, before the main
 ; script pulls in MUI2 (and with it LogicLib). The functions below are compiled
@@ -105,6 +111,39 @@ Var SynaProbe      ; the window executable, to test the files are free after the
 !ifndef BUILD_UNINSTALLER
   Var SynaRecorded ; the install folder the registry records for the installed copy ("" when none)
   Var SynaAside    ; where the installed copy was moved for this install ("" when it was not)
+  Var SynaProgressFile ; where a silent update's unpacking progress goes (SYNABUN_INSTALL_PROGRESS; "" when none)
+  Var SynaProgressLast ; the whole percent last written there
+
+; Nsis7z::ExtractWithCallback's callback (synabun-extract.nsh): the bytes unpacked and in all, on the stack. At every
+; new whole percent "<done> <total>" is written to $SynaProgressFile, whole (the watchdog ignores a half-written line).
+; Every register it uses is put back: the unpacking macro's are untouched.
+Function SynaProgress
+  Exch $R4 ; bytes done
+  Exch
+  Exch $R5 ; bytes in all
+  Push $R3
+  Push $R2
+  ${if} $SynaProgressFile != ""
+    StrCpy $R2 0
+    IntOp $R3 $R5 / 100
+    ${if} $R3 > 0
+      IntOp $R2 $R4 / $R3
+    ${endIf}
+    ${if} $R2 != $SynaProgressLast
+      StrCpy $SynaProgressLast $R2
+      ClearErrors
+      FileOpen $R3 "$SynaProgressFile" w
+      ${ifNot} ${errors}
+        FileWrite $R3 "$R4 $R5"
+        FileClose $R3
+      ${endIf}
+    ${endIf}
+  ${endIf}
+  Pop $R2
+  Pop $R3
+  Pop $R5
+  Pop $R4
+FunctionEnd
 !endif
 
 ; Open the log once, in %TEMP%, and start the clock. Idempotent. The timestamp
@@ -554,7 +593,7 @@ FunctionEnd
     !insertmacro synabunInstalledPart "resources\app\mcp-server\node_modules\@huggingface\transformers\.cache\${SYNABUN_EMBEDDING_MODEL}\onnx\model.onnx" "Local embedding model: ${SYNABUN_EMBEDDING_MODEL}"
   !endif
   !insertmacro synabunInstalledPart "resources\cloudflared\cloudflared.exe" "cloudflared ${SYNABUN_CLOUDFLARED_VERSION}: the tunnel behind invite links and remote MCP"
-  !insertmacro synabunInstalledPart "resources\git\bin\bash.exe" "Git for Windows ${SYNABUN_GIT_VERSION}: the Git Bash Claude Code needs"
+  !insertmacro synabunInstalledPart "resources\git-archive" "Git for Windows ${SYNABUN_GIT_VERSION}: the Git Bash Claude Code needs (its release file, unpacked on first use)"
   ; electron-builder's own steps follow: a copy of this installer for the next
   ; update's smaller download, the uninstaller, Settings > Apps, the shortcuts.
   !insertmacro SynaPhase "Saving this installer for the next update, writing the uninstaller, the entry in Settings > Apps and the shortcuts"
@@ -565,12 +604,6 @@ FunctionEnd
   WriteRegStr HKCU "${SYNABUN_PROTOCOL_KEY}" "" "URL:SynaBun Protocol"
   WriteRegStr HKCU "${SYNABUN_PROTOCOL_KEY}" "URL Protocol" ""
   WriteRegStr HKCU "${SYNABUN_PROTOCOL_KEY}\shell\open\command" "" '"$INSTDIR\synabun-cli.exe" "launcher" "--via=protocol" "--" "%1"'
-  ${if} ${FileExists} "$INSTDIR\resources\git\bin\bash.exe"
-    DetailPrint "Creating the empty folders of Git for Windows"
-    CreateDirectory "$INSTDIR\resources\git\dev\mqueue"
-    CreateDirectory "$INSTDIR\resources\git\dev\shm"
-    CreateDirectory "$INSTDIR\resources\git\tmp"
-  ${endIf}
   ${if} ${FileExists} "$newStartMenuLink"
     DetailPrint "Start menu shortcut: $newStartMenuLink"
   ${endIf}

@@ -36,6 +36,12 @@
 ; exit 2: the app's own update then keeps the installed version (win-swap.mjs
 ; restores on a non-zero exit).
 ;
+; A silent update started by the app's install watchdog (win-swap.mjs) sets
+; SYNABUN_INSTALL_PROGRESS: the unpacking then runs with Nsis7z's callback
+; (ExtractWithCallback, SynaProgress in installer.nsh), which writes the bytes
+; done and in all to that file at every whole percent; the watchdog reads it for
+; the install window. Same archive, same folder, same check after it.
+;
 ; packaging/lib/desktop.mjs (extractMacroMatches) refuses to build the installer
 ; unless electron-builder still unpacks with the Nsis7z plugin this relies on and
 ; this macro still unpacks straight into the folder.
@@ -51,7 +57,18 @@
     IntOp $R1 $R1 + 1
     !insertmacro SynaPhase "Unpacking SynaBun into $OUTDIR"
     ClearErrors
-    Nsis7z::ExtractWithDetails "${FILE}" "Unpacking SynaBun %s..."
+    ; The app's own update (silent) names a file for the unpacking's progress, which its install window shows
+    ; (SynaProgress, installer.nsh): the bytes done and in all, as the unpacking goes. Otherwise the page shows it.
+    ReadEnvStr $R2 SYNABUN_INSTALL_PROGRESS
+    ${if} ${Silent}
+    ${andIf} $R2 != ""
+      StrCpy $SynaProgressFile $R2
+      StrCpy $SynaProgressLast -1
+      GetFunctionAddress $R2 SynaProgress
+      Nsis7z::ExtractWithCallback "${FILE}" $R2
+    ${else}
+      Nsis7z::ExtractWithDetails "${FILE}" "Unpacking SynaBun %s..."
+    ${endif}
     # The Nsis7z plugin reports no result (electron-builder's own macro never reads
     # one either), so success is the end state on disk.
     ${if} ${FileExists} "$OUTDIR\${APP_EXECUTABLE_FILENAME}"

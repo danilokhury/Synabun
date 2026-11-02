@@ -32,7 +32,7 @@ import { npmRootIn, npmWrapperScript, WINDOWS_NPM_SHIMS } from './bundle.mjs';
 import { elfSymbols, unmetImports } from './cross.mjs';
 import { gitBashModulesOf } from './git-bash.mjs';
 import { findPrivatePaths } from './stage.mjs';
-import { BuildError, FORMAT_PLATFORM, nativeFormat, note, run, step, walk } from './util.mjs';
+import { BuildError, FORMAT_PLATFORM, nativeFormat, note, run, sha256File, step, walk } from './util.mjs';
 
 function executable(path) {
   try { accessSync(path, constants.X_OK); return true; } catch { return false; }
@@ -282,35 +282,36 @@ export async function auditBundle(ctx) {
     for (const other of otherCloudflareds) problems.push(`cloudflared: another one in the bundle (${other}). Only the pinned one is packaged, at ${place}.`);
   }
 
-  // Git for Windows: in a Windows bundle the pinned tree, file for file, with its license and source; in no other.
+  // Git for Windows: in a Windows bundle the pinned release file, byte for byte, in its one place (the application
+  // unpacks it on first need), and no tree; in no other bundle either of them.
   let gitBash = null;
+  const archiveFolder = join(resources, 'git-archive');
   const gitPlace = gitFolder.slice(root.length + 1);
+  const archivePlace = archiveFolder.slice(root.length + 1);
   if (windows) {
     const git = await gitBashOf({ app, platform, arch });
+    if (existsSync(gitFolder)) problems.push(`Git for Windows: a tree in ${gitPlace}; the installer carries the release file only (${archivePlace})`);
     if (git.error) {
       problems.push(`Git for Windows: the application does not say which one it uses (${git.error})`);
     } else if (!git.pin) {
       problems.push(`Git for Windows: none is pinned for ${platform}-${arch} (neural-interface/lib/git-bash/pins.json)`);
-    } else if (!existsSync(gitFolder)) {
-      problems.push(`missing: Git for Windows ${git.pin.version}, the Git Bash Claude Code needs (${gitPlace})`);
     } else {
-      const marker = git.install.readMarker(gitFolder);
-      if (!marker || marker.version !== git.pin.version || marker.sha256 !== git.pin.sha256 || marker.tree?.sha256 !== git.pin.tree.sha256) problems.push(`Git for Windows: ${gitPlace}/synabun-git.json does not name the pinned release`);
-      for (const name of git.added) if (!existsSync(join(gitFolder, name))) problems.push(`Git for Windows: ${gitPlace}/${name} is missing (its license and source ship with it)`);
-      let digest = null;
-      try { digest = git.install.treeDigest(gitFolder); } catch (error) { problems.push(`Git for Windows: ${error.message}`); }
-      const wrong = digest ? git.install.treeMismatch(digest, git.pin) : null;
-      if (wrong) problems.push(`Git for Windows: ${gitPlace} is not the pinned tree of ${git.pin.version} (${wrong})`);
-      const key = git.install.keyFilesMismatch(gitFolder, git.pin, { platform: process.platform });
-      if (key) problems.push(`Git for Windows: ${key}`);
-      for (const rel of [git.pin.bash, git.pin.git]) {
-        const format = nativeFormat(join(gitFolder, ...rel.split('/')));
-        if (FORMAT_PLATFORM[format?.format] !== 'win32' || !format.archs.includes(arch)) problems.push(`Git for Windows: ${gitPlace}/${rel} is not a ${arch} Windows program`);
+      const file = join(archiveFolder, git.pin.file);
+      const place = file.slice(root.length + 1);
+      if (!existsSync(file)) {
+        problems.push(`missing: Git for Windows ${git.pin.version}, the Git Bash Claude Code needs (${place})`);
+      } else {
+        const actual = { size: statSync(file).size, sha256: await sha256File(file) };
+        if (actual.size !== git.pin.size || actual.sha256 !== git.pin.sha256) problems.push(`Git for Windows: ${place} is not the pinned release file of ${git.pin.version} (${actual.size} bytes, sha256 ${actual.sha256})`);
+        else gitBash = { path: place.replace(/\\/g, '/'), version: git.pin.version, tag: git.pin.tag, file: git.pin.file, size: actual.size, sha256: actual.sha256, files: git.pin.tree.files };
       }
-      if (digest && !wrong && !key) gitBash = { path: gitPlace, version: git.pin.version, tag: git.pin.tag, files: digest.files, bytes: digest.bytes, sha256: digest.sha256 };
+      let beside = [];
+      try { beside = readdirSync(archiveFolder).filter((name) => name !== git.pin.file); } catch { /* reported above */ }
+      for (const name of beside) problems.push(`Git for Windows: an unexpected file beside it (${archivePlace}/${name})`);
     }
-  } else if (existsSync(gitFolder)) {
-    problems.push(`Git for Windows in a ${platform} bundle (${gitPlace}): only the Windows installer carries it`);
+  } else {
+    if (existsSync(gitFolder)) problems.push(`Git for Windows in a ${platform} bundle (${gitPlace}): only the Windows installer carries it`);
+    if (existsSync(archiveFolder)) problems.push(`Git for Windows in a ${platform} bundle (${archivePlace}): only the Windows installer carries it`);
   }
 
   if (!windows) {
@@ -336,7 +337,7 @@ export async function auditBundle(ctx) {
   ctx.report.audit = { files, bytes, natives, foreignBinaries: foreign.length, externalTools: { found: external.size, lockfilesRead: lockfiles.length }, cloudflared, gitBash, npm: npmAudit.npm };
   if (foreign.length) note(`${foreign.length} binaries for other systems remain inside third-party packages (never loaded here)`);
   if (problems.length) throw new BuildError(`The bundle failed its audit (${problems.length} problem${problems.length === 1 ? '' : 's'}). No artifact was created.`, { details: problems.slice(0, 40) });
-  note(`${files} files, ${(bytes / 1024 / 1024).toFixed(0)} MB, ${natives.length} native modules for ${platform}-${arch}, no external tool, cloudflared ${cloudflared.version} (the pinned binary)${gitBash ? `, Git for Windows ${gitBash.version} (the pinned tree, ${gitBash.files} files)` : ''}`);
+  note(`${files} files, ${(bytes / 1024 / 1024).toFixed(0)} MB, ${natives.length} native modules for ${platform}-${arch}, no external tool, cloudflared ${cloudflared.version} (the pinned binary)${gitBash ? `, Git for Windows ${gitBash.version} (the pinned release file, unpacked on first use: ${gitBash.files} files out of the install)` : ''}`);
   note(`npm and npx ${npmAudit.npm.version}: ${npmAudit.npm.ran ? `npm --version and npx --version answer ${npmAudit.npm.ran.npm} with the bundled runtime alone` : 'files and shims checked (this machine cannot run the target\'s Node)'}; global installs go to ${npmAudit.npm.prefix}`);
 }
 
@@ -493,10 +494,11 @@ export async function smokeTest(ctx) {
 
   // Git for Windows (a Windows bundle): the Git Bash a Claude Code gets on a PC without one has to start, and so
   // does the git SynaBun's own git features fall back to.
-  if (ctx.bundle.gitBash && ctx.gitBash?.pin) {
+  // The bundle carries the release file; what starts is its checked tree, still in the work folder (git-bash.mjs).
+  if (ctx.bundle.gitBash && ctx.gitBash?.pin && ctx.gitBash.folder && existsSync(ctx.gitBash.folder)) {
     const { pin } = ctx.gitBash;
-    const bash = run(join(ctx.bundle.gitBash, ...pin.bash.split('/')), ['--noprofile', '--norc', '-c', 'echo synabun-git-bash'], { capture: true, env, cwd: home, allowFailure: true, timeoutMs: 120000, label: 'Git Bash' });
-    const git = run(join(ctx.bundle.gitBash, ...pin.git.split('/')), ['--version'], { capture: true, env, cwd: home, allowFailure: true, timeoutMs: 120000, label: 'git --version' });
+    const bash = run(join(ctx.gitBash.folder, ...pin.bash.split('/')), ['--noprofile', '--norc', '-c', 'echo synabun-git-bash'], { capture: true, env, cwd: home, allowFailure: true, timeoutMs: 120000, label: 'Git Bash' });
+    const git = run(join(ctx.gitBash.folder, ...pin.git.split('/')), ['--version'], { capture: true, env, cwd: home, allowFailure: true, timeoutMs: 120000, label: 'git --version' });
     if (!bash.ok || !bash.stdout.includes('synabun-git-bash') || !git.ok || !/git version/.test(git.stdout)) {
       throw new BuildError('The bundled Git for Windows does not start.', { details: [`bash: exit ${bash.status} ${bash.stdout.trim()} ${bash.stderr.trim()}`.slice(0, 400), `git: exit ${git.status} ${git.stdout.trim()} ${git.stderr.trim()}`.slice(0, 400)] });
     }

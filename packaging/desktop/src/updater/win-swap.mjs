@@ -19,6 +19,14 @@
  *      (`started`, written by the new copy); then the old copy is removed. A new
  *      copy that does not start within three minutes is replaced by the old one
  *
+ * With SYNABUN_SWAP_WINDOW set (the app had something on screen), the
+ * install window (install-window.mjs, install-window.ps1) opens first, over
+ * the splash, and every step above says what it does there: waiting,
+ * installing with the unpacking's own percentage (the installer writes it to
+ * the file PROGRESS_ENV names), restarting, and ready once the new copy's
+ * window is up (window-up), when it closes; a failure stays on screen with its
+ * sentence and the log until it is closed.
+ *
  * The state folder gets the markers every system's swap writes (swap.log,
  * swapped, swap-failed, rolled-back; state.mjs), and the next start of the app
  * reports what happened.
@@ -46,9 +54,14 @@ export const SWAP_ENV = Object.freeze({
   exe: 'SYNABUN_SWAP_EXE',
   // How long the new copy has to start (tests give less than three minutes).
   startMs: 'SYNABUN_SWAP_START_MS',
+  // The install window's folder (install-window.mjs): set when the app asked for one, empty otherwise.
+  window: 'SYNABUN_SWAP_WINDOW',
 });
 
-export const SWAP_LIMITS = Object.freeze({ quitMs: 2 * 60 * 1000, stopMs: 15 * 1000, moveMs: 20 * 1000, installMs: 15 * 60 * 1000, startMs: 3 * 60 * 1000 });
+/** The file the installer writes its unpacking progress to ("<done bytes> <total bytes>"; installer.nsh SynaProgress). */
+export const PROGRESS_ENV = 'SYNABUN_INSTALL_PROGRESS';
+
+export const SWAP_LIMITS = Object.freeze({ quitMs: 2 * 60 * 1000, stopMs: 15 * 1000, moveMs: 20 * 1000, installMs: 15 * 60 * 1000, startMs: 3 * 60 * 1000, upMs: 30 * 1000 });
 
 /** What the installer is told: an update (keeps the user's data), silent, into exactly this folder. */
 export function installerArgs(instDir) {
@@ -67,6 +80,7 @@ export function swapParams(env = process.env) {
   const params = {
     pid, instDir: value('instDir'), installer: value('installer'), version: value('version'), previous: value('previous') || null,
     stateDir: value('stateDir'), relaunch: value('relaunch') === '1', exe: value('exe') || 'SynaBun.exe',
+    windowDir: value('window') || null,
   };
   const startMs = Number(value('startMs'));
   if (Number.isInteger(startMs) && startMs >= 1000 && startMs <= SWAP_LIMITS.startMs) params.limits = { startMs };
@@ -74,6 +88,7 @@ export function swapParams(env = process.env) {
   if (![params.instDir, params.installer, params.stateDir].every(absolute)) return null;
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(params.version)) return null;
   if (!/^[\w.-]+\.exe$/i.test(params.exe)) return null;
+  if (params.windowDir && !absolute(params.windowDir)) params.windowDir = null;
   return params;
 }
 
@@ -85,6 +100,65 @@ export function appEnvironment(env = process.env) {
 }
 
 /**
+ * "<done> <total>" as the installer writes it (installer.nsh SynaProgress): { done, total }, or null for anything
+ * else (a half-written line, nothing yet). The larger number is the total, whatever order the plugin hands them in.
+ */
+export function installerProgress(text) {
+  const match = /^\s*(\d{1,15})\s+(\d{1,15})\s*$/.exec(String(text ?? ''));
+  if (!match) return null;
+  const a = Number(match[1]);
+  const b = Number(match[2]);
+  const total = Math.max(a, b);
+  if (!(total > 0)) return null;
+  return { done: Math.min(a, b), total };
+}
+
+/** A whole percentage that never says 100 before the end. */
+export function percentOf({ done, total } = {}) {
+  if (!(Number(total) > 0) || !Number.isFinite(Number(done))) return null;
+  return Math.max(0, Math.min(99, Math.floor((Number(done) / Number(total)) * 100)));
+}
+
+/**
+ * What the install window draws (install-window.ps1), from its config (install-window.mjs installWindowConfig)
+ * and where the swap is:
+ *   phase     waiting · installing · restarting · ready · failed
+ *   progress  { done, total } of the unpacking (installing only)
+ *   outcome   for failed: kept (nothing changed) · restored (the installer failed, the old copy is back) ·
+ *             rolled-back (the new copy did not start) · broken (the old copy could not be put back) ·
+ *             stalled (the script itself failed: what happened is in the log)
+ *   reason    the watchdog's own words, shown small under the sentence
+ * A ready view closes the window; a failed one stays until the person closes it.
+ */
+export function composeWindowView(config, { phase, progress = null, outcome = 'kept', reason = '', log = '' } = {}) {
+  const views = config?.views || {};
+  const text = config?.text || {};
+  const name = ['waiting', 'installing', 'restarting', 'ready', 'failed'].includes(phase) ? phase : 'waiting';
+  const base = views[name] || views.installing || {};
+  const percent = name === 'installing' && progress ? percentOf(progress) : null;
+  const view = {
+    phase: name,
+    stage: String(base.stage || (name === 'failed' ? 'failed' : 'installing')),
+    mascot: String(base.mascot || (name === 'failed' ? 'failed' : name === 'ready' ? 'ready' : 'working')),
+    status: String(base.status || ''),
+    lines: Array.isArray(base.lines) ? base.lines.map(String) : [],
+    percent,
+    label: percent === null ? '' : String(text.percent || '{percent}%').replace('{percent}', String(percent)),
+    error: null,
+    detail: '',
+    log: String(log || config?.logPath || ''),
+    close: name === 'ready',
+    closeAfterMs: name === 'ready' ? 900 : null,
+  };
+  if (name === 'failed') {
+    const sentence = { kept: text.kept, restored: text.restored, 'rolled-back': text.rolledBack, broken: text.notRestored, stalled: text.stalled }[outcome] || text.kept;
+    view.error = String(sentence || reason || 'The update did not install.');
+    view.detail = String(reason || '').slice(0, 300);
+  }
+  return view;
+}
+
+/**
  * The swap. `ops` are the system calls: now, sleep, log, write, exists, remove,
  * rename, alive, listUnder (null when it cannot tell), kill, runInstaller,
  * readVersion, open. Resolves { ok, reason?, started?, rolledBack? }.
@@ -92,6 +166,18 @@ export function appEnvironment(env = process.env) {
 export async function runWindowsSwap(params, ops) {
   const { pid, instDir, installer, version, stateDir, relaunch, exe = 'SynaBun.exe' } = params;
   const limits = { ...SWAP_LIMITS, ...(params.limits || {}) };
+  // The install window (install-window.mjs): asked for by the app when something was on screen. Every step says
+  // what it does there; nothing waits for it, and a window that cannot be shown changes nothing of the swap.
+  const windowConfig = params.window?.config || null;
+  let lastView = '';
+  const show = (phase, extra = {}) => {
+    if (!windowConfig) return;
+    const view = composeWindowView(windowConfig, { phase, ...extra });
+    const key = JSON.stringify(view);
+    if (key === lastView) return;
+    lastView = key;
+    try { ops.writeView(view); } catch {}
+  };
   const backup = `${instDir}.previous`;
   const failedCopy = `${instDir}.failed-update`;
   const say = (line) => { try { ops.log(line); } catch {} };
@@ -150,12 +236,22 @@ export async function runWindowsSwap(params, ops) {
     try { ops.remove(failedCopy); } catch {}
     return true;
   };
-  const fail = (reason) => {
+  const fail = (reason, outcome = 'kept') => {
     say(`failed: ${reason}`);
     mark('swap-failed', reason);
+    show('failed', { outcome, reason });
     return { ok: false, reason };
   };
 
+  if (windowConfig) {
+    show('waiting');
+    try {
+      const shown = ops.openWindow();
+      say(shown ? `the install window opened (pid ${shown})` : 'the install window could not be opened');
+    } catch (error) {
+      say(`the install window could not be opened: ${error?.message || error}`);
+    }
+  }
   say(`update to v${version}: waiting for SynaBun (pid ${pid}) to quit`);
   if (!(await waitUntil(() => !ops.alive(pid), limits.quitMs))) return fail('SynaBun did not quit within two minutes');
   if (!ops.exists(join(instDir, exe))) return fail(`SynaBun is not in ${instDir}`);
@@ -178,7 +274,14 @@ export async function runWindowsSwap(params, ops) {
   }
   say(`the installed copy is aside: ${backup}`);
 
-  const ran = await ops.runInstaller(installer, instDir, limits.installMs);
+  show('installing');
+  let lastPercent = -1;
+  const ran = await ops.runInstaller(installer, instDir, limits.installMs, (progress) => {
+    const percent = percentOf(progress);
+    if (percent === null || percent === lastPercent) return;
+    lastPercent = percent;
+    show('installing', { progress });
+  });
   const found = ops.readVersion(instDir);
   say(`the installer ended (exit ${ran?.status ?? 'none'}${ran?.error ? `, ${ran.error}` : ''}); the folder holds ${found ? `v${found}` : 'no SynaBun'}`);
   if (ran?.status !== 0 || String(found) !== String(version) || !ops.exists(join(instDir, exe))) {
@@ -186,18 +289,29 @@ export async function runWindowsSwap(params, ops) {
       : String(found) !== String(version) ? `the installer left ${found ? `v${found}` : 'no SynaBun'} instead of v${version} (exit ${ran?.status ?? 'none'})`
         : `the installer failed (exit ${ran?.status ?? 'none'})`;
     const restored = await restore();
-    const result = fail(restored ? `${reason}; the installed version was kept` : `${reason}; the old copy could not be put back in ${instDir}`);
+    const result = fail(restored ? `${reason}; the installed version was kept` : `${reason}; the old copy could not be put back in ${instDir}`, restored ? 'restored' : 'broken');
     if (restored && relaunch) openApp();
     return result;
   }
   mark('swapped');
   say('the new copy is in place');
-  if (!relaunch) return { ok: true, started: null };
+  if (!relaunch) {
+    show('ready');
+    return { ok: true, started: null };
+  }
 
+  show('restarting');
   unmark('started');
   openApp(['--synabun-updated']);
   if (await waitUntil(() => ops.exists(join(stateDir, 'started')), limits.startMs)) {
     say('the new copy started');
+    // The install window stays until the new copy's own window is up (it writes window-up), so there is no moment
+    // with neither; a copy that never says so (it starts out of sight) lets it go after upMs.
+    if (windowConfig) {
+      const up = await waitUntil(() => ops.exists(join(stateDir, 'window-up')), limits.upMs);
+      say(up ? 'the new copy\'s window is up: the install window closes' : 'the new copy did not say its window is up: the install window closes');
+      show('ready');
+    }
     try { ops.remove(backup); } catch (error) { say(`the old copy stays in ${backup}: ${error?.message || error}`); }
     unmark('swapped');
     return { ok: true, started: true };
@@ -205,8 +319,9 @@ export async function runWindowsSwap(params, ops) {
   say('the new copy did not start within three minutes: putting the old one back');
   const restored = await restore();
   unmark('swapped');
-  if (!restored) return fail('the new copy did not start, and the old copy could not be put back');
+  if (!restored) return fail('the new copy did not start, and the old copy could not be put back', 'broken');
   mark('rolled-back');
+  show('failed', { outcome: 'rolled-back', reason: `v${version} did not start within three minutes` });
   openApp();
   return { ok: false, rolledBack: true };
 }
@@ -231,8 +346,71 @@ function listUnderWindows(folder) {
   }
 }
 
+/** Windows PowerShell 5.1, by its full path (never a `powershell` looked up on PATH). */
+export function windowsPowerShell(env = process.env) {
+  return join(env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+}
+
+/** The command line of the install window (install-window.ps1): STA for WPF, no profile, the files by their paths. */
+export function installWindowArgs({ script, config, view, shown, watchdog }) {
+  return ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', script, '-Config', config, '-View', view, '-Shown', shown, '-Watchdog', String(watchdog)];
+}
+
+/** Writes a file in one rename, so a reader never sees half of it. */
+function writeWhole(file, text) {
+  const temp = `${file}.${process.pid}.tmp`;
+  writeFileSync(temp, text);
+  try { renameSync(temp, file); } catch (error) { try { rmSync(temp, { force: true }); } catch {} throw error; }
+}
+
+/**
+ * The installer, waited for without holding the event loop: its unpacking progress is read from the file it writes
+ * (PROGRESS_ENV) twice a second. Resolves { status, error }.
+ */
+export function runInstallerWithProgress({ installer, instDir, ms, onProgress = () => {}, progressFile, spawnImpl = spawn, readText = (file) => readFileSync(file, 'utf8'), every = 500, env = process.env }) {
+  return new Promise((done) => {
+    let settled = false;
+    let timer = null;
+    let killer = null;
+    let child;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(timer);
+      clearTimeout(killer);
+      read();
+      done(result);
+    };
+    const read = () => {
+      if (!progressFile) return;
+      let text = null;
+      try { text = readText(progressFile); } catch { return; }
+      const progress = installerProgress(text);
+      if (progress) { try { onProgress(progress); } catch {} }
+    };
+    try {
+      if (progressFile) { try { rmSync(progressFile, { force: true }); } catch {} }
+      // NSIS reads /D= raw, to the end of the line: the arguments go as they are, only the program is quoted.
+      child = spawnImpl(installer, installerArgs(instDir), {
+        argv0: `"${installer}"`, windowsVerbatimArguments: true, windowsHide: true, stdio: 'ignore',
+        env: progressFile ? { ...env, [PROGRESS_ENV]: progressFile } : env,
+      });
+    } catch (error) {
+      finish({ status: null, error: error?.code || error?.message || String(error) });
+      return;
+    }
+    child.once('error', (error) => finish({ status: null, error: error?.code || error?.message || String(error) }));
+    child.once('exit', (code, signal) => finish({ status: code, error: signal ? `ended by ${signal}` : null }));
+    timer = setInterval(read, every);
+    killer = setTimeout(() => {
+      try { child.kill(); } catch {}
+      finish({ status: null, error: 'ETIMEDOUT' });
+    }, ms);
+  });
+}
+
 /** The real system calls, on Windows. */
-export function windowsOps({ stateDir, env = process.env }) {
+export function windowsOps({ stateDir, env = process.env, windowDir = null }) {
   const logFile = join(stateDir, 'swap.log');
   return {
     now: () => Date.now(),
@@ -245,13 +423,9 @@ export function windowsOps({ stateDir, env = process.env }) {
     alive: (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error?.code === 'EPERM'; } },
     listUnder: (folder) => listUnderWindows(folder),
     kill: (pid) => spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 15000 }),
-    runInstaller: async (installer, instDir, ms) => {
-      // NSIS reads /D= raw, to the end of the line: the arguments go as they are, only the program is quoted.
-      const result = spawnSync(installer, installerArgs(instDir), {
-        argv0: `"${installer}"`, windowsVerbatimArguments: true, windowsHide: true, stdio: 'ignore', timeout: ms,
-      });
-      return { status: result.status, error: result.error ? (result.error.code || result.error.message) : null };
-    },
+    runInstaller: (installer, instDir, ms, onProgress) => runInstallerWithProgress({
+      installer, instDir, ms, onProgress, progressFile: join(stateDir, 'swap', 'install-progress.txt'), env,
+    }),
     readVersion: (instDir) => {
       try { return String(JSON.parse(readFileSync(join(instDir, 'resources', 'synabun-package.json'), 'utf8')).version || '') || null; } catch { return null; }
     },
@@ -261,7 +435,29 @@ export function windowsOps({ stateDir, env = process.env }) {
       child.unref();
       return child.pid || null;
     },
+    // The install window: Windows PowerShell from System32 (nothing from the install folder), detached, without a
+    // console. It outlives this script only for its own rules (install-window.ps1).
+    openWindow: () => {
+      if (!windowDir) return null;
+      const child = spawn(windowsPowerShell(env), installWindowArgs({
+        script: join(windowDir, 'install-window.ps1'), config: join(windowDir, 'install-window.json'),
+        view: join(windowDir, 'install-view.json'), shown: join(stateDir, 'window-shown'), watchdog: process.pid,
+      }), { detached: true, stdio: 'ignore', windowsHide: true, cwd: windowDir, env: appEnvironment(env) });
+      child.on('error', () => {});
+      child.unref();
+      return child.pid || null;
+    },
+    writeView: (view) => { if (windowDir) writeWhole(join(windowDir, 'install-view.json'), `${JSON.stringify(view)}\n`); },
   };
+}
+
+/** The install window's config, when the app asked for one and wrote it; null otherwise (the swap shows nothing). */
+export function readWindowConfig(windowDir) {
+  if (!windowDir) return null;
+  try {
+    const config = JSON.parse(readFileSync(join(windowDir, 'install-window.json'), 'utf8'));
+    return config?.synabunInstallWindow === 1 && config.views ? config : null;
+  } catch { return null; }
 }
 
 // Run as a script: `node win-swap.mjs`, everything else in the environment.
@@ -269,11 +465,15 @@ const samePath = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b
 if (process.argv[1] && samePath(fileURLToPath(import.meta.url), process.argv[1])) {
   const params = swapParams(process.env);
   if (!params) process.exit(2);
-  runWindowsSwap(params, windowsOps({ stateDir: params.stateDir, env: process.env }))
+  const config = readWindowConfig(params.windowDir);
+  if (config) params.window = { config };
+  const ops = windowsOps({ stateDir: params.stateDir, env: process.env, windowDir: config ? params.windowDir : null });
+  runWindowsSwap(params, ops)
     .then((result) => process.exit(result.ok ? 0 : 1))
     .catch((error) => {
       try { appendFileSync(join(params.stateDir, 'swap.log'), `${new Date().toISOString()} failed: ${error?.stack || error}\n`); } catch {}
       try { writeFileSync(join(params.stateDir, 'swap-failed'), `the update script failed: ${error?.message || error}`); } catch {}
+      if (config) { try { ops.writeView(composeWindowView(config, { phase: 'failed', outcome: 'stalled', reason: `the update script failed: ${error?.message || error}` })); } catch {} }
       process.exit(1);
     });
 }

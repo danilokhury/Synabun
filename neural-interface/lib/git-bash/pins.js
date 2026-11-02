@@ -42,6 +42,13 @@ const SOURCE_TREE = 'https://github.com/git-for-windows/git/tree/';
 /** The folder of a packaged application that holds its Git for Windows, beside `runtime/` and `app/`. */
 export const BUNDLED_FOLDER = 'git';
 
+/**
+ * The folder of a packaged Windows application that holds the pinned release file itself (`<file>` of the pin):
+ * one file in the installer instead of a tree of ten thousand, unpacked into the data home on first need
+ * (manager.js) and kept there across updates.
+ */
+export const ARCHIVE_FOLDER = 'git-archive';
+
 /** What SynaBun puts at the top of its copy, beside what the release file holds (never part of the tree's digest). */
 export const MARKER = 'synabun-git.json';
 export const ADDED_FILES = Object.freeze(['LICENSE.txt', 'SOURCE.txt', MARKER]);
@@ -153,6 +160,11 @@ export function gitBashPinFor(pins, platform = process.platform, arch = process.
 /** The Git for Windows of a packaged application: `<resources>/git`. */
 export function bundledGitRoot(resources, platform = process.platform) {
   return (platform === 'win32' ? win32 : posix).join(resources, BUNDLED_FOLDER);
+}
+
+/** The release file a packaged application carries for `pin`: `<resources>/git-archive/<file>`. */
+export function bundledGitArchive(resources, pin, platform = process.platform) {
+  return (platform === 'win32' ? win32 : posix).join(resources, ARCHIVE_FOLDER, pin.file);
 }
 
 /** LICENSE.txt of SynaBun's copy: Git's own license texts of the pinned tag, after a line that says what they cover. */

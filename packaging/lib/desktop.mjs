@@ -36,6 +36,7 @@ import { basename, dirname, join, relative } from 'node:path';
 import { packagesInLock } from '../../neural-interface/lib/install-details.js';
 import { PACKAGING_ROOT } from './targets.mjs';
 import { BuildError, fetchVerified, note, removeTree, run, sha256File, step, walk, which } from './util.mjs';
+import { builderSigningOptions, checkTools, planSummary, unsignedOf, windowsSigningEnv, windowsSigningPlan } from './win-sign.mjs';
 
 export const DESKTOP_ROOT = join(PACKAGING_ROOT, 'desktop');
 export const APP_ID = 'ai.synabun.app';
@@ -206,8 +207,7 @@ export const PAYLOAD_MANIFEST = join('resources', 'synabun-payload.manifest');
 export const INSTALLER_KEY_FILES = Object.freeze([
   'SynaBun.exe', 'synabun-cli.exe', 'resources\\app.asar', 'resources\\synabun-package.json', 'resources\\bootstrap.mjs',
   'resources\\synabun-payload.manifest', 'resources\\runtime\\node.exe', 'resources\\app\\neural-interface\\server.js',
-  'resources\\app\\mcp-server\\dist\\index.js', 'resources\\cloudflared\\cloudflared.exe', 'resources\\git\\bin\\bash.exe',
-  'resources\\git\\usr\\bin\\msys-2.0.dll',
+  'resources\\app\\mcp-server\\dist\\index.js', 'resources\\cloudflared\\cloudflared.exe',
 ]);
 
 /**
@@ -367,7 +367,8 @@ export function signingFrom(env = process.env) {
     mac: macIdentity === undefined ? 'from-certificate' : macIdentity,
     notarize: !!((env.APPLE_ID && env.APPLE_APP_SPECIFIC_PASSWORD && env.APPLE_TEAM_ID) || (env.APPLE_API_KEY && env.APPLE_API_KEY_ID && env.APPLE_API_ISSUER)
       || env.APPLE_KEYCHAIN_PROFILE || env.SYNABUN_MAC_NOTARY_PROFILE),
-    windows: !!(env.WIN_CSC_LINK || env.CSC_LINK || env.SYNABUN_WIN_SIGN_PFX || env.SYNABUN_WIN_SIGN_THUMBPRINT),
+    windows: !!(env.WIN_CSC_LINK || env.CSC_LINK || env.SYNABUN_WIN_SIGN_PFX || env.SYNABUN_WIN_SIGN_THUMBPRINT)
+      || (windowsSigningPlan(env).enabled && !windowsSigningPlan(env).dryRun),
   };
 }
 
@@ -440,6 +441,8 @@ export function builderConfig({ target, version, electron, shellApp, output, res
       // resedit sets the icon and version on any build machine; a signature needs a certificate.
       signAndEditExecutable: true,
       ...(env.SYNABUN_WIN_SIGN_THUMBPRINT ? { signtoolOptions: { certificateSha1: env.SYNABUN_WIN_SIGN_THUMBPRINT } } : {}),
+      // A signing provider (lib/win-sign.mjs, docs/windows-code-signing.md): jsign through electron-builder's sign hook, on macOS too.
+      ...(builderSigningOptions(windowsSigningPlan(env)) || {}),
     };
     config.nsis = {
       // electron-builder's assisted installer: its install page lists every step (installer.nsh), with no page before
@@ -496,6 +499,8 @@ export function runElectronBuilder(ctx, tools, config, args, label) {
   if (process.env.SYNABUN_MAC_NOTARY_PROFILE && !env.APPLE_KEYCHAIN_PROFILE) env.APPLE_KEYCHAIN_PROFILE = process.env.SYNABUN_MAC_NOTARY_PROFILE;
   if (process.env.SYNABUN_WIN_SIGN_PFX && !env.WIN_CSC_LINK) env.WIN_CSC_LINK = process.env.SYNABUN_WIN_SIGN_PFX;
   if (process.env.SYNABUN_WIN_SIGN_PASSWORD && !env.WIN_CSC_KEY_PASSWORD) env.WIN_CSC_KEY_PASSWORD = process.env.SYNABUN_WIN_SIGN_PASSWORD;
+  // The sign hook (lib/win-sign-hook.mjs) runs inside electron-builder and reads its settings and secrets from here.
+  Object.assign(env, windowsSigningEnv(process.env));
   run(ctx.tool.node, [tools.cli, '--projectDir', ctx.desktopApp, '--config', file, '--publish', 'never', ...args], {
     cwd: ctx.desktopApp, env, label: `electron-builder (${label})`,
   });
@@ -540,6 +545,15 @@ export async function buildDesktopApp(ctx, { payload, entryFile, iconTools }) {
   const output = join(ctx.work, 'electron-out');
   removeTree(output);
   const signing = signingFrom(process.env);
+  const winSigning = ctx.target.platform === 'win32' ? windowsSigningPlan(process.env) : null;
+  if (winSigning) {
+    note(planSummary(winSigning));
+    const tools = checkTools(winSigning).problems;
+    // A dry run only prints the commands: a tool not installed yet is said, not fatal.
+    if (winSigning.dryRun) for (const problem of tools) note(`dry run: ${problem}`);
+    const problems = [...winSigning.problems, ...(winSigning.dryRun ? [] : tools)];
+    if (problems.length) throw new BuildError('Windows signing was asked for but cannot run (docs/windows-code-signing.md). No artifact was created.', { details: problems });
+  }
   const config = builderConfig({
     target: ctx.target, version: ctx.version, electron: { version: archive.version, dist }, shellApp, output, resources, payload, entryFile, signing, env: process.env,
   });
@@ -561,6 +575,12 @@ export async function buildDesktopApp(ctx, { payload, entryFile, iconTools }) {
   } else if (ctx.target.platform === 'win32') {
     root = join(output, 'win-unpacked');
     ctx.report.signed = signing.windows ? 'certificate' : false;
+    if (winSigning?.enabled && !winSigning.dryRun) {
+      // The hook signed and verified each one; a hook electron-builder never called is caught here.
+      const unsigned = unsignedOf(['SynaBun.exe', 'synabun-cli.exe'].map(name => join(root, name)));
+      if (unsigned.length) throw new BuildError('Windows signing was asked for, but the app\'s executables are not signed. No artifact was created.', { details: unsigned });
+      ctx.report.signed = winSigning.provider;
+    }
   } else {
     root = assembleAppDir(ctx, join(output, 'linux-unpacked'), { entryFile });
     ctx.report.signed = false;
@@ -709,6 +729,8 @@ function windowsArtifacts(ctx, names) {
   if (changed.length) throw new BuildError(`Making the installer changed ${changed.length} file${changed.length === 1 ? '' : 's'} of the audited app. No artifact was created.`, { details: changed.slice(0, 40) });
   const installer = join(output, names.installer);
   if (!existsSync(installer)) throw new BuildError(`electron-builder made no ${names.installer}`, { details: readdirSync(output) });
+  const winSigning = windowsSigningPlan(process.env);
+  if (winSigning.enabled && !winSigning.dryRun && unsignedOf([installer]).length) throw new BuildError(`Windows signing was asked for, but ${names.installer} is not signed. No artifact was created.`);
   const destination = join(ctx.out, names.installer);
   rmSync(destination, { force: true });
   renameSync(installer, destination);
