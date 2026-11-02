@@ -14,18 +14,24 @@
 # Its own rules, for a watchdog that stops answering: when the watchdog's process is
 # gone and the last view was neither an end nor an error, it says so (stalled) with
 # the log; and it never lives longer than maxMs. Closing it (Alt+F4, Close) never
-# stops the install: the watchdog goes on and the new version opens by itself.
+# dismisses a failure. While busy, the window stays visible until handover.
 
 param(
   [Parameter(Mandatory = $true)][string]$Config,
   [Parameter(Mandatory = $true)][string]$View,
   [Parameter(Mandatory = $true)][string]$Shown,
+  [string]$LanguageMode = "",
   [int]$Watchdog = 0
 )
 
 # Stop while the window is built (a script that cannot draw ends, and the app goes on without it); every handler
 # after that catches its own errors.
 $ErrorActionPreference = 'Stop'
+# Cmdlets/property reads only: this must run before Add-Type or any non-core .NET call.
+# ExecutionPolicy Bypass does not override App Control. A policy-trusted signed script may be FullLanguage.
+$mode = "$($ExecutionContext.SessionState.LanguageMode)"
+if ($LanguageMode) { Set-Content -LiteralPath $LanguageMode -Value $mode -Encoding ASCII }
+if ($mode -ne 'FullLanguage') { exit 3 }
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
 function Read-Json([string]$path) {
@@ -363,6 +369,7 @@ $el.OpenLog.Add_Click({
   } catch {}
 })
 $el.CloseBtn.Add_Click({ $window.Close() })
+$window.Add_Closing({ param($s, $e) if (-not $script:terminal) { $e.Cancel = $true } })
 $window.Add_MouseLeftButtonDown({ try { $window.DragMove() } catch {} })
 $window.Add_KeyDown({ param($s, $e) if ($e.Key -eq 'Escape' -and $script:terminal) { $window.Close() } })
 
@@ -391,7 +398,7 @@ $poll.Add_Tick({
     } catch {}
     $now = [DateTime]::UtcNow
     if ($null -ne $script:closeAt -and $now -ge $script:closeAt) { $window.Close(); return }
-    if (($now - $script:started).TotalMilliseconds -gt $maxMs) { $window.Close(); return }
+    if (($now - $script:started).TotalMilliseconds -gt $maxMs) { $script:terminal = $true; $window.Close(); return }
     if (-not $script:terminal) {
       if (Watchdog-Alive) { $script:goneSince = $null }
       elseif ($null -eq $script:goneSince) { $script:goneSince = $now }

@@ -74,6 +74,7 @@ import { PathConfineError, isInside } from './path-confine.js';
 import { canonicalInside, openConfinedStream, removeConfinedEntry } from './confined-fs.js';
 import { matchFileRoots, useFileRoot } from './editor-files-api.js';
 import { runGit } from './editor-git-api.js';
+import { gitStatusRunner, projectStatus, createIgnoredPrefixes, watchRelative, MAX_IGNORE_FOLDERS } from './git-status-runner.js';
 import { TrashUnavailable, createRevealer, createTrash, renameExclusive } from './file-explorer-system.js';
 import { isAllowedWebSocketOrigin } from './http-guards.js';
 import { createTreeWatcher, watchStrategy } from './file-explorer-watch.js';
@@ -89,8 +90,6 @@ export const MAX_UPLOAD_BYTES = 512 * 1024 * 1024;
 export const MAX_RAW_BYTES = 30 * 1024 * 1024;
 export const MAX_BATCH = 500;
 export const MAX_WATCH_SESSIONS = 16;
-const GIT_MAX_BUFFER = 64 * 1024 * 1024;
-const GIT_STATUS_TIMEOUT_MS = 15000;
 const STAT_PARALLEL = 64;
 const COPY_CHUNK_BYTES = 1024 * 1024;
 const O_NOFOLLOW = constants.O_NOFOLLOW || 0;
@@ -273,7 +272,7 @@ async function mapLimit(items, limit, work) {
  * @returns {import('express').Router & { close: () => void, sessions: () => number }}
  */
 export function createFileExplorerRouter({
-  fileRoots, guard = null, origins = {}, git = runGit, trash = createTrash(), revealer = createRevealer(),
+  fileRoots, guard = null, origins = {}, git = runGit, statusRunner = gitStatusRunner, trash = createTrash(), revealer = createRevealer(),
   platform = process.platform, watch = watchStrategy(), watchImpl = undefined, watchClock = {}, io = {}, log = (line) => console.warn(line),
   maxUploadBytes = MAX_UPLOAD_BYTES, listingCap = LISTING_CAP,
 } = {}) {
@@ -292,8 +291,7 @@ export function createFileExplorerRouter({
   // The folders only: a single file the editor is allowed by name is not something the explorer manages.
   const roots = () => ({ dirs: (fileRoots()?.dirs || []).filter(Boolean), files: [] });
   const sessions = new Map();   // watch id → { watcher, root, real, res, written: Map<real dir, written dir> }
-  const gitKnown = new Map();   // canonical project folder → { dirs: string[], files: Set<string> } git ignores
-  const gitFlights = new Map(); // canonical project folder → the status being read
+  const gitKnown = new Map();   // bounded visible-folder listings and ignore prefixes, independent of status revisions
 
   function answer(res, error) {
     const done = error?.midway || {};
@@ -438,6 +436,8 @@ export function createFileExplorerRouter({
       dirents.sort((a, b) => (a.isDirectory() !== b.isDirectory() ? (a.isDirectory() ? -1 : 1) : compareNames(a.name, b.name)));
       dirents = dirents.slice(0, listingCap);
     }
+    const ignoreResult = await ignoredEntries(dir.real, dir.real, dirents, requestSignal(res), true);
+    const ignored = new Set(ignoreResult || []);
     const realBase = realpathSync(dir.base);
     const items = await mapLimit(dirents, STAT_PARALLEL, async (entry) => {
       const full = join(dir.real, entry.name);
@@ -455,46 +455,67 @@ export function createFileExplorerRouter({
       try { const st = await lstat(full); return { name: entry.name, type: 'file', size: st.size, mtime: st.mtimeMs }; }
       catch { return { name: entry.name, type: 'file' }; }
     });
+    for (const item of items) {
+      if (ignored.has(item.name) || ignored.has(item.name + '/')) item.ignored = true;
+      else if (ignoreResult === null) item.ignored = null; // still being checked, not known-normal
+    }
     items.sort((a, b) => (a.type !== b.type ? (a.type === 'dir' ? -1 : 1) : compareNames(a.name, b.name)));
     res.json({ ok: true, path: dir.written, items, total, truncated });
   }));
 
   // ── The git state of a project ──
-  async function readGit(real) {
-    const top = await git(['rev-parse', '--show-toplevel'], { cwd: real, maxBuffer: 1024 * 1024 });
-    if (!top.ok) return { isGit: false };
-    let repo = top.stdout.toString('utf8').trim();
-    try { repo = realpathSync(repo); } catch { /* as git printed it */ }
-    const below = slashes(relative(repo, real));
-    if (below.startsWith('..')) return { isGit: false };
-    const prefix = below ? `${below}/` : '';
-    let branch = '';
-    const named = await git(['symbolic-ref', '--short', '-q', 'HEAD'], { cwd: real, maxBuffer: 1024 * 1024 });
-    if (named.ok) branch = named.stdout.toString('utf8').trim();
-    if (!branch) {
-      const short = await git(['rev-parse', '--short', 'HEAD'], { cwd: real, maxBuffer: 1024 * 1024 });
-      if (short.ok) branch = short.stdout.toString('utf8').trim();
+  function requestSignal(res) {
+    const controller = new AbortController();
+    res.once('close', () => controller.abort());
+    return controller.signal;
+  }
+  function ignoreData(real) {
+    let known = gitKnown.get(real);
+    if (!known) {
+      if (gitKnown.size >= 64) gitKnown.delete(gitKnown.keys().next().value);
+      gitKnown.set(real, known = { folders: new Map(), prefixes: createIgnoredPrefixes(platform), at: Date.now() });
     }
-    const status = await git(['status', '--porcelain=v1', '-z', '--ignored', '--untracked-files=normal'], { cwd: real, maxBuffer: GIT_MAX_BUFFER, timeoutMs: GIT_STATUS_TIMEOUT_MS });
-    if (!status.ok) return { isGit: true, branch, changes: {}, ignored: [], partial: true };
-    const { changes, ignored } = parseGitStatus(status.stdout.toString('utf8'), prefix);
-    gitKnown.set(real, { dirs: ignored.filter((path) => path.endsWith('/')), files: new Set(ignored.filter((path) => !path.endsWith('/'))) });
-    return { isGit: true, branch, changes, ignored };
+    if (Date.now() - known.at >= 30000) { known.prefixes.clear(); known.folders.clear(); known.at = Date.now(); }
+    return known;
+  }
+  async function ignoredEntries(real, folder, dirents, signal, cacheOnly = false) {
+    const known = ignoreData(real);
+    const rel = slashes(relative(real, folder));
+    const paths = dirents ? dirents.map(e => `${rel ? rel + '/' : ''}${e.name}${e.isDirectory() ? '/' : ''}`) : known.folders.get(folder)?.paths;
+    if (!paths) return null;
+    const ignored = await statusRunner.ignored(real, paths, { signal, cacheOnly });
+    if (known.folders.size >= MAX_IGNORE_FOLDERS && !known.folders.has(folder)) known.folders.delete(known.folders.keys().next().value);
+    known.folders.set(folder, { paths });
+    for (const path of ignored || []) known.prefixes.add(path);
+    return ignored;
+  }
+  async function readGit(real, signal) {
+    const result = projectStatus(await statusRunner.read(real, { signal }), real);
+    if (!result.isGit && result.ok) return { isGit: false };
+    const dirs = new Set([real]);
+    for (const session of sessions.values()) if (session.real === real) for (const folder of session.written.keys()) dirs.add(folder);
+    const known = ignoreData(real), ignored = [];
+    let ignoreUnknown = false;
+    for (const folder of dirs) {
+      try {
+        // Reuse the folder's entry names between listings/TTL; a tracked edit
+        // does not need readdir + check-ignore in every expanded folder.
+        const entries = known.folders.has(folder) ? null : (await readdir(folder, { withFileTypes: true })).slice(0, listingCap);
+        const checked = await ignoredEntries(real, folder, entries, signal);
+        if (checked === null) ignoreUnknown = true;
+        else ignored.push(...checked);
+      } catch { ignoreUnknown = true; }
+    }
+    const changes = Object.fromEntries((result.changes || []).map(c => [c.path, c.status]));
+    return { isGit: result.isGit, branch: result.branch, changes, ignored: [...new Set(ignored)], ignoreUnknown,
+      ...(!result.ok || result.partial ? { partial: true, stale: !!result.stale, scanState: result.timedOut ? 'timed-out' : 'failed' } : {}) };
   }
   router.get('/git', route(async (req, res) => {
     const dir = folderOf(req.query.root);
-    // Two windows that ask at once share one run of git.
-    let flight = gitFlights.get(dir.real);
-    if (!flight) {
-      flight = readGit(dir.real).finally(() => gitFlights.delete(dir.real));
-      gitFlights.set(dir.real, flight);
-    }
-    res.json({ ok: true, root: dir.written, ...(await flight) });
+    if (req.query.refresh === '1') statusRunner.invalidate(dir.real, { refresh: true });
+    res.json({ ok: true, root: dir.written, ...(await readGit(dir.real, requestSignal(res))) });
   }));
-  const ignoredByGit = (real) => (path) => {
-    const known = gitKnown.get(real);
-    return !!known && (known.files.has(path) || known.dirs.some((dir) => path.startsWith(dir) || `${path}/` === dir));
-  };
+  const ignoredByGit = real => path => ignoreData(real).prefixes.has(watchRelative(real, path, platform));
 
   // ── Entries by name ──
   router.get('/search', route(async (req, res) => {
@@ -505,8 +526,9 @@ export function createFileExplorerRouter({
     const words = query.split(/\s+/);
     const byPath = query.includes('/');
     // What git ignores as a whole folder (node_modules, build output) is not walked; without git, the usual two.
-    const known = gitKnown.get(dir.real) || (await readGit(dir.real).catch(() => null), gitKnown.get(dir.real));
-    const skipped = (rel, name) => name === '.git' || (known ? known.dirs.includes(`${rel}/`) : name === 'node_modules');
+    const signal = requestSignal(res);
+    const known = gitKnown.get(dir.real);
+    const skipped = (rel, name) => name === '.git' || (known ? known.prefixes.has(rel) : name === 'node_modules');
     const items = [];
     const queue = [''];
     const started = Date.now();
@@ -515,8 +537,15 @@ export function createFileExplorerRouter({
       const rel = queue[at];
       let dirents;
       try { dirents = await readdir(rel ? join(dir.real, rel) : dir.real, { withFileTypes: true }); } catch { continue; }
+      if (dirents.length > listingCap) { dirents = dirents.slice(0, listingCap); partial = true; }
+      const checked = await ignoredEntries(dir.real, rel ? join(dir.real, rel) : dir.real, dirents, signal);
+      // Unknown ignore policy must not send name search into an enormous cache.
+      if (checked === null) { partial = true; break; }
+      const ignored = new Set(checked);
+      if (signal.aborted) break;
       dirents.sort((a, b) => compareNames(a.name, b.name));
       for (const entry of dirents) {
+        if (ignored.has(`${rel ? rel + '/' : ''}${entry.name}${entry.isDirectory() ? '/' : ''}`)) continue;
         if (++visited > SEARCH_MAX_VISITED || Date.now() - started > SEARCH_BUDGET_MS) { partial = true; break walk; }
         const path = rel ? `${rel}/${entry.name}` : entry.name;
         const isDir = entry.isDirectory();
@@ -547,7 +576,12 @@ export function createFileExplorerRouter({
       ...(watchImpl ? { watch: watchImpl } : {}),
       ...watchClock,
       ignoresGit: ignoredByGit(dir.real),
-      onChange: ({ dirs, git: gitChanged }) => send('change', { dirs: dirs.map((real) => session.written.get(real)).filter(Boolean), git: gitChanged }),
+      onChange: ({ dirs, git: gitChanged, ignores }) => {
+        if (gitChanged || ignores) statusRunner.invalidate(dir.real, { ignores });
+        if (ignores) gitKnown.delete(dir.real);
+        else { const known = gitKnown.get(dir.real); for (const folder of dirs) known?.folders.delete(folder); }
+        send('change', { dirs: dirs.map((real) => session.written.get(real)).filter(Boolean), git: gitChanged });
+      },
       onError: () => send('resync', {}),
       // A stream is not a watch that works: what is really watched is said, and said again when it changes.
       onState: (state) => send('state', state),
@@ -557,7 +591,7 @@ export function createFileExplorerRouter({
     const beat = setInterval(() => { try { res.write(': still here\n\n'); } catch { /* closing */ } }, 25000);
     beat.unref?.();
     // The response's end is the page leaving (a request's own `close` only says its body was read).
-    res.on('close', () => { clearInterval(beat); session.watcher.close(); sessions.delete(id); });
+    res.on('close', () => { clearInterval(beat); session.watcher.close(); sessions.delete(id); if (![...sessions.values()].some(s => s.real === dir.real)) statusRunner.release(dir.real); });
   }));
 
   router.post('/watch/:id', route(async (req, res) => {
@@ -1033,7 +1067,7 @@ export function createFileExplorerRouter({
   router.use((req, res) => res.status(404).json({ ok: false, code: 'bad-request', error: 'Unknown explorer route.' }));
 
   /** Release every watch (the server is going down). */
-  router.close = () => { for (const session of sessions.values()) { session.watcher.close(); try { session.res.end(); } catch { /* gone */ } } sessions.clear(); };
+  router.close = () => { for (const session of sessions.values()) { session.watcher.close(); statusRunner.release(session.real); try { session.res.end(); } catch { /* gone */ } } sessions.clear(); };
   router.sessions = () => sessions.size;
   return router;
 }

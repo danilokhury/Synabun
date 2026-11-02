@@ -18,13 +18,12 @@
 // not an error. Dependencies are injected: the router is tested without server.js.
 
 import { Router } from 'express';
-import { execFile } from 'node:child_process';
 import { statSync } from 'node:fs';
 import { dirname, isAbsolute, relative, sep } from 'node:path';
 import { PathConfineError } from './path-confine.js';
 import { MAX_FILE_BYTES, canonicalInside } from './confined-fs.js';
 import { useFileRoot } from './editor-files-api.js';
-import { gitRead } from './git-read.js';
+import { gitStatusRunner } from './git-status-runner.js';
 
 /** What this route adds to the editor (GET /api/editor/capabilities). */
 export const EDITOR_GIT_CAPABILITIES = Object.freeze(['git-head']);
@@ -32,9 +31,6 @@ export const GIT_TIMEOUT_MS = 5000;
 
 const UTF8_BOM = [0xEF, 0xBB, 0xBF];
 const BINARY_PROBE_BYTES = 8192;
-// Variables that would point git at another repository than the one the file is in.
-const REDIRECTING = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_NAMESPACE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CEILING_DIRECTORIES'];
-
 /**
  * Run git for a read and collect what it prints. Never throws. The arguments are the command's own: what keeps a
  * read from starting a program of the repository's is added here (lib/git-read.js).
@@ -42,21 +38,8 @@ const REDIRECTING = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_NAMESPAC
  * @param {{ cwd: string, maxBuffer: number, timeoutMs?: number, binary?: string, env?: object }} o
  * @returns {Promise<{ ok: boolean, stdout: Buffer, tooLarge: boolean }>} `tooLarge`: it printed more than `maxBuffer` bytes
  */
-export function runGit(args, { cwd, maxBuffer, timeoutMs = GIT_TIMEOUT_MS, binary = 'git', env = process.env } = {}) {
-  const clean = { ...env };
-  for (const name of REDIRECTING) delete clean[name];
-  const failed = { ok: false, stdout: Buffer.alloc(0), tooLarge: false };
-  return gitRead(cwd, args, { binary, env: clean }).then((read) => new Promise((done) => {
-    try {
-      execFile(binary, read.args, { cwd, maxBuffer, timeout: timeoutMs, encoding: 'buffer', windowsHide: true, env: read.env, shell: false }, (error, stdout) => {
-        const out = Buffer.isBuffer(stdout) ? stdout : Buffer.alloc(0);
-        if (!error) done({ ok: true, stdout: out, tooLarge: false });
-        else done({ ok: false, stdout: out, tooLarge: error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' });
-      });
-    } catch {
-      done(failed);
-    }
-  })).catch(() => failed);
+export function runGit(args, options = {}) {
+  return gitStatusRunner.run(args, { timeoutMs: GIT_TIMEOUT_MS, ...options });
 }
 
 /**

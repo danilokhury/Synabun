@@ -36,7 +36,9 @@ import { basename, dirname, join, relative } from 'node:path';
 import { packagesInLock } from '../../neural-interface/lib/install-details.js';
 import { PACKAGING_ROOT } from './targets.mjs';
 import { BuildError, fetchVerified, note, removeTree, run, sha256File, step, walk, which } from './util.mjs';
-import { builderSigningOptions, checkTools, planSummary, unsignedOf, windowsSigningEnv, windowsSigningPlan } from './win-sign.mjs';
+import { buildNativeInstallWindow } from './install-window-native.mjs';
+import { auditWindowsSigning } from './windows-sac.mjs';
+import { builderSigningOptions, checkTools, planSummary, signWindowsTree, unsignedOf, verifySigned, windowsSigningEnv, windowsSigningPlan } from './win-sign.mjs';
 
 export const DESKTOP_ROOT = join(PACKAGING_ROOT, 'desktop');
 export const APP_ID = 'ai.synabun.app';
@@ -163,6 +165,7 @@ export function stageShellApp(ctx, { iconTools }) {
   if (!resizePng(join(publicDir, 'icon-512.png'), 32, tray)) copyFileSync(join(publicDir, 'icon-192.png'), tray);
   resizePng(join(publicDir, 'icon-512.png'), 64, join(assets, 'tray@2x.png'));
   if (ctx.target.platform === 'win32') writeFileSync(join(assets, 'tray.ico'), iconTools.pngToIco(readFileSync(tray)));
+  if (ctx.target.platform === 'win32') signWindowsTree(windowsSigningPlan(process.env), app, { log: note });
   return app;
 }
 
@@ -182,6 +185,8 @@ export function buildResources(ctx, { iconTools }) {
     out.icon = join(folder, 'icon.ico');
     // The installer's own steps, and the unpacking with its progress on the install page.
     for (const name of INSTALLER_INCLUDES) copyFileSync(join(DESKTOP_ROOT, 'build', name), join(folder, name));
+    signWindowsTree(windowsSigningPlan(process.env), folder, { log: note });
+    buildNativeInstallWindow(ctx, folder);
   } else {
     mkdirSync(join(folder, 'icons'), { recursive: true });
     copyFileSync(source, join(folder, 'icons', '512x512.png'));
@@ -500,7 +505,7 @@ export function runElectronBuilder(ctx, tools, config, args, label) {
   if (process.env.SYNABUN_WIN_SIGN_PFX && !env.WIN_CSC_LINK) env.WIN_CSC_LINK = process.env.SYNABUN_WIN_SIGN_PFX;
   if (process.env.SYNABUN_WIN_SIGN_PASSWORD && !env.WIN_CSC_KEY_PASSWORD) env.WIN_CSC_KEY_PASSWORD = process.env.SYNABUN_WIN_SIGN_PASSWORD;
   // The sign hook (lib/win-sign-hook.mjs) runs inside electron-builder and reads its settings and secrets from here.
-  Object.assign(env, windowsSigningEnv(process.env));
+  Object.assign(env, windowsSigningEnv(process.env), ctx.desktop?.signingToolEnv || {});
   run(ctx.tool.node, [tools.cli, '--projectDir', ctx.desktopApp, '--config', file, '--publish', 'never', ...args], {
     cwd: ctx.desktopApp, env, label: `electron-builder (${label})`,
   });
@@ -539,11 +544,6 @@ export async function buildDesktopApp(ctx, { payload, entryFile, iconTools }) {
   await fetchVerified({ url: archive.url, sha256: archive.sha256, destination: join(dist, archive.file), label: archive.file, fetchImpl: ctx.fetch });
   const tools = desktopTools(ctx);
   ctx.desktopTools = tools;
-  const shellApp = stageShellApp(ctx, { iconTools });
-  ctx.desktopApp = shellApp;
-  const resources = buildResources(ctx, { iconTools });
-  const output = join(ctx.work, 'electron-out');
-  removeTree(output);
   const signing = signingFrom(process.env);
   const winSigning = ctx.target.platform === 'win32' ? windowsSigningPlan(process.env) : null;
   if (winSigning) {
@@ -554,9 +554,19 @@ export async function buildDesktopApp(ctx, { payload, entryFile, iconTools }) {
     const problems = [...winSigning.problems, ...(winSigning.dryRun ? [] : tools)];
     if (problems.length) throw new BuildError('Windows signing was asked for but cannot run (docs/windows-code-signing.md). No artifact was created.', { details: problems });
   }
+  const shellApp = stageShellApp(ctx, { iconTools });
+  ctx.desktopApp = shellApp;
+  const resources = buildResources(ctx, { iconTools });
+  const output = join(ctx.work, 'electron-out');
+  removeTree(output);
   const config = builderConfig({
     target: ctx.target, version: ctx.version, electron: { version: archive.version, dist }, shellApp, output, resources, payload, entryFile, signing, env: process.env,
   });
+  if (ctx.target.platform === 'win32') {
+    config.extraResources.push({ from: join(resources.folder, 'SynaBun-install-window.exe'), to: 'update-ui/SynaBun-install-window.exe' });
+    // Leave the signed script visible to the full-tree audit; Electron resolves the asar-unpacked entry unchanged.
+    config.asarUnpack = ['src/updater/install-window.ps1'];
+  }
   ctx.desktop = { tools, config, output, signing, electron: archive };
   const platformFlag = { darwin: '--mac', win32: '--win', linux: '--linux' }[ctx.target.platform];
   step(`electron-builder: the ${ctx.target.label} app`);
@@ -576,7 +586,10 @@ export async function buildDesktopApp(ctx, { payload, entryFile, iconTools }) {
     root = join(output, 'win-unpacked');
     ctx.report.signed = signing.windows ? 'certificate' : false;
     if (winSigning?.enabled && !winSigning.dryRun) {
-      // The hook signed and verified each one; a hook electron-builder never called is caught here.
+      // Complete extraResources walk after builder/fuse edits, before the manifest and packing.
+      signWindowsTree(winSigning, root, { log: note });
+      const problems = auditWindowsSigning(winSigning, [root]);
+      if (problems.length) throw new BuildError('Windows SAC signing audit failed.', { details: problems });
       const unsigned = unsignedOf(['SynaBun.exe', 'synabun-cli.exe'].map(name => join(root, name)));
       if (unsigned.length) throw new BuildError('Windows signing was asked for, but the app\'s executables are not signed. No artifact was created.', { details: unsigned });
       ctx.report.signed = winSigning.provider;
@@ -699,7 +712,35 @@ function writeInstallerFacts(ctx, { keyFiles = [] } = {}) {
   return text;
 }
 
-function windowsArtifacts(ctx, names) {
+/** Copy verified packaging tools before signing their embedded plugins: never mutate shared pinned caches. */
+export async function prepareSignedNsis(ctx, { plan = windowsSigningPlan(process.env), signTree = signWindowsTree, audit = auditWindowsSigning } = {}) {
+  if (!plan.enabled || plan.dryRun) return;
+  const tools = ctx.desktop.tools.requireTool('app-builder-lib/out/toolsets/windows.js');
+  const version = ctx.desktop.config.toolsets?.nsis;
+  // Tool resolution happens in this process; use the same verified cache as the builder child.
+  const savedCache = process.env.ELECTRON_BUILDER_CACHE;
+  let binary, plugins;
+  try {
+    process.env.ELECTRON_BUILDER_CACHE = join(ctx.cache, 'electron-builder');
+    binary = await tools.getMakeNsisPath(version);
+    plugins = await tools.getNsisPluginsPath(version);
+  } finally {
+    if (savedCache === undefined) delete process.env.ELECTRON_BUILDER_CACHE;
+    else process.env.ELECTRON_BUILDER_CACHE = savedCache;
+  }
+  const nsis = join(ctx.work, 'signed-nsis');
+  const resources = join(ctx.work, 'signed-nsis-resources');
+  removeTree(nsis); removeTree(resources);
+  cpSync(binary.env?.NSISDIR || dirname(binary.path), nsis, { recursive: true });
+  mkdirSync(resources, { recursive: true });
+  cpSync(plugins, join(resources, 'plugins'), { recursive: true });
+  for (const root of [nsis, resources]) signTree(plan, root, { log: note });
+  const problems = audit(plan, [nsis, resources], { strictOwnership: false });
+  if (problems.length) throw new BuildError('NSIS plugin signatures failed verification.', { details: problems });
+  ctx.desktop.signingToolEnv = { ELECTRON_BUILDER_NSIS_DIR: nsis, ELECTRON_BUILDER_NSIS_RESOURCES_DIR: resources };
+}
+
+async function windowsArtifacts(ctx, names) {
   step('Installer (NSIS, per user, no administrator rights)');
   const output = join(ctx.work, 'electron-out-installer');
   removeTree(output);
@@ -721,6 +762,7 @@ function windowsArtifacts(ctx, names) {
   const keyFiles = installerKeyFiles(ctx.bundle.root);
   const facts = writeInstallerFacts(ctx, { keyFiles });
   note(`install page: ${facts.split(/\r?\n/).filter(line => line.startsWith('!define')).length} facts of this build, every step listed; ${keyFiles.length} files SynaBun starts, checked by size when the full check cannot run`);
+  await prepareSignedNsis(ctx);
   const config = { ...ctx.desktop.config, directories: { ...ctx.desktop.config.directories, output } };
   // The installer packs this folder as it is when NSIS runs: it must still be the folder the audit read.
   const audited = treeMarks(ctx.bundle.root);
@@ -731,6 +773,18 @@ function windowsArtifacts(ctx, names) {
   if (!existsSync(installer)) throw new BuildError(`electron-builder made no ${names.installer}`, { details: readdirSync(output) });
   const winSigning = windowsSigningPlan(process.env);
   if (winSigning.enabled && !winSigning.dryRun && unsignedOf([installer]).length) throw new BuildError(`Windows signing was asked for, but ${names.installer} is not signed. No artifact was created.`);
+  if (winSigning.enabled && !winSigning.dryRun) {
+    verifySigned({ ...winSigning, verifyMode: 'full' }, installer, { log: note });
+    const inspection = join(ctx.work, 'signed-installer-audit');
+    removeTree(inspection);
+    const sevenZip = await ctx.desktop.tools.requireTool('app-builder-lib/out/toolsets/7zip.js').getPath7za();
+    run(sevenZip, ['x', '-y', `-o${inspection}`, installer], { env: { ...process.env, ELECTRON_BUILDER_CACHE: join(ctx.cache, 'electron-builder') }, capture: true, label: 'audit embedded NSIS signatures' });
+    const uninstaller = [...walk(inspection)].find(file => /^Uninstall SynaBun\.exe$/i.test(file.relative));
+    if (!uninstaller) throw new BuildError('The installer has no embedded SynaBun uninstaller.');
+    run(sevenZip, ['x', '-y', `-o${join(inspection, 'uninstaller-content')}`, uninstaller.path], { capture: true, label: 'audit embedded uninstaller plugins' });
+    const problems = auditWindowsSigning(winSigning, [inspection]);
+    if (problems.length) throw new BuildError('Installer SAC signing audit failed.', { details: problems });
+  }
   const destination = join(ctx.out, names.installer);
   rmSync(destination, { force: true });
   renameSync(installer, destination);

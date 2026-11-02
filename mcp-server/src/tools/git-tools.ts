@@ -55,8 +55,8 @@ export async function handleGit(args: {
 
 async function handleStatus(path: string) {
   const result = await ni.gitStatus(path);
-  if (result.error) {
-    return text(`Git status failed: ${result.error}`);
+  if (result.error || result.ok === false || result.partial || result.stale || result.timedOut) {
+    return text(`Git status incomplete: ${result.error || result.scanState || 'scan unavailable'}. Worktree cleanliness is unknown; refresh and retry.`);
   }
   if (!result.isGit) {
     return text(`Not a git repository: ${path}`);

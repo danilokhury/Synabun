@@ -161,6 +161,7 @@ export function createTree({ el, mac, icons, hooks }) {
     node.classList.toggle('fe-node--selected', selected.has(path));
     node.classList.toggle('fe-node--focus', focus === path);
     node.classList.toggle('fe-node--ignored', !!info.ignored);
+    node.dataset.ignoreState = info.ignoreUnknown ? 'unknown' : info.ignored ? 'ignored' : 'known';
     node.classList.toggle('fe-node--cut', !!info.cut);
     node.classList.toggle('fe-node--open', !!info.open);
     node.classList.toggle('fe-node--active', !!info.active);

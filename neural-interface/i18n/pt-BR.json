@@ -765,6 +765,9 @@
       "addFailed": "Não foi possível adicionar o projeto."
     },
     "branch": {
+      "scanning": "Verificando status do git…",
+      "timedOut": "O status do git excedeu o tempo limite. Tente Atualizar.",
+      "scanFailed": "Não foi possível verificar o status do git. Tente Atualizar.",
       "label": "Branch {branch}: {count} alterados"
     },
     "count": {
@@ -817,6 +820,7 @@
       "deleted": "excluído",
       "conflict": "conflito",
       "contains": "tem alterações",
+      "ignoreUnknown": "Verificando se é ignorado",
       "ignored": "ignorado pelo git"
     },
     "row": {
@@ -9059,7 +9063,8 @@
       "tryAgain": "Tentar de novo",
       "retried": "Reenviado",
       "announceRestored": "O limite de uso reiniciou.",
-      "continue": "O limite de uso reiniciou. Tente de novo o que foi bloqueado e continue de onde parou."
+      "continue": "O limite de uso reiniciou. Tente de novo o que foi bloqueado e continue de onde parou.",
+      "switchProvider": "Continuar com outro provedor"
     },
     "accountUsage": {
       "autoPicked": "Auto escolheu {to}: {usage}",

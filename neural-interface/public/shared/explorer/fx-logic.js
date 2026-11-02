@@ -56,7 +56,7 @@ export function sameListing(a, b) {
   if (!a || !b || a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
     const x = a[i]; const y = b[i];
-    if (x.name !== y.name || x.type !== y.type || x.size !== y.size || x.mtime !== y.mtime || !!x.link !== !!y.link || !!x.outside !== !!y.outside || !!x.broken !== !!y.broken) return false;
+    if (x.name !== y.name || x.type !== y.type || x.size !== y.size || x.mtime !== y.mtime || !!x.link !== !!y.link || !!x.outside !== !!y.outside || !!x.broken !== !!y.broken || !!x.ignored !== !!y.ignored || (x.ignored === null) !== (y.ignored === null)) return false;
   }
   return true;
 }

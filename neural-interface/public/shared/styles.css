@@ -29492,3 +29492,7 @@ body .styleguide-panel {
 .ocpv2-tools-picker .cc-dropdown-trigger { min-width: 0; max-width: 160px; border: none; background: transparent; color: var(--t-primary); font-family: inherit; }
 
 .ocpv2-tools-picker .tool-list-picker .cc-dropdown-menu { background: rgba(22,22,26,0.98); }
+
+/* Git scan feedback stays inline; file browsing remains available. */
+.fe-git-scan-hint { color: var(--t-secondary); font-size: var(--fs-xs); white-space: normal; }
+.fe-branch-btn--scanning > svg { opacity: 0.5; }

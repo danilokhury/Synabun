@@ -502,7 +502,9 @@ const SUGGESTION_KINDS = { computer: 'computer', web: 'web', fix: 'edit', skill:
  *          onFollowup(text, { set, indices }) (a follow-up was clicked: send `text` as the user's message),
  *          onFollowupOther() ("Something else…": the composer), limitInfo() → the session's limit notice
  *          ({ status, resetsAt } | null), brainProvider() → the brain's provider id, onLimitRetry(text)
- *          (Retry now on the Assistant's own limit card: send `text`) }
+ *          (Retry now on the Assistant's own limit card: send `text`), onSwitchProvider(anchorEl, { excludeProvider, retryText })
+ *          (Continue with another provider on the Assistant's own limit card: the host opens its own
+ *          provider picker anchored on anchorEl and decides what a pick does) }
  */
 export function createRenderer(transcriptEl, hooks = {}) {
   loadMarked();
@@ -1043,9 +1045,17 @@ export function createRenderer(transcriptEl, hooks = {}) {
     if (!read && !(brainError && reported)) return null;
     const resetsAt = reported ? info.resetsAt : read?.resetsAt;
     const retryText = t('assistant.limitWait.continue', 'The usage limit has reset. Retry what was blocked and continue where you left off.');
-    let provider = '';
-    try { provider = providerShortLabel(hooks.brainProvider?.() || ''); } catch { /* unknown */ }
-    return limitDock.set('brain', { resetsAt, since: nowMs(), provider, onRetry: () => { limitDock.set('brain', null); hooks.onLimitRetry?.(retryText); } });
+    let providerId = '';
+    try { providerId = hooks.brainProvider?.() || ''; } catch { /* unknown */ }
+    const provider = providerId ? providerShortLabel(providerId) : '';
+    return limitDock.set('brain', {
+      resetsAt, since: nowMs(), provider,
+      onRetry: () => { limitDock.set('brain', null); hooks.onLimitRetry?.(retryText); },
+      onSwitchProvider: typeof hooks.onSwitchProvider === 'function'
+        ? (anchor) => hooks.onSwitchProvider(anchor, { excludeProvider: providerId, retryText })
+        : null,
+      onClose: () => limitDock.set('brain', null),
+    });
   }
 
   /** The session's limit report changed (assistant:limit): this turn's waiting card counts to its reset time. */
@@ -4146,6 +4156,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
     setWaiting,
     /** The session's usage-limit report changed: this turn's waiting card counts to its reset time. */
     noteLimit,
+    /** Dismiss the Assistant's own limit-wait card (a provider switch already decided what follows). */
+    clearLimitWait: () => limitDock.set('brain', null),
     finishTurn,
     renderTranscript,
     showWorking,

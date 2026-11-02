@@ -34,13 +34,13 @@ export function startWindowsSwap({
       if (!runtimeNode || !existsSync(runtimeNode)) throw new Error('SynaBun\'s own Node runtime is missing from this copy');
       const swapDir = join(stateDir, 'swap');
       mkdirSync(swapDir, { recursive: true });
-      for (const name of ['swap-failed', 'rolled-back', 'started', 'swapped', INSTALL_WINDOW_FILES.shown, INSTALL_WINDOW_FILES.up]) rmSync(join(stateDir, name), { force: true });
+      for (const name of ['swap-failed', 'rolled-back', 'started', 'swapped', INSTALL_WINDOW_FILES.shown, INSTALL_WINDOW_FILES.up, 'window-cancel']) rmSync(join(stateDir, name), { force: true });
       // The install window (install-window.mjs), when something is on screen: its files beside the watchdog's.
       let windowFiles = null;
       if (window?.config && window.scriptSource) {
         try {
-          windowFiles = writeInstallWindowFiles({ stateDir, config: window.config, scriptSource: window.scriptSource, logoFile: window.logoFile || null });
-        } catch { windowFiles = null; }
+          windowFiles = writeInstallWindowFiles({ stateDir, config: window.config, scriptSource: window.scriptSource, logoFile: window.logoFile || null, nativeFile: window.nativeFile || null });
+        } catch (error) { throw new Error(`the visible update window could not be prepared: ${error.message}`); }
       }
       writeFileSync(join(stateDir, 'plan.json'), JSON.stringify({
         platform: 'win32', appPath: instDir, backup: `${instDir}.previous`, version, previous, relaunch: !!relaunch, installer, installId, at: now().toISOString(),

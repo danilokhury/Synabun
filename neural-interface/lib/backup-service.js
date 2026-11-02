@@ -38,6 +38,11 @@ export const DEFAULT_BACKUP_RETENTION = Object.freeze({
   dailyDays: 30,
   weeklyWeeks: 12,
   maxBytes: 10 * 1024 * 1024 * 1024,
+  // How many pre-update/pre-migration snapshots this generic sweep keeps in a shared folder; the
+  // dedicated pruner for the updater's own folder (lib/update-snapshot.js prunePreUpdateSnapshots)
+  // reads the same retention.preUpdateKeep through the settings mechanism (GET/PUT
+  // /api/system/auto-backup), with its own PRE_UPDATE_KEEP_ENV override.
+  preUpdateKeep: 1,
 });
 
 /** The DATA_HOME folders every backup copies (createVerifiedBackup); DATA_HOME/.env goes too, as a file. */
@@ -1322,7 +1327,7 @@ export function applyBackupRetention({
     keep.add(latestPreUpdate.path);
     protectedPaths.add(latestPreUpdate.path);
   }
-  for (const item of snapshots.filter(item => ['pre-update', 'pre-migration'].includes(item.kind)).slice(0, 5)) keep.add(item.path);
+  for (const item of snapshots.filter(item => ['pre-update', 'pre-migration'].includes(item.kind)).slice(0, Math.max(0, Number(policy.preUpdateKeep) || 0))) keep.add(item.path);
 
   const daily = new Set();
   const weekly = new Set();

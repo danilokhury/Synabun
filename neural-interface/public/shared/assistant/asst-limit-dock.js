@@ -20,7 +20,12 @@ export function createLimitDock(transcript, { t, createWait = createLimitWait, c
       host.replaceChildren();
       active = key;
       provider = next?.[1].provider;
-      wait = next ? createWait({ t, ...next[1], onRetry: next[1].onRetry ? () => entries.get(key)?.onRetry?.() : null }) : null;
+      wait = next ? createWait({
+        t, ...next[1],
+        onRetry: next[1].onRetry ? () => entries.get(key)?.onRetry?.() : null,
+        onSwitchProvider: next[1].onSwitchProvider ? (anchor) => entries.get(key)?.onSwitchProvider?.(anchor) : null,
+        onClose: next[1].onClose ? () => entries.get(key)?.onClose?.() : null,
+      }) : null;
       if (wait) host.appendChild(wait.el);
     } else if (wait) wait.update({ resetsAt: next[1].resetsAt });
     host.hidden = !wait;

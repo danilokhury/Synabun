@@ -11,11 +11,10 @@
 // `git status`. Everything is injected, so nothing here opens the memory
 // database itself, and every reader answers an empty list on failure.
 
-import { execFile } from 'node:child_process';
 import { CATEGORIES } from '../assistant-user-context-budgets.js';
 import { openItems, parseThread } from '../assistant-user-threads.js';
 import { readGitBranch } from '../assistant-user-context.js';
-import { gitRead } from '../git-read.js';
+import { gitStatusRunner } from '../git-status-runner.js';
 import { FACTS } from './budgets.js';
 import { PROBLEMS, runStatus } from './facts.js';
 
@@ -46,16 +45,15 @@ export function parseSessionSummary(content) {
  * `git status --porcelain` → the number of changed and untracked paths, or null (not a repository, too slow).
  * Run as lib/git-read.js runs a read: nothing the project's own git configuration names is started for it.
  */
-export function gitDirtyCount(cwd, { timeoutMs = 1500, run = execFile } = {}) {
-  return new Promise((done) => {
-    if (!cwd) return done(null);
-    gitRead(cwd, ['status', '--porcelain']).then((read) => {
-      run('git', read.args, { cwd, env: read.env, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (error, stdout) => {
-        if (error) return done(null);
-        done(String(stdout || '').split('\n').filter((line) => line.trim()).length);
-      });
-    }).catch(() => done(null));
-  });
+export async function gitDirtyCount(cwd, { timeoutMs = 1500, runner = gitStatusRunner } = {}) {
+  if (!cwd) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const result = await runner.read(cwd, { signal: controller.signal });
+    return result.ok && result.isGit !== false && !result.partial && !result.stale ? result.changes.length : null;
+  } catch { return null; }
+  finally { clearTimeout(timer); }
 }
 
 /**

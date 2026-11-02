@@ -819,6 +819,9 @@
       "addFailed": "The project could not be added."
     },
     "branch": {
+      "scanning": "Scanning git status…",
+      "timedOut": "Git status timed out. Retry with Refresh.",
+      "scanFailed": "Could not scan git status. Retry with Refresh.",
       "label": "Branch {branch}: {count} changed"
     },
     "count": {
@@ -871,6 +874,7 @@
       "deleted": "deleted",
       "conflict": "conflict",
       "contains": "holds changes",
+      "ignoreUnknown": "Ignore status pending",
       "ignored": "ignored by git"
     },
     "row": {
@@ -9113,7 +9117,8 @@
       "tryAgain": "Try again",
       "retried": "Retried",
       "announceRestored": "The usage limit has reset.",
-      "continue": "The usage limit has reset. Retry what was blocked and continue where you left off."
+      "continue": "The usage limit has reset. Retry what was blocked and continue where you left off.",
+      "switchProvider": "Continue with another provider"
     },
     "accountUsage": {
       "autoPicked": "Auto chose {to}: {usage}",

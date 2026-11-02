@@ -31,6 +31,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { gitStatusRunner } from '../neural-interface/lib/git-status-runner.js';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { evaluateAll, evaluateTarget, formatVerdict } from './lib/preflight.mjs';
@@ -114,9 +115,9 @@ function sourceCommit(repoRoot) {
 }
 
 /** True when the checkout has changes that are not committed: the build then is of the working tree, not of the commit. */
-function sourceDirty(repoRoot) {
-  const status = spawnSync('git', ['-C', repoRoot, 'status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8', windowsHide: true });
-  return status.status === 0 ? status.stdout.trim().length > 0 : null;
+async function sourceDirty(repoRoot) {
+  const status = await gitStatusRunner.read(repoRoot);
+  return status.ok && status.isGit && !status.partial && !status.stale ? status.changes.some(change => change.status !== 'untracked') : null;
 }
 
 async function build(options) {
@@ -158,7 +159,7 @@ async function build(options) {
       toolDownloads: !options.flags.has('no-tool-downloads'),
       artifacts: options.values.artifact ? options.values.artifact.split(',').map(kind => kind.trim()).filter(Boolean) : null,
     },
-    report: { target: target.id, version, ...(override ? { versionOverride: `staged only; the source says ${sourceVersion}` } : {}), mode: verdict.mode, startedAt: new Date().toISOString(), sourceDirty: sourceDirty(REPO_ROOT) },
+    report: { target: target.id, version, ...(override ? { versionOverride: `staged only; the source says ${sourceVersion}` } : {}), mode: verdict.mode, startedAt: new Date().toISOString(), sourceDirty: await sourceDirty(REPO_ROOT) },
   };
 
   step(`SynaBun ${version} for ${target.id} (${target.label})${ctx.cross ? `, cross-built on ${process.platform}-${process.arch}` : ''}`);

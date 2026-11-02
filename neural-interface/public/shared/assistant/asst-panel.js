@@ -50,7 +50,7 @@ import { buildPromptText, createComposer } from './asst-composer.js';
 import { buildDispatchSpec, parseSlashCommand, slashHelpMarkdown } from './asst-slash.js';
 import { resolveStopTarget } from './asst-stop.js';
 import { plural } from './asst-tool-kinds.js';
-import { cachedProjects, createBrainPicker, testDensityLabel } from './asst-brain-picker.js';
+import { cachedProjects, createBrainPicker, openModelMenu, testDensityLabel } from './asst-brain-picker.js';
 import { createRovingToolbar } from './asst-roving.js';
 import { openAccountsManager } from './asst-accounts.js';
 import { createAgentsDock } from './asst-agents-dock.js';
@@ -61,7 +61,7 @@ import { createRouteModeControl, openModelsManager, openRoutesEditor, refreshMod
 import { budgetChipText, budgetSpendText, budgetTone, closeBudgetEditor, createBudgetController, mountBudgetChip, openBudgetEditor } from './asst-budget.js';
 import { computerRemoteView, createComputerPanel, createComputerToggle, normalizeComputerRemote, openFrameLightbox, closeFrameLightbox, requestDesktopStop } from './asst-computer.js';
 import {
-  applyLimit, applyLimitPacket, applyUsagePacket, brainLabel, createRenameWriter, createTabState, DEFAULT_ROUTE_MODE, deserializeTabState, fmtCost, fmtRunLine, limitExpiresIn, limitNoticeText, modelShortName,
+  applyLimit, applyLimitPacket, applyUsagePacket, BRAIN_PROVIDERS, brainLabel, createRenameWriter, createTabState, DEFAULT_ROUTE_MODE, deserializeTabState, fmtCost, fmtRunLine, limitExpiresIn, limitNoticeText, modelShortName,
   brainModePatch, isBrainProvider, normalizeBrain, normalizeComputerMode, permissionModeLabel, normalizeRouteMode, normalizeTestDensity, projectLabel, providerMeta, providerShortLabel, readStoredBrain, runFromPayload,
   serializeTabState, sessionStatus, tabStorageKey, userSessionTitle,
 } from './asst-state.js';
@@ -537,6 +537,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     onFollowup: (text) => { submit(clickPayload(text)); },
     onFollowupOther: () => composer.focus(),
     onLimitRetry: (text) => { submit(clickPayload(text)); },
+    onSwitchProvider: (anchor, meta) => continueOnAnotherProvider(anchor, meta),
     limitInfo: () => st.limit,
     brainProvider: () => st.brain.provider,
     heroOrigin: () => { try { return host.takeHeroOrigin?.() || null; } catch { return null; } },
@@ -1670,6 +1671,33 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       persist();
       if (!meta.requiresSwitch) renderer.appendError(err.message || String(err));
     });
+  }
+
+  // "Continue with another provider" on the Assistant's own limit-wait card: the same model menu
+  // the toolbar's model field opens (never a native select), minus the limited provider, then the
+  // existing switch (applyBrain → switch_brain) and, where the blocked prompt is known, Retry now's
+  // own resend (submit) — in that order, so the server sees the switch before the retried prompt.
+  function continueOnAnotherProvider(anchor, { excludeProvider = '', retryText = '' } = {}) {
+    if (!anchor) return;
+    const providers = BRAIN_PROVIDERS.filter((p) => p !== excludeProvider);
+    if (!providers.length) return;
+    openModelMenu(anchor, {
+      brain: st.brain,
+      t,
+      providers,
+      title: tt('assistant.limitWait.switchProvider', 'Continue with another provider'),
+      warnSwitch: true,
+      allowCustom: false, // a custom id here would resolve to the (still limited) current provider
+      onToast: toast,
+      onManageModels: () => openModels(),
+      onSelect: async (target) => {
+        if (!target?.provider) return;
+        await picker.switchProvider(target.provider, target.model || '');
+        if (destroyed) return;
+        renderer.clearLimitWait();
+        if (retryText) submit(clickPayload(retryText));
+      },
+    }).catch(() => {});
   }
 
   // ── Runs ──

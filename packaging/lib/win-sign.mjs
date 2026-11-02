@@ -11,10 +11,8 @@
  *                           CRYPTOCERTUM / YUBIKEY / ETOKEN / PIV): jsign --storetype PKCS11 (or that type)
  *   ssl-esigner             SSL.com eSigner cloud signing: jsign --storetype ESIGNER
  *
- * What is signed (signPolicy): SynaBun.exe and synabun-cli.exe as electron-builder makes the app folder (before the
- * payload manifest, the audit and the installer read it), then the uninstaller electron-builder embeds and the
- * installer itself. Nothing under resources/ is signed: the payload's programs keep the signatures their vendors gave
- * them (Node.js, cloudflared, Git for Windows), and cloudflared and Git are checked byte for byte against their pins.
+ * SynaBun executables, Electron DLLs, payload native modules/helpers and owned PowerShell scripts, before packing.
+ * Existing verified vendor signatures are preserved; Node, cloudflared and Git bundles remain immutable.
  *
  * Secrets are read from the environment only, reach jsign through its own `env:NAME` form (never its command line),
  * and are taken out of every line this module prints (createRedactor). Every signature is verified right after it is
@@ -25,7 +23,7 @@
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, statSync } from 'node:fs';
 import { basename, dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -186,7 +184,7 @@ export function signingFingerprint(env = process.env) {
   const plan = windowsSigningPlan(env);
   if (!plan.enabled) return 'unsigned';
   if (plan.dryRun) return 'unsigned (dry run)';
-  return JSON.stringify({ provider: plan.provider, store: plan.store && { type: plan.store.type, keystore: plan.store.keystore, alias: plan.store.alias }, publisherNames: plan.publisherNames, timestamp: plan.timestampUrls });
+  return JSON.stringify({ coverage: 'sac-all-v1', provider: plan.provider, store: plan.store && { type: plan.store.type, keystore: plan.store.keystore, alias: plan.store.alias }, publisherNames: plan.publisherNames, timestamp: plan.timestampUrls });
 }
 
 // ── Redaction ──
@@ -278,21 +276,45 @@ export function describeCommand({ file, args }, redact = (value) => value) {
 
 // ── What gets signed ──
 
-/**
- * Whether a file electron-builder hands the hook is one of ours to sign. { sign, kind, reason }.
- *   app          SynaBun.exe / synabun-cli.exe in the app folder (not anywhere under resources/)
- *   uninstaller  the uninstaller electron-builder builds and embeds in the installer (…__uninstaller.exe)
- *   installer    SynaBun-<version>-<target>-setup.exe
- * Everything else is left as it is: the payload's programs keep their vendors' signatures.
- */
+/** Extensions Authenticode can sign. Batch files cannot carry an Authenticode signature. */
+export const SIGN_EXTENSIONS = Object.freeze(['.exe', '.dll', '.node', '.sys', '.ps1', '.psm1', '.vbs', '.msi']);
+const normalPath = path => String(path).replace(/\\/g, '/');
+export const isSignable = path => SIGN_EXTENSIONS.some(ext => String(path).toLowerCase().endsWith(ext));
+export const isPowerShell = path => /\.ps(?:1|m1)$/i.test(path);
+
+/** Scope is ownership, never merely an extension: pinned vendor trees are immutable. */
 export function signPolicy(path) {
-  const parts = String(path).split(/[\\/]+/);
-  const name = parts.at(-1) || '';
-  if (parts.slice(0, -1).some(part => part.toLowerCase() === 'resources')) return { sign: false, kind: 'payload', reason: 'inside resources/: a program of the payload keeps its vendor\'s signature' };
-  if (OWN_EXECUTABLES.includes(name)) return { sign: true, kind: 'app', reason: 'SynaBun\'s own executable' };
-  if (/__uninstaller\.exe$/i.test(name)) return { sign: true, kind: 'uninstaller', reason: 'the uninstaller the installer carries' };
-  if (/^SynaBun-.+-setup\.exe$/i.test(name)) return { sign: true, kind: 'installer', reason: 'the installer' };
-  return { sign: false, kind: 'other', reason: 'not one of SynaBun\'s own executables' };
+  const rel = normalPath(path);
+  const name = rel.split('/').at(-1) || '';
+  const lower = rel.toLowerCase();
+  if (/(^|\/)resources\/(runtime|cloudflared|git|git-archive)(\/|$)/i.test(rel))
+    return { sign: false, kind: 'payload', reason: 'immutable vendor bundle (pins and vendor signatures preserved)' };
+  if (/^synabun(?:-cli|-install-window)?\.exe$/i.test(name) && !lower.includes('/resources/app/'))
+    return { sign: true, kind: 'app', reason: 'SynaBun executable' };
+  if (/__uninstaller\.exe$/i.test(name) || /^Uninstall SynaBun\.exe$/i.test(name))
+    return { sign: true, kind: 'uninstaller', reason: 'SynaBun uninstaller' };
+  if (/^SynaBun-.+-setup\.exe$/i.test(name)) return { sign: true, kind: 'installer', reason: 'SynaBun installer' };
+  if (!isSignable(rel)) return { sign: false, kind: 'other', reason: 'not an Authenticode format' };
+  if (/\.(dll|node|sys)$/i.test(name)) return { sign: true, kind: 'native', reason: 'distributed native code; preserve a verified vendor signature' };
+  if (/(^|\/)resources\/(app|app.asar.unpacked|update-ui)\//i.test(rel) ||
+      /^(install-window|synabun-(stop|verify))\.ps1$/i.test(name))
+    return { sign: true, kind: isPowerShell(name) ? 'script' : 'helper', reason: 'SynaBun payload code' };
+  return { sign: false, kind: 'other', reason: 'unknown executable: inventory must identify its owner' };
+}
+
+/** Sequential sweep: electron-builder does not walk DLLs in arbitrary extraResources. */
+export function windowsFiles(root) {
+  const out = [];
+  for (const entry of readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) out.push(...windowsFiles(path));
+    else if (entry.isFile()) out.push(path);
+  }
+  return out;
+}
+export function signWindowsTree(plan, root, options = {}) {
+  if (!plan.enabled) return [];
+  return windowsFiles(root).filter(path => signPolicy(path).sign).map(path => ({ path, ...signFile(plan, path, options) }));
 }
 
 // ── Signatures in a PE file ──
@@ -485,6 +507,7 @@ export function publisherNamesForBuild(plan, platform) {
 export function builderSigningOptions(plan, hookFile = HOOK_FILE) {
   if (!plan.enabled) return null;
   return {
+    signExts: [...SIGN_EXTENSIONS],
     signtoolOptions: {
       sign: hookFile,
       signingHashAlgorithms: ['sha256'],
@@ -531,12 +554,12 @@ const defaultRun = (file, args, { env }) => {
  */
 export function verifySigned(plan, target, { run = defaultRun, env = process.env, log = () => {}, readPe = authenticodeInfo } = {}) {
   const redact = createRedactor(env);
-  const pe = readPe(target);
-  if (!pe?.signed) throw new Error(`${basename(target)} carries no Authenticode signature after signing`);
+  const pe = /\.(ps1|psm1|vbs|js|msi)$/i.test(target) ? null : readPe(target);
+  if (!/\.(ps1|psm1|vbs|js|msi)$/i.test(target) && !pe?.signed) throw new Error(`${basename(target)} carries no Authenticode signature after signing`);
   const command = verifyCommand(plan, target);
   const result = run(command.file, command.args, { env: childEnvironment(env) });
   const output = `${result.stdout}\n${result.stderr}`;
-  const verdict = parseVerifyOutput(output, { status: result.status, mode: plan.verifyMode });
+  const verdict = parseVerifyOutput(output, { status: result.status, mode: plan.required ? 'full' : plan.verifyMode });
   const subject = verdict.subject ? subjectFromOpenssl(verdict.subject) : new Map();
   if (verdict.subject) {
     const match = publisherMatches(plan.publisherNames, subject);
@@ -546,7 +569,7 @@ export function verifySigned(plan, target, { run = defaultRun, env = process.env
   if (verdict.problems.length) {
     throw new Error(redact(`${basename(target)}: the signature did not verify: ${verdict.problems.join('; ')}\n${output.trim().split('\n').slice(-25).join('\n')}`));
   }
-  if (plan.verifyMode === 'integrity') log(`warning: ${basename(target)}: certificate chain not checked (SYNABUN_WIN_SIGN_VERIFY=integrity)`);
+  if (plan.verifyMode === 'integrity' && !plan.required) log(`warning: ${basename(target)}: certificate chain not checked (SYNABUN_WIN_SIGN_VERIFY=integrity)`);
   return { subject: windowsSubjectText(subject), timestamped: verdict.timestamped };
 }
 
@@ -556,6 +579,7 @@ export function verifySigned(plan, target, { run = defaultRun, env = process.env
  */
 export function signFile(plan, target, { run = defaultRun, env = process.env, log = () => {}, readPe = authenticodeInfo } = {}) {
   const policy = signPolicy(target);
+  if (!plan.enabled) return { signed: false, kind: policy.kind, reason: 'signing off' };
   if (!policy.sign) return { signed: false, kind: policy.kind, reason: policy.reason };
   const redact = createRedactor(env);
   const command = jsignCommand(plan, target, env);
@@ -563,6 +587,19 @@ export function signFile(plan, target, { run = defaultRun, env = process.env, lo
     log(`dry run: would sign ${policy.kind} ${basename(target)}: ${describeCommand(command, redact)}`);
     log(`dry run: would verify: ${describeCommand(verifyCommand(plan, target), redact)}`);
     return { signed: false, kind: policy.kind, dryRun: true };
+  }
+  // asar-unpacked metadata records the script's signed size. Never change its bytes in the post-pack sweep.
+  if (isPowerShell(target) && /# SIG # Begin signature block/.test(readFileSync(target, 'utf8'))) {
+    const verified = verifySigned(plan, target, { run, env, log, readPe });
+    return { signed: true, kind: policy.kind, reused: true, subject: verified.subject };
+  }
+  // Ours must use our publisher. Native dependencies already signed by a vendor stay byte-for-byte intact.
+  if (['native', 'helper'].includes(policy.kind) && readPe(target)?.signed) {
+    const command = verifyCommand(plan, target);
+    const result = run(command.file, command.args, { env: childEnvironment(env) });
+    if (result.status !== 0 || !/^Signature verification: ok\s*$/m.test(`${result.stdout}\n${result.stderr}`))
+      throw new Error(redact(`${target}: existing vendor signature cannot be verified; refusing to overwrite it`));
+    return { signed: true, kind: policy.kind, vendor: true };
   }
   log(`signing ${policy.kind} ${basename(target)} (${plan.provider})`);
   const result = run(command.file, command.args, { env: command.env });
@@ -580,6 +617,7 @@ export function signFile(plan, target, { run = defaultRun, env = process.env, lo
  * `installer` / `executables` are { signed } readings of the PE headers. Pure.
  */
 export function signedBuildProblems(plan, { installer = null, executables = {}, appUpdate = '' } = {}) {
+  if (plan.problems?.length) return [...plan.problems];
   if (!plan.enabled || plan.dryRun) return [];
   const problems = [];
   if (!installer?.signed) problems.push('the installer is not signed, although Windows signing was configured');

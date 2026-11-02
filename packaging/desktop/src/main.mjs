@@ -1038,9 +1038,10 @@ function startApp() {
                 config: installWindowConfig({ locale, version: next, previous, bounds: splash.window?.getBounds?.() || null, logPath: join(updateStateDir, 'swap.log') }),
                 scriptSource: installWindowScript(APP_DIR),
                 logoFile: join(APP_DIR, 'assets', 'logo.png'),
+                nativeFile: join(resources, 'update-ui', 'SynaBun-install-window.exe'),
               };
             } catch (error) {
-              log(`the install window cannot be prepared: ${error?.message || error}`);
+              throw new Error(`the install window cannot be prepared: ${error?.message || error}`);
             }
           }
           const started = await startWindowsSwap({
@@ -1053,7 +1054,11 @@ function startApp() {
             // The splash stays until the install window's first frame is drawn: never a moment with neither.
             const shownAt = Date.now();
             const shown = await waitForMarker(started.window.shown, WINDOW_SHOWN_WAIT_MS);
-            log(shown ? `the install window is on screen (${Date.now() - shownAt} ms)` : `the install window did not appear within ${WINDOW_SHOWN_WAIT_MS} ms: the update goes on without it`);
+            if (!shown) {
+              writeFileSync(join(updateStateDir, 'window-cancel'), 'no visible install window\n');
+              throw new Error(`The update window could not open. SynaBun kept the installed version. Log: ${join(updateStateDir, 'swap.log')}`);
+            }
+            log(`the install window is on screen (${Date.now() - shownAt} ms)`);
           }
         },
         installAppImage: async ({ downloaded, relaunch: reopen, version: next, previous, installId }) => {

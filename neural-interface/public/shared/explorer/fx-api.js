@@ -96,15 +96,15 @@ export function createExplorerApi({ fetchImpl = (...args) => fetch(...args), Eve
     return old.ok ? fromLegacySearch(old) : old;
   }
 
-  async function git(root) {
+  async function git(root, signal, refresh = false) {
     await capabilities();
-    if (caps.explorer) return request(`/api/explorer/git?root=${encodeURIComponent(root)}`);
-    const old = await request(`/api/git/status?path=${encodeURIComponent(root)}`);
+    if (caps.explorer) return request(`/api/explorer/git?root=${encodeURIComponent(root)}${refresh ? '&refresh=1' : ''}`, { signal });
+    const old = await request(`/api/git/status?path=${encodeURIComponent(root)}${refresh ? '&refresh=1' : ''}`, { signal });
     if (!old.ok) return old;
     if (!old.isGit) return { ok: true, isGit: false };
     const changes = {};
     for (const change of old.changes || []) if (change?.path) changes[change.path] = change.status;
-    return { ok: true, isGit: true, branch: old.branch || '', changes, ignored: [], legacy: true };
+    return { ok: true, isGit: true, branch: old.branch || '', changes, ignored: [], legacy: true, ...(old.partial ? { partial: true, scanState: old.scanState } : {}) };
   }
 
   async function create(parent, name, type) {

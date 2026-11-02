@@ -808,6 +808,7 @@ function wireEvents() {
     try {
       const statusResponse = await fetch(`/api/git/status?path=${encodeURIComponent(project)}`);
       const status = statusResponse.ok ? await statusResponse.json() : null;
+      if (!status?.ok || !status.isGit || status.partial || status.stale || status.timedOut) throw new Error(status?.error || 'Git status is incomplete. Refresh before switching branches.');
       if (status?.changes?.length) {
         const confirmed = window.confirm(`Switch from ${previous || 'the current branch'} to ${branch} with ${status.changes.length} uncommitted change${status.changes.length === 1 ? '' : 's'}? Git will preserve them when possible.`);
         if (!confirmed) {

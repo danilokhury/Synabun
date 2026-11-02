@@ -39,10 +39,12 @@ export const INSTALL_WINDOW_FILES = Object.freeze({
   logo: 'install-window-logo.png',
   shown: 'window-shown',
   up: 'window-up',
+  language: 'language-mode',
+  native: 'SynaBun-install-window.exe',
 });
 
-/** How long the app waits for the install window's first frame before it quits anyway (the splash covers until then). */
-export const WINDOW_SHOWN_WAIT_MS = 8000;
+/** Bounded WPF + native first-frame attempts; timeout aborts the visible update while the splash stays up. */
+export const WINDOW_SHOWN_WAIT_MS = 18000;
 /** The longest an install window lives, whatever happens: a watchdog that never answers does not leave it for ever. */
 export const INSTALL_WINDOW_MAX_MS = 40 * 60 * 1000;
 
@@ -110,13 +112,14 @@ export const installWindowDir = (stateDir) => join(stateDir, 'install-window');
  * The window's files in its folder (installWindowDir): the script, the config and the logo, written fresh; a view
  * and the markers of an earlier update removed. Returns the paths.
  */
-export function writeInstallWindowFiles({ stateDir, config, scriptSource, logoFile = null, windowDir = installWindowDir(stateDir) }) {
+export function writeInstallWindowFiles({ stateDir, config, scriptSource, logoFile = null, nativeFile = null, windowDir = installWindowDir(stateDir) }) {
   mkdirSync(windowDir, { recursive: true });
   const script = join(windowDir, INSTALL_WINDOW_FILES.script);
   const configFile = join(windowDir, INSTALL_WINDOW_FILES.config);
   const logo = join(windowDir, INSTALL_WINDOW_FILES.logo);
   for (const name of [INSTALL_WINDOW_FILES.shown, INSTALL_WINDOW_FILES.up]) rmSync(join(stateDir, name), { force: true });
-  rmSync(join(windowDir, INSTALL_WINDOW_FILES.view), { force: true });
+  for (const name of [INSTALL_WINDOW_FILES.view, INSTALL_WINDOW_FILES.language, 'native-view.txt']) rmSync(join(windowDir, name), { force: true });
+  if (nativeFile && existsSync(nativeFile)) copyFileSync(nativeFile, join(windowDir, INSTALL_WINDOW_FILES.native));
   // Windows PowerShell 5.1 reads a script without a BOM in the ANSI code page: the script is ASCII (its test says
   // so) and the words come from the JSON, which it reads as UTF-8 itself.
   writeFileSync(script, scriptSource);
@@ -143,7 +146,7 @@ export function markWindowUp(stateDir, what = 'splash') {
   try { writeFileSync(join(stateDir, INSTALL_WINDOW_FILES.up), `${what} ${new Date().toISOString()}\n`); return true; } catch { return false; }
 }
 
-/** The text of the install window's script, from the app's own files (inside app.asar, which Electron reads). */
+/** Raw signed bytes from the app's own files. Never decode/re-encode Authenticode scripts when copying them. */
 export function installWindowScript(appDir) {
-  return readFileSync(join(appDir, 'src', 'updater', INSTALL_WINDOW_FILES.script), 'utf8');
+  return readFileSync(join(appDir, 'src', 'updater', INSTALL_WINDOW_FILES.script));
 }

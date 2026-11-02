@@ -126,12 +126,12 @@ export function readsIndex(args) {
  * @param {string[]} args the command and its arguments, the command first (['status', '--porcelain'])
  * @param {{ monitor?: boolean }} [o] `monitor`: the repository has git's built-in file system monitor switched on
  */
-export function gitReadArgs(args, { monitor = false } = {}) {
+export function gitReadArgs(args, { monitor = false, nullDevice = devNull } = {}) {
   const [command, ...rest] = Array.isArray(args) ? args : [];
   const own = [
     '--no-pager',
     '-c', `core.fsmonitor=${monitor === true ? 'true' : 'false'}`,
-    '-c', `core.hooksPath=${devNull}`,
+    '-c', `core.hooksPath=${nullDevice}`,
     '-c', 'log.showSignature=false',
   ];
   if (command === undefined) return own;

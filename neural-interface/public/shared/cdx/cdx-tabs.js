@@ -4647,6 +4647,7 @@ export function promptNameNewSession() {
       try {
         const statusResponse = await fetch(`/api/git/status?path=${encodeURIComponent(chosenProject)}`);
         const status = statusResponse.ok ? await statusResponse.json() : null;
+        if (!status?.ok || !status.isGit || status.partial || status.stale || status.timedOut) throw new Error(status?.error || 'Git status is incomplete. Refresh before switching branches.');
         const shouldCheckout = !status?.changes?.length || window.confirm(
           `Switch from ${branchOriginal} to ${chosenBranch} with ${status.changes.length} uncommitted change${status.changes.length === 1 ? '' : 's'}? Git will preserve them when possible.`,
         );

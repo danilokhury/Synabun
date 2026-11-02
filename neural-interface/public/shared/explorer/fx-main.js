@@ -77,7 +77,7 @@ export function createExplorer(host) {
   let watcher = null;
   let saidLimited = false;      // this project was told once that not everything on disk is followed
   let loaded = Promise.resolve();
-  let gitTimer = 0; let gitBusy = false; let gitAgain = false; let lastGitAt = 0;
+  let gitTimer = 0; let gitRequest = null; let gitRefresh = false; let gitAgain = false; let lastGitAt = 0;
   let diskTimer = 0; let lastDiskAt = 0; const diskDue = new Set();
   let filterTimer = 0; let searchAbort = null;
   let persistTimer = 0; let lastFocusRefresh = 0;
@@ -114,18 +114,20 @@ export function createExplorer(host) {
     const ed = editor.state();
     const status = item.missing ? 'deleted' : S.git.statusOf(below, isDir);
     const tone = item.missing ? 'deleted' : S.git.toneOf(below, isDir);
-    const ignored = S.git.isIgnored(below);
+    const ignored = !!item.ignored || S.git.isIgnored(below);
+    const ignoreUnknown = item.ignored === null && !ignored;
     const open = !isDir && ed.open.has(path);
     const dirty = !isDir && ed.dirty.has(path);
     const cut = !!S.clipboard && S.clipboard.mode === 'cut' && S.clipboard.paths.some((held) => isWithin(held, path));
     const words = [];
     if (status) words.push(t(`fileExplorer.git.${status}`)); else if (tone) words.push(t('fileExplorer.git.contains'));
     if (ignored) words.push(t('fileExplorer.git.ignored'));
+    else if (ignoreUnknown) words.push(t('fileExplorer.git.ignoreUnknown'));
     if (dirty) words.push(t('fileExplorer.row.unsaved')); else if (open) words.push(t('fileExplorer.row.open'));
     if (item.outside) words.push(t('fileExplorer.row.linkOutside')); else if (item.broken) words.push(t('fileExplorer.row.linkBroken')); else if (item.link) words.push(t('fileExplorer.row.link'));
     if (cut) words.push(t('fileExplorer.row.cut'));
     return {
-      tone, letter: status ? GIT_MARKS[status].letter : '', ignored, open, dirty, cut, words,
+      tone, letter: status ? GIT_MARKS[status].letter : '', ignored, ignoreUnknown, open, dirty, cut, words,
       active: !isDir && ed.active === path,
       missing: !!item.missing,
       faint: !!item.outside || !!item.broken,
@@ -296,24 +298,37 @@ export function createExplorer(host) {
 
   // ── Git ──
 
+  function cancelGit() {
+    clearTimeout(gitTimer);
+    gitRequest?.controller.abort();
+    gitRequest = null; gitAgain = false; gitRefresh = false;
+  }
   async function loadGit() {
-    if (!S.root) return;
-    if (gitBusy) { gitAgain = true; return; }
-    gitBusy = true;
+    if (!S.root || !S.visible) return;
+    if (gitRequest?.root === S.root) { gitAgain = true; return; }
+    gitRequest?.controller.abort();
+    const request = { root: S.root, controller: new AbortController() };
+    gitRequest = request;
     const mine = epoch;
-    const got = await api.git(S.root);
-    gitBusy = false;
+    const say = (scanState) => host.onGit({ isGit: S.git.isGit, branch: S.git.branch, count: S.git.count, scanState });
+    const slow = setTimeout(() => { if (gitRequest === request && mine === epoch) say('scanning'); }, 1500);
+    const refresh = gitRefresh; gitRefresh = false;
+    const got = await api.git(request.root, request.controller.signal, refresh);
+    clearTimeout(slow);
+    if (gitRequest !== request) return;
+    gitRequest = null;
     if (mine === epoch && got.ok) {
-      S.git = gitIndex(got);
-      host.onGit({ isGit: S.git.isGit, branch: S.git.branch, count: S.git.count });
+      if (!got.partial || !S.git.isGit) S.git = gitIndex(got);
+      say(got.scanState || 'ready');
       if (S.changedOnly) { buildView(); tree.render(); } else tree.refreshRows();
       updateCount();
-    }
+    } else if (mine === epoch && got.code !== 'aborted') say('failed');
     if (gitAgain) { gitAgain = false; queueGit(); }
   }
   // Soon after the last sign of a change, and never more often than once in a while: a file that is written
   // without pause (a log, a database) does not make git run without pause.
   function queueGit() {
+    if (!S.root || !S.visible) return;
     clearTimeout(gitTimer);
     gitTimer = setTimeout(() => { lastGitAt = Date.now(); loadGit(); }, Math.max(GIT_DELAY_MS, lastGitAt + GIT_MIN_INTERVAL_MS - Date.now()));
   }
@@ -654,7 +669,7 @@ export function createExplorer(host) {
       case 'sortBy': return [back(), ...SORTS.map((mode) => ({ id: `sort:${mode}`, label: t(`fileExplorer.menu.sort.${mode}`), checked: S.sort === mode }))];
       case 'expandAll': expandLevel(); break;
       case 'collapseAll': collapseAll(); break;
-      case 'refresh': refreshAll(); break;
+      case 'refresh': gitRefresh = true; refreshAll(); break;
       default:
     }
     return undefined;
@@ -739,7 +754,7 @@ export function createExplorer(host) {
     });
     on('fe-collapse-all', collapseAll);
     // Refresh also asks what the server has: one that was restarted since the page loaded is found out here.
-    on('fe-refresh', async () => { await host.readServer?.(); await api.capabilities(); syncToolbar(); await refreshAll(); if (!watcher) startWatch(); });
+    on('fe-refresh', async () => { gitRefresh = true; await host.readServer?.(); await api.capabilities(); syncToolbar(); await refreshAll(); if (!watcher) startWatch(); });
     on('fe-more', (event) => { const box = event.currentTarget.getBoundingClientRect(); openMenu({ y: box.top + box.height / 2, keyboard: event.detail === 0 }); });
     on('fe-filter-clear', () => { clearFilter(); filterInput.focus(); });
     filterInput.addEventListener('input', () => setFilter(filterInput.value));
@@ -773,6 +788,7 @@ export function createExplorer(host) {
   function setProject(project) {
     persist();
     epoch++;
+    cancelGit();
     stopWatch();
     saidLimited = false;
     closeFlyout({ refocus: false });
@@ -824,7 +840,7 @@ export function createExplorer(host) {
   /** The panel is shown or hidden: the disk is followed only while it is shown. */
   function setVisible(visible) {
     S.visible = !!visible;
-    if (S.visible) { if (S.root) { startWatch(); if (S.dirs.size) refreshAll(); } } else { persist(); stopWatch(); closeFlyout({ refocus: false }); }
+    if (S.visible) { if (S.root) { startWatch(); if (S.dirs.size) refreshAll(); } } else { persist(); cancelGit(); host.onGit({ isGit: S.git.isGit, branch: S.git.branch, count: S.git.count, scanState: 'ready' }); stopWatch(); closeFlyout({ refocus: false }); }
   }
 
   /** Show a file of the project in the tree: its folders open, its row is selected and marked. */
@@ -850,7 +866,7 @@ export function createExplorer(host) {
     setProject,
     setVisible,
     reveal,
-    refresh: refreshAll,
+    refresh: () => { gitRefresh = true; return refreshAll(); },
     collapseAll,
     /** The icons changed: every row is drawn again. */
     redraw() { if (S.root) { const now = tree.selection(); const top = tree.scrollTop(); tree.setRoot(S.root); tree.render(); tree.select(now.selected, { focus: now.focus, quiet: true, scroll: false }); tree.setScrollTop(top); } },

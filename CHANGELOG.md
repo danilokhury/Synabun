@@ -1,3 +1,17 @@
+# SynaBun v.2.1.5
+
+A fix-focused release: git status checks no longer pile up and spike CPU in repos with large ignored trees.
+
+## ✨ New
+
+- **One shared git status check** — Every part of SynaBun that needs a repo's git status (the File Explorer, the project greeting, and others) now shares one careful check per repo instead of each running its own.
+
+## 🛠 Fixed
+
+- **Git status checks piling up and pegging CPU** — In a repo with a huge ignored tree (for example, a large `node_modules`), overlapping git status checks could run several processes at once, each using close to a full CPU core, and some kept running even after SynaBun had stopped. Checks are now capped, deduplicated, given a time limit, and cleaned up reliably, including on Windows. A timed-out or partial check is now shown as incomplete rather than silently reported as "no changes."
+
+---
+
 # SynaBun v.2.1.4
 
 A Windows-focused release: updates now show a visible progress window, Git for Windows ships smaller and installs faster, and signed builds are supported when a certificate is configured.

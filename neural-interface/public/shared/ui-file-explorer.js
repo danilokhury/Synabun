@@ -298,12 +298,22 @@ function updateBranchLabel(git) {
   const badge = $('fe-branch-btn-badge');
   if (!btn) return;
 
-  if (git.isGit && git.branch) {
+  const scanning = git.scanState === 'scanning';
+  const message = scanning ? tr('fileExplorer.branch.scanning') : git.scanState === 'timed-out' ? tr('fileExplorer.branch.timedOut') : git.scanState === 'failed' ? tr('fileExplorer.branch.scanFailed') : '';
+  btn.classList.toggle('fe-branch-btn--scanning', scanning);
+  btn.setAttribute('aria-busy', String(scanning));
+  let hint = btn.querySelector('.fe-git-scan-hint');
+  if (!hint) { hint = document.createElement('span'); hint.className = 'fe-git-scan-hint'; hint.setAttribute('role', 'status'); hint.setAttribute('aria-live', 'polite'); btn.appendChild(hint); }
+  hint.textContent = message;
+  hint.hidden = !message;
+
+  if ((git.isGit && git.branch) || message) {
     btn.style.display = '';
-    if (nameEl) nameEl.textContent = git.branch;
+    if (nameEl) nameEl.textContent = git.branch || '';
     if (badge) badge.textContent = git.count > 0 ? git.count : '';
     btn.setAttribute('aria-label', tr('fileExplorer.branch.label', { branch: git.branch, count: git.count }));
-    btn.dataset.tooltip = tr('fileExplorer.branch.label', { branch: git.branch, count: git.count });
+    btn.dataset.tooltip = message || tr('fileExplorer.branch.label', { branch: git.branch, count: git.count });
+    if (message) btn.setAttribute('aria-label', message);
     if (_gitPopoverOpen) renderGitSummary();
   } else {
     btn.style.display = 'none';

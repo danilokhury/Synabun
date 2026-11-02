@@ -59,7 +59,8 @@ import { createPtyHostManager } from './lib/pty-host/manager.js';
 import { AGENT_HEADERS, hostNameOf, isAllowedHost, isAllowedWebSocketOrigin, parseCookies, refuseUpgrade, requireLocal as requireLoopbackSocket } from './lib/http-guards.js';
 import { createRequestGates, extraHostNames, hostsOf, savedValueOf, startedValueOf } from './lib/request-gate.js';
 import { createGitDiffRouter } from './lib/git-diff-api.js';
-import { gitRead, gitReadSync, setGitFallbackFolder, withGitFallback } from './lib/git-read.js';
+import { setGitFallbackFolder } from './lib/git-read.js';
+import { gitStatusRunner, projectStatus } from './lib/git-status-runner.js';
 import { createPhoneAuthority } from './lib/remote-policy.js';
 import { brainCredentialOf } from './lib/virtual-socket.js';
 import { buildTerminalEnv, interactiveShellArgs, cliWrapperArgs } from './lib/terminal-env.js';
@@ -367,6 +368,7 @@ import {
 import { ensureProjectCategories as ensureProjectCategoriesInFile, ensureCategories as ensureCategoriesInFile, FEATURE_CATEGORIES } from '../hooks/claude-code/shared.mjs';
 import { getDataHome, getDataHomeDiagnostics, isGlobalInstall, pathIsInside } from '../lib/paths.js';
 import { launcherLogPath } from '../lib/first-launch-protection.js';
+import { prunePreUpdateSnapshots, resolvePreUpdateKeep } from '../lib/update-snapshot.js';
 import { launcherRegistrationAllowed, registerStartLauncher, startLauncherState } from '../lib/start-launcher.js';
 import { effectiveNpmPrefix } from '../lib/child-path.js';
 import { checkRuntimeDependencies, fallbackInstallArgs, fallbackInstallEnv, findInstalled, mcpCompiler, npmCommand, npmInvocation } from '../lib/runtime-dependencies.js';
@@ -2400,6 +2402,7 @@ function gracefulShutdown(reason = 'shutdown') {
 }
 
 async function runGracefulShutdown(reason) {
+  gitStatusRunner.shutdown();
   console.log(`[server] gracefulShutdown(${reason}) — releasing children...`);
 
   // Native automation providers own SDK subprocesses/isolated serves that are
@@ -2832,7 +2835,17 @@ app.post('/api/system/run-update', async (req, res) => {
       appVersion: installPlan.current,
       additionalEntries: getBackupAdditionalEntries(),
     }));
-    applyBackupRetention({ folderPath: updateBackupDir });
+    // Older pre-update snapshots are pruned only now, after this one is written and verified: a
+    // failed createVerifiedBackup above threw and never reached here.
+    try {
+      const configuredKeep = loadAutoBackupConfig()?.retention?.preUpdateKeep ?? null;
+      prunePreUpdateSnapshots({
+        folderPath: updateBackupDir,
+        keep: resolvePreUpdateKeep(configuredKeep),
+        keepPath: snapshot.path,
+        log: (message) => console.log(`[update-backup] ${message}`),
+      });
+    } catch (error) { console.error(`[update-backup] retention cleanup failed: ${error?.message || error}`); }
     const handoffPath = resolve(DATA_HOME, 'data', 'update-handoff.json');
     writeFileSync(handoffPath, JSON.stringify({
       version: 1,
@@ -17602,7 +17615,7 @@ function isSynabunGitHubRemote(remoteText) {
   return /github\.com[:/]danilokhury\/Synabun(?:\.git)?(?:[\s)]|$)/i.test(String(remoteText || ''));
 }
 
-function detectSynabunInstallSource() {
+async function detectSynabunInstallSource() {
   if (PACKAGED_RUNTIME) return { kind: 'packaged-app' };
   const normalizedRoot = PACKAGE_ROOT.replace(/\\/g, '/');
   if (/\/node_modules\/synabun$/i.test(normalizedRoot)) {
@@ -17612,13 +17625,13 @@ function detectSynabunInstallSource() {
   try {
     // Run as reads (lib/git-read.js): the app's own checkout is a folder like any other, and can be a registered
     // project. What git could not say is an empty answer.
-    const git = (args) => {
-      const result = spawnGitRead(args, { cwd: PACKAGE_ROOT, timeout: 2000 });
+    const git = async (args) => {
+      const result = await spawnGitRead(args, { cwd: PACKAGE_ROOT, timeout: 2000 });
       return result.status === 0 ? result.stdout.toString().trim() : '';
     };
-    if (git(['rev-parse', '--is-inside-work-tree']) === 'true') {
-      const remote = git(['remote', 'get-url', 'origin']);
-      const remotes = git(['remote', '-v']);
+    if (await git(['rev-parse', '--is-inside-work-tree']) === 'true') {
+      const remote = await git(['remote', 'get-url', 'origin']);
+      const remotes = await git(['remote', '-v']);
       if (isSynabunGitHubRemote(`${remote}\n${remotes}`)) {
         const firstRemote = remote || remotes.split(/\s+/).find(part => isSynabunGitHubRemote(part)) || null;
         return { kind: 'github-clone', remote: firstRemote };
@@ -17703,7 +17716,7 @@ async function checkSynabunUpdate() {
   const installPlan = buildSynabunInstallPlan({
     ...found,
     current,
-    installSource: updateAvailable ? detectSynabunInstallSource() : null,
+    installSource: updateAvailable ? await detectSynabunInstallSource() : null,
     repoUrl: SYNABUN_GITHUB_REPO_URL,
   });
 
@@ -18864,7 +18877,7 @@ app.get('/api/project-files', editorOwnerGuard, async (req, res) => {
     }
 
     // Git info for status badges
-    const git = getGitInfo(normalizedDir);
+    const git = await getGitInfo(normalizedDir, { signal: gitRequestSignal(res) });
 
     if (recursive || (search && search.length > 2)) {
       // Recursive search mode
@@ -21976,7 +21989,7 @@ app.get('/api/claude-code/integrations', (req, res) => {
 
 // POST /api/claude-code/integrations — enable hook for a target
 // Optional `hook` param: 'SessionStart' | 'UserPromptSubmit' (omit for both)
-app.post('/api/claude-code/integrations', (req, res) => {
+app.post('/api/claude-code/integrations', async (req, res) => {
   try {
     const { target, projectPath, label, hook } = req.body;
     // target: 'global' | 'project'
@@ -22046,7 +22059,7 @@ app.post('/api/claude-code/integrations', (req, res) => {
       let dubiousOwnership = false;
       let trustPath = null;
       try {
-        if (detectDubiousOwnership(normalized)) {
+        if (await detectDubiousOwnership(normalized)) {
           dubiousOwnership = true;
           trustPath = normalizeGitPath(normalized);
         }
@@ -29345,30 +29358,15 @@ function resolveGitPath() {
 }
 
 // Cross-platform git invocation. Uses resolved absolute path when possible (spawnable
-// directly on all OSes with no shell/quoting pitfalls). Falls back to `shell: true` on
-// Windows only when path resolution fails or when the resolved target is a .cmd/.bat shim.
-function spawnGit(args, opts = {}) {
-  const baseOpts = { stdio: 'pipe', timeout: 5000, windowsHide: true, ...opts };
-  const gitPath = resolveGitPath();
-  if (gitPath) {
-    if (IS_WINDOWS && /\.(cmd|bat)$/i.test(gitPath)) {
-      const quoted = args.map(a => /[\s()%&|<>^"']/.test(a) ? `"${String(a).replace(/"/g, '\\"')}"` : a);
-      return spawnSync(gitPath, quoted, { ...baseOpts, shell: true });
-    }
-    return spawnSync(gitPath, args, baseOpts);
-  }
-  if (IS_WINDOWS) {
-    const quoted = args.map(a => /[\s()%&|<>^"']/.test(a) ? `"${String(a).replace(/"/g, '\\"')}"` : a);
-    return spawnSync('git', quoted, { ...baseOpts, shell: true });
-  }
-  return spawnSync('git', args, baseOpts);
+// directly without a shell). The runner handles a resolved Windows .cmd/.bat shim.
+async function spawnGit(args, opts = {}) {
+  const binary = await resolveGitPathInBackground();
+  return gitStatusRunner.runRaw(args, { ...opts, binary: binary || 'git', timeoutMs: opts.timeout || 5000 });
 }
 
-// spawnGit for a command that only reads, in a folder a request named: nothing the repository's own configuration
-// names is started for it (lib/git-read.js: no file system monitor program, no hook, no external diff, no fetch).
-function spawnGitRead(args, opts = {}) {
-  const read = gitReadSync(opts.cwd, args, { env: opts.env });
-  return spawnGit(read.args, { ...opts, env: read.env });
+async function spawnGitRead(args, opts = {}) {
+  const binary = await resolveGitPathInBackground();
+  return gitStatusRunner.run(args, { ...opts, binary: binary || 'git', timeoutMs: opts.timeout || 5000 });
 }
 
 function logGitFailure(where, err) {
@@ -29407,22 +29405,20 @@ function resolveGitPathInBackground() {
 
 // Startup probe — always logs git status so Windows users can see whether git works at all. Asynchronous:
 // after the lookup above, one `git --version` (no folder, no repository's configuration) off the event loop.
-setImmediate(() => {
-  resolveGitPathInBackground().then((gitPath) => new Promise((done) => {
-    const shell = IS_WINDOWS && (!gitPath || /\.(cmd|bat)$/i.test(gitPath));
-    execFile(gitPath || 'git', ['--version'], { encoding: 'utf8', timeout: 3000, windowsHide: true, shell }, (error, stdout, stderr) => {
-      if (!error) console.log(`[git] ${String(stdout || '').trim()} — OK`);
-      else console.warn(`[git] startup probe FAILED: ${String(stderr || '').trim() || error.message || 'unknown error'}. File explorer git UI will be hidden.`);
-      done();
-    });
-  })).catch(() => {});
+setImmediate(async () => {
+  try {
+    const gitPath = await resolveGitPathInBackground();
+    const result = await gitStatusRunner.run(['--version'], { binary: gitPath || 'git', timeoutMs: 3000 });
+    if (result.ok) console.log(`[git] ${String(result.stdout).trim()} — OK`);
+    else console.warn(`[git] startup probe FAILED: ${String(result.stderr).trim() || result.code}. File explorer git UI will be hidden.`);
+  } catch { /* availability is reported on the first read */ }
 });
 
 // Git "dubious ownership" detection — CVE-2022-24765 safety check refuses to operate on
 // repos owned by a different OS user/SID. Common on Windows external drives or repos
 // copied from another machine. Returns true only when git emits the specific error.
-function detectDubiousOwnership(dir) {
-  const r = spawnGitRead(['rev-parse', '--is-inside-work-tree'], { cwd: dir, timeout: 3000 });
+async function detectDubiousOwnership(dir) {
+  const r = await spawnGitRead(['rev-parse', '--is-inside-work-tree'], { cwd: dir, timeout: 3000 });
   if (r.status === 0) return false;
   const stderr = r.stderr?.toString?.() || '';
   return /dubious ownership|safe\.directory/i.test(stderr);
@@ -29435,91 +29431,27 @@ function normalizeGitPath(dir) {
 }
 
 /** Try to get git status for a directory. Returns { branch, statuses } or null. */
-function getGitInfo(dir) {
-  // Check if inside a git work tree (spawnGit for consistent path resolution)
-  const inside = spawnGitRead(['rev-parse', '--is-inside-work-tree'], { cwd: dir, timeout: 3000 });
-  if (inside.status !== 0) {
-    logGitFailure('rev-parse --is-inside-work-tree', inside.error || { stderr: inside.stderr });
-    return null;
+async function getGitInfo(dir, options = {}) {
+  const result = projectStatus(await gitStatusRunner.read(dir, options), dir);
+  if (!result.isGit) return null;
+  const statuses = new Map();
+  for (const change of result.changes) {
+    const child = change.path.split('/')[0];
+    if (gitStatusPriority(change.status) > gitStatusPriority(statuses.get(child))) statuses.set(child, change.status);
   }
+  return { branch: result.branch, statuses, scanState: result.timedOut ? 'timed-out' : result.ok ? 'ready' : 'failed' };
+}
 
-  // Get branch name — try --show-current first (git 2.22+), then fall back to
-  // --abbrev-ref HEAD (works on older git; detached HEAD returns the literal "HEAD"),
-  // then short SHA for detached HEAD. The chained fallback is essential for Windows users
-  // with older Git for Windows installs where --show-current exits non-zero.
-  let branch = '';
-  const showCurrent = spawnGitRead(['branch', '--show-current'], { cwd: dir, timeout: 3000 });
-  if (showCurrent.status === 0) {
-    branch = showCurrent.stdout.toString().trim();
-  } else {
-    logGitFailure('branch --show-current', showCurrent.error || { stderr: showCurrent.stderr });
-  }
-  if (!branch) {
-    const abbrev = spawnGitRead(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir, timeout: 3000 });
-    if (abbrev.status === 0) {
-      const b = abbrev.stdout.toString().trim();
-      if (b && b !== 'HEAD') branch = b;
-    }
-  }
-  if (!branch) {
-    const shortSha = spawnGitRead(['rev-parse', '--short', 'HEAD'], { cwd: dir, timeout: 3000 });
-    if (shortSha.status === 0) branch = shortSha.stdout.toString().trim();
-  }
-
-  try {
-    // Get status for this directory (porcelain v1: XY <path>)
-    const statusResult = spawnGitRead(['status', '--porcelain', '-u', '.'], { cwd: dir, maxBuffer: 256 * 1024 * 1024 });
-    if (statusResult.status !== 0) {
-      logGitFailure('status --porcelain', statusResult.error || { stderr: statusResult.stderr });
-      return { branch, statuses: new Map() };
-    }
-    const raw = statusResult.stdout.toString();
-    const statuses = new Map(); // name → status code
-
-    for (const line of raw.split('\n')) {
-      if (!line || line.length < 4) continue;
-      const xy = line.substring(0, 2); // index + worktree status
-      let filePath = line.substring(3);
-      // Handle renames: "R  old -> new"
-      const arrowIdx = filePath.indexOf(' -> ');
-      if (arrowIdx !== -1) filePath = filePath.substring(arrowIdx + 4);
-
-      // Get the immediate child name relative to this directory
-      const sep = filePath.indexOf('/');
-      const childName = sep === -1 ? filePath : filePath.substring(0, sep);
-
-      // Map XY to a simplified status
-      let status;
-      const x = xy[0], y = xy[1];
-      if (xy === '??') status = 'untracked';
-      else if (xy === '!!') continue; // ignored
-      else if (x === 'U' || y === 'U' || xy === 'DD' || xy === 'AA') status = 'conflict';
-      else if (x === 'A') status = 'added';
-      else if (x === 'D' || y === 'D') status = 'deleted';
-      else if (x === 'R') status = 'renamed';
-      else if (x !== ' ' && y !== ' ') status = 'mixed'; // staged + unstaged changes
-      else if (x !== ' ') status = 'staged';
-      else if (y !== ' ') status = 'modified';
-      else continue;
-
-      // For directories: escalate priority (conflict > modified > staged > added > untracked)
-      const existing = statuses.get(childName);
-      if (!existing || gitStatusPriority(status) > gitStatusPriority(existing)) {
-        statuses.set(childName, status);
-      }
-    }
-
-    return { branch, statuses };
-  } catch (err) {
-    logGitFailure('getGitInfo status-parse', err);
-    return { branch, statuses: new Map() };
-  }
+function gitRequestSignal(res) {
+  const controller = new AbortController();
+  res.once('close', () => controller.abort());
+  return controller.signal;
 }
 
 const GIT_STATUS_PRIORITY = { untracked: 1, added: 2, renamed: 2, staged: 3, modified: 4, mixed: 5, deleted: 5, conflict: 6 };
 function gitStatusPriority(s) { return GIT_STATUS_PRIORITY[s] || 0; }
 
-app.get('/api/terminal/files', (req, res) => {
+app.get('/api/terminal/files', async (req, res) => {
   const dir = req.query.path;
   if (!dir || typeof dir !== 'string') return res.status(400).json({ error: 'path required' });
   const search = (req.query.search || '').trim().toLowerCase();
@@ -29576,7 +29508,7 @@ app.get('/api/terminal/files', (req, res) => {
     });
 
     // Try git — gracefully ignored if unavailable
-    const git = getGitInfo(dir);
+    const git = await getGitInfo(dir, { signal: gitRequestSignal(res) });
     if (git) {
       for (const item of items) {
         const s = git.statuses.get(item.name);
@@ -29590,11 +29522,11 @@ app.get('/api/terminal/files', (req, res) => {
   }
 });
 
-app.get('/api/terminal/branches', (req, res) => {
+app.get('/api/terminal/branches', async (req, res) => {
   const dir = req.query.path;
   if (!dir || typeof dir !== 'string') return res.status(400).json({ error: 'path required' });
 
-  const inside = spawnGitRead(['rev-parse', '--is-inside-work-tree'], { cwd: dir, timeout: 3000 });
+  const inside = await spawnGitRead(['rev-parse', '--is-inside-work-tree'], { cwd: dir, timeout: 3000 });
   if (inside.status !== 0) {
     logGitFailure('branches: rev-parse', inside.error || { stderr: inside.stderr });
     return res.json({ branches: [], current: null });
@@ -29603,11 +29535,11 @@ app.get('/api/terminal/branches', (req, res) => {
   try {
     // Current branch — chained fallback (older git may not support --show-current)
     let current = '';
-    const showCurrent = spawnGitRead(['branch', '--show-current'], { cwd: dir, timeout: 3000 });
+    const showCurrent = await spawnGitRead(['branch', '--show-current'], { cwd: dir, timeout: 3000 });
     if (showCurrent.status === 0) current = showCurrent.stdout.toString().trim();
     else logGitFailure('branches: show-current', showCurrent.error || { stderr: showCurrent.stderr });
     if (!current) {
-      const abbrev = spawnGitRead(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir, timeout: 3000 });
+      const abbrev = await spawnGitRead(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir, timeout: 3000 });
       if (abbrev.status === 0) {
         const b = abbrev.stdout.toString().trim();
         if (b && b !== 'HEAD') current = b;
@@ -29616,7 +29548,7 @@ app.get('/api/terminal/branches', (req, res) => {
 
     // All local branches — plain `git branch` parsed manually; avoids --format=%(refname:short)
     // which can get mangled by cmd.exe variable expansion on Windows even with proper quoting.
-    const branchResult = spawnGitRead(['branch'], { cwd: dir });
+    const branchResult = await spawnGitRead(['branch'], { cwd: dir });
     if (branchResult.status !== 0) logGitFailure('branch list', branchResult.error || { stderr: branchResult.stderr });
     const raw = branchResult.status === 0 ? branchResult.stdout.toString() : '';
     // Plain `git branch` output: each line is "  branch" or "* branch" (current). Strip
@@ -29634,7 +29566,7 @@ app.get('/api/terminal/branches', (req, res) => {
 // Trust a workspace path with git — runs `git config --global --add safe.directory <path>`
 // so git stops refusing to operate on it (CVE-2022-24765 dubious-ownership protection).
 // Triggered by the add-project UI flows when the server detects the dubious-ownership error.
-app.post('/api/terminal/trust-workspace', (req, res) => {
+app.post('/api/terminal/trust-workspace', async (req, res) => {
   const { path: dir } = req.body || {};
   if (!dir || typeof dir !== 'string') return res.status(400).json({ ok: false, error: 'path required' });
   if (/[\x00-\x1f]/.test(dir) || dir === '*' || dir === '/' || dir === '\\') {
@@ -29650,7 +29582,7 @@ app.post('/api/terminal/trust-workspace', (req, res) => {
   }
 
   const gitPath = normalizeGitPath(abs);
-  const r = spawnGit(['config', '--global', '--add', 'safe.directory', gitPath]);
+  const r = await spawnGit(['config', '--global', '--add', 'safe.directory', gitPath]);
   if (r.status !== 0) {
     const stderr = r.stderr?.toString?.()?.trim() || r.error?.message || 'git config failed';
     logGitFailure('config --add safe.directory', r.error || { stderr: r.stderr });
@@ -29658,12 +29590,12 @@ app.post('/api/terminal/trust-workspace', (req, res) => {
   }
 
   // Confirm by re-probing
-  const stillDubious = detectDubiousOwnership(abs);
+  const stillDubious = await detectDubiousOwnership(abs);
   console.log(`[git] trusted workspace: ${gitPath}${stillDubious ? ' (but still flagged — check permissions)' : ''}`);
   res.json({ ok: true, path: gitPath, stillDubious });
 });
 
-app.post('/api/terminal/checkout', (req, res) => {
+app.post('/api/terminal/checkout', async (req, res) => {
   const { path: dir, branch } = req.body;
   if (!dir || !branch) return res.status(400).json({ error: 'path and branch required' });
 
@@ -29672,7 +29604,7 @@ app.post('/api/terminal/checkout', (req, res) => {
     return res.status(400).json({ error: 'Invalid branch name' });
   }
 
-  const inside = spawnGitRead(['rev-parse', '--is-inside-work-tree'], { cwd: dir, timeout: 3000 });
+  const inside = await spawnGitRead(['rev-parse', '--is-inside-work-tree'], { cwd: dir, timeout: 3000 });
   if (inside.status !== 0) {
     logGitFailure('checkout: rev-parse', inside.error || { stderr: inside.stderr });
     return res.status(400).json({ error: 'Not a git repository' });
@@ -29682,7 +29614,8 @@ app.post('/api/terminal/checkout', (req, res) => {
   // No '--' separator — that would make git treat the branch name as a file pathspec.
   // (The switch itself is a write and runs plainly, with the repository's post-checkout hook; the two questions
   // around it are reads.)
-  const result = spawnGit(['checkout', branch], { cwd: dir, timeout: 10000 });
+  const result = await spawnGit(['checkout', branch], { cwd: dir, timeout: 10000 });
+  gitStatusRunner.invalidate(dir);
   if (result.status !== 0) {
     const stderr = result.stderr?.toString?.()?.trim() || result.error?.message || 'Checkout failed';
     return res.status(500).json({ error: stderr });
@@ -29690,71 +29623,21 @@ app.post('/api/terminal/checkout', (req, res) => {
 
   // Return confirmed branch name + git's own output
   let current = '';
-  const showCurrent = spawnGitRead(['branch', '--show-current'], { cwd: dir, timeout: 3000 });
+  const showCurrent = await spawnGitRead(['branch', '--show-current'], { cwd: dir, timeout: 3000 });
   if (showCurrent.status === 0) current = showCurrent.stdout.toString().trim();
   else logGitFailure('checkout: show-current', showCurrent.error || { stderr: showCurrent.stderr });
   const output = result.stderr?.toString?.()?.trim() || `Switched to branch '${current}'`;
   res.json({ ok: true, branch: current, output });
 });
 
-// Polled by the file explorer — run git via async execFile (never blocks the
-// event loop) and memoize per path for 1.5s so rapid polls share one result.
-const _gitStatusCache = new Map(); // dir -> { at, promise }
-const GIT_STATUS_TTL_MS = 1500;
-
-async function computeGitStatus(dir) {
-  // Each of these only reads: run as lib/git-read.js runs a read, so nothing the folder's own git configuration
-  // names is started (the route takes any folder).
-  const read = async (args, options) => {
-    const safe = await gitRead(dir, args);
-    return execFileAsync('git', safe.args, { cwd: dir, env: safe.env, ...options });
-  };
-  try {
-    await read(['rev-parse', '--is-inside-work-tree'], { timeout: 3000 });
-  } catch {
-    return { ok: true, isGit: false, branch: null, changes: [] };
-  }
-
-  const resolveBranch = async () => {
-    try {
-      const { stdout } = await read(['branch', '--show-current'], { timeout: 3000 });
-      let branch = stdout.trim();
-      if (!branch) {
-        const { stdout: head } = await read(['rev-parse', '--short', 'HEAD'], { timeout: 3000 });
-        branch = head.trim();
-      }
-      return branch;
-    } catch { return ''; }
-  };
-
-  const [branch, statusOut] = await Promise.all([
-    resolveBranch(),
-    read(['status', '--porcelain'], { timeout: 5000, maxBuffer: 256 * 1024 * 1024 }),
-  ]);
-
-  const changes = [];
-  for (const line of statusOut.stdout.split('\n')) {
-    if (!line || line.length < 4) continue;
-    const xy = line.substring(0, 2);
-    let filePath = line.substring(3);
-    const arrowIdx = filePath.indexOf(' -> ');
-    if (arrowIdx !== -1) filePath = filePath.substring(arrowIdx + 4);
-    const x = xy[0], y = xy[1];
-    let staged = x !== ' ' && x !== '?';
-    let status;
-    if (xy === '??') status = 'untracked';
-    else if (xy === '!!') continue;
-    else if (x === 'U' || y === 'U' || xy === 'DD' || xy === 'AA') status = 'conflict';
-    else if (x === 'A') status = 'added';
-    else if (x === 'D' || y === 'D') status = 'deleted';
-    else if (x === 'R') status = 'renamed';
-    else if (x !== ' ' && y !== ' ') status = 'mixed';
-    else if (x !== ' ') status = 'staged';
-    else status = 'modified';
-    changes.push({ path: filePath, status, staged });
-  }
-
-  return { ok: true, isGit: true, branch, changes };
+// All callers share the canonical worktree's flight and last completed result.
+async function computeGitStatus(dir, options = {}) {
+  const result = projectStatus(await gitStatusRunner.read(dir, options), dir);
+  if (!result.ok || result.partial || result.stale) return { ok: false, isGit: !!result.isGit, branch: result.branch, changes: result.changes || [],
+    partial: true, stale: !!result.stale, timedOut: !!result.timedOut, retryAt: result.retryAt,
+    scanState: result.timedOut ? 'timed-out' : 'failed', error: 'Git status is incomplete. Refresh before switching branches or assuming the worktree is clean.' };
+  if (!result.isGit) return { ok: true, isGit: false, branch: null, changes: [] };
+  return { ok: true, isGit: true, branch: result.branch, changes: result.changes };
 }
 
 // The folder a git route is asked about: inside a registered folder, as the disk resolves it (the rule of
@@ -29768,11 +29651,9 @@ function registeredGitFolder(asked, res) {
 // be started, failed or took too long, as the command lines the /api/git routes used to run did. For reads only
 // (every caller is one): run as lib/git-read.js runs a read, so no program the repository's own configuration
 // names is started. `git add` and `git commit` are not run through here: a commit keeps the repository's hooks.
-function gitOutput(dir, args, { timeout = 5000, maxBuffer } = {}) {
-  const read = gitReadSync(dir, args);
-  const result = spawnSync('git', read.args, { cwd: dir, env: read.env, stdio: 'pipe', timeout, windowsHide: true, ...(maxBuffer ? { maxBuffer } : {}) });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(result.stderr?.toString?.()?.trim?.() || `git ${args[0]} failed`);
+async function gitOutput(dir, args, { timeout = 5000, maxBuffer } = {}) {
+  const result = await gitStatusRunner.run(args, { cwd: dir, timeoutMs: timeout, ...(maxBuffer ? { maxBuffer } : {}) });
+  if (!result.ok) throw new Error(result.stderr?.toString?.()?.trim?.() || `git ${args[0]} failed`);
   return result.stdout.toString();
 }
 
@@ -29782,37 +29663,17 @@ function gitOutput(dir, args, { timeout = 5000, maxBuffer } = {}) {
 app.get('/api/git/status', editorOwnerGuard, async (req, res) => {
   const dir = req.query.path;
   if (!dir || typeof dir !== 'string') return res.status(400).json({ error: 'path required' });
-
-  let entry = _gitStatusCache.get(dir);
-  if (!entry || Date.now() - entry.at >= GIT_STATUS_TTL_MS) {
-    const promise = computeGitStatus(dir);
-    entry = { at: Date.now(), promise };
-    _gitStatusCache.set(dir, entry);
-    // Failed computations shouldn't be served for the rest of the TTL.
-    promise.catch(() => {
-      if (_gitStatusCache.get(dir)?.promise === promise) _gitStatusCache.delete(dir);
-    });
-    // Keep the map bounded across many distinct paths.
-    if (_gitStatusCache.size > 100) {
-      const cutoff = Date.now() - 60_000;
-      for (const [k, v] of _gitStatusCache) if (v.at < cutoff) _gitStatusCache.delete(k);
-    }
-  }
-
-  try {
-    res.json(await entry.promise);
-  } catch (err) {
-    res.status(500).json({ error: err.stderr?.toString?.()?.trim?.() || err.message });
-  }
+  if (req.query.refresh === '1') gitStatusRunner.invalidate(dir, { refresh: true });
+  res.json(await computeGitStatus(dir, { signal: gitRequestSignal(res) }));
 });
 
-app.post('/api/git/commit', editorOwnerGuard, (req, res) => {
+app.post('/api/git/commit', editorOwnerGuard, async (req, res) => {
   const { path: dir, message, files } = req.body;
   if (!dir || typeof dir !== 'string' || !message) return res.status(400).json({ error: 'path and message required' });
   if (typeof message !== 'string' || message.trim().length === 0) return res.status(400).json({ error: 'Commit message cannot be empty' });
 
   try {
-    gitOutput(dir, ['rev-parse', '--is-inside-work-tree'], { timeout: 3000 });
+    await gitOutput(dir, ['rev-parse', '--is-inside-work-tree'], { timeout: 3000 });
   } catch {
     return res.status(400).json({ error: 'Not a git repository' });
   }
@@ -29824,16 +29685,19 @@ app.post('/api/git/commit', editorOwnerGuard, (req, res) => {
       for (const f of files) {
         if (typeof f !== 'string' || f.includes('..')) return res.status(400).json({ error: 'Invalid file path' });
       }
-      const result = spawnSync('git', ['add', '--', ...files], { cwd: dir, env: withGitFallback(process.env), stdio: 'pipe', timeout: 10000 });
+      const result = await gitStatusRunner.runRaw(['add', '--', ...files], { cwd: dir, timeoutMs: 10000 });
+      gitStatusRunner.invalidate(dir);
       if (result.status !== 0) return res.status(500).json({ error: result.stderr?.toString?.()?.trim() || 'Stage failed' });
     } else {
       // Stage all changes
-      const result = spawnSync('git', ['add', '-A'], { cwd: dir, env: withGitFallback(process.env), stdio: 'pipe', timeout: 10000 });
+      const result = await gitStatusRunner.runRaw(['add', '-A'], { cwd: dir, timeoutMs: 10000 });
+      gitStatusRunner.invalidate(dir);
       if (result.status !== 0) return res.status(500).json({ error: result.stderr?.toString?.()?.trim() || 'Stage failed' });
     }
 
     // Commit
-    const result = spawnSync('git', ['commit', '-m', message.trim()], { cwd: dir, env: withGitFallback(process.env), stdio: 'pipe', timeout: 15000 });
+    const result = await gitStatusRunner.runRaw(['commit', '-m', message.trim()], { cwd: dir, timeoutMs: 15000 });
+    gitStatusRunner.invalidate(dir);
     if (result.status !== 0) {
       const stderr = result.stderr?.toString?.()?.trim() || '';
       const stdout = result.stdout?.toString?.()?.trim() || '';
@@ -29847,32 +29711,32 @@ app.post('/api/git/commit', editorOwnerGuard, (req, res) => {
   }
 });
 
-app.get('/api/git/diff-summary', editorOwnerGuard, (req, res) => {
+app.get('/api/git/diff-summary', editorOwnerGuard, async (req, res) => {
   const asked = req.query.path;
   if (!asked || typeof asked !== 'string') return res.status(400).json({ error: 'path required' });
   const dir = registeredGitFolder(asked, res);
   if (!dir) return;
 
   try {
-    gitOutput(dir, ['rev-parse', '--is-inside-work-tree'], { timeout: 3000 });
+    await gitOutput(dir, ['rev-parse', '--is-inside-work-tree'], { timeout: 3000 });
   } catch {
     return res.status(400).json({ error: 'Not a git repository' });
   }
 
   try {
     // Get diff stat for tracked files
-    const stat = gitOutput(dir, ['diff', '--stat', '--stat-width=120']).trim();
+    const stat = (await gitOutput(dir, ['diff', '--stat', '--stat-width=120'])).trim();
 
     // Get diff stat for staged files
-    const stagedStat = gitOutput(dir, ['diff', '--cached', '--stat', '--stat-width=120']).trim();
+    const stagedStat = (await gitOutput(dir, ['diff', '--cached', '--stat', '--stat-width=120'])).trim();
 
     // Get untracked files
-    const untracked = gitOutput(dir, ['ls-files', '--others', '--exclude-standard']).trim();
+    const untracked = (await gitOutput(dir, ['ls-files', '--others', '--exclude-standard'])).trim();
 
     // Get short diff for context (limited to avoid huge payloads)
-    const diff = gitOutput(dir, ['diff', '-U1', '--no-color'], { timeout: 8000, maxBuffer: 64 * 1024 }).substring(0, 4000);
+    const diff = (await gitOutput(dir, ['diff', '-U1', '--no-color'], { timeout: 8000, maxBuffer: 64 * 1024 })).substring(0, 4000);
 
-    const stagedDiff = gitOutput(dir, ['diff', '--cached', '-U1', '--no-color'], { timeout: 8000, maxBuffer: 64 * 1024 }).substring(0, 4000);
+    const stagedDiff = (await gitOutput(dir, ['diff', '--cached', '-U1', '--no-color'], { timeout: 8000, maxBuffer: 64 * 1024 })).substring(0, 4000);
 
     // Build a commit message from the changes
     const changedFiles = [];
@@ -29940,7 +29804,7 @@ app.use(createGitDiffRouter({ fileRoots: allowedFileRoots, guard: editorOwnerGua
 
 // ── Git Log ──
 
-app.get('/api/git/log', editorOwnerGuard, (req, res) => {
+app.get('/api/git/log', editorOwnerGuard, async (req, res) => {
   const asked = req.query.path;
   if (!asked || typeof asked !== 'string') return res.status(400).json({ error: 'path required' });
   const dir = registeredGitFolder(asked, res);
@@ -29948,13 +29812,13 @@ app.get('/api/git/log', editorOwnerGuard, (req, res) => {
   const count = Math.min(Math.max(parseInt(req.query.count) || 10, 1), 50);
 
   try {
-    gitOutput(dir, ['rev-parse', '--is-inside-work-tree'], { timeout: 3000 });
+    await gitOutput(dir, ['rev-parse', '--is-inside-work-tree'], { timeout: 3000 });
   } catch {
     return res.status(400).json({ error: 'Not a git repository' });
   }
 
   try {
-    const raw = gitOutput(dir, ['log', '--oneline', '--no-decorate', '-n', String(count)]).trim();
+    const raw = (await gitOutput(dir, ['log', '--oneline', '--no-decorate', '-n', String(count)])).trim();
     const commits = raw ? raw.split('\n').map(line => {
       const spaceIdx = line.indexOf(' ');
       return { hash: line.substring(0, spaceIdx), message: line.substring(spaceIdx + 1) };
@@ -29972,17 +29836,17 @@ app.post('/api/git/generate-message', editorOwnerGuard, async (req, res) => {
   if (!dir || typeof dir !== 'string') return res.status(400).json({ error: 'path required' });
 
   try {
-    gitOutput(dir, ['rev-parse', '--is-inside-work-tree'], { timeout: 3000 });
+    await gitOutput(dir, ['rev-parse', '--is-inside-work-tree'], { timeout: 3000 });
   } catch {
     return res.status(400).json({ error: 'Not a git repository' });
   }
 
   // Gather diff data — separate try/catch per command so one failure doesn't skip the rest
   let diffText = '', stagedText = '', untrackedList = '', recentCommits = '';
-  try { diffText = gitOutput(dir, ['diff', '--no-color'], { timeout: 8000, maxBuffer: 2 * 1024 * 1024 }).substring(0, 4000); } catch {}
-  try { stagedText = gitOutput(dir, ['diff', '--cached', '--no-color'], { timeout: 8000, maxBuffer: 2 * 1024 * 1024 }).substring(0, 4000); } catch {}
-  try { untrackedList = gitOutput(dir, ['ls-files', '--others', '--exclude-standard']).trim(); } catch {}
-  try { recentCommits = gitOutput(dir, ['log', '--oneline', '--no-decorate', '-n', '5'], { timeout: 3000 }).trim(); } catch {}
+  try { diffText = (await gitOutput(dir, ['diff', '--no-color'], { timeout: 8000, maxBuffer: 2 * 1024 * 1024 })).substring(0, 4000); } catch {}
+  try { stagedText = (await gitOutput(dir, ['diff', '--cached', '--no-color'], { timeout: 8000, maxBuffer: 2 * 1024 * 1024 })).substring(0, 4000); } catch {}
+  try { untrackedList = (await gitOutput(dir, ['ls-files', '--others', '--exclude-standard'])).trim(); } catch {}
+  try { recentCommits = (await gitOutput(dir, ['log', '--oneline', '--no-decorate', '-n', '5'], { timeout: 3000 })).trim(); } catch {}
 
   const allDiff = (diffText + '\n' + stagedText).trim();
   if (!allDiff && !untrackedList) {
@@ -30033,8 +29897,8 @@ app.post('/api/git/generate-message', editorOwnerGuard, async (req, res) => {
   // Fallback: heuristic (same logic as /api/git/diff-summary)
   try {
     let stat = '', stagedStat = '';
-    try { stat = gitOutput(dir, ['diff', '--stat', '--stat-width=120'], { maxBuffer: 2 * 1024 * 1024 }).trim(); } catch {}
-    try { stagedStat = gitOutput(dir, ['diff', '--cached', '--stat', '--stat-width=120'], { maxBuffer: 2 * 1024 * 1024 }).trim(); } catch {}
+    try { stat = (await gitOutput(dir, ['diff', '--stat', '--stat-width=120'], { maxBuffer: 2 * 1024 * 1024 })).trim(); } catch {}
+    try { stagedStat = (await gitOutput(dir, ['diff', '--cached', '--stat', '--stat-width=120'], { maxBuffer: 2 * 1024 * 1024 })).trim(); } catch {}
     const changedFiles = [];
     for (const line of (stat + '\n' + stagedStat).split('\n').filter(l => l.includes('|'))) {
       const m = line.match(/^\s*(.+?)\s*\|/);

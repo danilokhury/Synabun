@@ -167,7 +167,7 @@ export async function runWindowsSwap(params, ops) {
   const { pid, instDir, installer, version, stateDir, relaunch, exe = 'SynaBun.exe' } = params;
   const limits = { ...SWAP_LIMITS, ...(params.limits || {}) };
   // The install window (install-window.mjs): asked for by the app when something was on screen. Every step says
-  // what it does there; nothing waits for it, and a window that cannot be shown changes nothing of the swap.
+  // what it does there; a visible update proceeds only after a window acknowledges its first frame.
   const windowConfig = params.window?.config || null;
   let lastView = '';
   const show = (phase, extra = {}) => {
@@ -246,14 +246,16 @@ export async function runWindowsSwap(params, ops) {
   if (windowConfig) {
     show('waiting');
     try {
-      const shown = ops.openWindow();
+      const shown = await ops.openWindow();
+      if (!shown) return fail(`No install window could open; the installed copy was kept. Log: ${join(stateDir, 'swap.log')}`);
       say(shown ? `the install window opened (pid ${shown})` : 'the install window could not be opened');
     } catch (error) {
-      say(`the install window could not be opened: ${error?.message || error}`);
+      return fail(`the install window could not be opened: ${error?.message || error}; log: ${join(stateDir, 'swap.log')}`);
     }
   }
   say(`update to v${version}: waiting for SynaBun (pid ${pid}) to quit`);
-  if (!(await waitUntil(() => !ops.alive(pid), limits.quitMs))) return fail('SynaBun did not quit within two minutes');
+  if (!(await waitUntil(() => !ops.alive(pid) || ops.exists(join(stateDir, 'window-cancel')), limits.quitMs))) return fail('SynaBun did not quit within two minutes');
+  if (ops.exists(join(stateDir, 'window-cancel'))) return fail('The visible update was cancelled before replacement');
   if (!ops.exists(join(instDir, exe))) return fail(`SynaBun is not in ${instDir}`);
   if (!ops.exists(installer)) {
     const result = fail('the downloaded installer is gone');
@@ -352,8 +354,65 @@ export function windowsPowerShell(env = process.env) {
 }
 
 /** The command line of the install window (install-window.ps1): STA for WPF, no profile, the files by their paths. */
-export function installWindowArgs({ script, config, view, shown, watchdog }) {
-  return ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', script, '-Config', config, '-View', view, '-Shown', shown, '-Watchdog', String(watchdog)];
+export function installWindowArgs({ script, config, view, shown, watchdog, languageMode = null }) {
+  return ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', script, '-Config', config, '-View', view, '-Shown', shown, '-Watchdog', String(watchdog), ...(languageMode ? ['-LanguageMode', languageMode] : [])];
+}
+
+/** App Control can give a policy-trusted signed script FullLanguage; CLM/blocked/timeout uses native. */
+export function installWindowChoice({ mode = '', shown = false, nativeAvailable = false } = {}) {
+  if (shown && mode.trim() === 'FullLanguage') return 'powershell';
+  return nativeAvailable ? 'native' : 'abort';
+}
+
+/** Small native protocol: fixed UTF-16LE lines, no executable code and no locale/code-page ambiguity. */
+export function nativeWindowView(view, config = {}) {
+  const fields = [view.phase, view.percent ?? '', view.status, view.error, view.detail, view.log,
+    config.text?.close, config.text?.stalled, view.mascot, config.text?.openLog];
+  return Buffer.from(fields.map(value => String(value ?? '').replace(/[\r\n\0]/g, ' ').slice(0, 2047)).join('\n') + '\n', 'utf16le');
+}
+
+export async function openInstallWindow({ windowDir, stateDir, env = process.env, spawnImpl = spawn,
+  exists = existsSync, readText = file => readFileSync(file, 'utf8'), sleep = ms => new Promise(done => setTimeout(done, ms)),
+  now = () => Date.now(), log = () => {}, waitMs = 8000 } = {}) {
+  if (!windowDir) return null;
+  const marker = join(stateDir, 'window-shown');
+  const modeFile = join(windowDir, 'language-mode');
+  const native = join(windowDir, 'SynaBun-install-window.exe');
+  let ps = null;
+  let mode = '';
+  const start = (file, args) => {
+    const child = spawnImpl(file, args, { detached: true, stdio: 'ignore', windowsHide: true, cwd: windowDir, env: appEnvironment(env) });
+    child.on('error', () => {}); child.unref(); return child;
+  };
+  try {
+    ps = start(windowsPowerShell(env), installWindowArgs({
+      script: join(windowDir, 'install-window.ps1'), config: join(windowDir, 'install-window.json'),
+      view: join(windowDir, 'install-view.json'), shown: marker, watchdog: process.pid, languageMode: modeFile,
+    }));
+    const until = now() + waitMs;
+    do {
+      try { mode = readText(modeFile).trim(); } catch {}
+      if (exists(marker) && mode === 'FullLanguage') { log('install window language mode: FullLanguage'); return ps.pid || null; }
+      if (mode && mode !== 'FullLanguage') break;
+      if (ps.exitCode !== null && ps.exitCode !== undefined) break;
+      await sleep(100);
+    } while (now() < until);
+  } catch (error) { log(`PowerShell install window: ${error.message}`); }
+  log(`install window language mode: ${mode || 'blocked or no startup report'}; selecting native fallback`);
+  try { ps?.kill(); } catch {}
+  try { rmSync(marker, { force: true }); } catch {}
+  if (installWindowChoice({ mode, nativeAvailable: exists(native) }) !== 'native') return null;
+  try {
+    const child = start(native, [windowDir, stateDir, String(process.pid)]);
+    const until = now() + waitMs;
+    do {
+      if (exists(marker)) return child.pid || null;
+      if (child.exitCode !== null && child.exitCode !== undefined) break;
+      await sleep(100);
+    } while (now() < until);
+    try { child.kill(); } catch {}
+  } catch (error) { log(`native install window: ${error.message}`); }
+  return null;
 }
 
 /** Writes a file in one rename, so a reader never sees half of it. */
@@ -435,19 +494,13 @@ export function windowsOps({ stateDir, env = process.env, windowDir = null }) {
       child.unref();
       return child.pid || null;
     },
-    // The install window: Windows PowerShell from System32 (nothing from the install folder), detached, without a
-    // console. It outlives this script only for its own rules (install-window.ps1).
-    openWindow: () => {
-      if (!windowDir) return null;
-      const child = spawn(windowsPowerShell(env), installWindowArgs({
-        script: join(windowDir, 'install-window.ps1'), config: join(windowDir, 'install-window.json'),
-        view: join(windowDir, 'install-view.json'), shown: join(stateDir, 'window-shown'), watchdog: process.pid,
-      }), { detached: true, stdio: 'ignore', windowsHide: true, cwd: windowDir, env: appEnvironment(env) });
-      child.on('error', () => {});
-      child.unref();
-      return child.pid || null;
+    openWindow: () => openInstallWindow({ windowDir, stateDir, env,
+      log: line => appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`) }),
+    writeView: (view) => {
+      if (!windowDir) return;
+      writeWhole(join(windowDir, 'install-view.json'), `${JSON.stringify(view)}\n`);
+      writeWhole(join(windowDir, 'native-view.txt'), nativeWindowView(view, readWindowConfig(windowDir) || {}));
     },
-    writeView: (view) => { if (windowDir) writeWhole(join(windowDir, 'install-view.json'), `${JSON.stringify(view)}\n`); },
   };
 }
 

@@ -6,10 +6,15 @@
 // mascot dozes inside a gold ring that fills toward the reset, a live
 // hh:mm:ss countdown and the local reset time beside it. At zero it wakes
 // ("Usage limit restored") and offers Retry now. With no reset time known it
-// waits with "Reset time unknown" and offers the retry at once. The clock is
-// the shared ticker at 1 fps, only while it counts and only while the card is
-// on the page; under prefers-reduced-motion the mascot is a still and nothing
-// eases. Its sheet is its own (injectLimitWaitStyles), like the rack's.
+// waits with "Reset time unknown" and offers the retry at once. While it
+// blocks, a host that passes onSwitchProvider also offers "Continue with
+// another provider" (the host owns the picker and what a pick does); a host
+// that passes onClose always offers Close, which only dismisses the card —
+// the limit itself is untouched — and Esc does the same while focus is
+// inside. The clock is the shared ticker at 1 fps, only while it counts and
+// only while the card is on the page; under prefers-reduced-motion the mascot
+// is a still and nothing eases. Its sheet is its own (injectLimitWaitStyles),
+// like the rack's.
 
 import * as mascotLib from '../synabun-mascot.js';
 import { isReducedMotion, subscribe } from '../synabun-ticker.js';
@@ -37,10 +42,12 @@ function localTime(ms, now) {
 }
 
 /**
- * createLimitWait({ t, resetsAt, since, provider, onRetry, retryLabel, announce(text) })
+ * createLimitWait({ t, resetsAt, since, provider, onRetry, retryLabel, onSwitchProvider, onClose, announce(text) })
  * → { el, get state(), update({ resetsAt, since }), retried(), stale(), destroy() }
  * `resetsAt`: epoch ms / s or ISO, or null (unknown). `since`: when the wait began (the ring's start).
  * `provider`: the name in the meta line ("Codex"). `onRetry()`: Retry now; null: no button.
+ * `onSwitchProvider(anchorEl)`: Continue with another provider, while blocking; null: no button.
+ * `onClose()`: Close (and Esc, while focus is inside); null: no button.
  */
 export function createLimitWait(opts = {}) {
   injectLimitWaitStyles();
@@ -84,6 +91,16 @@ export function createLimitWait(opts = {}) {
   const actions = $('.asst-limit-wait-actions');
   const live = $('.asst-limit-wait-live');
 
+  // Continue with another provider: only while actively blocking (waiting / unknown). Opens the
+  // host's own provider picker (never a native select); the host decides what happens on a pick.
+  let switchBtn = null;
+  if (typeof opts.onSwitchProvider === 'function') {
+    switchBtn = el('button', 'asst-btn asst-btn-secondary asst-limit-wait-switch', t('assistant.limitWait.switchProvider', 'Continue with another provider'));
+    switchBtn.type = 'button';
+    switchBtn.addEventListener('click', () => { if (!destroyed) opts.onSwitchProvider(switchBtn); });
+    actions.appendChild(switchBtn);
+  }
+
   let retryBtn = null;
   if (typeof opts.onRetry === 'function') {
     retryBtn = el('button', 'asst-btn asst-btn-primary asst-limit-wait-retry');
@@ -94,6 +111,21 @@ export function createLimitWait(opts = {}) {
       try { opts.onRetry(); } catch { /* the host reports its own failure */ }
     });
     actions.appendChild(retryBtn);
+  }
+
+  // Dismisses the card only; the limit itself is untouched (the host decides how it resurfaces).
+  let closeBtn = null;
+  if (typeof opts.onClose === 'function') {
+    closeBtn = el('button', 'asst-btn asst-btn-secondary asst-limit-wait-close', t('common.close', 'Close'));
+    closeBtn.type = 'button';
+    closeBtn.addEventListener('click', () => { if (!destroyed) opts.onClose(); });
+    actions.appendChild(closeBtn);
+    // Not a dialog (role="group"): Esc closes it only while focus is inside.
+    card.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape' || destroyed) return;
+      e.stopPropagation();
+      opts.onClose();
+    });
   }
 
   function setPose(next) {
@@ -146,6 +178,7 @@ export function createLimitWait(opts = {}) {
           : (opts.retryLabel || t('assistant.limitWait.retry', 'Retry now'));
       retryBtn.textContent = label;
     }
+    if (switchBtn) switchBtn.hidden = !(next === 'waiting' || next === 'unknown');
     if (next === 'waiting') { setPose('sleep'); setRing(limitCountdown({ resetsAt, since }, now).progress || 0); }
     else if (next === 'unknown') { setPose('wait'); setRing(0.18, true); }
     else if (next === 'restored') { setPose(was === 'waiting' ? 'success' : 'idle'); setRing(1); }

@@ -26,7 +26,7 @@
 // that is not there, whatever folders the page shows meanwhile.
 
 import { existsSync, watch as fsWatch } from 'node:fs';
-import { dirname, join, relative, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 
 export const MAX_WATCHED_DIRS = 600;
 /** A watch that failed is tried again after this long, then after twice that, and so on. */
@@ -80,6 +80,7 @@ export function createTreeWatcher({
   let said = null;                     // the `live` that was last reported
   const pending = new Set();
   let pendingGit = false;
+  let pendingIgnores = false;
   let timer = null;
   let firstAt = 0;
 
@@ -88,9 +89,10 @@ export function createTreeWatcher({
   function flush() {
     timer = null;
     if (closed || (!pending.size && !pendingGit)) return;
-    const change = { dirs: [...pending], git: pendingGit };
+    const change = { dirs: [...pending], git: pendingGit, ...(pendingIgnores ? { ignores: true } : {}) };
     pending.clear();
     pendingGit = false;
+    pendingIgnores = false;
     try { onChange(change); } catch { /* a listener's failure is not the watcher's */ }
   }
 
@@ -107,7 +109,11 @@ export function createTreeWatcher({
   // One change, by its path below the root ('' is the root itself).
   function note(rel) {
     if (closed) return;
-    const path = slashed(rel || '');
+    // Native watchers can report an absolute path, or no filename at all.
+    // Missing names conservatively dirty status, never all ignore data.
+    const path = slashed(isAbsolute(rel || '') ? relative(root, rel) : rel || '');
+    if (path === '..' || path.startsWith('../')) return;
+    if (path === '.git/info/exclude' || path === '.git/config' || path === '.git/config.worktree' || path === '.gitignore' || path.endsWith('/.gitignore')) { pendingIgnores = true; pendingGit = true; }
     if (path === '.git' || path.startsWith('.git/')) {
       const inside = path.slice(5);
       if (GIT_STATE_FILES.test(inside) || inside.startsWith('refs/')) pendingGit = true;

@@ -1415,6 +1415,7 @@ export function createBrainPicker(host, hooks = {}) {
     refresh,
     snapshot,
     openField,
+    switchProvider,
     fieldSummary,
     modelLabel: () => modelLabel(),
     mountEmptyProject,
