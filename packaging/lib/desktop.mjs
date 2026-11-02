@@ -362,6 +362,52 @@ export function uninstallMacroMatches(installUtilText, installSectionText, oursT
   return { ok: true, reason: null };
 }
 
+/** The text of one function (`Function <name>` to its `FunctionEnd`) in an NSIS text, or null. */
+export function nsisFunction(text, name) {
+  const start = String(text).search(new RegExp(`^\\s*Function ${name}\\s*$`, 'm'));
+  if (start < 0) return null;
+  const end = String(text).indexOf('FunctionEnd', start);
+  return end < 0 ? null : String(text).slice(start, end + 'FunctionEnd'.length);
+}
+
+/** Lines of an NSIS text without their comments (`;` or `#` to the end of a line, outside quotes is close enough here). */
+const nsisCode = (text) => String(text || '').split(/\r?\n/).map(line => line.replace(/^\s*[;#].*$/, '').replace(/\s;\s.*$/, '')).join('\n');
+
+/** What may never run while the finish page opens SynaBun: anything that waits on the installer's window thread. */
+export const FINISH_PAGE_BLOCKING = Object.freeze([/\bExecWait\b/, /\bnsExec::/, /\bExecShellWait/, /\bSleep\b/, /\bStdUtils::/, /\$\{StdUtils\./, /\bExecShell\b/, /\bExecDos::/, /\bnsProcess::/]);
+
+/**
+ * Whether installer.nsh's finish page (customFinishPage, SynaStartApp) still replaces electron-builder's: the
+ * assisted installer must still insert customFinishPage instead of its own page, whose StartApp waits for
+ * ${StdUtils.ExecShellAsUser} on the window thread (the "Not Responding" installer), and its install section must
+ * still set $launchLink. Ours must insert MUI's finish page with SynaStartApp as its run function, hide the
+ * installer's window before it starts anything, start SynaBun with Exec only (never waited for), and wait for
+ * nothing. { ok, reason }.
+ */
+export function finishPageMatches(assistedText, installSectionText, oursText) {
+  const assisted = String(assistedText || '');
+  if (!/!ifmacrodef customFinishPage\s*\n\s*!insertmacro customFinishPage\s*\n\s*!else/.test(assisted)) {
+    return { ok: false, reason: 'electron-builder\'s assistedInstaller.nsh no longer puts customFinishPage in place of its own finish page: review installer.nsh against it' };
+  }
+  if (!/StrCpy \$launchLink "/.test(String(installSectionText || ''))) {
+    return { ok: false, reason: 'electron-builder\'s installSection.nsh no longer sets $launchLink, which SynaStartApp opens: review installer.nsh against it' };
+  }
+  const page = nsisMacro(oursText, 'customFinishPage');
+  if (!page) return { ok: false, reason: 'packaging/desktop/build/installer.nsh has no customFinishPage macro' };
+  const code = nsisCode(page);
+  if (!/!insertmacro MUI_PAGE_FINISH/.test(code)) return { ok: false, reason: 'installer.nsh customFinishPage does not insert the finish page' };
+  if (!/!define MUI_FINISHPAGE_RUN_FUNCTION "SynaStartApp"/.test(code)) return { ok: false, reason: 'installer.nsh customFinishPage does not open SynaBun with SynaStartApp' };
+  const start = nsisFunction(code, 'SynaStartApp');
+  if (!start) return { ok: false, reason: 'installer.nsh has no SynaStartApp function inside customFinishPage' };
+  const blocking = FINISH_PAGE_BLOCKING.find(pattern => pattern.test(start));
+  if (blocking) return { ok: false, reason: `SynaStartApp must not wait on the installer's window thread (${blocking.source})` };
+  const hide = start.search(/^\s*HideWindow\s*$/m);
+  const firstExec = start.search(/^\s*Exec\s/m);
+  if (firstExec < 0) return { ok: false, reason: 'SynaStartApp starts nothing with Exec' };
+  if (hide < 0 || hide > firstExec) return { ok: false, reason: 'SynaStartApp must hide the installer\'s window before it starts SynaBun' };
+  return { ok: true, reason: null };
+}
+
 // ── Signing (only with credentials from the environment) ──
 
 /** What signs this build: { mac: identity|null, notarize, windows: boolean }. Off unless the environment says otherwise. */
@@ -754,6 +800,11 @@ async function windowsArtifacts(ctx, names) {
   const upgrade = uninstallMacroMatches(readFileSync(installUtil, 'utf8'), readFileSync(join(templates, 'installSection.nsh'), 'utf8'),
     readFileSync(join(DESKTOP_ROOT, 'build', 'synabun-upgrade.nsh'), 'utf8'));
   if (!upgrade.ok) throw new BuildError(`The installer cannot replace an installed copy in one step: ${upgrade.reason}. No artifact was created.`, { details: [installUtil] });
+  // The finish page opens SynaBun without waiting on the installer's window: only while its page is the one used.
+  const assisted = join(templates, 'assistedInstaller.nsh');
+  const finish = finishPageMatches(readFileSync(assisted, 'utf8'), readFileSync(join(templates, 'installSection.nsh'), 'utf8'),
+    readFileSync(join(DESKTOP_ROOT, 'build', 'installer.nsh'), 'utf8'));
+  if (!finish.ok) throw new BuildError(`The installer's finish page would wait for SynaBun to start: ${finish.reason}. No artifact was created.`, { details: [assisted] });
   // The payload manifest, written into the bundle before the audit snapshot so it packs with everything else and
   // does not trip the "unchanged" guard: the installer checks the unpacked payload against it (synabun-verify.ps1).
   const manifest = writePayloadManifest(ctx.bundle.root);

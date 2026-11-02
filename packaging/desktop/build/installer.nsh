@@ -663,17 +663,87 @@ FunctionEnd
   !insertmacro SynaCloseLog
 !macroend
 
-; -- The finish page names the installation log, and can open it --
+; -- The finish page: open SynaBun without waiting for it, and the installation log --
+;
+; electron-builder's own finish page (assistedInstaller.nsh, app-builder-lib
+; 26.15.3) opens the app with StartApp: ${StdUtils.ExecShellAsUser}, which asks
+; the desktop shell to start it from a thread of its own and waits for that
+; thread, up to 30 s, in the page's leave function: on the installer's window
+; thread, which pumps no messages meanwhile. The shell's call returns once
+; Windows has created the process, and for a SynaBun.exe that was written a
+; moment ago that includes the virus scanner's scan of it and the reputation
+; check of Smart App Control (a file Windows has not seen yet: seconds, up to
+; the 20-30 s measured for a new installer). Windows marks the window
+; "Not Responding" after 5 s of that, and it stayed so until the app appeared.
+;
+; This page is the same, with SynaStartApp in its place:
+;   1  the installer leaves the screen first (HideWindow), so nothing of it can
+;      hang in view, whatever follows
+;   2  the variables this installer set for its helpers (synabun-stop.ps1,
+;      synabun-verify.ps1) are taken out of the environment SynaBun gets
+;   3  SynaBun is started by the desktop shell, as before, but with Exec of
+;      explorer.exe: a program of Windows that starts at once and hands the
+;      shortcut to the shell, which starts SynaBun in its own process. The
+;      installer waits for none of it and closes. Without a desktop shell (or
+;      when explorer.exe cannot start) SynaBun.exe itself is started by Exec,
+;      still not waited for, the window already gone
+; Nothing here waits: no ExecWait, no nsExec, no Sleep, no StdUtils.
+; The app's own update never comes here: it installs silently (--updated /S,
+; no finish page) and the install watchdog (desktop/src/updater/win-swap.mjs)
+; opens the new copy itself.
+; packaging/lib/desktop.mjs (finishPageMatches) refuses to build the installer
+; unless electron-builder still puts customFinishPage in place of its own.
 !ifndef BUILD_UNINSTALLER
-  !ifndef MUI_FINISHPAGE_SHOWREADME
-    !define MUI_FINISHPAGE_SHOWREADME ""
-    !define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED
-    !define MUI_FINISHPAGE_SHOWREADME_TEXT "Open the installation log (shows where the time went)"
-    !define MUI_FINISHPAGE_SHOWREADME_FUNCTION SynaOpenLogFile
-  !endif
   Function SynaOpenLogFile
     ${if} $SynaLog != ""
       ExecShell "open" "$SynaLog"
     ${endIf}
   FunctionEnd
 !endif
+
+; electron-builder inserts this where its finish page would be (installer only),
+; after it declared $launchLink: the function is compiled here, where that exists.
+!macro customFinishPage
+  !ifndef HIDE_RUN_AFTER_FINISH
+    Function SynaStartApp
+      HideWindow
+      System::Call 'kernel32::SetEnvironmentVariable(t "SYNABUN_STOP_ROOTS", p 0)i'
+      System::Call 'kernel32::SetEnvironmentVariable(t "SYNABUN_STOP_LOG", p 0)i'
+      System::Call 'kernel32::SetEnvironmentVariable(t "SYNABUN_STOP_PROBE", p 0)i'
+      System::Call 'kernel32::SetEnvironmentVariable(t "SYNABUN_STOP_BUDGET", p 0)i'
+      System::Call 'kernel32::SetEnvironmentVariable(t "SYNABUN_STOP_DETECT", p 0)i'
+      System::Call 'kernel32::SetEnvironmentVariable(t "SYNABUN_VERIFY_DIR", p 0)i'
+      System::Call 'kernel32::SetEnvironmentVariable(t "SYNABUN_VERIFY_LOG", p 0)i'
+      ; Started in the install folder, never in this installer's temporary folder (removed when it closes).
+      SetOutPath "$INSTDIR"
+      StrCpy $R0 "$launchLink"
+      ${if} $R0 == ""
+        StrCpy $R0 "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
+      ${endIf}
+      ; explorer.exe takes no arguments for the program: an install run with --updated starts SynaBun.exe itself.
+      ${ifNot} ${isUpdated}
+        System::Call 'user32::GetShellWindow()p.R1'
+        ${if} $R1 != 0
+        ${andIf} ${FileExists} "$WINDIR\explorer.exe"
+          ClearErrors
+          Exec '"$WINDIR\explorer.exe" "$R0"'
+          ${ifNot} ${errors}
+            Return
+          ${endIf}
+        ${endIf}
+        Exec '"$INSTDIR\${APP_EXECUTABLE_FILENAME}"'
+      ${else}
+        Exec '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" --updated'
+      ${endIf}
+    FunctionEnd
+
+    !define MUI_FINISHPAGE_RUN
+    !define MUI_FINISHPAGE_RUN_FUNCTION "SynaStartApp"
+  !endif
+  ; The finish page names the installation log, and can open it.
+  !define MUI_FINISHPAGE_SHOWREADME ""
+  !define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED
+  !define MUI_FINISHPAGE_SHOWREADME_TEXT "Open the installation log (shows where the time went)"
+  !define MUI_FINISHPAGE_SHOWREADME_FUNCTION SynaOpenLogFile
+  !insertmacro MUI_PAGE_FINISH
+!macroend

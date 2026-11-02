@@ -301,7 +301,12 @@ global bin before it (`lib/packaged-runtime.js` `packagedChildEnv`).
   show`, `ShowUninstDetails show`), each with the seconds since the start
   (`SynaPhase`), and the whole list is written to
   `%TEMP%\SynaBun-install-<timestamp>.log`, named and openable on the finish
-  page (`SynaOpenLog` / `SynaOpenLogFile`). Its finish page also opens SynaBun. A
+  page (`SynaOpenLog` / `SynaOpenLogFile`). Its finish page also opens SynaBun,
+  without waiting for it (`customFinishPage` → `SynaStartApp`: the window hides,
+  then `Exec` of `explorer.exe` hands the shortcut to the desktop shell;
+  electron-builder's own `StartApp` waited up to 30 s on the window thread for
+  `StdUtils::ExecShellAsUser`, and the installer showed "Not Responding" while
+  Windows checked the new `SynaBun.exe`; `finishPageMatches` guards it). A
   silent run (the app's own update: `--updated /S /D=<dir>`) shows nothing and
   asks nothing. An install over an existing one keeps that one's folder
   (electron-builder reads it from the registry): the one-click test builds before

@@ -1,3 +1,13 @@
+# SynaBun v.2.1.6
+
+A small Windows installer fix: finishing an install no longer looks stuck.
+
+## 🛠 Fixed
+
+- **Installer no longer shows "Not Responding" on finish** — On Windows, clicking Finish with "Run SynaBun" checked used to make the installer wait on its own window while Windows scanned the brand-new SynaBun.exe, so it could sit there looking frozen for 20-30 seconds before the app actually opened. The installer now closes right away and hands off to the desktop, so it never waits and never appears stuck.
+
+---
+
 # SynaBun v.2.1.5
 
 A fix-focused release: git status checks no longer pile up and spike CPU in repos with large ignored trees.
