@@ -19,6 +19,7 @@ import { OUTPUT_LIMITS, boundedText, jsonAnswer, prettyJsonFences, readableStruc
 import { renderReadableOutput, renderReadableBlock, cleanOutputBlocks, hydrateOutputControls, observeOutputBlocks, renderDiffView, restoreDiffViews } from './cdx-output.js';
 import { fileLinkTitle, fillFileLinkCopy, isInsideRoots, parseFileLinkTarget, readFileLink } from '../file-links.js';
 import { sanitizeHtmlString } from '../assistant/asst-sanitize.js';
+import { createTextCache } from '../text-cache.js';
 export { setCardExpanded } from './cdx-cards.js';
 
 // ── Shared context (set by cdx-tabs via setRenderContext) ──
@@ -105,8 +106,9 @@ export function esc(s) {
 // `<img onerror>` in a reply would run in SynaBun's origin with no click. Every
 // Markdown sink of the panel takes md()'s output, so it goes through the
 // allowlist sanitiser the Assistant, Claude and OpenCode panels use, here, once.
-const _mdCache = new Map();
-const _MD_CACHE_LIMIT = 512;
+const _mdCache = createTextCache();
+export const markdownCacheStats = () => _mdCache.stats();
+export const clearMarkdownCache = () => _mdCache.clear();
 let _mdRenderer = null;
 let _mdParser;
 function markdownFallback(text) {
@@ -130,7 +132,7 @@ export function md(text) {
     _mdRenderer = renderer;
     _mdParser = parser;
   }
-  const key = text || '';
+  const key = String(text || '');
   if (key.length > OUTPUT_LIMITS.input) return `<pre class="cxp-card-pre cxp-output-raw"><code>${esc(boundedText(key))}</code></pre>`;
   const cached = _mdCache.get(key);
   if (cached !== undefined) return cached;
@@ -144,10 +146,6 @@ export function md(text) {
   // A page with no DOM to sanitise in, or a sanitiser that fails, gets escaped text: never raw HTML.
   try { html = sanitizeHtmlString(html); }
   catch { html = markdownFallback(key); }
-  if (_mdCache.size >= _MD_CACHE_LIMIT) {
-    const firstKey = _mdCache.keys().next().value;
-    if (firstKey !== undefined) _mdCache.delete(firstKey);
-  }
   _mdCache.set(key, html);
   return html;
 }

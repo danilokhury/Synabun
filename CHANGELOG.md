@@ -1,3 +1,15 @@
+# SynaBun v.2.2.0
+
+2.2.0 is a reliability release: it fixes a slow memory buildup in long-running chat panels, makes closing a minimized OpenCode tab actually stop that conversation, and cleans up terminal processes left behind by a crash.
+
+## Fixed
+
+- **Long sessions no longer grow unbounded in memory** — chat transcripts stayed in memory after being closed or replaced, and streaming replies re-rendered the entire reply on every update instead of just the new part. Both are fixed, so the interface stays fast and light over many hours of use.
+- **Closing an OpenCode tab now actually stops the conversation** — clicking the × on a minimized OpenCode session only hid it before; the conversation kept running in the background. It now stops properly when you close it.
+- **Crashed terminal sessions no longer leave orphaned processes behind** — if a terminal session crashed or was force-stopped, its underlying shell process could keep running unseen. It is now always cleaned up.
+
+---
+
 # SynaBun v.2.1.7
 
 2.1.7 lets dispatched Assistant task workers ask you a question mid-task instead of guessing, and fixes a browser automation bug where one stuck tab could take down an entire MoreLogin browser session.

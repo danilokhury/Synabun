@@ -1,6 +1,6 @@
 {
   "name": "synabun",
-  "version": "2.1.7",
+  "version": "2.2.0",
   "mcpName": "io.github.danilokhury/synabun",
   "description": "Local-first persistent vector memory, MCP tooling, and multi-agent workflows for AI assistants",
   "license": "Apache-2.0",

@@ -19,6 +19,7 @@ import { evaluateFlow } from './flow.js';
 import { EV, OP, HOST_DEFAULTS } from './protocol.js';
 import { createEventLoopMonitor } from '../event-loop-monitor.js';
 import { withPathEnv } from '../augmented-path.js';
+import { killOwnedPty } from './lifetime.js';
 
 const IS_WIN = process.platform === 'win32';
 const IS_LINUX = process.platform === 'linux';
@@ -39,8 +40,14 @@ export function createPtyHostCore({ send, config = {}, pty: injectedPty = null }
   let pty = injectedPty;
   let ptyError = null;
   let shuttingDown = false;
+  let shutdownTimer = null;
 
   const emit = (msg) => { try { send(msg); } catch {} };
+  // Covers process.exit(), including host.js's bounded shutdown, and the
+  // in-process transport. This must be synchronous: exit cannot await PTYs.
+  const onOwnerExit = () => {
+    for (const s of sessions.values()) if (!s.exited) killOwnedPty(s.proc.pid);
+  };
 
   // ── Startup ──
   async function init() {
@@ -65,6 +72,10 @@ export function createPtyHostCore({ send, config = {}, pty: injectedPty = null }
   // ── Spawn ──
   function spawnSession(spec) {
     const { id } = spec;
+    if (shuttingDown) {
+      emit({ t: EV.SPAWN_ERROR, id, message: 'Terminal host is shutting down' });
+      return;
+    }
     if (!id || sessions.has(id)) {
       emit({ t: EV.SPAWN_ERROR, id, message: 'Duplicate or missing session id' });
       return;
@@ -133,6 +144,7 @@ export function createPtyHostCore({ send, config = {}, pty: injectedPty = null }
       graceTimer: null,
       exited: false,
     };
+    if (!sessions.size) process.once('exit', onOwnerExit);
     sessions.set(id, s);
     counters.spawns++;
 
@@ -490,6 +502,11 @@ export function createPtyHostCore({ send, config = {}, pty: injectedPty = null }
     for (const f of s.tempFiles.splice(0)) unlink(f).catch(() => {});
     try { s.model.dispose(); } catch {}
     sessions.delete(s.id);
+    if (!sessions.size) {
+      process.removeListener('exit', onOwnerExit);
+      clearTimeout(shutdownTimer);
+      shutdownTimer = null;
+    }
   }
 
   function killSession(s, signal) {
@@ -571,7 +588,11 @@ export function createPtyHostCore({ send, config = {}, pty: injectedPty = null }
     return out;
   }
 
-  function shutdownAll() {
+  function shutdownAll({ force = false } = {}) {
+    // The server's synchronous exit handler kills itself before later exit
+    // listeners can run. Its killNow() path must reap the PTYs right here.
+    if (force) onOwnerExit();
+    if (shuttingDown) return;
     shuttingDown = true;
     for (const s of sessions.values()) {
       s.draining = true;
@@ -580,6 +601,12 @@ export function createPtyHostCore({ send, config = {}, pty: injectedPty = null }
     }
     for (const s of sessions.values()) {
       for (const c of s.clients) { try { c.ws.close(1001, 'terminal host shutting down'); } catch {} }
+    }
+    // HUP can be ignored, or arrive while the macOS helper is attaching.
+    // Bound the grace period in both transports, even if the owner stays up.
+    if (sessions.size) {
+      shutdownTimer = setTimeout(onOwnerExit, 100);
+      shutdownTimer.unref?.();
     }
   }
 

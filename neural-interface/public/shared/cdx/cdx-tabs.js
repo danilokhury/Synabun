@@ -16,8 +16,8 @@ import { accountName, accountSummary, accountSwitchPlan, accountText, serverAcco
 import { mountAccountMenu } from '../account-menu.js';
 import '../account-i18n.js';
 import { restoreMcpAppCards, teardownMcpApps, retireMcpAppNode, stripMcpAppRuntime } from './cdx-mcp-app-host.js';
-import { renderTurnDiff, completeTurnOutputs } from './cdx-render.js';
-import { hydrateOutputControls } from './cdx-output.js';
+import { renderTurnDiff, completeTurnOutputs, clearMarkdownCache } from './cdx-render.js';
+import { hydrateOutputControls, disposeOutputBlocks } from './cdx-output.js';
 import { sanitizeStoredHtml } from '../assistant/asst-sanitize.js';
 import {
   beginPlanTurn, capturePlanItem, finishPlanTurn, getPlanMarkdown, syncPlanMirrors, recordPlanTurn,
@@ -2655,6 +2655,9 @@ function disposeDiscardedTab(tab) {
     clearTimeout(tab.snapshotTimer);
     tab.snapshotTimer = null;
   }
+  tab.scrollController?.destroy();
+  tab.scrollController = null;
+  disposeOutputBlocks(tab.messagesEl);
   tab.messagesEl?.remove();
   tab.pillEl?.remove();
 }
@@ -2997,6 +3000,8 @@ export function closeTab(idx, { detachAutomation = false } = {}) {
   tab.closed = true;
   tab.titleRequestController?.abort();
   tab.titleRequestController = null;
+  tab.authView?.dispose();
+  tab.terminalAuthView?.dispose();
   if (tab.titleReassertTimer) clearTimeout(tab.titleReassertTimer);
   flushThreadSnapshotSave(tab);
   withTab(tab, () => {
@@ -3019,11 +3024,16 @@ export function closeTab(idx, { detachAutomation = false } = {}) {
   }
   tab.scrollController?.destroy();
   tab.scrollController = null;
+  disposeOutputBlocks(tab.messagesEl);
   if (tab.messagesEl) retireMcpAppNode(tab.messagesEl, () => tab.messagesEl.remove());
   tab.pillEl?.remove();
   _tabs.splice(idx, 1);
   if (!_tabs.length) {
     _activeTabIdx = -1;
+    // The module binding otherwise keeps the last closed transcript, its item
+    // and request maps, and every closure on their DOM alive indefinitely.
+    bindTabState(null);
+    clearMarkdownCache();
     saveTabs();
     renderPills();
     _setVisible(false);

@@ -10,6 +10,7 @@ import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { EV, OP, UPGRADE_HEADER_WHITELIST } from './protocol.js';
 import { createPtyHostCore } from './core.js';
+import { killOwnedPty } from './lifetime.js';
 
 const HOST_PATH = fileURLToPath(new URL('./host.js', import.meta.url));
 const BACKOFF_MS = [0, 1000, 2000, 4000, 8000, 16000, 30000];
@@ -39,6 +40,7 @@ export function createPtyHostManager({
   const handlers = new Map();     // id → { onSpawned, onTap, onResized, onClients, onExit }
   const spawnWaiters = new Map(); // id → waiter
   const preparing = new Map();   // id → operations queued while PATH is read
+  const ptyPids = new Map();     // id → live PTY PID owned by the current host
   const requests = new Map();     // reqId → { resolve, reject, timer }
   let reqSeq = 0;
   let child = null;
@@ -76,6 +78,7 @@ export function createPtyHostManager({
         releaseHeldSockets();
         break;
       case EV.SPAWNED:
+        ptyPids.set(m.id, m.pid);
         try { handlers.get(m.id)?.onSpawned?.(m); } catch (err) { log.warn?.('[pty-host] onSpawned', err?.message); }
         settleSpawn(m.id, null, m);
         break;
@@ -97,6 +100,7 @@ export function createPtyHostManager({
         try { handlers.get(m.id)?.onClients?.(m); } catch {}
         break;
       case EV.EXIT: {
+        ptyPids.delete(m.id);
         const h = handlers.get(m.id);
         handlers.delete(m.id);
         spawnWaiters.delete(m.id);
@@ -150,6 +154,11 @@ export function createPtyHostManager({
   }
 
   function onChildExit(code, signal) {
+    // A SIGKILL cannot run host.js's disconnect/shutdown handlers. In
+    // particular, a macOS helper still attaching its terminal may survive
+    // closing the PTY master. Reap only this host's still-owned children.
+    for (const pid of ptyPids.values()) killOwnedPty(pid);
+    ptyPids.clear();
     child = null;
     ready = false;
     hostPid = null;
@@ -358,8 +367,10 @@ export function createPtyHostManager({
     for (const id of preparing.keys()) settleSpawn(id, new Error('Terminal host is shutting down'));
     preparing.clear();
     if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
+    for (const pid of ptyPids.values()) killOwnedPty(pid);
+    ptyPids.clear();
     try { child?.kill('SIGTERM'); } catch {}
-    try { core?.shutdownAll(); } catch {}
+    try { core?.shutdownAll({ force: true }); } catch {}
   }
 
   return {

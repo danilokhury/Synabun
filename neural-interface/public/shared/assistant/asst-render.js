@@ -57,6 +57,7 @@ import { activityScene, compactActivity, isLivePhase, runChip, sceneOfClass, sce
 import { STAGE_TIMING, createWorkerStage } from './asst-run-stage.js';
 import { formatRunTokens } from './asst-usage.js';
 import { sanitizeHtmlString, sanitizeInto } from './asst-sanitize.js';
+import { renderStreamingMarkdown } from '../streaming-markdown.js';
 import { automationView } from './asst-automation.js';
 import { guessFollowups, splitFollowups } from './asst-followups.js';
 import { createFollowupsCard } from './asst-followups-card.js';
@@ -524,6 +525,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
   // there, above the "Working…" row, until it is answered; rows appended meanwhile go above it.
   const askTail = createAskTail($msgs, { anchor: () => (working?.parentNode === $msgs ? working : null) });
   let followTail = true;
+  let scrollFrame = 0;
   let emptyEl = null;
   let hero = null; // the empty state's character: { rig, el, box, parked, leaving, held, dock, egg, target }
   const mcpWarned = new Set();
@@ -639,7 +641,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
 
   function scrollEnd(force = false) {
     if (!force && !followTail) return;
-    requestAnimationFrame(() => { $msgs.scrollTop = $msgs.scrollHeight; });
+    if (scrollFrame) return;
+    scrollFrame = requestAnimationFrame(() => { scrollFrame = 0; $msgs.scrollTop = $msgs.scrollHeight; });
   }
 
   function root() { return { container: $msgs, stream: null, key: null, msgId: null, lastAt: 0 }; }
@@ -950,7 +953,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
    */
   function paintMessage(row, body, text, { streaming = false, scope = rootScope } = {}) {
     const split = splitFollowups(text, { streaming });
-    renderMarkdownInto(body, split.body);
+    renderStreamingMarkdown(body, split.body, renderMarkdownInto, { streaming });
     if (!streaming && split.block && scope === rootScope) attachFollowups(row, split.block);
     return split;
   }
@@ -4073,6 +4076,10 @@ export function createRenderer(transcriptEl, hooks = {}) {
   }
 
   function clear() {
+    if (scrollFrame) { cancelAnimationFrame(scrollFrame); scrollFrame = 0; }
+    clearTimeout(recutTimer);
+    recutTimer = 0;
+    toRecut.clear();
     for (const scope of scopes.values()) { if (scope.stream?.mdTimer) clearTimeout(scope.stream.mdTimer); if (scope.stream?.thinkTimer) clearTimeout(scope.stream.thinkTimer); }
     if (rootScope.stream?.mdTimer) clearTimeout(rootScope.stream.mdTimer);
     if (rootScope.stream?.thinkTimer) clearTimeout(rootScope.stream.thinkTimer);
@@ -4115,7 +4122,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
   return {
     el: $msgs,
     clear,
-    destroy: () => { clear(); limitDock.destroy(); },
+    destroy: () => { clear(); stageResizes?.disconnect(); limitDock.destroy(); },
     appendUser,
     appendAssistantMarkdown,
     appendStatus,

@@ -6,7 +6,7 @@ const bound = new WeakSet();
 const diffStates = new WeakMap();
 const pending = new WeakMap();
 const cleaned = new WeakMap();
-const watched = new WeakSet();
+const watched = new WeakMap(); // transcript -> teardown (including queued mutation work)
 const observer = typeof IntersectionObserver === 'function' ? new IntersectionObserver(entries => {
   for (const entry of entries) if (entry.isIntersecting) { pending.get(entry.target)?.(); observer.unobserve(entry.target); pending.delete(entry.target); }
 }, { rootMargin: '200px' }) : null;
@@ -23,6 +23,7 @@ const measurements = new WeakMap();
 const measurementQueue = new Set();
 let measurementFrame = false, capId = 0;
 function queueMeasurement(el) {
+  if (!measurements.has(el)) return;
   measurementQueue.add(el);
   if (measurementFrame) return;
   measurementFrame = true;
@@ -50,6 +51,7 @@ function measureChanges(el, update) {
 }
 function releaseMeasurements(root) {
   for (const el of [root, ...(root.querySelectorAll?.('*') || [])]) {
+    observer?.unobserve(el); pending.delete(el);
     sizeObserver?.unobserve(el); contentObservers.get(el)?.disconnect();
     contentObservers.delete(el); measurements.delete(el); measurementQueue.delete(el);
   }
@@ -249,11 +251,13 @@ export function cleanOutputBlocks(container) {
 // Covers generic/legacy cards and request builders which assign pre.textContent
 // directly. Observe each transcript once; our own writes settle after one pass.
 export function observeOutputBlocks(container) {
-  if (!container || watched.has(container) || typeof MutationObserver !== 'function') return;
-  watched.add(container);
+  if (!container || typeof MutationObserver !== 'function') return;
+  if (watched.has(container)) return watched.get(container);
   let queued = false;
+  let disposed = false;
   const dirty = new Set();
   const watcher = new MutationObserver(records => {
+    if (disposed) return;
     for (const record of records) {
       for (const removed of record.removedNodes || []) if (removed.nodeType === 1 && !removed.isConnected) releaseMeasurements(removed);
       const target = record.target.nodeType === 1 ? record.target : record.target.parentElement;
@@ -265,6 +269,7 @@ export function observeOutputBlocks(container) {
     queued = true;
     queueMicrotask(() => {
       queued = false;
+      if (disposed) return;
       for (const root of dirty) {
         if (root.matches?.('pre, .cxp-card-pre') && !root.closest('.cxp-readable, .cxp-output-source, .cxp-diff-view') && !root.querySelector('.cxp-readable')) {
           const code = root.querySelector('code');
@@ -276,6 +281,24 @@ export function observeOutputBlocks(container) {
     });
   });
   watcher.observe(container, { childList: true, characterData: true, subtree: true });
+  const dispose = () => {
+    disposed = true;
+    watcher.disconnect();
+    dirty.clear();
+    watched.delete(container);
+    releaseMeasurements(container);
+  };
+  watched.set(container, dispose);
+  return dispose;
+}
+
+// Removing a whole transcript does not produce a mutation *inside* it. Both
+// global observers must release its outputs and lazy diffs explicitly on close.
+export function disposeOutputBlocks(container) {
+  if (!container) return;
+  const dispose = watched.get(container);
+  if (dispose) dispose();
+  else releaseMeasurements(container);
 }
 
 function diffRows(file, target, count) {

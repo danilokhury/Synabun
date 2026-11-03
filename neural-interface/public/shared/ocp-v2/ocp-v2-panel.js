@@ -2281,7 +2281,7 @@ function createTabPill(sessionId) {
   });
   pill.querySelector('.term-minimized-pill-close')?.addEventListener('click', (event) => {
     event.stopPropagation();
-    closeTabByUser(sessionId, 'pill close');
+    closeTabByUser(sessionId, 'pill close', { deleteBeforeClose: true });
   });
   tray.appendChild(pill);
   return pill;
@@ -2291,10 +2291,16 @@ function createTabPill(sessionId) {
 // continued the terminal automation manually; backend cleanup is best-effort.
 // Asked first when prompts are still waiting in that session; declined: the
 // tab stays, nothing is deleted, and this resolves false.
-async function closeTabByUser(sessionId, context) {
+async function closeTabByUser(sessionId, context, { deleteBeforeClose = false } = {}) {
   if (!(await mayCloseTab(sessionId))) return false;
-  const wasRunning = sessionId === getState().sessionId && !!getState().running;
-  closeSessionBackend(sessionId, { wasRunning, context }).catch(() => {});
+  // Only the tray X waits for deletion, including a turn in a background tab.
+  // Worker tabs retain their existing stop/dismiss and transcript ownership.
+  const deletePillSession = deleteBeforeClose && !_automationRunIds.has(sessionId);
+  const wasRunning = sessionId === getState().sessionId
+    ? !!getState().running
+    : deletePillSession && _sessionBusy.get(sessionId) === true;
+  const backendClose = closeSessionBackend(sessionId, { wasRunning, context }).catch(() => {});
+  if (deletePillSession) await backendClose;
   try { await handlePillClose(sessionId, { byUser: true }); }
   catch (err) { console.warn(`[ocp-v2-panel] local ${context} failed`, err); }
   return true;

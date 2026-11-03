@@ -129,24 +129,34 @@ export function createStickyScrollController(container, options = {}) {
 
   const ResizeObserverCtor = view.ResizeObserver || globalThis.ResizeObserver;
   const MutationObserverCtor = view.MutationObserver || globalThis.MutationObserver;
-  const observedChildren = new WeakSet();
+  // ResizeObserver retains its targets, even after they leave the transcript.
+  // Keep only current rows: OpenCode replaces a row on every streaming update.
+  const observedChildren = new Set();
   const resizeObserver = ResizeObserverCtor
     ? new ResizeObserverCtor(() => scrollToBottom())
     : null;
   const observeChildren = () => {
     if (!resizeObserver) return;
-    resizeObserver.observe(container);
-    for (const child of container.children) {
+    const current = new Set(container.children);
+    for (const child of observedChildren) {
+      if (current.has(child)) continue;
+      resizeObserver.unobserve(child);
+      observedChildren.delete(child);
+    }
+    for (const child of current) {
       if (observedChildren.has(child)) continue;
       observedChildren.add(child);
       resizeObserver.observe(child);
     }
   };
+  resizeObserver?.observe(container);
   observeChildren();
 
   const mutationObserver = MutationObserverCtor
-    ? new MutationObserverCtor(() => {
-      observeChildren();
+    ? new MutationObserverCtor((records) => {
+      if (disposed) return;
+      // Nested text/class changes need scrolling, but cannot change row ownership.
+      if (records.some(record => record.type === 'childList' && record.target === container)) observeChildren();
       scrollToBottom();
     })
     : null;
@@ -173,6 +183,7 @@ export function createStickyScrollController(container, options = {}) {
       disposed = true;
       cancelScheduled();
       resizeObserver?.disconnect();
+      observedChildren.clear();
       mutationObserver?.disconnect();
       container.removeEventListener('scroll', onScroll);
       container.removeEventListener('wheel', onWheel);
