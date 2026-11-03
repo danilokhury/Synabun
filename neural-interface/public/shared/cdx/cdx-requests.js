@@ -417,7 +417,7 @@ export function renderUserInputRequest(requestId, params, protocol = {}) {
           <span class="cxp-ask-option-desc">${esc(optionDesc)}</span>
         `;
         const retainedValue = answers[answerKey]?.answers?.[0];
-        if (!isOtherOption && retainedValue === optionLabel) btn.classList.add('selected');
+        if (!isOtherOption && (answers[answerKey]?.answers || []).includes(optionLabel)) btn.classList.add('selected');
         btn.addEventListener('click', async () => {
           if (isChangelogAsk && /edit first/i.test(optionLabel)) {
             const allButtons = Array.from(optionsEl.querySelectorAll('.cxp-ask-option'));
@@ -433,6 +433,16 @@ export function renderUserInputRequest(requestId, params, protocol = {}) {
             });
             if (!opened) _ctx.restoreChangelogButtons(allButtons);
             return;
+          }
+          if (question.multiSelect && !isOtherOption) {
+            otherWrap.hidden = true;
+            const selected = new Set(answers[answerKey]?.answers || []);
+            if (selected.has(optionLabel)) selected.delete(optionLabel); else selected.add(optionLabel);
+            const labels = new Set(explicitOptions.map((o) => typeof o === 'string' ? o : o.label));
+            const values = [...selected].filter((label) => labels.has(label));
+            if (values.length) answers[answerKey] = { answers: values }; else delete answers[answerKey];
+            optionsEl.querySelectorAll('.cxp-ask-option').forEach((node) => node.classList.toggle('selected', values.includes(node.querySelector('.cxp-ask-option-label')?.textContent)));
+            persistEditingDraft(); syncSubmit(); return;
           }
           optionsEl.querySelectorAll('.cxp-ask-option').forEach((node) => node.classList.remove('selected'));
           btn.classList.add('selected');

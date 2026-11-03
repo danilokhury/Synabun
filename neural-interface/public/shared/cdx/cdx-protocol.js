@@ -208,6 +208,7 @@ export function normalizeSynaBunChoiceElicitation(params = {}) {
       if (options.length < 2) return null;
       return {
         id,
+        multiSelect: question.multiSelect === true,
         header: String(question?.header || id),
         question: String(question?.question || ''),
         options,
@@ -226,16 +227,16 @@ export function buildSynaBunChoiceContent(questions = [], answers = {}) {
   const content = {};
   for (const question of questions) {
     const id = question?.id;
-    const answer = id ? answers[id]?.answers?.[0] : '';
-    if (!id || !answer) continue;
-    const option = (question.options || []).find((candidate) => candidate.label === answer);
-    if (option) {
-      content[id] = option.value || option.label;
-      continue;
-    }
-    const meta = question._synabunMcp || {};
-    content[id] = meta.otherValue || SYNABUN_OTHER_VALUE;
-    content[meta.otherField || `${id}__other`] = answer;
+    const selected = id ? answers[id]?.answers || [] : [];
+    if (!id || !selected.length) continue;
+    const values = selected.map((answer) => {
+      const option = (question.options || []).find((candidate) => candidate.label === answer);
+      if (option) return option.value || option.label;
+      const meta = question._synabunMcp || {};
+      content[meta.otherField || `${id}__other`] = answer;
+      return meta.otherValue || SYNABUN_OTHER_VALUE;
+    });
+    content[id] = question.multiSelect ? values : values[0];
   }
   return content;
 }

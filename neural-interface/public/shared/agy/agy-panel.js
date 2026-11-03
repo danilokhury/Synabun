@@ -1,3 +1,4 @@
+import { answerWorkerQuestion, syncWorkerQuestions } from '../worker-questions.js';
 // ═══════════════════════════════════════════
 // SynaBun — Antigravity side panel
 // ═══════════════════════════════════════════
@@ -694,7 +695,8 @@ async function answerElicitation(tab, requestId, action, content = undefined) {
   const entry = rt.elicitations.get(requestId);
   if (!entry || entry.state !== 'open') return;
   try {
-    await client().request('elicitation:answer', { requestId, action, ...(content ? { content } : {}) });
+    if (tab.automationRunId) await answerWorkerQuestion(tab.automationRunId, requestId, { behavior: action === 'accept' ? 'allow' : 'deny', action, content });
+    else await client().request('elicitation:answer', { requestId, action, ...(content ? { content } : {}) });
     entry.state = action === 'accept' ? 'answered' : action === 'decline' ? 'declined' : 'cancelled';
     delete rt.elicitDrafts[requestId];
   } catch (error) {
@@ -2481,6 +2483,12 @@ export async function attachAntigravityAutomation(run, { focus = !!run?.focus, i
   tab.automationOwnerId = nativeLoopWindowId;
   tab.automationAwaits = runAwaitsAnswer(run);
   tab.running = running && run.turnState !== 'idle';
+  const rt = runtimeOf(tab);
+  syncWorkerQuestions(tab, run, {
+    open: (id, pending) => rt.elicitations.set(id, { ...pending.input, ...(pending.questions?.length ? { message: pending.questions.map((q) => q.header || q.question).join(' · ') } : {}), requestId: id, state: 'open', errors: {} }),
+    close: (id) => { rt.elicitations.delete(id); delete rt.elicitDrafts[id]; },
+  });
+  refreshNeedsYou(tab);
   try {
     trackWorkerEnd(run, {
       apply: (view) => {

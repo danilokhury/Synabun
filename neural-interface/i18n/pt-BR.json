@@ -1,4 +1,8 @@
 {
+  "workerQuestion": {
+    "deliveryFailed": "Não foi possível enviar sua resposta. Tente novamente.",
+    "resolved": "Resolvido"
+  },
   "workerRestart": {
     "suspended": "Suspensa — esta execução será retomada assim que o SynaBun voltar.",
     "resumed": "Retomada após a reinicialização do servidor — a execução continua aqui."
@@ -768,7 +772,8 @@
       "scanning": "Verificando status do git…",
       "timedOut": "O status do git excedeu o tempo limite. Tente Atualizar.",
       "scanFailed": "Não foi possível verificar o status do git. Tente Atualizar.",
-      "label": "Branch {branch}: {count} alterados"
+      "label": "Branch {branch}: {count} alterados",
+      "withState": "{label} · {state}"
     },
     "count": {
       "items": {

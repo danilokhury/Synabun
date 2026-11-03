@@ -54,6 +54,7 @@ function cleanDescriptor(record) {
     // existing consumers (router, sidepanels, schedules) are unaffected.
     runMode: record.runMode || 'loop',
     turnState: record.turnState || null,
+    pending: record.status === 'running' ? (record.pendingRequests || []) : [],
     // What the last turn's result said (task mode: done, blocked or needs_input; the dispatcher's
     // lastResult.status): an idle warm worker whose turn ended asking waits on the user.
     outcome: record.outcome || null,
@@ -185,6 +186,14 @@ export class NativeLoopRuntime {
     return this._emit('sidepanel:run-updated', record, { reason: 'turn-state' });
   }
 
+  /** A live worker's requests, durable for a late attach or page reload. Resolvers stay in the dispatcher. */
+  setPendingRequests(runId, requests) {
+    const record = this.records.get(runId);
+    if (!record) return null;
+    record.pendingRequests = structuredClone(requests || []);
+    return this._emit('sidepanel:run-updated', record, { reason: 'pending-requests' });
+  }
+
   /**
    * Task-mode helper: records what the wrapper's last turn reported ('done' |
    * 'blocked' | 'needs_input', the dispatcher's lastResult.status) and
@@ -225,6 +234,7 @@ export class NativeLoopRuntime {
         record.suspendedAt = record.suspendedAt || iso(this.now());
         record.suspendReason = record.suspendReason || 'server_restart';
         record.turnState = 'suspended';
+        record.pendingRequests = [];
         record.stopping = false;
         this.records.set(record.runId, record);
         this._hold(record);
@@ -315,7 +325,8 @@ export class NativeLoopRuntime {
   }
 
   _writeState(runId, state) {
-    writeJsonAtomic(this._statePath(runId), toolListRecord(state, this.toolListOptions()));
+    const { permissionBroker: _broker, ...stored } = state;
+    writeJsonAtomic(this._statePath(runId), toolListRecord(stored, this.toolListOptions()));
   }
 
   _writeTerminalState(record, patch) {
@@ -551,6 +562,7 @@ export class NativeLoopRuntime {
               runId,
               emit: (event) => this._emitProviderEvent(record, event),
               setTurnState: (turnState) => this.setTurnState(runId, turnState),
+              setPendingRequests: (requests) => this.setPendingRequests(runId, requests),
               setOutcome: (outcome) => this.setOutcome(runId, outcome),
               readState: () => this._readState(runId),
             })
@@ -838,6 +850,7 @@ export class NativeLoopRuntime {
     record.startupAbortController = null;
     record.buildPrompt = null;
     record.wrapAdapter = null;
+    record.pendingRequests = [];
     if (turnState === 'suspended') record.turnState = 'suspended';
     else if (record.turnState && record.turnState !== 'terminal') record.turnState = 'terminal';
   }

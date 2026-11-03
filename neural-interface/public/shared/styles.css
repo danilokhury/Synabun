@@ -16712,6 +16712,28 @@
     flex-shrink: 0;
   }
   .fe-branch-btn-badge:empty { display: none; }
+  /* Scan state: a dot in the corner, out of the flow, so no state moves the row (words: tooltip, label, popover). */
+  .fe-branch-btn-state {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: transparent;
+    pointer-events: none;
+  }
+  .fe-branch-btn[data-scan-state="scanning"] .fe-branch-btn-state { background: var(--t-secondary); }
+  .fe-branch-btn[data-scan-state="timed-out"] .fe-branch-btn-state { background: var(--fe-git-modified); }
+  .fe-branch-btn[data-scan-state="failed"] .fe-branch-btn-state { background: var(--fe-git-deleted); }
+  .fe-branch-btn[data-scan-state="scanning"] > svg { opacity: 0.5; }
+  .fe-branch-btn--placeholder .fe-branch-btn-name { color: var(--t-secondary); }
+  @media (prefers-reduced-motion: no-preference) {
+    .fe-branch-btn[data-scan-state="scanning"] .fe-branch-btn-state { animation: fe-git-scan-pulse 1.2s ease-in-out infinite; }
+  }
+  @keyframes fe-git-scan-pulse { 50% { opacity: 0.3; } }
+  /* Read out by screen readers only; takes no room in the row. */
+  .fe-git-scan-live { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
   /* ── Git popover ── */
   .fe-git-popover {
@@ -16866,6 +16888,15 @@
     line-height: 1.5;
   }
   .fe-git-summary:empty { display: none; }
+  .fe-git-scan-state {
+    font-size: 10.5px;
+    font-family: var(--ff-mono);
+    color: var(--t-secondary);
+    line-height: 1.5;
+  }
+  .fe-git-scan-state[hidden] { display: none; }
+  .fe-git-scan-state[data-tone="timed-out"] { color: var(--fe-git-modified); }
+  .fe-git-scan-state[data-tone="failed"] { color: var(--fe-git-deleted); }
   .fe-git-summary .gs-m { color: var(--fe-git-modified); }
   .fe-git-summary .gs-a { color: var(--fe-git-new); }
   .fe-git-summary .gs-d { color: var(--fe-git-deleted); }
@@ -29493,6 +29524,3 @@ body .styleguide-panel {
 
 .ocpv2-tools-picker .tool-list-picker .cc-dropdown-menu { background: rgba(22,22,26,0.98); }
 
-/* Git scan feedback stays inline; file browsing remains available. */
-.fe-git-scan-hint { color: var(--t-secondary); font-size: var(--fs-xs); white-space: normal; }
-.fe-branch-btn--scanning > svg { opacity: 0.5; }

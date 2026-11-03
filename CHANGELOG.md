@@ -1,3 +1,17 @@
+# SynaBun v.2.1.7
+
+2.1.7 lets dispatched Assistant task workers ask you a question mid-task instead of guessing, and fixes a browser automation bug where one stuck tab could take down an entire MoreLogin browser session.
+
+## ✨ New
+
+- **Dispatched workers can ask you a question** — When an Assistant task worker hits a decision only you can make, it can now stop and ask right in that task's live sidepanel tab, across every provider (Claude Code, Codex, OpenCode, Antigravity) and every permission level. Answer from the panel, or by replying to the Assistant's message; the worker picks up and continues from there. Supports multiple-choice questions with more than one answer selected at once.
+
+## 🛠 Fixed
+
+- **A stuck browser tab no longer breaks the whole automation session** — On some automated browser sessions, a single tab's background service worker could get stuck, and every subsequent browser action in that session (navigating, taking a snapshot or screenshot, reading the console, running a script, reloading) would fail with a network-protection error until the server was restarted. SynaBun now detects and recovers from this automatically, without needing a restart, and a stuck tab no longer affects the rest of the session.
+
+---
+
 # SynaBun v.2.1.6
 
 A small Windows installer fix: finishing an install no longer looks stuck.

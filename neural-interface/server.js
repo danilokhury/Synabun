@@ -207,7 +207,7 @@ import { createOpenCodeActivityRelay } from './lib/opencode-worker-activity.js';
 import { browserServePortDenial } from './lib/browser-tool-policy.js';
 import { createNativeServeBoundary, nativeServeCapability } from './lib/opencode-native-boundary.js';
 const nativeServeBoundary = createNativeServeBoundary();
-import { setBrowserNetworkRule, usesNativeBrowserNetworkGuard, disposeBrowserNetworkGuard, MONEY_PATTERNS, SERVE_PORT_PATTERNS } from './lib/browser-network-guard.js';
+import { setBrowserNetworkRule, usesNativeBrowserNetworkGuard, disposeBrowserNetworkGuard, recoverBrowserNetworkGuard, MONEY_PATTERNS, SERVE_PORT_PATTERNS } from './lib/browser-network-guard.js';
 import { browserPolicyRoots } from './lib/browser-policy-roots.js';
 import {
   mergeCodexModelContextCapabilities,
@@ -27530,6 +27530,7 @@ _nativeLoopRuntime = new NativeLoopRuntime({
         state.model,
         {
           SYNABUN_DESKTOP_GRANT: typeof state.desktopGrantProvider === 'function' ? state.desktopGrantProvider() : null,
+          SYNABUN_RUN_MODE: state.runMode === 'task' ? 'task' : null,
         },
         // Assistant task runs: the browser policy plugin (loops and schedules unchanged) with the registered code
         // projects its test runners may run in (the sandboxed serve cannot read the registry), and the run's confinement
@@ -33885,30 +33886,41 @@ app.use('/api/browser', (req, res, next) => { res.setHeader('X-Synabun-Browser-D
 // action, a new tab, CDP). Closing it, or listing its tabs, stays allowed.
 app.use('/api/browser/sessions/:id', (req, res, next) => {
   const protectedContext = browserSessions.get(req.params.id)?.context;
-  const unsafe = protectedContext?.__browserNetworkGuardError;
-  if (unsafe && req.method !== 'DELETE' && !(req.method === 'GET' && req.path === '/tabs')) {
-    return res.status(503).json({ error: `Browser network protection unavailable: ${unsafe}`, networkGuard: true });
+  const exempt = req.method === 'DELETE' || (req.method === 'GET' && req.path === '/tabs');
+  const gate = () => {
+    const unsafe = protectedContext?.__browserNetworkGuardError;
+    if (unsafe && !exempt) {
+      return res.status(503).json({ error: `Browser network protection unavailable: ${unsafe}`, networkGuard: true });
+    }
+    // Also cancel requests already waiting/probing when the protection disappears.
+    // Cancellation prevents their next page action; an action that already began
+    // retains the existing truthful "outcome uncertain" response semantics.
+    if (req.method !== 'DELETE' && protectedContext?.on) {
+      const cancel = reason => req.browserRequest?.cancelForProtection?.(reason);
+      protectedContext.on('synabun-network-guard-fault', cancel);
+      const release = () => protectedContext.removeListener('synabun-network-guard-fault', cancel);
+      res.once('finish', release);
+      res.once('close', release);
+    }
+    if (!req.get('X-Synabun-Terminal') || exempt) return next();
+    const session = browserSessions.get(req.params.id);
+    if (!session) return next();
+    const cfg = loadBrowserConfig();
+    if (cfg.connectMode !== 'morelogin' || sessionServesMoreLoginDefault(session, cfg)) return next();
+    const envId = moreLoginDefaultEnvId(cfg);
+    res.status(409).json({
+      error: `Session ${req.params.id} is not the default browser (${session._profileMode || 'unknown'} mode${session._mlEnvId ? `, MoreLogin env ${session._mlEnvId}` : ''}; the default is MoreLogin${envId ? ` env ${envId}` : ''}), so SynaBun's browser tools do not act on it. Leave sessionId out: browser_navigate opens the page in the default browser.`,
+      code: 'NOT_DEFAULT_BROWSER',
+    });
+  };
+  // A faulted network guard re-arms on demand: a fresh protected attachment replaces
+  // the broken one before this request runs, so a session never needs a server
+  // restart to recover. Until a re-arm succeeds every action stays refused.
+  if (protectedContext?.__browserNetworkGuardError && !exempt) {
+    recoverBrowserNetworkGuard(protectedContext).then(gate).catch(next);
+    return;
   }
-  // Also cancel requests already waiting/probing when the protection disappears.
-  // Cancellation prevents their next page action; an action that already began
-  // retains the existing truthful "outcome uncertain" response semantics.
-  if (req.method !== 'DELETE' && protectedContext?.on) {
-    const cancel = reason => req.browserRequest?.cancelForProtection?.(reason);
-    protectedContext.on('synabun-network-guard-fault', cancel);
-    const release = () => protectedContext.removeListener('synabun-network-guard-fault', cancel);
-    res.once('finish', release);
-    res.once('close', release);
-  }
-  if (!req.get('X-Synabun-Terminal') || req.method === 'DELETE' || (req.method === 'GET' && req.path === '/tabs')) return next();
-  const session = browserSessions.get(req.params.id);
-  if (!session) return next();
-  const cfg = loadBrowserConfig();
-  if (cfg.connectMode !== 'morelogin' || sessionServesMoreLoginDefault(session, cfg)) return next();
-  const envId = moreLoginDefaultEnvId(cfg);
-  res.status(409).json({
-    error: `Session ${req.params.id} is not the default browser (${session._profileMode || 'unknown'} mode${session._mlEnvId ? `, MoreLogin env ${session._mlEnvId}` : ''}; the default is MoreLogin${envId ? ` env ${envId}` : ''}), so SynaBun's browser tools do not act on it. Leave sessionId out: browser_navigate opens the page in the default browser.`,
-    code: 'NOT_DEFAULT_BROWSER',
-  });
+  return gate();
 });
 // Read-only semantic context for the browser judgments (the judgments themselves run in the MCP layer).
 app.use('/api/browser', createBrowserAssistRouter({ browserSessions, getTargetPage, normalizeSelector }));

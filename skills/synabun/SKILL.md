@@ -25,7 +25,7 @@ You are the SynaBun assistant hub. The user has invoked `/synabun`.
   - **OpenCode:** the native `question` tool. **Codex:** `request_user_input`, or SynaBun `choice` where that is not offered (Default mode). **A runtime with only SynaBun's tools:** SynaBun `choice`.
   - Whenever one of these tools is available, never write the choices as plain text: a side panel shows text as static markdown, not as a card.
   - **No question tool at all:** ask a short plain-text multiple-choice question and wait for the reply.
-  - **Nobody can answer** (an unattended or dispatched run, a loop, a schedule, a worker): ask nothing. Take the default the step names, or the most conservative option; when a step cannot be done without the user, stop and say what it needs.
+  - **Dispatched task workers:** when blocked on a decision only the user can make, use the provider question tool above; the live run sidepanel answers and the same turn continues. **Nobody can answer** (an unattended loop or schedule without a live question channel): ask nothing. Take the default the step names, or the most conservative option; when a step cannot be done without the user, stop and say what it needs.
 - **Load/read a module file** means: use whatever local file-reading mechanism exists in the current runtime. Do not depend on a tool literally being named `Read`.
 - **Category management** means: use the runtime's available category tool surface, whether that is split helpers such as `category_list` / `category_create` or a unified `category` tool with actions like `list` / `create`.
 

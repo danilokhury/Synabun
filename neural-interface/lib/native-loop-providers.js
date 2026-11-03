@@ -1,3 +1,4 @@
+import { codexWorkerReply, CODEX_QUESTIONS, elicitationReply, openCodeAnswers, workerQuestions } from './worker-question.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { externalServerInventory, selectExternalServers, codexMcpEnabledOverride, referenceClaudeMap, waitForClaudeMcpScope, redactMcpValues, writePrivateMcpConfig, mcpDefinitionValues } from './mcp-external-servers.js';
@@ -361,7 +362,7 @@ export async function createCodexNativeLoopAdapter(options = {}) {
     runId, cwd, model, effort, codexHome, codexPath, browserSessionId,
     browserTabId, onIdentity = () => {}, onEvent = () => {},
     CodexClass = Codex,
-    extraEnv = {}, permissionPolicy: rawPolicy = 'auto', capability: rawCapability = 'full',
+    extraEnv = {}, permissionPolicy: rawPolicy = 'auto', permissionBroker = null, capability: rawCapability = 'full',
     outputSchema = null, desktopGrantProvider = null, modelContextWindow = null, contextMode = null,
     // Image creation runs (assistant dispatch): 'image' → each turn returns the images it generated.
     collectMedia = null,
@@ -406,10 +407,8 @@ export async function createCodexNativeLoopAdapter(options = {}) {
   const extended = contextMode === 'extended' || legacyExtended;
   const runModel = legacyExtended ? String(model).replace(/\[extended\]$/i, '') : model;
   if (extended && !(Number(modelContextWindow) > 0)) throw new Error(`Extended context is unavailable for ${runModel}.`);
-  // The Codex SDK drives `codex exec`, which has no approval channel: an 'ask'
-  // policy would hang or fail mid-turn. Refuse up front so the dispatcher can
-  // offer 'restricted' instead.
-  if (permissionPolicy === 'ask') throw policyUnsupportedError('Codex', permissionPolicy);
+  // Legacy exec loops have no approval channel. Task workers use an app-server.
+  if (permissionPolicy === 'ask' && runMode !== 'task') throw policyUnsupportedError('Codex', permissionPolicy);
   // Assistant task runs: SynaBun's browser policy as a PreToolUse hook the
   // user's Codex trusts (the brain's route-gate mechanism), and no web search
   // of Codex's own. Without a trusted hook the policy is instructions only
@@ -422,6 +421,7 @@ export async function createCodexNativeLoopAdapter(options = {}) {
   }
   const pins = stringEnv({
     SYNABUN_TERMINAL_SESSION: runId,
+    SYNABUN_RUN_MODE: options.runMode === 'task' ? 'task' : undefined,
     SYNABUN_PROJECT: cwd ? memoryProject(cwd) : 'global',
     SYNABUN_BROWSER_SESSION: browserSessionId,
     SYNABUN_BROWSER_TAB: browserTabId,
@@ -442,7 +442,7 @@ export async function createCodexNativeLoopAdapter(options = {}) {
   const policyEnv = browserPolicy ? { SYNABUN_BROWSER_POLICY_CWD: cwd || process.cwd(), SYNABUN_BROWSER_POLICY_ROOTS: JSON.stringify(Array.isArray(policyRoots) ? policyRoots : []) } : {};
   const env = withServeEnv(stringEnv({ ...inherited, ...pins, CODEX_HOME: codexHome, ...policyEnv, ...stringEnv(extraEnv) }), evaluated ? evalGitSafetyEnv(evaluated.held.root) : null);
   const config = { ...codexWindowsSandboxConfig(adminSandbox) };
-  if (Object.keys(pins).length) config.mcp_servers = { SynaBun: { env: pins } };
+  if (Object.keys(pins).length) config.mcp_servers = { SynaBun: { env: pins, ...(task ? { tool_timeout_sec: Math.ceil((options.questionTimeoutMs || 30 * 60_000) / 1000) + 30 } : {}) } };
   if (!boxed) {
     const inventory = externalServerInventory({ provider: 'codex', cwd, codexHome, env, home: env.HOME, dataHome: memoryConfig.dataHome, ...options.externalMcpContext });
     const list = nativeToolSelection(options, 'codex');
@@ -468,6 +468,13 @@ export async function createCodexNativeLoopAdapter(options = {}) {
   }
   const WorkerCodex = task && !boxed && CodexClass === Codex ? CodexWorkerAppServer : CodexClass;
   const codex = new WorkerCodex({
+    permissionPolicy,
+    onRequest: permissionBroker && !boxed ? async (packet, signal) => {
+      const question = CODEX_QUESTIONS.has(packet.method);
+      if (!question && permissionPolicy !== 'ask') return { error: { code: -32601, message: 'Unexpected worker approval request' } };
+      const reply = await permissionBroker.request({ kind: question ? 'ask' : 'tool', toolName: packet.method, input: packet.params, questions: workerQuestions(packet.params), protocol: { provider: 'codex', method: packet.method, id: packet.id }, signal });
+      return codexWorkerReply(packet, reply);
+    } : null,
     onProcess: options.onProcess, signal: options.signal, apiKey: options.apiKey, configArgs: options.configArgs,
     ...(codexPath ? { codexPathOverride: codexPath } : {}),
     env,
@@ -700,10 +707,10 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
   const ownEnv = stringEnv({
     ...inherited,
     SYNABUN_TERMINAL_SESSION: runId,
+    SYNABUN_RUN_MODE: options.runMode === 'task' ? 'task' : undefined,
     SYNABUN_PROJECT: cwd ? memoryProject(cwd) : 'global',
     SYNABUN_BROWSER_SESSION: browserSessionId,
     SYNABUN_BROWSER_TAB: browserTabId,
-    SYNABUN_RUN_MODE: runMode === 'task' ? 'task' : undefined,
     ...stringEnv(extraEnv),
   });
   // Apply after every inherited/child environment overlay: drop ALL GIT_* first, then SynaBun's own safety entries.
@@ -728,13 +735,11 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
     // Computer-use workers: the grant unlocks the `computer` MCP group.
     'X-Synabun-Desktop-Grant': typeof desktopGrantProvider === 'function' ? desktopGrantProvider() || undefined : undefined,
   });
-  // Under 'ask' the orchestrator answers permission prompts (and AskUserQuestion
-  // becomes a relayed question); otherwise the run is unattended and both
-  // interactive tools stay denied. ExitPlanMode is never useful for a worker.
-  const denyMatcher = askMode ? 'ExitPlanMode' : 'AskUserQuestion|ExitPlanMode';
-  const denyMessage = askMode
-    ? 'Dispatched workers do not use plan mode.'
-    : 'This unattended automation cannot wait for interactive input.';
+  // Questions use the broker under every policy, independently of tool approvals.
+  // ExitPlanMode stays denied: asking does not need a separate plan turn.
+  const questionMode = !held && typeof permissionBroker?.request === 'function';
+  const denyMatcher = questionMode ? 'ExitPlanMode' : 'AskUserQuestion|ExitPlanMode';
+  const denyMessage = 'Dispatched workers do not use plan mode; questions use the live run sidepanel.';
   // A confined run asks canUseTool for every write (permission mode 'default') on top of its PreToolUse hook, and
   // loads no settings file: no user hooks (they would ask it for memories it has no tool to write), no allow rules.
   const bypass = !askMode && !held;
@@ -773,6 +778,7 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
           },
         })],
       },
+      ...(questionMode ? [{ matcher: 'AskUserQuestion', hooks: [async () => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: 'The user answers in this run’s sidepanel.' } })] }] : []),
       // Assistant task runs: SynaBun's browser policy (browser-tool-policy.js)
       // on every call, subagents' included, before the bypass and canUseTool.
       ...(runMode === 'task' ? [{
@@ -795,7 +801,7 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
       }
       if (toolName === 'ExitPlanMode') return { behavior: 'deny', message: denyMessage };
       if (toolName === 'AskUserQuestion') {
-        if (!askMode) return { behavior: 'deny', message: denyMessage };
+        if (!questionMode) return { behavior: 'deny', message: denyMessage };
         const reply = await brokerRequest({ kind: 'ask', toolName, input: toolInput, questions: toolInput?.questions || [] });
         if (reply.behavior === 'allow') {
           const answers = reply.answers || reply.updatedInput?.answers || {};
@@ -803,6 +809,8 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
         }
         return { behavior: 'deny', message: reply.message || 'The question was not answered.' };
       }
+      // Loading a deferred question schema is a read, never a permission decision.
+      if (toolName === 'ToolSearch') return { behavior: 'allow', updatedInput: toolInput };
       // Computer use is fully autonomous: its guards live in the desktop service,
       // so the orchestrator is never asked to approve individual actions.
       if (askMode && /^mcp__SynaBun__computer(_apps|_ax|_status)?$/.test(String(toolName))) return { behavior: 'allow', updatedInput: toolInput };
@@ -1299,6 +1307,7 @@ export async function createOpenCodeNativeLoopAdapter(options = {}) {
     } catch {}
     return '';
   };
+  const pendingQuestions = new Set();
   const brokerRequest = async (request) => {
     try {
       const reply = await permissionBroker.request({ runId, provider: 'opencode', signal: activeAbort?.signal, ...request });
@@ -1316,6 +1325,7 @@ export async function createOpenCodeNativeLoopAdapter(options = {}) {
   };
   const finishTurnWithText = () => {
     const turn = activeTurn;
+    if (pendingQuestions.size) return;
     if (!turn || turn.mode !== 'async' || turn.sent === false || turn.settled || turn.finishing) return;
     turn.finishing = true;
     fetchAssistantText()
@@ -1342,15 +1352,23 @@ export async function createOpenCodeNativeLoopAdapter(options = {}) {
     if (/^message[.:]part[.:]delta$/i.test(eventType)) rememberDelta(event);
     if (/question\.asked/i.test(eventType)) {
       const requestID = event.id || event.requestID;
-      if (requestID && askMode && client.question?.reply) {
-        brokerRequest({ kind: 'ask', toolName: 'question', input: event, questions: event.questions || [] })
+      if (requestID && !held && permissionBroker?.request && client.question?.reply) {
+        if (pendingQuestions.has(requestID)) return;
+        pendingQuestions.add(requestID);
+        brokerRequest({ kind: 'ask', toolName: 'question', input: event, questions: event.questions || [], protocol: { provider: 'opencode', id: requestID } })
           .then((reply) => {
+            // The tool is now answered; an idle SSE arriving before the HTTP ack is valid.
+            pendingQuestions.delete(requestID);
             if (reply.behavior === 'allow') {
-              return client.question.reply({ requestID, answers: reply.answers || [], directory: cwd || undefined });
+              return client.question.reply({ requestID, answers: openCodeAnswers(event.questions || [], reply.answers), directory: cwd || undefined });
             }
             return client.question?.reject?.({ requestID, directory: cwd || undefined });
           })
-          .catch(() => {});
+          .catch(async (error) => {
+            try { await client.question?.reject?.({ requestID, directory: cwd || undefined }); } catch {}
+            settleActiveTurn(new Error(`OpenCode question reply failed: ${providerErrorMessage(error)}`));
+          })
+          .finally(() => pendingQuestions.delete(requestID));
       } else if (requestID && client.question?.reject) {
         client.question.reject({ requestID, directory: cwd || undefined }).catch(() => {});
       }
@@ -1389,7 +1407,8 @@ export async function createOpenCodeNativeLoopAdapter(options = {}) {
   }) || (() => {});
   // The rules of a confined run ride the session too (lib/opencode2-client.js session.create sends them as the
   // session's own `permissions`), on top of the serve's config.
-  const sessionRules = confined ? openCodeDraftConfig().permissions : evaluated ? openCodeEvalConfig(evaluated).permissions : guard ? openCodePermissionsFor(guard) : null;
+  let sessionRules = confined ? openCodeDraftConfig().permissions : evaluated ? openCodeEvalConfig(evaluated).permissions : guard ? openCodePermissionsFor(guard) : null;
+  if (runMode === 'task' && !held) sessionRules = [...(sessionRules || []), { action: 'question', resource: '*', effect: 'allow' }];
   try {
     await client.waitUntilConnected?.(10_000);
     const created = options.resumeSessionId
@@ -1695,6 +1714,7 @@ export async function createAntigravityNativeLoopAdapter(options = {}) {
 
   const pins = stringEnv({
     SYNABUN_TERMINAL_SESSION: runId,
+    SYNABUN_RUN_MODE: options.runMode === 'task' ? 'task' : undefined,
     SYNABUN_PROJECT: cwd ? memoryProject(cwd) : 'global',
     SYNABUN_BROWSER_SESSION: browserSessionId,
     SYNABUN_BROWSER_TAB: browserTabId,
@@ -1769,6 +1789,11 @@ export async function createAntigravityNativeLoopAdapter(options = {}) {
       if (activeTurn && update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') activeTurn.text += update.content.text || '';
       emit(update.sessionUpdate || 'session/update', update, turnMeta());
     },
+    onElicitation: async (params, { signal } = {}) => {
+      if (!alive || !activeTurn || params.sessionId !== sessionId || !permissionBroker?.request) return { action: 'cancel' };
+      const reply = await permissionBroker.request({ runId, provider: 'antigravity', signal: AbortSignal.any([activeTurn?.controller?.signal, signal].filter(Boolean)), kind: 'ask', toolName: 'choice', input: params, questions: workerQuestions(params), protocol: { provider: 'antigravity', method: 'elicitation/create' } });
+      return elicitationReply(params, reply);
+    },
     onPermission: (params, { signal } = {}) => new Promise((resolve) => {
       const done = (answer) => { openPermissions.delete(done); resolve(answer); };
       openPermissions.add(done);
@@ -1790,7 +1815,7 @@ export async function createAntigravityNativeLoopAdapter(options = {}) {
   };
   let session;
   try {
-    const init = await conn.initialize();
+    const init = await conn.initialize({ clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, elicitation: { form: {} } } });
     if (resumeSessionId) {
       // session/resume picks the conversation up without replaying it; an agent without it replays (session/load),
       // which onUpdate drops (sessionId is set only once the load answered).
@@ -1860,7 +1885,7 @@ export async function createAntigravityNativeLoopAdapter(options = {}) {
       if (!alive || !conn.running) throw new Error('Antigravity native loop is closed');
       if (activeTurn) throw new Error('Antigravity native loop already has an active turn');
       providerTurn += 1;
-      const turn = { iteration: meta.iteration, providerTurn, text: '', cancelled: false };
+      const turn = { iteration: meta.iteration, providerTurn, text: '', cancelled: false, controller: new AbortController() };
       activeTurn = turn;
       emit('synabun.user_prompt', { type: 'synabun.user_prompt', text: String(prompt || '') }, { iteration: meta.iteration, providerTurn });
       const schema = meta.outputSchema || outputSchema;
@@ -1889,11 +1914,12 @@ export async function createAntigravityNativeLoopAdapter(options = {}) {
         if (!alive || !conn.running) throw new Error(`Antigravity stopped during the turn${conn.stderrTail() ? `: ${conn.stderrTail().slice(-400)}` : ''}`);
         throw new Error(providerErrorMessage(error, 'Antigravity turn failed'));
       } finally {
+        turn.controller.abort();
         if (activeTurn === turn) activeTurn = null;
       }
     },
     async abort() {
-      if (activeTurn) activeTurn.cancelled = true;
+      if (activeTurn) { activeTurn.cancelled = true; activeTurn.controller.abort(); }
       for (const done of [...openPermissions]) done({ outcome: { outcome: 'cancelled' } });
       try { if (sessionId && conn.running) await settleWithin(conn.notify('session/cancel', { sessionId })); } catch {}
       return true;
@@ -1903,6 +1929,7 @@ export async function createAntigravityNativeLoopAdapter(options = {}) {
     async dispose() {
       const wasAlive = alive;
       alive = false;
+      activeTurn?.controller.abort();
       for (const done of [...openPermissions]) done({ outcome: { outcome: 'cancelled' } });
       if (wasAlive && activeTurn && sessionId && conn.running) { try { await settleWithin(conn.notify('session/cancel', { sessionId })); } catch {} }
       await settleWithin(conn.close(), 3000);

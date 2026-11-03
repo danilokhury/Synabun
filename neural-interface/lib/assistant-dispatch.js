@@ -50,6 +50,7 @@ import { createBudgetPlanner } from './assistant-budget-planner.js';
 import { CLAUDE_ESTIMATE_SOURCE, CODEX_USAGE_KEYS, TOKEN_KEYS, addTokens, antigravityUsageTokens, codexUsageTokens, createClaudeMeter, createCodexMeter, createOpenCodeMeter, totalTokens, withTotal, zeroTokens } from './assistant-usage.js';
 import { claudeTokensCostUsd } from './assistant-pricing.js';
 import { RemotePolicyError, clampDispatchSpec, getSessionPolicy, readRegisteredProjects } from './remote-policy.js';
+import { validateWorkerReply } from './worker-question.js';
 import { limitFromText } from '../public/shared/assistant/asst-limit.js';
 
 // Antigravity (Google's `agy`, over ACP: lib/native-loop-providers.js createAntigravityNativeLoopAdapter) is a worker
@@ -823,7 +824,7 @@ export function createAssistantDispatcher({
   }
 
   /** `taskClass`: the run's class (its route's, else the spec's); image / video creation needs a model that makes the medium. */
-  function normalizeSpec(spec = {}, { catalogValue = null, codexAskFallback = false, taskClass = null } = {}) {
+  function normalizeSpec(spec = {}, { catalogValue = null, taskClass = null } = {}) {
     const provider = String(spec.provider || '').trim().toLowerCase();
     if (!NATIVE_PROVIDERS.has(provider)) throw new DispatchError('INVALID_PROVIDER', `provider must be one of ${[...NATIVE_PROVIDERS].join(', ')}`);
     const task = String(spec.task || '').trim();
@@ -834,12 +835,6 @@ export function createAssistantDispatcher({
     let permissionPolicy = normalizePermissionPolicy(spec.permissionPolicy);
     let capability = normalizeCapability(spec.capability || 'full');
     const notes = [];
-    if (provider === 'codex' && permissionPolicy === 'ask') {
-      // A route card may move an 'ask' dispatch onto Codex: degrade instead of failing.
-      if (!codexAskFallback) throw new DispatchError('PERMISSION_POLICY_UNSUPPORTED', 'Codex dispatches cannot use permissionPolicy "ask" (the Codex SDK has no approval channel). Use "restricted" for a workspace-write sandbox or "auto".', { suggested: 'restricted' });
-      permissionPolicy = 'restricted';
-      notes.push('permission policy "ask" became "restricted" (Codex has no approval channel)');
-    }
     // "auto" (or nothing) = let routing pick / use the provider default.
     let model = spec.model && String(spec.model).trim() && String(spec.model).trim().toLowerCase() !== 'auto' ? String(spec.model).trim() : null;
     let modelInfo = null;
@@ -1611,7 +1606,7 @@ export function createAssistantDispatcher({
     let spec;
     // The picked provider may need another clamp (Codex under strict worker approvals), or the level fell meanwhile.
     const remoteNotes = [];
-    try { input = clampRemote(input, entry.assistantSessionId, remoteNotes); spec = normalizeSpec(input, { catalogValue, codexAskFallback: true, taskClass: entry.taskClass || null }); }
+    try { input = clampRemote(input, entry.assistantSessionId, remoteNotes); spec = normalizeSpec(input, { catalogValue, taskClass: entry.taskClass || null }); }
     catch (error) {
       entry.state = 'failed'; entry.completionReason = 'route_invalid'; entry.finishedAt = iso(now()); entry.turnState = 'terminal';
       entry.error = error?.message || String(error);
@@ -1664,7 +1659,7 @@ export function createAssistantDispatcher({
       accountId: to.accountId || (to.provider === entry.provider ? entry.accountId : null),
       title: clip(`${entry.title} ${retry ? '↻' : '↑'}`, 80), tags: entry.tags, workflowId: entry.workflowId, parentRunId: runId,
       tools: entry.tools?.some(item => item.startsWith('mcp:')) ? retainExternalRefs(entry.toolsRequested ?? dispatchTools({}).items, entry.tools) : entry.toolsRequested ?? undefined, capability: entry.capability,
-      permissionPolicy: to.provider === 'codex' && entry.permissionPolicy === 'ask' ? 'restricted' : entry.permissionPolicy,
+      permissionPolicy: entry.permissionPolicy,
       usesBrowser: entry.usesBrowser, usesComputer: entry.usesComputer, maxMinutes: entry.maxMinutes, budgetUsd: entry.budgetUsd,
       outputSchema: entry.outputSchema, taskClass: entry.taskClass || null,
     }, { assistantSessionId: entry.assistantSessionId, origin: 'ui', brief: entry.brief || null });
@@ -1867,7 +1862,7 @@ export function createAssistantDispatcher({
     } else entry.scratchDir = null;
     const desktopGrant = mintDesktopGrant(entry);
     const state = runState(entry, { browserSessionId, browserTabId, desktopGrant, startedAt: iso(now()) });
-    if (entry.permissionPolicy === 'ask') state.permissionBroker = createBroker(entry.runId);
+    state.permissionBroker = createBroker(entry.runId);
     // A class's rules (design), read now so an edited override applies without a restart;
     // they go to the prompt only, not into the loop state file.
     const playbook = playbookFor(entry);
@@ -1957,6 +1952,7 @@ export function createAssistantDispatcher({
       onSessionUsage: (value) => { if (entry.provider === 'antigravity' && value && typeof value === 'object') resumeInfoOf(entry).acpSessionUsage = value; },
       guardMode: entry.guardMode, scratchDir: entry.scratchDir || null, serverPort: Number(serverPort) > 0 ? Number(serverPort) : null,
       localPortRange: localPortRange && Number(localPortRange.from) > 0 && Number(localPortRange.to) >= Number(localPortRange.from) ? { from: Number(localPortRange.from), to: Number(localPortRange.to) } : null,
+      questionTimeoutMs: limits.questionTimeoutMs,
       idleTimeoutMs: entry.idleTimeoutMs, maxTurns: entry.maxTurns, outputSchema: entry.outputSchema, project: entry.project,
       title: entry.title, tags: entry.tags, workflowId: entry.workflowId, parentRunId: entry.parentRunId,
       // The user's brief after a clarification (assistant-task-prompt.js briefBlock).
@@ -2055,36 +2051,38 @@ export function createAssistantDispatcher({
     return account?.home || CODEX_DEFAULT_HOME || null;
   }
 
-  // ── permission broker ('ask' policy) ──────────────────────────────────────
+  // ── request broker (questions in every policy; tool approvals under 'ask') ──────────────────────────────────────
   function createBroker(runId) {
     return {
       request: (request = {}) => new Promise((resolvePermission) => {
         const entry = entries.get(runId);
         const liveState = live.get(runId);
-        if (!entry || !liveState) { resolvePermission({ behavior: 'deny', message: 'Run is no longer tracked.' }); return; }
+        if (!entry || !liveState || liveState.dead || liveState.suspending || TERMINAL_STATES.has(entry.state) || request.signal?.aborted) { resolvePermission({ behavior: 'deny', message: 'Run is no longer tracked.' }); return; }
         const requestId = `perm-${randomBytes(6).toString('hex')}`;
         const kind = request.kind === 'ask' ? 'question' : 'permission';
         const timeoutMs = kind === 'question' ? limits.questionTimeoutMs : limits.permissionTimeoutMs;
         const pending = {
           requestId, kind, toolName: request.toolName || null, input: request.input ?? null,
+          protocol: request.protocol || null,
           questions: Array.isArray(request.questions) ? request.questions : [], createdAt: iso(now()), expiresAt: iso(now() + timeoutMs),
         };
         entry.pending = [...(entry.pending || []), pending];
         entry.state = 'awaiting_permission';
         entry.turnState = 'awaiting_permission';
-        // Waiting on the answer is not work: the request's own timeout bounds it.
-        pauseWork(entry, liveState);
-        liveState.ctx?.setTurnState?.('awaiting_permission');
-        liveState.ctx?.emit?.({ type: 'synabun.permission_request', requestId, kind, toolName: pending.toolName, input: pending.input, questions: pending.questions });
+        // Install the resolver before publishing: a synchronous listener can answer at once.
         const timer = setTimeout(() => finishPending(runId, requestId, { behavior: 'deny', message: `No decision within ${Math.round(timeoutMs / 60000)} minutes.`, resolvedBy: 'timeout' }), timeoutMs);
         timer.unref?.();
-        liveState.pendingResolvers.set(requestId, { resolve: resolvePermission, timer });
+        const abortSignal = request.signal;
+        const onAbort = () => finishPending(runId, requestId, { behavior: 'deny', message: 'Run aborted.', resolvedBy: 'abort' });
+        liveState.pendingResolvers.set(requestId, { resolve: resolvePermission, timer, cleanup: () => abortSignal?.removeEventListener?.('abort', onAbort) });
+        abortSignal?.addEventListener?.('abort', onAbort, { once: true });
+        // Waiting on the answer is not work: the request's own timeout bounds it.
+        pauseWork(entry, liveState);
+        liveState.ctx?.setPendingRequests?.(entry.pending);
+        liveState.ctx?.setTurnState?.('awaiting_permission');
+        liveState.ctx?.emit?.({ type: 'synabun.permission_request', requestId, kind, toolName: pending.toolName, input: pending.input, questions: pending.questions });
         try { broadcastSync({ type: 'assistant:permission-request', runId, assistantSessionId: entry.assistantSessionId, provider: entry.provider, request_id: requestId, request: pending }); } catch {}
         emit(entry, kind === 'question' ? 'needs_input' : 'permission_request', { request: pending });
-        const abortSignal = request.signal;
-        if (abortSignal && typeof abortSignal.addEventListener === 'function') {
-          abortSignal.addEventListener('abort', () => finishPending(runId, requestId, { behavior: 'deny', message: 'Run aborted.', resolvedBy: 'abort' }), { once: true });
-        }
       }),
     };
   }
@@ -2095,10 +2093,12 @@ export function createAssistantDispatcher({
     const resolver = liveState.pendingResolvers.get(requestId);
     if (!resolver) return false;
     clearTimeout(resolver.timer);
+    resolver.cleanup?.();
     liveState.pendingResolvers.delete(requestId);
     const request = (entry.pending || []).find((item) => item.requestId === requestId) || null;
     entry.pending = (entry.pending || []).filter((item) => item.requestId !== requestId);
-    if (entry.state === 'awaiting_permission' && entry.pending.length === 0) {
+    liveState.ctx?.setPendingRequests?.(entry.pending);
+    if (entry.state === 'awaiting_permission' && entry.pending.length === 0 && !liveState.dead && !liveState.suspending && !liveState.abortReason) {
       entry.state = 'running';
       entry.turnState = 'running';
       startWork(entry, liveState);
@@ -2124,9 +2124,11 @@ export function createAssistantDispatcher({
     // Antigravity saves an "always" answer for every later session of the user's, outside the run: a worker's
     // answer is for this request only.
     const always = entry.provider === 'antigravity' ? false : !!response.always;
+    try { validateWorkerReply((entry.pending || []).find((p) => p.requestId === requestId), { ...response, behavior }); }
+    catch (error) { throw new DispatchError('INVALID_QUESTION_ANSWER', error.message); }
     finishPending(runId, requestId, {
       behavior, updatedInput: response.updatedInput, message: response.message || response.note, always,
-      answers: response.answers, resolvedBy: origin,
+      answers: response.answers ?? response.updatedInput?.answers, result: response.result, content: response.content, action: response.action, error: response.error, resolvedBy: origin,
     }, { origin });
     return view(entry);
   }
@@ -3161,6 +3163,7 @@ export function createAssistantDispatcher({
       entry.suspendReason = String(reason || 'server_shutdown');
       delete entry.crashed;
       // An open permission request goes with the process: the resumed worker asks again.
+      for (const requestId of [...liveState.pendingResolvers.keys()]) finishPending(entry.runId, requestId, { behavior: 'deny', message: 'Server restarting; ask again after resume.', resolvedBy: 'server_restart' });
       entry.pending = [];
       // What the cut-off turn spent so far is booked now (an estimate per call the stream showed: no result will
       // count them); the meter takes the resumed CLI's counters as its new baseline (rebaseClaudeUsage).
@@ -3359,7 +3362,7 @@ export function createAssistantDispatcher({
     // backstop only: the dispatcher holds the run to its ceiling and its share between calls.
     const allowanceUsd = claudeRunCap(entry, { spentUsd: entry.costUsd });
     if (Number(allowanceUsd) > 0) state.maxBudgetUsd = Number((Number(allowanceUsd) + Math.max(0, Number(costBaseUsd) || 0)).toFixed(2));
-    if (entry.permissionPolicy === 'ask') state.permissionBroker = createBroker(entry.runId);
+    state.permissionBroker = createBroker(entry.runId);
     const at = clockTime(entry.suspendedAt);
     const selfRestarts = isInside(entry.cwd, PACKAGE_ROOT);
     const playbook = mode === 'fresh' ? playbookFor(entry) : null;

@@ -27,7 +27,12 @@ export function codexWorkerConfigOverrides(config) {
 }
 
 export class CodexWorkerAppServer {
-  constructor({ codexPathOverride, env, config = {}, configArgs = [], apiKey, signal, onProcess = () => {} }) {
+  constructor({ codexPathOverride, env, config = {}, configArgs = [], apiKey, signal, onProcess = () => {}, onRequest = null, permissionPolicy = 'auto' }) {
+    this.onRequest = onRequest;
+    this.approvalPolicy = permissionPolicy === 'ask' ? 'untrusted' : 'never';
+    this.requestAbort = new AbortController();
+    this.incoming = new Map();
+    this.requestAbort.signal.addEventListener('abort', () => { for (const pending of this.incoming.values()) pending.abort(); this.incoming.clear(); }, { once: true });
     this.pending = new Map();
     this.seq = 0;
     this.listener = null;
@@ -52,9 +57,21 @@ export class CodexWorkerAppServer {
           this.pending.delete(msg.id); clearTimeout(p.timer);
           msg.error ? p.reject(new Error(msg.error.message || 'Codex RPC failed')) : p.resolve(msg.result);
         } else if (msg.id != null) {
-          // Workers have approvalPolicy never. Never grant an unexpected request.
-          this.write({ id: msg.id, error: { code: -32601, message: 'Unattended worker does not accept interactive requests' } });
-        } else this.listener?.(msg);
+          const controller = new AbortController();
+          this.incoming.set(msg.id, controller);
+          Promise.resolve().then(() => {
+            if (!this.onRequest) throw new Error('Worker has no interactive request handler');
+            return this.onRequest(msg, controller.signal);
+          }).then((reply) => {
+            if (!this.failure && !controller.signal.aborted) this.write({ id: msg.id, ...reply });
+          }, (error) => {
+            if (!this.failure && !controller.signal.aborted) this.write({ id: msg.id, error: { code: -32000, message: error.message } });
+          }).finally(() => this.incoming.delete(msg.id));
+        } else {
+          if (msg.method === 'serverRequest/resolved') this.incoming.get(msg.params?.requestId)?.abort();
+          if (msg.method === 'turn/completed') { for (const pending of this.incoming.values()) pending.abort(); this.incoming.clear(); }
+          this.listener?.(msg);
+        }
       }
     });
     // Drain stderr without exposing credentials/config to the worker transcript.
@@ -76,6 +93,7 @@ export class CodexWorkerAppServer {
   write(value) { if (!this.proc.stdin.destroyed) this.proc.stdin.write(JSON.stringify(value) + '\n'); }
   fail(error) {
     this.failure = error;
+    this.requestAbort.abort();
     for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(error); }
     this.pending.clear();
     this.listener?.({ method: 'synabun/exit', error });
@@ -99,7 +117,7 @@ export class CodexWorkerAppServer {
     const ready = this.ready.then(async () => {
       const reply = await this.rpc(id ? 'thread/resume' : 'thread/start', {
         ...(id ? { threadId: id } : {}), cwd: options.workingDirectory,
-        model: options.model || null, approvalPolicy: 'never', sandbox: options.sandboxMode,
+        model: options.model || null, approvalPolicy: owner.approvalPolicy, sandbox: options.sandboxMode,
         config: { web_search: options.webSearchMode || 'disabled', sandbox_workspace_write: { network_access: !!options.networkAccessEnabled, writable_roots: options.additionalDirectories || [] } },
       });
       const actual = reply?.thread?.id;
@@ -141,7 +159,7 @@ export class CodexWorkerAppServer {
         signal?.addEventListener('abort', abort, { once: true });
         try {
           if (signal?.aborted) throw Object.assign(new Error('Codex turn aborted'), { name: 'AbortError' });
-          const reply = await owner.rpc('turn/start', { threadId: id, input: [{ type: 'text', text: String(prompt), text_elements: [] }], approvalPolicy: 'never', sandboxPolicy, effort: options.modelReasoningEffort || null, ...(outputSchema ? { outputSchema } : {}) });
+          const reply = await owner.rpc('turn/start', { threadId: id, input: [{ type: 'text', text: String(prompt), text_elements: [] }], approvalPolicy: owner.approvalPolicy, sandboxPolicy, effort: options.modelReasoningEffort || null, ...(outputSchema ? { outputSchema } : {}) });
           turnId = reply?.turn?.id;
           if (signal?.aborted) abort();
         } catch (error) { owner.listener = null; signal?.removeEventListener('abort', abort); throw error; }
@@ -159,6 +177,7 @@ export class CodexWorkerAppServer {
     };
   }
   async dispose() {
+    this.requestAbort.abort();
     this.startupSignal?.removeEventListener('abort', this.cancelStartup);
     if (this.proc.exitCode !== null || this.proc.signalCode) return;
     if (process.platform === 'win32') {

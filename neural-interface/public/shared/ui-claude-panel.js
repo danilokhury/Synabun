@@ -1,3 +1,5 @@
+import { t } from './i18n.js';
+import { answerWorkerQuestion, syncWorkerQuestionQueue } from './worker-questions.js';
 import { providerAuthSnapshot } from './ui-provider-auth.js';
 import { mountProviderTerminalAuth, providerApiKeyRequest, startProviderTerminalLogin } from './ui-provider-terminal-auth.js';
 import { accountName, accountSwitchPlan, accountText, tabAccountId, serverAccountId } from './account-view.js';
@@ -6855,6 +6857,8 @@ function renderAssistant(tab, msg) {
 
 /** Build an interactive AskUserQuestion card from a tool_use block */
 function buildAskFromToolUse(tab, block) {
+  // A task worker’s broker owns the interactive card, even if this tool event arrives first.
+  if (tab.automationRunId) { const placeholder = document.createElement('div'); placeholder.hidden = true; return placeholder; }
   const input = block.input || {};
   const toolUseId = block.id || '';
   tab.pendingAskToolUseId = toolUseId;
@@ -7046,7 +7050,7 @@ function buildAskFromToolUse(tab, block) {
   // Submit button — sends all answers as a batch
   submitBtn.addEventListener('click', () => {
     // An answer is shown as given only once it can be sent: until then the card stays as it is.
-    if (tab.ws?.readyState !== WebSocket.OPEN) { appendStatus(tab, ASK_ANSWER_UNSENT); return; }
+    if (!tab.automationRunId && tab.ws?.readyState !== WebSocket.OPEN) { appendStatus(tab, ASK_ANSWER_UNSENT); return; }
     container.querySelectorAll('.ask-option').forEach(b => { b.disabled = true; });
     container.querySelectorAll('.ask-text-input, .ask-notes').forEach(i => { i.disabled = true; });
     submitBtn.disabled = true;
@@ -7064,6 +7068,21 @@ function buildAskFromToolUse(tab, block) {
 
 // Returns whether the answer left: false while the tab's socket is closed.
 function sendAskAnswer(tab, questions, answers, annotations = null) {
+  if (tab.automationRunId) {
+    const requestId = tab.pendingAskRequestId;
+    if (!tab._workerQuestions?.has(requestId)) return false;
+    answerWorkerQuestion(tab.automationRunId, requestId, { decision: 'answer', answers }).catch((error) => {
+      appendStatus(tab, error.message);
+      // Keep the native card retryable after a delivery failure.
+      if (tab._workerQuestions?.has(requestId)) {
+        const card = tab.messagesEl?.querySelector(`[data-worker-question-id="${CSS.escape(requestId)}"]`);
+        card?.querySelectorAll('button, input, textarea').forEach((el) => { el.disabled = false; });
+        const submit = card?.querySelector('.ask-submit');
+        if (submit) submit.textContent = t('common.retry');
+      }
+    });
+    return true;
+  }
   if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) return false;
 
   const requestId = tab.pendingAskRequestId;
@@ -8235,6 +8254,7 @@ function renderAskUserQuestion(tab, requestId, input) {
   const allQuestions = input.questions || questions;
   const el = document.createElement('div');
   el.className = 'msg msg-assistant';
+  el.dataset.workerQuestionId = requestId;
 
   const avatar = document.createElement('div');
   avatar.className = 'msg-avatar';
@@ -8416,7 +8436,7 @@ function renderAskUserQuestion(tab, requestId, input) {
   // Submit button — sends all answers as a batch
   submitBtn.addEventListener('click', () => {
     // An answer is shown as given only once it can be sent: until then the card stays as it is.
-    if (tab.ws?.readyState !== WebSocket.OPEN) { appendStatus(tab, ASK_ANSWER_UNSENT); return; }
+    if (!tab.automationRunId && tab.ws?.readyState !== WebSocket.OPEN) { appendStatus(tab, ASK_ANSWER_UNSENT); return; }
     wrap.querySelectorAll('.ask-option').forEach(b => { b.disabled = true; });
     wrap.querySelectorAll('.ask-text-input, .ask-notes').forEach(i => { i.disabled = true; });
     submitBtn.disabled = true;
@@ -10684,6 +10704,19 @@ export async function attachClaudeAutomation(run, { focus = !!run?.focus, isCanc
     tab._automationLifecycleError = run.error;
     appendError(tab, run.error);
   }
+  syncWorkerQuestionQueue(tab, run, {
+    open: (id, pending) => handleControlRequest(tab, { request_id: id, request: { tool_name: 'AskUserQuestion', input: pending.input || { questions: pending.questions } } }),
+    close: (id) => {
+      const card = tab.messagesEl?.querySelector(`[data-worker-question-id="${CSS.escape(id)}"]`);
+      card?.querySelectorAll('button, input, textarea').forEach((el) => { el.disabled = true; });
+      const submit = card?.querySelector('.ask-submit');
+      if (submit) submit.textContent = t('workerQuestion.resolved');
+      tab.pendingAskRequestId = null; tab.pendingAskToolUseId = null;
+      tab.pendingAskBufferedAnswer = null; tab.askRenderedViaControl = false;
+      // The same provider turn resumes; release messages buffered while its question was open.
+      _flushMsgBuffer(tab);
+    },
+  });
   trackWorkerEnd(run, { apply: (view) => showWorkerEnd(tab, view), busy: hasLiveBackgroundWork(tab) });
   // The mode control is hidden while the run is active and back when it ended.
   if (tab === activeTab()) populateModeDropdown(_panel?.querySelector('#cp-mode'), tab);

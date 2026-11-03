@@ -1,3 +1,4 @@
+import { syncOpenCodeWorkerQuestions, forgetWorkerQuestions } from './ocp-v2-ws.js';
 import { workerRestart } from '../worker-restart.js';
 import { t } from '../i18n.js';
 import { hostedSidepanelId, sidepanelHost } from '../ui-sidepanel-runtime.js';
@@ -2238,6 +2239,8 @@ function removeTab(sessionId, { byUser = false } = {}) {
   forgetWorkerEnd(_automationRunIds.get(sessionId));
   _workerEnds.delete(sessionId);
   _automationRunIds.delete(sessionId);
+  forgetWorkerQuestions(sessionId);
+  forgetWorkerQuestions(sessionId);
   unregisterAutomationSession(sessionId);
   _automationRunning.delete(sessionId);
   _automationTurn.delete(sessionId);
@@ -2536,6 +2539,7 @@ export async function attachOpenCodeAutomation(run, { focus = !!run?.focus, isCa
     && (_automationContinuedManually.has(sessionId) || _automationManualSendInFlight.has(sessionId));
   _automationRunIds.set(sessionId, run.runId);
   registerAutomationSession(sessionId, run.runId);
+  syncOpenCodeWorkerQuestions(run);
   if (running || previousRunId !== run.runId) {
     _automationContinuedManually.delete(sessionId);
     _automationManualSendInFlight.delete(sessionId);
@@ -2604,6 +2608,7 @@ export async function detachOpenCodeAutomation(runId) {
   if (!entry) return false;
   const [sessionId] = entry;
   _automationRunIds.delete(sessionId);
+  forgetWorkerQuestions(sessionId);
   _automationRunning.delete(sessionId);
   _automationTurn.delete(sessionId);
   _automationContinuedManually.delete(sessionId);

@@ -17,11 +17,12 @@ const questionSchema = z.object({
   header: z.string().min(1).max(40),
   question: z.string().min(1).max(400),
   options: z.array(optionSchema).min(2).max(4),
+  multiSelect: z.boolean().optional().describe('Allow more than one option in this question.'),
 });
 
 export const choiceSchema = {
   questions: z.array(questionSchema).min(1).max(3).describe(
-    'One to three blocking multiple-choice questions. Each question must have two to four mutually exclusive options.',
+    'One to three blocking multiple-choice questions. Each question must have two to four options; set multiSelect to allow more than one selection.',
   ),
 };
 
@@ -36,14 +37,18 @@ export function buildChoiceElicitation(questions: ChoiceQuestion[]) {
 
   for (const question of questions) {
     const otherField = `${question.id}__other`;
-    properties[question.id] = {
+    const choices = [
+      ...question.options.map((option) => ({ const: option.label, title: option.label })),
+      { const: SYNABUN_OTHER_VALUE, title: 'Other' },
+    ];
+    properties[question.id] = question.multiSelect ? {
+      type: 'array', title: question.header, description: question.question,
+      items: { type: 'string', anyOf: choices }, minItems: 1,
+    } : {
       type: 'string',
       title: question.header,
       description: question.question,
-      oneOf: [
-        ...question.options.map((option) => ({ const: option.label, title: option.label })),
-        { const: SYNABUN_OTHER_VALUE, title: 'Other' },
-      ],
+      oneOf: choices,
     };
     properties[otherField] = {
       type: 'string',
@@ -71,11 +76,11 @@ export function decodeChoiceAnswers(
 ) {
   const answers: Record<string, { answers: string[] }> = {};
   for (const question of questions) {
-    const selected = String(content[question.id] || '');
-    const value = selected === SYNABUN_OTHER_VALUE
-      ? String(content[`${question.id}__other`] || '').trim()
-      : selected;
-    if (value) answers[question.id] = { answers: [value] };
+    const raw = content[question.id];
+    const selected = Array.isArray(raw) ? raw.map(String) : [String(raw || '')];
+    const values = selected.map((value) => value === SYNABUN_OTHER_VALUE
+      ? String(content[`${question.id}__other`] || '').trim() : value).filter(Boolean);
+    if (values.length) answers[question.id] = { answers: values };
   }
   return answers;
 }
@@ -92,7 +97,7 @@ export async function handleChoice(
     }));
   }
 
-  const result = await server.server.elicitInput(buildChoiceElicitation(args.questions));
+  const result = await server.server.elicitInput(buildChoiceElicitation(args.questions), { timeout: 30 * 60_000 });
   return text(JSON.stringify({
     supported: true,
     action: result.action,

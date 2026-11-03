@@ -95,7 +95,7 @@ export const agentListSchema = {
 
 export const agentDispatchSchema = {
   provider: z.enum(PROVIDERS).optional().describe(
-    'Worker runtime. "claude-code" (Claude Agent SDK; supports permission_policy "ask"), "codex" (Codex app-server; use "restricted" instead of "ask"), "opencode" (isolated OpenCode serve), "antigravity" (Google Antigravity\'s agy CLI over ACP; supports "ask"; no accounts; reports tokens, not prices, so it runs only when the session budget is No limit). Required unless route_id is given (the approved route sets it). Reviews should use a different provider than the author.'
+    'Worker runtime. "claude-code" (Claude Agent SDK; supports permission_policy "ask"), "codex" (Codex app-server; supports questions and permission_policy "ask"), "opencode" (isolated OpenCode serve), "antigravity" (Google Antigravity\'s agy CLI over ACP; supports "ask"; no accounts; reports tokens, not prices, so it runs only when the session budget is No limit). Required unless route_id is given (the approved route sets it). Reviews should use a different provider than the author.'
   ),
   route_id: optionalId('The route_id agent_route returned with status "approved": the server applies the approved provider/model/effort. Dispatches without an approved route may be held for the user\'s model choice (status awaiting_route).'),
   task_class: z.enum(TASK_CLASSES).optional().describe('Task class, used when this dispatch has no route_id (with one, it must match the route\'s image_gen / video_gen / design class or neither).'),
@@ -126,7 +126,7 @@ export const agentDispatchSchema = {
     'Account profile id, or "auto" for the signed-in subscription with most usage left (API keys excluded; limited pinned/default accounts fall back within the provider, with corrections). An approved route binds its resolved account unless it becomes limited before dispatch. A Codex account for provider "codex" or a Claude account for provider "claude-code" (ignored for opencode and antigravity), an id from agent_catalog accounts["codex"] / accounts["claude-code"]. The worker uses that account\'s own mode (its ChatGPT or Claude subscription, or its API key). Omit to use the user\'s worker account for that provider (agent_catalog codexWorkerAccount / claudeWorkerAccount; Default when null). A signed-out account is refused with ACCOUNT_SIGNED_OUT.'
   ),
   permission_policy: z.enum(['auto', 'ask', 'restricted']).optional().describe(
-    '"auto" (default): fully autonomous. "ask": tool permissions and questions are relayed to you — collect them with agent_wait until="event" and answer with agent_send reply. "restricted": workspace-write sandbox without prompts (the Codex alternative to ask).'
+    'Questions in every policy appear in the worker’s live sidepanel and pause the same turn; agent_send reply can also answer (first answer wins). "auto" (default): autonomous tool permissions. "ask": tool permissions are relayed to you — collect them with agent_wait until="event" and answer with agent_send reply. "restricted": workspace-write sandbox; user questions remain available.'
   ),
   capability: z.enum(['read-only', 'workspace', 'full']).optional().describe(
     '"full" (default; "workspace" for design runs), "workspace" (edits limited to cwd) or "read-only" (reviews, research). Browser jobs with "full" require the tag "user-authorized-full".'
@@ -189,7 +189,7 @@ export const agentSendSchema = {
     decision: z.enum(['allow', 'deny', 'answer']).describe(
       '"allow" / "deny" for tool permission requests; "answer" for questions (provide answers).'
     ),
-    answers: z.record(z.unknown()).optional().describe('Question answers keyed by question id (decision "answer").'),
+    answers: z.record(z.unknown()).optional().describe('Question answers: Claude keys are the exact question text; Codex/choice/form keys are field ids (values may be {answers:[...]}); OpenCode keys are question text/header or index, with string-array values for multiple choices (decision "answer").'),
     note: z.string().max(2000).optional().describe('Optional message delivered to the worker with the decision.'),
   }).optional().describe('Answer a pending permission or question request instead of (or before) sending text.'),
   queue: z.boolean().optional().describe(

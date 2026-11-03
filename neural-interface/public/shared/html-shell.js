@@ -713,6 +713,7 @@ ${is3D ? '' : `
       <span class="fe-branch-btn-name" id="fe-branch-btn-name"></span>
       <span class="fe-branch-btn-badge" id="fe-branch-btn-badge"></span>
     </button>
+    <span class="fe-git-scan-live" id="fe-git-scan-live" role="status" aria-live="polite"></span>
   </div>
   <div class="fe-filter">
     <svg class="fe-filter-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4-2v-4z"/></svg>

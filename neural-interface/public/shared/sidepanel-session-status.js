@@ -44,6 +44,6 @@ export function normalizeSessionWindowStatus(status) {
  */
 export function runAwaitsAnswer(run) {
   if (run?.status !== 'starting' && run?.status !== 'running') return false;
-  if (run.turnState === 'needs_input') return true;
+  if (run.turnState === 'needs_input' || run.turnState === 'awaiting_permission' || run.pending?.some((p) => p.kind === 'question')) return true;
   return run.turnState === 'idle' && (run.outcome || run.lastResult?.status) === 'needs_input';
 }

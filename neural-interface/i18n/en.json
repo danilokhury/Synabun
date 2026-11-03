@@ -1,4 +1,8 @@
 {
+  "workerQuestion": {
+    "deliveryFailed": "Could not deliver your answer. Try again.",
+    "resolved": "Resolved"
+  },
   "workerRestart": {
     "suspended": "Suspended — this run resumes as soon as SynaBun is back.",
     "resumed": "Resumed after the server restart — this run continues here."
@@ -822,7 +826,8 @@
       "scanning": "Scanning git status…",
       "timedOut": "Git status timed out. Retry with Refresh.",
       "scanFailed": "Could not scan git status. Retry with Refresh.",
-      "label": "Branch {branch}: {count} changed"
+      "label": "Branch {branch}: {count} changed",
+      "withState": "{label} · {state}"
     },
     "count": {
       "items": {

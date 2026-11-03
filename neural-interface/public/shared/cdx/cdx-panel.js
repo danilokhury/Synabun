@@ -1,3 +1,5 @@
+import { syncWorkerQuestions } from '../worker-questions.js';
+import { handleServerRequest, resolveRequestCard } from './cdx-requests.js';
 import { cxpText, cxpSessionLabel, setCodexTranslator } from './cdx-copy.js';
 // SynaBun — Codex Panel: DOM, Events & Lifecycle
 // ═══════════════════════════════════════════
@@ -1190,6 +1192,14 @@ export async function attachCodexAutomation(run, {
     tab._automationLifecycleError = run.error;
     withTab(tab, () => appendSystem(run.error, 'error'));
   }
+  withTab(tab, () => syncWorkerQuestions(tab, run, {
+    open: (id, pending) => handleServerRequest({ requestId: id, method: pending.protocol?.method, params: pending.input || {}, threadId }),
+    close: (id) => {
+      resolveRequestCard(id, t('workerQuestion.resolved'));
+      tab.heldServerRequests?.delete(String(id));
+      tab.blockingServerRequests?.delete(String(id));
+    },
+  }));
   trackWorkerEnd(run, { apply: (view) => { tab._workerEnd = view; placeWorkerEnd(tab); } });
   saveTabs();
   renderPills();

@@ -1,3 +1,5 @@
+import { t } from '../i18n.js';
+import { answerWorkerQuestion } from '../worker-questions.js';
 // ─────────────────────────────────────────────────────────────────────────────
 // OpenCode V2 — WebSocket client (multi-panel)
 // One WS connection serves every OCP v2 panel on the page. Panels register a
@@ -633,6 +635,41 @@ function request(payload, timeoutMs = 30000, { turnOf = '' } = {}) {
   });
 }
 
+const workerQuestionRuns = new Map();
+export const hasWorkerQuestions = (sessionId) => workerQuestionRuns.has(sessionId);
+export const forgetWorkerQuestions = (sessionId) => workerQuestionRuns.delete(sessionId);
+const workerQuestions = (run) => (run?.pending || []).filter((p) => p.kind === 'question').map((p) => ({ ...p.input, id: p.protocol?.id, sessionID: run.providerSessionId, _workerRequestId: p.requestId }));
+
+export function syncOpenCodeWorkerQuestions(run) {
+  if (run.runMode !== 'task') return;
+  const sid = run.providerSessionId;
+  const previous = workerQuestions(workerQuestionRuns.get(sid));
+  workerQuestionRuns.set(sid, run);
+  const next = workerQuestions(run);
+  for (const req of previous) if (!next.some((n) => n.id === req.id)) _asks.note('question.replied', { id: req.id, sessionID: sid });
+  for (const req of next) _asks.note('question.asked', req);
+  for (const store of _storesBySession.get(sid) || []) {
+    for (const req of previous) if (!next.some((n) => n.id === req.id)) store.removePendingQuestion(req.id);
+    for (const req of next) store.addPendingQuestion(req);
+  }
+}
+
+async function answerOpenCodeWorker({ sessionId, requestId, answers }, reject = false) {
+  let run = workerQuestionRuns.get(sessionId);
+  let pending = workerQuestions(run).find((q) => q.id === requestId);
+  // An SSE question can precede the run update. Read the authoritative pending request before answering.
+  if (!pending) {
+    const res = await fetch(`/api/assistant/runs/${encodeURIComponent(run.runId)}`);
+    if (!res.ok) throw new Error(t('workerQuestion.deliveryFailed'));
+    const body = await res.json();
+    if (!body.run) throw new Error(t('workerQuestion.deliveryFailed'));
+    run = body.run; pending = workerQuestions(run).find((q) => q.id === requestId);
+  }
+  if (pending) await answerWorkerQuestion(run.runId, pending._workerRequestId, { decision: reject ? 'deny' : 'answer', answers });
+  for (const store of _storesBySession.get(sessionId) || []) store.removePendingQuestion(requestId);
+  return { ok: true, data: true };
+}
+
 export const api = {
   init:           ()              => request({ type: 'init', windowId: nativeLoopWindowId }),
   // options: { search, archived, roots, limit }. A server without
@@ -651,9 +688,9 @@ export const api = {
   compact: ({ sessionId, cwd, tools } = {}) => request({ type: 'session:compact', sessionId, cwd, tools }, 5 * 60 * 1000),
   permissionReply: ({ sessionId, permissionId, response, cwd, message }) =>
     request({ type: 'permission:reply', sessionId, permissionId, response, cwd, message }),
-  questionList:   ({ cwd, sessionId } = {})   => request({ type: 'question:list', cwd, sessionId }),
-  questionReply:  ({ requestId, answers, cwd, sessionId }) => request({ type: 'question:reply', requestId, answers, cwd, sessionId }),
-  questionReject: ({ requestId, sessionId })  => request({ type: 'question:reject', requestId, sessionId }),
+  questionList:   ({ cwd, sessionId } = {})   => workerQuestionRuns.has(sessionId) ? Promise.resolve({ data: workerQuestions(workerQuestionRuns.get(sessionId)) }) : request({ type: 'question:list', cwd, sessionId }),
+  questionReply:  ({ requestId, answers, cwd, sessionId }) => workerQuestionRuns.has(sessionId) ? answerOpenCodeWorker({ requestId, answers, sessionId }) : request({ type: 'question:reply', requestId, answers, cwd, sessionId }),
+  questionReject: ({ requestId, sessionId })  => workerQuestionRuns.has(sessionId) ? answerOpenCodeWorker({ requestId, sessionId }, true) : request({ type: 'question:reject', requestId, sessionId }),
   toolsGet:  (sessionId) => gated({ type: 'mcp:tools:get', sessionId }),
   toolsSet:  (sessionId, tools) => gated({ type: 'mcp:tools:set', sessionId, tools }, 45_000),
 

@@ -198,12 +198,12 @@ export function styleGuideBlock(state = {}) {
 }
 
 function policyLine(policy) {
-  if (String(policy) === 'ask') {
-    return 'Permission requests are answered by the orchestrator or the user; keep them minimal and batch related actions. '
-      + 'If you need a decision, ask once and precisely with the question tool available to you.';
-  }
-  return 'This run is unattended: do not ask questions, do not enter plan mode, and do not wait for approval. '
-    + 'Make reasonable assumptions and state them in your result. If you truly cannot proceed, finish with status needs_input and one precise question.';
+  const permissions = String(policy) === 'ask'
+    ? 'Permission requests are answered by the orchestrator or the user; keep them minimal and batch related actions. '
+    : 'Continue autonomously within your permissions. Make reasonable assumptions and state them in your result. ';
+  return permissions + 'Ask only when genuinely blocked on a decision only the user can make. Use your question tool, never prose or a final needs_input result to ask: the user answers in this run’s live sidepanel and this SAME turn continues. '
+    + 'Claude Code: load the deferred AskUserQuestion schema with ToolSearch (select:AskUserQuestion) before calling it. Codex: use SynaBun choice in Default mode (request_user_input only in Plan mode). OpenCode: use the native question tool. Antigravity: use SynaBun choice through ACP form elicitation. '
+    + 'Do not enter plan mode just to ask. While a question is pending, wait for its tool result; do not end the turn or re-dispatch. If no question tool works, report blocked with the missing capability.';
 }
 
 /**
@@ -419,6 +419,7 @@ export function buildResumePrompt(state = {}, { at = '', selfRestarts = false } 
   const lines = [
     `SERVER RESTART (same run ${runId}, project "${project}"): SynaBun's server restarted${clean(at) ? ` at ${clean(at)}` : ''} while you were working on this task, and this conversation was resumed in a new process.`,
     '- A tool call that was running then was cut off: its result is lost, and a command it started may or may not have finished.',
+    '- A question pending before the restart was cancelled with its live tool call, not answered. If it is still needed, ask again with the question tool; never infer an answer from the cancellation.',
     '- Check the actual state before you go on instead of assuming it: git status and git log, the files you were changing, test or build output, processes you started.',
     '- Do not repeat a side effect that already happened (a commit, a push, a message or post sent, a memory stored, a deploy): check first.',
   ];

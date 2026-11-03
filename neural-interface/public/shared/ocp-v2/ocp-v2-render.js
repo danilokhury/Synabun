@@ -10,7 +10,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { getDefaultStore } from './ocp-v2-state.js';
-import { api, supports, isDescendantSession, isKnownDescendantSession, onEvent } from './ocp-v2-ws.js';
+import { hasWorkerQuestions, api, supports, isDescendantSession, isKnownDescendantSession, onEvent } from './ocp-v2-ws.js';
 import {
   permissionCardView, ALWAYS_ALLOW_SCOPE, replyToPermission, FOREIGN_REQUEST_MESSAGE,
   transcriptQuestionCard, answerQuestion, skipQuestion,
@@ -1000,6 +1000,12 @@ function renderToolPart(part, store) {
       done.className = 'ocpv2-part ocpv2-part-question-stub';
       done.textContent = 'Question answered.';
       return done;
+    }
+    if (hasWorkerQuestions(store.getState().sessionId)) {
+      const stub = document.createElement('div');
+      stub.className = 'ocpv2-part ocpv2-part-question-stub';
+      stub.textContent = store.getState().pendingQuestions?.length ? 'Awaiting your answer…' : 'Question answered.';
+      return stub;
     }
     // Dedup: if an SSE-driven QuestionRequest exists whose tool.callID matches
     // this tool part, let the pendingQuestions render handle it instead.

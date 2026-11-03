@@ -5,9 +5,10 @@ import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
 
 export class GuardCdpConnection extends EventEmitter {
-  constructor(socket) {
+  constructor(socket, { timeoutMs = 5000 } = {}) {
     super();
     this.socket = socket;
+    this.timeoutMs = timeoutMs;
     this.pending = new Map();
     this.sequence = 0;
     this.closed = false;
@@ -33,7 +34,7 @@ export class GuardCdpConnection extends EventEmitter {
     if (this.closed || this.closing) return Promise.reject(new Error('Network guard CDP transport closed'));
     const id = ++this.sequence;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`Network guard: ${method} timed out`)); }, 5000);
+      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`Network guard: ${method} timed out`)); }, this.timeoutMs);
       this.pending.set(id, { resolve, reject, timer, sessionId, method });
       const failed = error => {
         if (!error) return;
@@ -67,7 +68,7 @@ export class GuardCdpConnection extends EventEmitter {
   }
 }
 
-export async function connectGuardCdp(endpoint) {
+export async function connectGuardCdp(endpoint, { timeoutMs } = {}) {
   let address = endpoint;
   if (!/^wss?:\/\//.test(address)) {
     // The owned DevTools JSON API, not page retrieval. No cookies or profile
@@ -79,5 +80,5 @@ export async function connectGuardCdp(endpoint) {
   if (typeof address !== 'string' || !/^wss?:\/\//.test(address)) throw new Error('Network guard: no DevTools WebSocket endpoint');
   const socket = new WebSocket(address, { handshakeTimeout: 5000, maxPayload: 16 * 1024 * 1024 });
   await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
-  return new GuardCdpConnection(socket);
+  return new GuardCdpConnection(socket, { timeoutMs });
 }

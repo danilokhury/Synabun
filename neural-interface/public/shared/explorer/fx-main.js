@@ -48,7 +48,9 @@ const EXPAND_LEVEL_MAX = 200;
  * @param {object} host.send what each side panel offers for a path (fx-links.js createSender)
  * @param {(name: string) => object} host.fileIcon @param {string} host.folderSvg
  * @param {{ all: { hex: string, key: string }[], of: (path: string) => string | undefined, set: Function, move: Function }} host.colors
- * @param {(git: { isGit: boolean, branch: string, count: number }) => void} host.onGit
+ * @param {(git: { isGit: boolean, branch: string, count: number, scanState?: 'ready' | 'scanning' | 'timed-out' | 'failed',
+ *   shown?: boolean, loud?: boolean }) => void} host.onGit `shown`: a result of this project is already on screen;
+ *   `loud`: the scan is the project's first or one the owner asked for (Refresh), not a background one.
  * @param {() => void} host.addProject
  * @param {typeof fetch} [host.fetchImpl]
  */
@@ -78,6 +80,9 @@ export function createExplorer(host) {
   let saidLimited = false;      // this project was told once that not everything on disk is followed
   let loaded = Promise.resolve();
   let gitTimer = 0; let gitRequest = null; let gitRefresh = false; let gitAgain = false; let lastGitAt = 0;
+  // gitShown: a result of this project is on screen. gitLoud: the owner asked (Refresh), so a slow scan may say so.
+  // gitSettled: the last state a scan ended in, put back when a scan that said 'scanning' is called off.
+  let gitShown = false; let gitLoud = false; let gitSettled = 'ready';
   let diskTimer = 0; let lastDiskAt = 0; const diskDue = new Set();
   let filterTimer = 0; let searchAbort = null;
   let persistTimer = 0; let lastFocusRefresh = 0;
@@ -301,7 +306,7 @@ export function createExplorer(host) {
   function cancelGit() {
     clearTimeout(gitTimer);
     gitRequest?.controller.abort();
-    gitRequest = null; gitAgain = false; gitRefresh = false;
+    gitRequest = null; gitAgain = false; gitRefresh = false; gitLoud = false;
   }
   async function loadGit() {
     if (!S.root || !S.visible) return;
@@ -310,20 +315,29 @@ export function createExplorer(host) {
     const request = { root: S.root, controller: new AbortController() };
     gitRequest = request;
     const mine = epoch;
-    const say = (scanState) => host.onGit({ isGit: S.git.isGit, branch: S.git.branch, count: S.git.count, scanState });
-    const slow = setTimeout(() => { if (gitRequest === request && mine === epoch) say('scanning'); }, 1500);
     const refresh = gitRefresh; gitRefresh = false;
+    // A background scan (the watcher, focus, the popover) never puts words in the header while a result is shown:
+    // only the first scan of a project, or one the owner asked for, is loud.
+    const loud = gitLoud || !gitShown; gitLoud = false;
+    let said = '';
+    const say = (scanState) => { said = scanState; host.onGit({ ...gitState(scanState), loud }); };
+    const slow = setTimeout(() => { if (gitRequest === request && mine === epoch) say('scanning'); }, 1500);
     const got = await api.git(request.root, request.controller.signal, refresh);
     clearTimeout(slow);
     if (gitRequest !== request) return;
     gitRequest = null;
     if (mine === epoch && got.ok) {
       if (!got.partial || !S.git.isGit) S.git = gitIndex(got);
-      say(got.scanState || 'ready');
+      gitShown = true;
+      say(gitSettled = got.scanState || 'ready');
       if (S.changedOnly) { buildView(); tree.render(); } else tree.refreshRows();
       updateCount();
-    } else if (mine === epoch && got.code !== 'aborted') say('failed');
+    } else if (mine === epoch && got.code !== 'aborted') say(gitSettled = 'failed');
+    else if (mine === epoch && said === 'scanning') say(gitSettled);
     if (gitAgain) { gitAgain = false; queueGit(); }
+  }
+  function gitState(scanState) {
+    return { isGit: S.git.isGit, branch: S.git.branch, count: S.git.count, scanState, shown: gitShown };
   }
   // Soon after the last sign of a change, and never more often than once in a while: a file that is written
   // without pause (a log, a database) does not make git run without pause.
@@ -669,7 +683,7 @@ export function createExplorer(host) {
       case 'sortBy': return [back(), ...SORTS.map((mode) => ({ id: `sort:${mode}`, label: t(`fileExplorer.menu.sort.${mode}`), checked: S.sort === mode }))];
       case 'expandAll': expandLevel(); break;
       case 'collapseAll': collapseAll(); break;
-      case 'refresh': gitRefresh = true; refreshAll(); break;
+      case 'refresh': gitRefresh = true; gitLoud = true; refreshAll(); break;
       default:
     }
     return undefined;
@@ -754,7 +768,7 @@ export function createExplorer(host) {
     });
     on('fe-collapse-all', collapseAll);
     // Refresh also asks what the server has: one that was restarted since the page loaded is found out here.
-    on('fe-refresh', async () => { gitRefresh = true; await host.readServer?.(); await api.capabilities(); syncToolbar(); await refreshAll(); if (!watcher) startWatch(); });
+    on('fe-refresh', async () => { gitRefresh = true; gitLoud = true; await host.readServer?.(); await api.capabilities(); syncToolbar(); await refreshAll(); if (!watcher) startWatch(); });
     on('fe-more', (event) => { const box = event.currentTarget.getBoundingClientRect(); openMenu({ y: box.top + box.height / 2, keyboard: event.detail === 0 }); });
     on('fe-filter-clear', () => { clearFilter(); filterInput.focus(); });
     filterInput.addEventListener('input', () => setFilter(filterInput.value));
@@ -794,6 +808,7 @@ export function createExplorer(host) {
     closeFlyout({ refocus: false });
     searchAbort?.abort();
     clearTimeout(gitTimer);
+    gitShown = false; gitSettled = 'ready';
     S.dirs = new Map(); S.git = gitIndex(null); S.view = null; S.viewOpen = new Set(); S.viewClosed = new Set();
     S.search = null; S.filter = ''; S.clipboard = null;
     reads.clear();
@@ -840,7 +855,7 @@ export function createExplorer(host) {
   /** The panel is shown or hidden: the disk is followed only while it is shown. */
   function setVisible(visible) {
     S.visible = !!visible;
-    if (S.visible) { if (S.root) { startWatch(); if (S.dirs.size) refreshAll(); } } else { persist(); cancelGit(); host.onGit({ isGit: S.git.isGit, branch: S.git.branch, count: S.git.count, scanState: 'ready' }); stopWatch(); closeFlyout({ refocus: false }); }
+    if (S.visible) { if (S.root) { startWatch(); if (S.dirs.size) refreshAll(); } } else { persist(); cancelGit(); host.onGit(gitState(gitSettled)); stopWatch(); closeFlyout({ refocus: false }); }
   }
 
   /** Show a file of the project in the tree: its folders open, its row is selected and marked. */
@@ -866,7 +881,8 @@ export function createExplorer(host) {
     setProject,
     setVisible,
     reveal,
-    refresh: () => { gitRefresh = true; return refreshAll(); },
+    /** Read the disk and git again. `quiet`: nobody asked for it in so many words (the git popover opened). */
+    refresh: ({ quiet = false } = {}) => { gitRefresh = true; if (!quiet) gitLoud = true; return refreshAll(); },
     collapseAll,
     /** The icons changed: every row is drawn again. */
     redraw() { if (S.root) { const now = tree.selection(); const top = tree.scrollTop(); tree.setRoot(S.root); tree.render(); tree.select(now.selected, { focus: now.focus, quiet: true, scroll: false }); tree.setScrollTop(top); } },

@@ -1,3 +1,4 @@
+import { answerWorkerQuestion } from '../worker-questions.js';
 import { cxpText, cxpSessionLabel } from './cdx-copy.js';
 import { codexWantsRolloutPreview, rolloutPreviewApplies } from './cdx-preview.js';
 import { mountCodexSettings } from './cdx-settings.js';
@@ -206,6 +207,13 @@ function autosizeInput() { _onAutosizeInput?.(); }
 function emit(...args) { _onEmit?.(...args); }
 
 function sendSocket(msg) {
+  if (_boundTab?.automationRunId && msg?.type === 'server_request_response') {
+    const tab = _boundTab;
+    answerWorkerQuestion(tab.automationRunId, msg.requestId, { behavior: msg.error || ['cancel', 'decline'].includes(msg.result?.action) || ['cancel', 'decline'].includes(msg.result?.decision) ? 'deny' : 'allow', result: msg.result, error: msg.error })
+      .then((result) => withTab(tab, () => handleServerRequestResponseResult({ responseToken: msg.responseToken, ok: true, status: result.stale ? 'stale' : 'answered' })),
+        (error) => withTab(tab, () => handleServerRequestResponseResult({ responseToken: msg.responseToken, ok: false, status: tab._workerQuestions?.has(String(msg.requestId)) ? 'delivery_failed' : 'stale', retryable: true, error: error.message })));
+    return true;
+  }
   const packet = msg && _boundTab?.id
     ? {
         ...msg,

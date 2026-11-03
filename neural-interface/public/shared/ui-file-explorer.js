@@ -291,6 +291,13 @@ async function showTree() {
   }
 }
 
+// What each scan state says, in words. The header never shows them while a branch is on screen (that would
+// move the row): there they are a dot on the branch button, its tooltip and label, and a line of the git popover.
+const SCAN_STATE_TEXT = { scanning: 'fileExplorer.branch.scanning', 'timed-out': 'fileExplorer.branch.timedOut', failed: 'fileExplorer.branch.scanFailed' };
+function scanStateText(git) {
+  return git && SCAN_STATE_TEXT[git.scanState] ? tr(SCAN_STATE_TEXT[git.scanState]) : '';
+}
+
 function updateBranchLabel(git) {
   _git = git;
   const btn = $('fe-branch-btn');
@@ -298,25 +305,33 @@ function updateBranchLabel(git) {
   const badge = $('fe-branch-btn-badge');
   if (!btn) return;
 
-  const scanning = git.scanState === 'scanning';
-  const message = scanning ? tr('fileExplorer.branch.scanning') : git.scanState === 'timed-out' ? tr('fileExplorer.branch.timedOut') : git.scanState === 'failed' ? tr('fileExplorer.branch.scanFailed') : '';
-  btn.classList.toggle('fe-branch-btn--scanning', scanning);
-  btn.setAttribute('aria-busy', String(scanning));
-  let hint = btn.querySelector('.fe-git-scan-hint');
-  if (!hint) { hint = document.createElement('span'); hint.className = 'fe-git-scan-hint'; hint.setAttribute('role', 'status'); hint.setAttribute('aria-live', 'polite'); btn.appendChild(hint); }
-  hint.textContent = message;
-  hint.hidden = !message;
+  const state = SCAN_STATE_TEXT[git.scanState] ? git.scanState : '';
+  const message = scanStateText(git);
+  const hasBranch = !!(git.isGit && git.branch);
+  // Nothing on screen yet (the project's first scan): the state, in one truncated line, where the branch will be.
+  const placeholder = !hasBranch && !git.shown && !!message;
+  let dot = btn.querySelector('.fe-branch-btn-state');
+  if (!dot) { dot = document.createElement('span'); dot.className = 'fe-branch-btn-state'; dot.setAttribute('aria-hidden', 'true'); btn.appendChild(dot); }
+  if (state) btn.dataset.scanState = state; else delete btn.dataset.scanState;
+  btn.setAttribute('aria-busy', String(state === 'scanning'));
+  // Read out, never drawn: only what the owner is waiting for (a first scan, a Refresh), or how one ended.
+  const live = $('fe-git-scan-live');
+  // A background scan clears it (that is not read out) rather than leave an old sentence there.
+  if (live) { const said = git.loud ? message : ''; if (live.textContent !== said) live.textContent = said; }
 
-  if ((git.isGit && git.branch) || message) {
+  if (hasBranch || placeholder) {
     btn.style.display = '';
-    if (nameEl) nameEl.textContent = git.branch || '';
-    if (badge) badge.textContent = git.count > 0 ? git.count : '';
-    btn.setAttribute('aria-label', tr('fileExplorer.branch.label', { branch: git.branch, count: git.count }));
-    btn.dataset.tooltip = message || tr('fileExplorer.branch.label', { branch: git.branch, count: git.count });
-    if (message) btn.setAttribute('aria-label', message);
+    btn.classList.toggle('fe-branch-btn--placeholder', placeholder);
+    if (nameEl) nameEl.textContent = hasBranch ? git.branch : message;
+    if (badge) badge.textContent = hasBranch && git.count > 0 ? git.count : '';
+    const label = hasBranch ? tr('fileExplorer.branch.label', { branch: git.branch, count: git.count }) : '';
+    const full = label && message ? tr('fileExplorer.branch.withState', { label, state: message }) : label || message;
+    btn.setAttribute('aria-label', full);
+    btn.dataset.tooltip = full;
     if (_gitPopoverOpen) renderGitSummary();
   } else {
     btn.style.display = 'none';
+    btn.classList.remove('fe-branch-btn--placeholder');
     closeGitPopover();
   }
 }
@@ -370,7 +385,8 @@ function openGitPopover() {
   requestAnimationFrame(() => pop.classList.add('visible'));
   loadGitBranches();
   renderGitSummary();
-  _fx?.refresh();
+  // Fresh counts for the popover, without a word in the header: nobody pressed Refresh.
+  _fx?.refresh({ quiet: true });
 }
 
 function closeGitPopover() {
@@ -391,6 +407,7 @@ function toggleGitPopover() {
 
 // What changed, in words and counts: from the git state the tree already holds.
 function renderGitSummary() {
+  renderGitScanState();
   const summary = $('fe-git-summary');
   if (!summary) return;
   const changes = _fx?.state.git.changed() || [];
@@ -415,6 +432,18 @@ function renderGitSummary() {
     part.textContent = tr(`fileExplorer.gitPanel.count.${kind}`, { count: counts[kind] });
     summary.append(part);
   }
+}
+
+// How the last scan went, in the popover (the header has no room for words): a timeout or a failure always,
+// a scan under way only when the owner is waiting for it (the first one, a Refresh).
+function renderGitScanState() {
+  const line = $('fe-git-scan-state');
+  if (!line) return;
+  const state = _git?.scanState;
+  const message = state === 'scanning' && !_git.loud ? '' : scanStateText(_git);
+  line.textContent = message;
+  line.hidden = !message;
+  if (message) line.dataset.tone = state; else delete line.dataset.tone;
 }
 
 async function loadGitBranches() {
@@ -573,6 +602,7 @@ function createGitPopover() {
       </div>
       <div class="fe-git-pop-sep"></div>
       <div class="fe-git-pop-section">
+        <div class="fe-git-scan-state" id="fe-git-scan-state" hidden></div>
         <div class="fe-git-summary" id="fe-git-summary"></div>
       </div>
     </div>

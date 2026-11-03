@@ -2794,6 +2794,7 @@ export function createAssistantRuntime({
     if (message.type === 'assistant:permission-request') {
       sendToSockets(live, { type: 'event', event: { type: 'synabun.dispatch_control_request', runId: message.runId, request_id: message.request?.requestId, provider: dispatcher?.get?.(message.runId)?.provider || null, request: message.request } });
     } else if (message.type === 'assistant:permission-resolved') {
+      live.mailbox = live.mailbox.filter((item) => !(item.run?.runId === message.runId && item.request?.requestId === message.requestId));
       sendToSockets(live, { type: 'event', event: { type: 'synabun.dispatch_control_resolved', runId: message.runId, request_id: message.requestId, resolvedBy: message.resolvedBy, behavior: message.behavior } });
     }
   }
