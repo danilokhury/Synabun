@@ -319,14 +319,38 @@ export async function waitForClaudeMcpScope(q, names, { timeoutMs = 30000 } = {}
   }
   throw Object.assign(new Error('Claude MCP scope could not be enforced before the first turn'), { code: 'MCP_SCOPE_UNENFORCED' });
 }
+/** Values shorter than this are never redacted: a short or common word would be erased from ordinary output. */
+export const MIN_MCP_SECRET_LENGTH = 8;
 export function redactMcpValues(value, values) {
-  if (typeof value === 'string') { for (const secret of [...new Set(values)].filter(Boolean).sort((a, b) => b.length - a.length)) value = value.split(secret).join('[MCP value]'); return value; }
+  if (typeof value === 'string') { for (const secret of [...new Set(values)].filter(item => typeof item === 'string' && item.length >= MIN_MCP_SECRET_LENGTH).sort((a, b) => b.length - a.length)) value = value.split(secret).join('[MCP value]'); return value; }
   if (Array.isArray(value)) return value.map(item => redactMcpValues(item, values));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactMcpValues(item, values)]));
   return value;
 }
 
-export function mcpDefinitionValues(servers) {
+const SECRET_QUERY_NAME = /token|key|secret|auth|pass|pwd|sig|credential|session|code/i;
+/** The secrets a URL carries (userinfo, credential-named query values), never the URL itself. */
+export function urlSecretValues(url) {
+  if (typeof url !== 'string' || !url) return [];
+  let parsed; try { parsed = new URL(url); } catch { return []; }
+  const out = [];
+  for (const part of [parsed.username, parsed.password]) if (part) { out.push(part); try { out.push(decodeURIComponent(part)); } catch {} }
+  for (const [name, value] of parsed.searchParams) if (value && SECRET_QUERY_NAME.test(name)) { out.push(value); out.push(encodeURIComponent(value)); }
+  return out;
+}
+
+/**
+ * The real secrets of MCP server definitions: env / environment and header values, authToken, oauth strings
+ * and the secrets inside a URL. Never command, args, cwd, type or a whole URL, and never SynaBun's own entry
+ * (its headers name the project, terminal and role: ordinary words). `${VAR}` / `{env:VAR}` references are
+ * expanded through `env` when given. Values under MIN_MCP_SECRET_LENGTH are dropped.
+ */
+export function mcpSecretValues(servers, { env = null, exclude = ['SynaBun'] } = {}) {
   const strings = value => typeof value === 'string' ? [value] : Array.isArray(value) ? value.flatMap(strings) : value && typeof value === 'object' ? Object.values(value).flatMap(strings) : [];
-  return [...new Set(Object.values(servers || {}).flatMap(entry => ['command', 'args', 'cwd', 'env', 'environment', 'headers', 'url', 'oauth', 'headersHelper', 'authToken'].flatMap(field => strings(entry[field]))))].filter(Boolean);
+  const expand = value => env ? value.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}|\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (whole, a, b) => env[a || b] ?? whole) : value;
+  const values = Object.entries(servers || {}).filter(([name]) => !exclude.includes(name)).flatMap(([, entry]) => entry && typeof entry === 'object' ? [
+    ...['env', 'environment', 'headers', 'oauth', 'authToken'].flatMap(field => strings(entry[field])).flatMap(value => { const bare = /^(?:Bearer|Basic|Token|Bot)\s+(\S.*)$/i.exec(value); return bare ? [value, bare[1]] : [value]; }),
+    ...urlSecretValues(entry.url),
+  ] : []).map(expand);
+  return [...new Set(values)].filter(value => value.length >= MIN_MCP_SECRET_LENGTH);
 }

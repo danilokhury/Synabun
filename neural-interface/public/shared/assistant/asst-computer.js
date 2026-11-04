@@ -290,6 +290,14 @@ export function requestDesktopStop(body = { scope: 'all' }) {
 const ICON_COMPUTER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>';
 const ICON_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
 const POLL_MS = 3000;
+
+/** What a failed status check was: { kind: 'forbidden' | 'timeout' | 'error', message }. */
+export function computerCheckFailure(err) {
+  const message = str(err?.message) || 'The status check failed';
+  if (err?.status === 401 || err?.status === 403 || err?.forbidden) return { kind: 'forbidden', message };
+  if (err?.timedOut || err?.code === 'TIMEOUT' || err?.name === 'AbortError') return { kind: 'timeout', message };
+  return { kind: 'error', message };
+}
 const THUMB_MIN_INTERVAL_MS = 500; // ≤ 2 live-thumbnail updates per second
 
 function el(tag, className, text) {
@@ -411,6 +419,7 @@ export function createComputerPanel(hostEl, hooks = {}) {
     thumbTimer: null,
     thumbPending: null,
     view: '',
+    checkFailed: null,
   };
 
   function isEnabled() { try { return !!hooks.isEnabled?.(); } catch { return false; } }
@@ -575,7 +584,17 @@ export function createComputerPanel(hostEl, hooks = {}) {
     const note = (text) => body.appendChild(el('div', 'asst-computer-tray-note', text));
     const spinner = () => head.insertBefore(el('span', 'asst-spinner'), head.firstChild);
 
-    switch (info.state) {
+    const viewState = info.state === 'loading' && state.checkFailed ? 'check_failed' : info.state;
+    switch (viewState) {
+      case 'check_failed':
+        title.textContent = t('assistant.computer.checkFailed', 'Could not check computer use');
+        note(state.checkFailed.kind === 'forbidden'
+          ? t('assistant.computer.checkFailedForbidden', 'This window is not allowed to read computer use.')
+          : state.checkFailed.kind === 'timeout'
+            ? t('assistant.computer.checkFailedTimeout', 'The check did not answer in time.')
+            : state.checkFailed.message);
+        button(t('assistant.computer.checkAgain', 'Check again'), 'secondary', () => { state.checkFailed = null; render(); refresh().catch(() => {}); }, 'recheck');
+        break;
       case 'loading':
         spinner();
         title.textContent = t('assistant.computer.checking', 'Checking computer use…');
@@ -670,6 +689,7 @@ export function createComputerPanel(hostEl, hooks = {}) {
 
   function applyStatus(status) {
     if (!status || typeof status !== 'object') return;
+    state.checkFailed = null;
     state.status = status;
     state.info = computerSetupState(status);
     if (status.control && typeof status.control === 'object') {
@@ -688,7 +708,9 @@ export function createComputerPanel(hostEl, hooks = {}) {
       if (!state.destroyed) applyStatus(status);
       return status;
     } catch (err) {
-      if (!state.destroyed) { state.error = ''; render(); }
+      // A check that failed is a settled state (Check again), never "Checking…" forever. A status already known
+      // stays on screen; only a tray that never got one shows the failure.
+      if (!state.destroyed) { state.error = ''; state.checkFailed = computerCheckFailure(err); render(); }
       throw err;
     }
   }
@@ -735,6 +757,8 @@ export function createComputerPanel(hostEl, hooks = {}) {
     stop,
     isActive: desktopActive,
     status: () => state.status,
+    /** A status check made elsewhere failed: settle the tray instead of leaving it on "Checking…". */
+    checkFailed(err) { if (state.destroyed || state.status) return; state.checkFailed = computerCheckFailure(err); render(); },
     info: () => state.info,
     destroy() {
       state.destroyed = true;

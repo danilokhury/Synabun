@@ -9,6 +9,18 @@
 // requestFrames(ms) lifts the animation subscribers (≥ 24 fps) to 60 fps for a
 // moment: a pose blend, a hop.
 //
+// A frame is only requested for the vsync a subscriber is due on: a 30 fps
+// rig costs 30 frames a second, not one per vsync. Every frame the page draws
+// makes the browser restyle each running CSS animation on the main thread
+// (composited or not), so a frame nobody needs is never free. Between due
+// frames the loop sleeps on a timer that wakes half a frame before the vsync
+// it wants; the frame interval is learnt from back-to-back frames (60 Hz,
+// 120 Hz displays).
+//
+// A subscriber may name a `target` element: it runs only while that element
+// is on screen (one shared IntersectionObserver), and a loop whose every
+// subscriber is off screen requests nothing at all until one comes back.
+//
 // The loop stops while the tab is hidden (document.hidden, body.app-hidden)
 // and freezes while the UI is dragged (body.ui-interacting): subscribers are
 // skipped, and the first frame after either hands each one a dt of at most
@@ -20,7 +32,7 @@
 // pointermove listener and one keydown listener (both capture phase, so a
 // handler that stops propagation cannot hide input from them).
 //
-//   subscribe(fn(now, dt), { fps })  → unsubscribe()   (unsubscribe.setFps(n) re-caps)
+//   subscribe(fn(now, dt), { fps, target })  → unsubscribe()   (unsubscribe.setFps(n) re-caps)
 //   requestFrames(ms)                   60 fps for the next ms
 //   isReducedMotion()                   live prefers-reduced-motion
 //   onReducedMotionChange(fn(on))    → unsubscribe()
@@ -41,8 +53,10 @@
 const FRAME_60 = 1000 / 60;
 const SLOP = 4; // ms of rAF jitter a capped subscriber tolerates before it skips a frame
 const RESUME_DT = 50; // the first dt after a stop or a freeze is at most this
-const SLEEP_OVER = 48; // a wait longer than this sleeps on a timer instead of frames
 const POLL_MS = 250; // how often a stopped loop re-checks when no MutationObserver exists
+const PHASE_MS = 1500; // a frame newer than this still tells where the vsyncs fall
+const MIN_FRAME = 4; // ms: the shortest frame interval believed (240 Hz)
+const MAX_FRAME = 34; // ms: the longest (30 Hz)
 const MAX_BOOST = 5000;
 const LISTEN = { passive: true, capture: true };
 
@@ -84,10 +98,73 @@ let pollId = 0;
 let boostUntil = -Infinity;
 let watching = false;
 let observer = null;
+let frameMs = FRAME_60; // the display's frame interval, as back-to-back frames show it
+let lastTs = -Infinity; // the last frame's timestamp: where the vsyncs fall
+let inFrame = false; // frame() is running
+let chained = false; // the frame in flight was requested by the previous one, with no wait between
+const counts = { frames: 0, requests: 0, sleeps: 0 }; // for tests and the idle-CPU suite
 
 const capFps = fps => Math.max(1, Math.min(60, Number(fps) > 0 ? Number(fps) : 30));
 const boosted = (sub, t) => t < boostUntil && sub.fps >= 24;
 const intervalOf = (sub, t) => (boosted(sub, t) ? FRAME_60 : 1000 / sub.fps);
+/** A subscriber with a target off screen is parked: it is neither called nor waited for. */
+const parked = sub => sub.target && !sub.seen;
+
+// ── Targets: one IntersectionObserver for every subscriber that names an element ──
+
+let targetIo = null; // undefined while unavailable
+const targetSubs = new Map(); // element → Set of subs
+const targetSeen = new Map(); // element → on screen as last reported (absent until the first report)
+
+function targetObserver() {
+  if (targetIo !== null) return targetIo;
+  const IO = env ? env.IntersectionObserver : globalThis.IntersectionObserver;
+  if (typeof IO !== 'function') { targetIo = undefined; return targetIo; }
+  try {
+    targetIo = new IO((entries) => {
+      let woke = false;
+      for (const entry of entries) {
+        const set = targetSubs.get(entry.target);
+        if (!set) continue;
+        const on = !!entry.isIntersecting;
+        targetSeen.set(entry.target, on);
+        for (const sub of set) {
+          if (sub.seen === on) continue;
+          sub.seen = on;
+          if (on) { sub.resume = true; woke = true; }
+        }
+      }
+      if (woke && subs.size) wakeNow();
+    });
+  } catch { targetIo = undefined; }
+  return targetIo;
+}
+
+function watchTarget(sub) {
+  const el = sub.target;
+  const io = targetObserver();
+  if (!io) { sub.target = null; return; } // no observer: the target counts as on screen
+  let set = targetSubs.get(el);
+  if (!set) {
+    set = new Set();
+    targetSubs.set(el, set);
+    try { io.observe(el); } catch { targetSubs.delete(el); sub.target = null; return; }
+  }
+  set.add(sub);
+  // Until the observer's first report the target counts as on screen (it draws at once, as before).
+  sub.seen = targetSeen.has(el) ? targetSeen.get(el) : true;
+}
+
+function unwatchTarget(sub) {
+  const el = sub.target;
+  const set = el ? targetSubs.get(el) : null;
+  if (!set) return;
+  set.delete(sub);
+  if (set.size) return;
+  targetSubs.delete(el);
+  targetSeen.delete(el);
+  try { targetIo?.unobserve(el); } catch { /* already gone */ }
+}
 
 /** Why the loop is not running: '' (it runs), 'hidden' or 'interacting'. */
 export function tickerPaused() {
@@ -102,17 +179,20 @@ export function tickerPaused() {
 
 /**
  * Call `fn(now, dt)` from the shared loop, at most `fps` times a second
- * (1-60, default 30). Returns unsubscribe(); unsubscribe.setFps(n) changes the
- * cap in place.
+ * (1-60, default 30). With `target` (an element) it is called only while that
+ * element is on screen. Returns unsubscribe(); unsubscribe.setFps(n) changes
+ * the cap in place.
  */
-export function subscribe(fn, { fps = 30 } = {}) {
+export function subscribe(fn, { fps = 30, target = null } = {}) {
   if (typeof fn !== 'function') return Object.assign(() => {}, { setFps() {} });
-  const sub = { fn, fps: capFps(fps), last: -1, born: now(), resume: false };
+  const sub = { fn, fps: capFps(fps), last: -1, born: now(), resume: false, target: target && typeof target === 'object' ? target : null, seen: true };
   subs.add(sub);
+  if (sub.target) watchTarget(sub);
   watch();
   wakeNow();
   const unsubscribe = () => {
     if (!subs.delete(sub)) return;
+    unwatchTarget(sub);
     if (!subs.size) halt();
   };
   unsubscribe.setFps = (next) => {
@@ -138,22 +218,49 @@ function wakeNow() {
   schedule();
 }
 
+/**
+ * Request the next frame a subscriber is due on, and no other: when the next
+ * vsync serves it, at once; otherwise a timer wakes half a frame before the
+ * vsync it wants. Nothing at all while every subscriber is parked.
+ */
 function schedule() {
   if (rafId || timerId || !subs.size) return;
   const raf = rafFn();
   if (!raf) return;
   if (tickerPaused()) { stopped(); return; }
   const t = now();
-  let wait = Infinity;
+  let due = Infinity;
   for (const sub of subs) {
-    const due = sub.last < 0 ? 0 : sub.last + intervalOf(sub, t) - SLOP - t;
-    if (due < wait) wait = due;
+    if (parked(sub)) continue;
+    const at = sub.last < 0 ? t : sub.last + intervalOf(sub, t) - SLOP;
+    if (at < due) due = at;
   }
-  if (wait > SLEEP_OVER) {
-    timerId = later(() => { timerId = 0; schedule(); }, wait - FRAME_60);
+  if (!Number.isFinite(due)) return; // every subscriber is off screen: the observer wakes the loop
+  const phase = lastTs > -Infinity && t - lastTs < PHASE_MS ? lastTs : null;
+  let lead;
+  if (due <= t) lead = 0;
+  else if (phase === null) lead = due - t - frameMs; // no recent vsync to count from: the frame before `due`
+  else {
+    const k = Math.max(1, Math.ceil((due - phase) / frameMs - 1e-6));
+    lead = k === 1 ? 0 : phase + (k - 0.5) * frameMs - t; // half a frame before the vsync that serves `due`
+  }
+  if (lead > 1) {
+    counts.sleeps += 1;
+    timerId = later(() => { timerId = 0; schedule(); }, lead);
     return;
   }
+  counts.requests += 1;
+  chained = inFrame;
   rafId = raf(frame);
+}
+
+/** Learn the display's frame interval from two frames requested back to back. */
+function learnInterval(ts) {
+  if (!chained || !(lastTs > -Infinity)) return;
+  const d = ts - lastTs;
+  if (!(d >= MIN_FRAME && d <= MAX_FRAME)) return;
+  // Snap down to the shortest seen; drift back up slowly (a dropped frame is two, not a slower display).
+  frameMs = Math.min(d, Math.min(MAX_FRAME, frameMs + 0.05));
 }
 
 function frame(ts) {
@@ -161,8 +268,21 @@ function frame(ts) {
   if (!subs.size) return;
   if (tickerPaused()) { stopped(); return; }
   const t = typeof ts === 'number' && Number.isFinite(ts) ? ts : now();
+  counts.frames += 1;
+  learnInterval(t);
+  lastTs = t;
+  chained = false;
+  inFrame = true;
+  try {
+    runSubscribers(t);
+    schedule(); // inside the frame: a frame requested from here is the next vsync's (it teaches the interval)
+  } finally { inFrame = false; }
+}
+
+function runSubscribers(t) {
   for (const sub of Array.from(subs)) {
     if (!subs.has(sub)) continue; // unsubscribed by an earlier subscriber this frame
+    if (parked(sub)) continue;
     const interval = intervalOf(sub, t);
     if (sub.last >= 0 && t - sub.last < interval - SLOP) continue;
     let dt = t - (sub.last >= 0 ? sub.last : sub.born);
@@ -172,7 +292,6 @@ function frame(ts) {
     sub.last = t;
     try { sub.fn(t, dt); } catch (err) { report(err); }
   }
-  schedule();
 }
 
 /** The loop stopped (hidden) or froze (drag): mark the jump, wait for the watchers. */
@@ -334,6 +453,17 @@ function reset() {
   halt();
   subs.clear();
   boostUntil = -Infinity;
+  try { targetIo?.disconnect(); } catch { /* gone */ }
+  targetIo = null;
+  targetSubs.clear();
+  targetSeen.clear();
+  frameMs = FRAME_60;
+  lastTs = -Infinity;
+  inFrame = false;
+  chained = false;
+  counts.frames = 0;
+  counts.requests = 0;
+  counts.sleeps = 0;
   const q = motionQuery;
   if (q && motionFns.size) {
     if (q.removeEventListener) q.removeEventListener('change', onMotionQuery);
@@ -372,5 +502,10 @@ export const __ticker = {
     keyListeners: keyFns.size,
     keyAttached: keyOn,
     motionListeners: motionFns.size,
+    parked: Array.from(subs).filter(parked).length,
+    targets: targetSubs.size,
+    frameMs,
   }),
+  /** Frames run, frames requested and timer sleeps since the last reset (the idle-CPU suite reads them). */
+  counts: () => ({ ...counts }),
 };

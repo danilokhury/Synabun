@@ -853,6 +853,14 @@ function synabunSummaryText(name, input) {
 const _expandedToolIds = new Set();
 const SYNABUN_CHEVRON_SVG = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>';
 
+function spinRing() {
+  const ring = document.createElement('span');
+  ring.className = 'ocpv2-spin-ring';
+  ring.setAttribute('aria-hidden', 'true');
+  ring.appendChild(document.createElement('i'));
+  return ring;
+}
+
 function renderSynaBunToolPart(part, toolName, stateStatus) {
   const callId = part.callID || part.id || part.toolCallId || part.tool_use_id || `sb-${toolName}`;
   const expanded = _expandedToolIds.has(callId);
@@ -861,6 +869,8 @@ function renderSynaBunToolPart(part, toolName, stateStatus) {
   wrap.className = 'ocpv2-part ocpv2-part-tool ocpv2-tool-synabun' + (expanded ? ' ocpv2-tool-expanded' : '');
   wrap.dataset.toolId = callId;
   wrap.dataset.status = stateStatus;
+  // The working ring (.ocpv2-spin-ring): a box the compositor turns while the call runs or waits.
+  wrap.appendChild(spinRing());
 
   const head = document.createElement('div');
   head.className = 'ocpv2-tool-head ocpv2-sb-head';

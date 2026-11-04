@@ -90,9 +90,10 @@
  * - `paintMascot(svg, frame)` — draw a frame on any `mascotSvg()`. A still
  *   frame (`stillFrame`, or a rig that is not looping) draws its prop at
  *   ≥ .7 opacity with strokes of ≥ 1.5 CSS px, so it reads at 28×14.
- * - `mascotCameoSvg()` — two 3×7 px pill eyes (`syna-cameo` /
- *   `syna-cameo-eye`) for running pills, leaning −12° like the two-pill mark
- *   (never a pause glyph); the host's CSS animates them.
+ * - `mascotCameoSvg()` — two 3×7 px pill eyes (`syna-cameo` >
+ *   `syna-cameo-eyes` > svg > `syna-cameo-eye` ×2) for running pills,
+ *   leaning −12° like the two-pill mark (never a pause glyph); the host's CSS
+ *   moves the `syna-cameo-eyes` box (an HTML element, so the compositor runs it).
  * - `mascotPropSvg(kind, { width, height })` + `paintMascotProp(svg, kind)`
  *   — a kind's prop alone, framed to its own box: the ledger's row glyphs.
  * - `mascotBounds(pose)` — the face-unit box a pose can draw in (the eyes over
@@ -167,14 +168,18 @@ export function blinkAmount(elapsed) {
 /**
  * Two 3×7 px pill eyes for a running pill; the host's CSS moves them. The
  * pair leans −12° like the two-pill mark (the right eye sits higher), so it
- * never reads as a pause glyph. The eyes stay untransformed for the CSS glance.
+ * never reads as a pause glyph. What moves is the HTML box around the eyes
+ * (`syna-cameo-eyes`), never a part of the SVG: a box's transform runs on
+ * the compositor and, when the page draws a frame anyway, restyles one
+ * element without laying the SVG out again.
  */
 export function mascotCameoSvg({ className = '' } = {}) {
-  return `<svg class="syna-cameo${className ? ` ${className}` : ''}" viewBox="0 0 10 7" width="10" height="7" style="overflow:visible" aria-hidden="true" focusable="false">`
+  return `<span class="syna-cameo${className ? ` ${className}` : ''}" aria-hidden="true"><span class="syna-cameo-eyes">`
+    + '<svg viewBox="0 0 10 7" width="10" height="7" style="display:block;overflow:visible" focusable="false">'
     + '<g class="syna-cameo-pair" transform="rotate(-12 5 3.5)">'
     + '<rect class="syna-cameo-eye" x="0" y="0" width="3" height="7" rx="1.5" fill="currentColor"/>'
     + '<rect class="syna-cameo-eye" x="7" y="0" width="3" height="7" rx="1.5" fill="currentColor"/>'
-    + '</g></svg>';
+    + '</g></svg></span></span>';
 }
 
 /** Each prop's own box in face units, to draw it alone (a ledger row's glyph, a suggestion's). */
@@ -1842,6 +1847,14 @@ function createPainter(svg, uid) {
     if (value == null) el.removeAttribute(attr);
     else el.setAttribute(attr, value);
   };
+  /** A prop's writes for this frame: the last value per attribute wins, put() writes it once (paint). */
+  const staged = new Map();
+  const stage = (el, attr, value) => {
+    if (!el) return;
+    let attrs = staged.get(el);
+    if (!attrs) { attrs = new Map(); staged.set(el, attrs); }
+    attrs.set(attr, value);
+  };
   /** CSS px per face unit: the SVG's box over its viewBox (xMidYMid meet: the tighter axis). */
   const unitPx = () => {
     const w = Number(svg.getAttribute?.('width'));
@@ -1898,8 +1911,14 @@ function createPainter(svg, uid) {
       put(entry.g, 'display', null);
       put(entry.g, 'opacity', op < 0.999 ? n(op) : null);
       put(entry.g, 'transform', p.dx || p.dy ? `translate(${n(p.dx || 0)},${n(p.dy || 0)})` : null);
-      if (!f.still) for (const b of entry.base) put(b.el, b.attr, b.value); // live: the drawn values
-      PROPS[name].update(entry.r, p, put);
+      // Live: the drawn values, then the frame's own over them. Both are staged and each attribute is
+      // written once with its final value, so a frame that changes nothing writes nothing (an attribute
+      // written twice a frame, back to its base and on again, restyles and re-lays the SVG out every frame).
+      staged.clear();
+      if (!f.still) for (const b of entry.base) stage(b.el, b.attr, b.value);
+      PROPS[name].update(entry.r, p, stage);
+      for (const [el, attrs] of staged) for (const [attr, value] of attrs) put(el, attr, value);
+      staged.clear();
       if (f.still) legible(entry);
     }
   }

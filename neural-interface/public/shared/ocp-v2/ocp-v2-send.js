@@ -211,6 +211,12 @@ export function mountCompose(rootEl, store = getDefaultStore(), opts = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'ocpv2-input-wrap';
   _wrap = wrap;
+  // The focus ring (.ocpv2-spin-ring): a box the compositor turns while the composer has focus.
+  const ring = document.createElement('span');
+  ring.className = 'ocpv2-spin-ring';
+  ring.setAttribute('aria-hidden', 'true');
+  ring.appendChild(document.createElement('i'));
+  wrap.appendChild(ring);
 
   const inner = document.createElement('div');
   inner.className = 'ocpv2-input-inner';

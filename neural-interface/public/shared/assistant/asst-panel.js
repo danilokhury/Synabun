@@ -1118,7 +1118,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
           computerPanel.applyStatus(status);
           applyFeatures();
         })
-        .catch(() => { st.features.computer = false; applyFeatures(); });
+        .catch((err) => { st.features.computer = false; computerPanel.checkFailed?.(err); applyFeatures(); });
     }
   }
 

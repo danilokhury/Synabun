@@ -7,6 +7,7 @@
 import { fetchHealth, startHealth } from './api.js';
 import { emit, on } from './state.js';
 import { t } from './i18n.js';
+import { concealOverlay, revealOverlay } from './loading-teardown.js';
 import {
   START_LIMITS, START_STORAGE, createStartBridge, fetchStartBeacon, isMacPlatform, isWindowsPlatform,
   manualStartCommands, openStartLink, startBeaconTarget, startButtonUsable, startStatusView,
@@ -127,7 +128,7 @@ export function showLoadingError(title, sub, canStart, serverOffline) {
  */
 export function hideLoading(delay = 400) {
   const $overlay = $('loading-overlay');
-  if ($overlay) setTimeout(() => $overlay.classList.add('hidden'), delay);
+  if ($overlay) setTimeout(() => concealOverlay($overlay), delay);
 }
 
 /**
@@ -135,7 +136,7 @@ export function hideLoading(delay = 400) {
  */
 export function showLoading() {
   const $overlay = $('loading-overlay');
-  if ($overlay) $overlay.classList.remove('hidden');
+  if ($overlay) revealOverlay($overlay);
 }
 
 /**
@@ -479,7 +480,7 @@ function beginRestart({ request = null, announced = false, boot = '' } = {}) {
   _offlineTitle = t('loading.serverOffline');
   // `over-app`: no fade-in and above whatever is open. The screen is there in the frame of the click.
   $overlay.classList.add('over-app', 'error', 'server-offline');
-  $overlay.classList.remove('hidden');
+  revealOverlay($overlay);
   // Nothing behind the screen keeps the keyboard (a terminal, an editor).
   try { document.activeElement?.blur?.(); } catch {}
   if (_statusDot) _statusDot.classList.add('error');
@@ -503,7 +504,7 @@ function dismissRestart() {
   if (_restartTitle !== null) document.title = _restartTitle;
   _restartTitle = null;
   const $overlay = $('loading-overlay');
-  if ($overlay) $overlay.classList.add('hidden');
+  if ($overlay) concealOverlay($overlay);
 }
 
 // ═══════════════════════════════════════════

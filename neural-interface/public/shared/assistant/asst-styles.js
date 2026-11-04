@@ -252,9 +252,13 @@ export function injectAssistantStyles() {
     .asst-count.attention { color: var(--asst-warn); box-shadow: inset 0 0 0 1px var(--asst-pill-warn-ring); }
     /* The running cameo: the mascot's two pill eyes, glancing ±1.2px every 1.4s.
        One form everywhere (the header status, the tray pill, run pills):
-       mascotCameoSvg() from synabun-mascot.js, a 10×7 SVG. */
+       mascotCameoSvg() from synabun-mascot.js, a 10×7 SVG in two spans. The
+       glance moves the HTML box around the eyes (.syna-cameo-eyes), along the
+       pair's −12° lean (1.2 of the SVG's 10×7 units: 11.738% and 3.564% of the
+       box), never a part of the SVG: a box's transform runs on the compositor,
+       and a frame the page draws anyway restyles one span and lays nothing out. */
     .syna-cameo { display: inline-block; flex-shrink: 0; overflow: visible; color: var(--asst-brand); }
-    .syna-cameo-eye { transform-box: fill-box; animation: asst-cameo 2.8s var(--asst-ease-emphasized) infinite; }
+    .syna-cameo-eyes { display: block; animation: asst-cameo 2.8s var(--asst-ease-emphasized) infinite; }
 
     /* ── Toolbar: flush under the terminal tabs ─────────────────────────
        Edge to edge like the tab bar above it (same hairline), no card and no
@@ -1088,6 +1092,8 @@ export function injectAssistantStyles() {
       border-radius: 50%;
       animation: asst-spin .8s linear infinite;
     }
+    /* A spinner nobody can see never runs (a hidden holder still restyles a running loop every frame). */
+    [hidden] .asst-spinner, .asst-spinner[hidden], [inert] .asst-spinner { animation: none; }
     .asst-computer-activity { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 7px 8px 7px 12px; border-bottom: 1px solid var(--asst-line); }
     .asst-live-dot { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: var(--asst-live); animation: asst-live 1.4s var(--asst-ease-standard) infinite; }
     .asst-computer-activity[data-state="paused_user"] .asst-live-dot { background: var(--asst-warn); animation: none; }
@@ -2063,10 +2069,24 @@ export function injectAssistantStyles() {
        whole Assistant holds still: the component, its menus and modals, the
        sidepanel frame and its header (.asp-*), and the tray pills. */
     @keyframes asst-live { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.8); } }
-    @keyframes asst-cameo { 0%, 42% { transform: translateX(-1.2px); } 50%, 92% { transform: translateX(1.2px); } 100% { transform: translateX(-1.2px); } }
+    @keyframes asst-cameo { 0%, 42% { transform: translate(-11.738%, 3.564%); } 50%, 92% { transform: translate(11.738%, -3.564%); } 100% { transform: translate(-11.738%, 3.564%); } }
     @keyframes asst-spin { to { transform: rotate(360deg); } }
 
-    body.ui-interacting :is(.asst-live-dot, .asst-spinner, .asst-computer-dot, .syna-cameo-eye) { animation-play-state: paused !important; }
+    /* A moving box gets its layer up front (only where motion is allowed; nothing is promoted under reduced motion). */
+    @media (prefers-reduced-motion: no-preference) {
+      .syna-cameo-eyes { will-change: transform; }
+    }
+
+    body.ui-interacting :is(.asst-live-dot, .asst-spinner, .asst-computer-dot, .syna-cameo-eyes) { animation-play-state: paused !important; }
+
+    /* Off screen, nothing loops. A holder the renderer saw leave the viewport (asst-motion-gate.js marks it
+       data-offscreen: a run card, a rack or a route line scrolled out of its transcript) and a closed side
+       panel (it stays in the page, moved out and faded: .assistant-panel without .open) pause every loop
+       under them; each picks up where it stopped when it is back. Every frame the page draws restyles each
+       running animation, composited or not, so a loop nobody sees is never free. */
+    [data-offscreen], [data-offscreen]::before, [data-offscreen]::after,
+    [data-offscreen] *, [data-offscreen] *::before, [data-offscreen] *::after,
+    .assistant-panel:not(.open) *, .assistant-panel:not(.open) *::before, .assistant-panel:not(.open) *::after { animation-play-state: paused !important; }
     body.ui-interacting .asst-route-line[data-live] .asst-route-icon,
     body.ui-interacting .asst-route-line[data-live] .asst-route-sweep::after { animation-play-state: paused !important; }
 

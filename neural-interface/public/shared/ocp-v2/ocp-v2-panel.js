@@ -2271,6 +2271,7 @@ function createTabPill(sessionId) {
   pill.dataset.owner = PANEL_OWNER;
   pill.dataset.sessionId = sessionId;
   pill.innerHTML = `
+    <span class="ocpv2-pill-ring" aria-hidden="true"><i></i></span>
     <span class="term-minimized-pill-icon">${OPENCODE_ICON}</span>
     <span class="term-minimized-pill-label">${escapeHtml(tabLabelFor(sessionId))}</span>
     <button class="term-minimized-pill-close" data-tooltip="Close" data-tooltip-pos="top">&times;</button>

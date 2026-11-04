@@ -15,30 +15,51 @@
 // - the agents tray's mini scenes and lanes (asst-agents-dock.js).
 //
 // Rules as the rack's: gold only means live; infinite loops pause while the
-// UI is dragged (body.ui-interacting) and stop under prefers-reduced-motion,
+// UI is dragged (body.ui-interacting), off screen (data-offscreen on a holder,
+// a closed side panel: asst-styles.js) and stop under prefers-reduced-motion,
 // where every scene is its still frame and the sweep is not drawn. Tokens
 // come from asst-styles.js, always with a fallback. No backdrop blur and no
-// standing layer hints.
+// standing layer hints: a moving layer is promoted (will-change) only while
+// its scene is live and on screen.
+//
+// A scene's moving parts are HTML layers (asst-scenes.js), so every motion is
+// a box's transform or opacity, run by the compositor. Lengths are written in
+// the scene's own units (the SVG's px) and turned into percentages of the box
+// here (sc() below): a scene is drawn at several sizes, and a percentage of
+// the box is the same distance in units at every one of them.
 
-import { CODE_LINES, CODE_STEP, codeCaretX } from './asst-scenes.js';
+import { CODE_LINES, CODE_STEP, CODE_WINDOW, FILM_MINI_WINDOW, FILM_WINDOW, SCENE_BOX, boxPct, codeCaretX } from './asst-scenes.js';
 
 export const SCENE_STYLE_ID = 'asst-scene-styles';
 
-/** The code scene's stepped scroll (one line per step) and its caret, which lands on each new bottom line's end. */
+const FULL = SCENE_BOX.full;
+const MINI = SCENE_BOX.mini;
+const win = ([, , w, h]) => ({ w, h });
+
+/** A move of (x, y) scene units in a box: `translate(…%, …%)`, plus any scale or rotation after it. */
+function sc(box, x, y, more = '') {
+  return `transform: translate(${boxPct(x, box.w)}, ${boxPct(y, box.h)})${more ? ` ${more}` : ''};`;
+}
+
+/** The code scene's stepped scroll (one line per step, inside its window) and its caret, which lands on each new bottom line's end. */
 function codeFrames() {
   const n = CODE_LINES.length;
   const at = (s) => Math.round((s * 100000) / n) / 1000;
   const hold = (s) => Math.round(((s * 100) / n + (100 / n) * 0.72) * 1000) / 1000;
+  const view = win(CODE_WINDOW);
   let scroll = '';
   let caret = '';
   for (let s = 0; s < n; s += 1) {
-    scroll += ` ${at(s)}%, ${hold(s)}% { transform: translateY(${-CODE_STEP * s}px); }`;
-    caret += ` ${at(s)}%, ${hold(s)}% { transform: translateX(${codeCaretX(s)}px); }`;
+    scroll += ` ${at(s)}%, ${hold(s)}% { ${sc(view, 0, -CODE_STEP * s)} }`;
+    caret += ` ${at(s)}%, ${hold(s)}% { ${sc(FULL, codeCaretX(s), 0)} }`;
   }
-  scroll += ` 100% { transform: translateY(${-CODE_STEP * n}px); }`;
-  caret += ` 100% { transform: translateX(${codeCaretX(n)}px); }`;
+  scroll += ` 100% { ${sc(view, 0, -CODE_STEP * n)} }`;
+  caret += ` 100% { ${sc(FULL, codeCaretX(n), 0)} }`;
   return `@keyframes asst-sc-code {${scroll} }\n  @keyframes asst-sc-code-caret {${caret} }`;
 }
+
+/** The pointer scenes: rest on the button, travel to the page, back (units of their own box). */
+const pointFrames = (name, box, [x0, y0], [x1, y1], more = '', [a, b, c, d] = [22, 46, 72, 96]) => `@keyframes ${name} { 0%, ${a}% { ${sc(box, x0, y0, more)} } ${b}%, ${c}% { ${sc(box, x1, y1, more)} } ${d}%, 100% { ${sc(box, x0, y0, more)} } }`;
 
 export const SCENE_CSS = `
   /* ── The stage in a run card ──────────────────────────────────────── */
@@ -110,8 +131,15 @@ export const SCENE_CSS = `
   .asst-run.is-revealed { background: var(--asst-fill-1, rgba(255,255,255,.04)); box-shadow: 0 0 0 1px var(--asst-line-2, rgba(255,255,255,.12)); }
 
   /* ── Scenes ─────────────────────────────────────────────────────────── */
-  /* --sc-gold is set by a holder that neutralizes it (waiting, settled); unset, it is the brand gold. */
-  .asst-scene { display: block; overflow: visible; }
+  /* --sc-gold is set by a holder that neutralizes it (waiting, settled); unset, it is the brand gold.
+     The box takes its holder's size (120×40 and 40×20 by default); its still SVG and every layer cover
+     it, in the same viewBox; strokes are 1.5 units unless the holder says otherwise (they inherit). */
+  .asst-scene { position: relative; display: block; overflow: visible; stroke-width: 1.5; }
+  :where(.asst-scene) { width: 120px; height: 40px; }
+  :where(.asst-scene.is-mini) { width: 40px; height: 20px; }
+  .asst-scene svg { position: absolute; inset: 0; display: block; width: 100%; height: 100%; overflow: visible; }
+  .asst-scene .sc-layer { position: absolute; inset: 0; display: block; transform-origin: 0 0; pointer-events: none; }
+  .asst-scene .sc-clip { position: absolute; display: block; overflow: hidden; pointer-events: none; }
   .asst-scene .sc-dim { stroke-opacity: .5; }
   .asst-scene .sc-mid { stroke-opacity: .72; }
   .asst-scene .sc-gold { stroke: var(--sc-gold, var(--asst-brand, rgba(255,215,0,.85))); }
@@ -120,9 +148,13 @@ export const SCENE_CSS = `
   .asst-scene .sc-fill.sc-mid { fill-opacity: .55; }
   .asst-scene .sc-fill.sc-gold { fill: var(--sc-gold, var(--asst-brand, rgba(255,215,0,.85))); }
   .asst-scene .sc-shade { fill: var(--sc-shade, #131316); }
-  .asst-scene .sc-ring { fill: none; opacity: 0; }
-  .asst-scene .sc-box { transform-box: fill-box; transform-origin: center; }
-  .asst-scene .sc-vb { transform-box: view-box; }
+  .asst-scene .sc-ring { opacity: 0; }
+  /* A layer that only turns or travels gets its compositor layer up front, and only while its scene is
+     live and on screen and motion is allowed (no standing hints). Layers that scale are left to the
+     browser, which rasterises them at the largest scale they reach (a hint would fix it at rest). */
+  @media (prefers-reduced-motion: no-preference) {
+    .asst-scene[data-live]:not([data-offscreen] *) :is(.sc-gear-big, .sc-gear-small, .sc-hand, .sc-wrench, .sc-code-scroll, .sc-code-caret, .sc-lens, .sc-lens-mini, .sc-point-browser, .sc-point-computer, .sc-point-mini, .sc-run-dot, .sc-pen, .sc-film, .sc-film-mini, .sc-slide) { will-change: transform; }
+  }
   .asst-scene[data-live] .sc-code-scroll { animation: asst-sc-code 6.6s cubic-bezier(.45, 0, .55, 1) infinite; }
   .asst-scene[data-live] .sc-code-caret { animation: asst-sc-code-caret 6.6s cubic-bezier(.45, 0, .55, 1) infinite; }
   .asst-scene[data-live] .sc-caret { animation: asst-rk-caret 1.06s steps(1) infinite; }
@@ -229,23 +261,23 @@ export const SCENE_CSS = `
   ${codeFrames()}
   @keyframes asst-sc-spin { to { transform: rotate(360deg); } }
   @keyframes asst-sc-tick { 0%, 8% { opacity: 0; transform: scale(.4); } 16%, 80% { opacity: 1; transform: scale(1); } 92%, 100% { opacity: 0; transform: scale(1); } }
-  @keyframes asst-sc-lens { 0%, 100% { transform: translate(0, 0); } 25% { transform: translate(14px, 4px); } 50% { transform: translate(48px, 0); } 75% { transform: translate(34px, 5px); } }
-  @keyframes asst-sc-lens-mini { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(12px, 2px); } }
-  @keyframes asst-sc-point-browser { 0%, 22% { transform: translate(92px, 29px); } 46%, 72% { transform: translate(26px, 16px); } 96%, 100% { transform: translate(92px, 29px); } }
-  @keyframes asst-sc-point-computer { 0%, 22% { transform: translate(90px, 22.5px); } 46%, 72% { transform: translate(32px, 9px); } 96%, 100% { transform: translate(90px, 22.5px); } }
-  @keyframes asst-sc-point-mini { 0%, 24% { transform: translate(29px, 13px) scale(.6); } 48%, 74% { transform: translate(12px, 8px) scale(.6); } 98%, 100% { transform: translate(29px, 13px) scale(.6); } }
+  @keyframes asst-sc-lens { 0%, 100% { ${sc(FULL, 0, 0)} } 25% { ${sc(FULL, 14, 4)} } 50% { ${sc(FULL, 48, 0)} } 75% { ${sc(FULL, 34, 5)} } }
+  @keyframes asst-sc-lens-mini { 0%, 100% { ${sc(MINI, 0, 0)} } 50% { ${sc(MINI, 12, 2)} } }
+  ${pointFrames('asst-sc-point-browser', FULL, [92, 29], [26, 16])}
+  ${pointFrames('asst-sc-point-computer', FULL, [90, 22.5], [32, 9])}
+  ${pointFrames('asst-sc-point-mini', MINI, [29, 13], [12, 8], 'scale(.6)', [24, 48, 74, 98])}
   @keyframes asst-sc-ripple { 0% { opacity: .9; transform: scale(.3); } 16% { opacity: 0; transform: scale(1.5); } 100% { opacity: 0; transform: scale(1.5); } }
-  @keyframes asst-sc-run { 0% { opacity: 0; transform: translateX(0); } 8%, 12% { opacity: 1; transform: translateX(0); } 45%, 55% { transform: translateX(23px); } 88% { opacity: 1; transform: translateX(46px); } 100% { opacity: 0; transform: translateX(46px); } }
+  @keyframes asst-sc-run { 0% { opacity: 0; ${sc(FULL, 0, 0)} } 8%, 12% { opacity: 1; ${sc(FULL, 0, 0)} } 45%, 55% { ${sc(FULL, 23, 0)} } 88% { opacity: 1; ${sc(FULL, 46, 0)} } 100% { opacity: 0; ${sc(FULL, 46, 0)} } }
   @keyframes asst-sc-shape { 0%, 6% { opacity: 0; transform: scale(.4); } 16%, 84% { opacity: 1; transform: scale(1); } 94%, 100% { opacity: 0; transform: scale(.9); } }
-  @keyframes asst-sc-pen { 0%, 8% { transform: translate(47px, 13px); } 18%, 24% { transform: translate(73px, 13px); } 32%, 84% { transform: translate(100px, 20px); } 100% { transform: translate(47px, 13px); } }
+  @keyframes asst-sc-pen { 0%, 8% { ${sc(FULL, 47, 13)} } 18%, 24% { ${sc(FULL, 73, 13)} } 32%, 84% { ${sc(FULL, 100, 20)} } 100% { ${sc(FULL, 47, 13)} } }
   @keyframes asst-sc-develop { 0% { opacity: .08; } 30%, 82% { opacity: 1; } 100% { opacity: .08; } }
   @keyframes asst-sc-twinkle { 0%, 100% { opacity: .35; transform: scale(.7) rotate(0deg); } 50% { opacity: 1; transform: scale(1.1) rotate(45deg); } }
   @keyframes asst-sc-zap { 0%, 100% { opacity: .45; transform: scale(.92); } 40% { opacity: 1; transform: scale(1.06); } }
-  @keyframes asst-sc-film { to { transform: translateX(-24px); } }
-  @keyframes asst-sc-film-mini { to { transform: translateX(-12px); } }
+  @keyframes asst-sc-film { to { ${sc(win(FILM_WINDOW), -24, 0)} } }
+  @keyframes asst-sc-film-mini { to { ${sc(win(FILM_MINI_WINDOW), -12, 0)} } }
   @keyframes asst-sc-wrench { 0%, 100% { transform: rotate(-14deg); } 50% { transform: rotate(16deg); } }
   @keyframes asst-sc-spark { 0%, 38% { opacity: 0; } 50% { opacity: 1; } 72%, 100% { opacity: 0; } }
-  @keyframes asst-sc-slide { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(68px); } }
+  @keyframes asst-sc-slide { 0%, 100% { ${sc(FULL, 0, 0)} } 50% { ${sc(FULL, 68, 0)} } }
   @keyframes asst-sc-dot { 0%, 100% { opacity: .3; } 40% { opacity: 1; } }
   body.ui-interacting .asst-scene *,
   body.ui-interacting .asst-run-stage-sweep::after { animation-play-state: paused !important; }

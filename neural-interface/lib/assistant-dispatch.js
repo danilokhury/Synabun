@@ -1842,8 +1842,11 @@ export function createAssistantDispatcher({
       const acq = await acquireLoopBrowserAndTab({ requestedBrowserSessionId: entry.requestedBrowserSessionId, terminalSessionId: entry.runId, logTag: 'assistant:browser' });
       if (acq?.error) {
         entry.state = 'failed'; entry.completionReason = 'browser_unavailable'; entry.finishedAt = iso(now()); entry.notes.push(acq.error);
+        // The native serve boundary's refusal keeps its own code and the serves it names, on the run and the error.
+        const boundary = acq.code === 'NATIVE_SERVE_UNVERIFIED' ? { browserCode: acq.code, offenders: Array.isArray(acq.offenders) ? acq.offenders : [] } : null;
+        if (boundary) entry.browserError = boundary;
         emit(entry, 'failed');
-        throw new DispatchError('PROVIDER_UNAVAILABLE', acq.error, { status: 500 });
+        throw new DispatchError('PROVIDER_UNAVAILABLE', acq.error, { status: 500, ...(boundary || {}) });
       }
       browserSessionId = acq.browserSessionId || null;
       browserTabId = acq.browserTabId || null;

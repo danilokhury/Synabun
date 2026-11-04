@@ -439,7 +439,7 @@ export function agentProcesses() {
  *   `agentPids`: processes SynaBun started for an agent (registerAgentProcess), refused like an agent's tree
  * @returns {{ self:boolean, refuse: null | { why:string, kind:string, pid:number, name:string } }}
  */
-export function classifyPeerChain(chain, { selfPid = process.pid, listening = new Set(), synabunMcp = 0, agentPids = AGENT_PROCESSES } = {}) {
+export function classifyPeerChain(chain, { selfPid = process.pid, listening = new Set(), synabunMcp = 0, agentPids = AGENT_PROCESSES, debugClient = null } = {}) {
   const list = Array.isArray(chain) ? chain : [];
   if (!list.length) return { self: false, refuse: null };
   if (list[0].pid === selfPid) return { self: true, refuse: null };
@@ -447,11 +447,17 @@ export function classifyPeerChain(chain, { selfPid = process.pid, listening = ne
   const refuse = (p, kind, why) => ({ self: false, refuse: { kind, why, pid: p.pid, name: nameOf(p) } });
   const peerKinds = processKinds(list[0]);
   const mcp = Number(synabunMcp) > 0 && list[0].pid === Number(synabunMcp);
+  let exempted = false;
   for (let i = 0; i < list.length; i++) {
     const p = list[i];
     if (!p || p.pid === selfPid || p.pid <= 1) break; // this server's own ancestry, and launchd, are not the peer's
     const k = i === 0 ? peerKinds : processKinds(p);
-    if (k.automation) return refuse(p, 'automation-browser', `a browser started for automation (${k.automation})`);
+    // Local profiling (SYNABUN_ALLOW_DEBUG_CLIENT, debugClientPolicy): only the remote-debugging flag is forgiven, and
+    // only on the port the policy names; every other rule below still applies to this process and its parents. The
+    // process holds its debug port open itself, so the listener rule is not asked of that one process.
+    const debugOk = !!k.automation && debugClientExempt(p, k, debugClient);
+    if (debugOk) exempted = true;
+    if (k.automation && !debugOk) return refuse(p, 'automation-browser', `a browser started for automation (${k.automation})`);
     if (k.agent) return refuse(p, 'agent', `an AI agent's process tree (${k.agent})`);
     const startedFor = agentPids?.get?.(p.pid);
     if (startedFor) return refuse(p, 'agent', `an AI agent's process tree (${startedFor}, started by SynaBun)`);
@@ -464,11 +470,46 @@ export function classifyPeerChain(chain, { selfPid = process.pid, listening = ne
     // A program that serves TCP itself and calls SynaBun is relaying for whoever reached it (a dev server's proxy,
     // a small SOCKS / HTTP proxy). The owner's browsers are left out of this one rule (their network process, or a
     // browser that holds a socket for its own reasons): their automation flags are what is asked of them.
-    if (i <= 1 && !peerKinds.browser && listening.has(p.pid)) return refuse(p, 'listener', 'a program that also listens for connections (a relay or proxy)');
+    if (i <= 1 && !peerKinds.browser && !debugOk && listening.has(p.pid)) return refuse(p, 'listener', 'a program that also listens for connections (a relay or proxy)');
   }
+  if (exempted && !mcp) return { self: false, refuse: null, debugExempt: true };
   if (mcp) return refuse(list[0], 'synabun-mcp', 'SynaBun\'s own MCP server over HTTP (it calls for whichever MCP client reached it)');
   return { self: false, refuse: null };
 }
+
+// ── Local profiling exemption (off unless the server's own environment asks) ─
+//
+// SYNABUN_ALLOW_DEBUG_CLIENT=1 (any debug port) or =<port> (only --remote-debugging-port=<port>) lets a client process
+// started with --remote-debugging-port hold the owner's authority, so SynaBun's own window can be profiled over CDP.
+// Read from the environment the server was started with only (server.js reads it before DATA_HOME/.env is loaded:
+// never from a file a client can write), loopback peers only (127.0.0.0/8, ::1), and only that flag: a
+// --remote-debugging-pipe, MoreLogin, Playwright WebKit / Firefox automation, agents, relays and every other rule
+// still refuse.
+
+/** The policy from an environment object: { enabled, port } (port null = any). Anything but 1/on/true/yes or a port is off. */
+export function debugClientPolicy(env = process.env) {
+  const raw = String(env?.SYNABUN_ALLOW_DEBUG_CLIENT ?? '').trim().toLowerCase();
+  if (/^(?:1|on|true|yes)$/.test(raw)) return { enabled: true, port: null };
+  if (/^[0-9]{4,5}$/.test(raw) && Number(raw) >= 1024 && Number(raw) <= 65535) return { enabled: true, port: Number(raw) };
+  return { enabled: false, port: null };
+}
+
+/** Whether this process's automation flag is the one the policy forgives. */
+export function debugClientExempt(proc, kinds, policy) {
+  if (!policy?.enabled || kinds?.automation !== 'remote debugging') return false;
+  const la = lower(proc?.args);
+  if (/(?:^|\s)--remote-debugging-pipe(?:[=\s]|$)/.test(la)) return false;
+  // The other automation rules are asked as if the flag were not there: MoreLogin, Playwright, Firefox automation.
+  if (MORELOGIN_PATH_RE.test(String(proc?.comm ?? '')) || lower(proc?.ucomm).trim().startsWith('morelogin')) return false;
+  if (/(?:^|\s)--inspector-pipe(?:\s|$)/.test(la) || /\/pw_run\.sh(?:\s|$)/.test(la) || /(?:^|\s)-juggler(?:-pipe)?(?:\s|$)/.test(la) || /(?:^|\s)--?marionette(?:\s|$)/.test(la)) return false;
+  if (/(?:^|\s)--(?:enable-automation|headless)(?:[=\s]|$)/.test(la)) return false;
+  const ports = [...la.matchAll(/(?:^|\s)--remote-debugging-port(?:=|\s+)([0-9]+)(?=\s|$)/g)].map((m) => Number(m[1]));
+  if (!ports.length) return false;
+  return policy.port == null || ports.every((n) => n === policy.port);
+}
+
+/** Whether a normalized address is loopback. */
+export const isLoopbackAddress = (addr) => /^127\.\d+\.\d+\.\d+$/.test(String(addr || '')) || String(addr || '') === '::1';
 
 /** The environment part of `ps -E` output for one process, given the same process's line without -E. */
 export function envPart(withEnv, plain) {
@@ -526,8 +567,10 @@ function thisMachineAddresses() {
  *   is told apart from other listening programs (isSynabunMcpServer). None: it is refused as a listener, as any relay.
  * @param {(path:string) => string} [o.realpath] fs.realpathSync (tests inject one).
  */
-export function createPeerIdentity({ platform = process.platform, selfPid = process.pid, run = defaultRun, localAddresses = null, log = () => {}, now = Date.now, disabled = false, synabunRoots = [], realpath = realpathSync } = {}) {
+export function createPeerIdentity({ platform = process.platform, selfPid = process.pid, run = defaultRun, localAddresses = null, log = () => {}, now = Date.now, disabled = false, synabunRoots = [], realpath = realpathSync, debugClient = null } = {}) {
   const supported = platform === 'darwin' && !disabled;
+  const debugPolicy = debugClient?.enabled ? { enabled: true, port: Number.isInteger(debugClient.port) ? debugClient.port : null } : null;
+  if (debugPolicy) { try { log(`[peer-identity] WARNING: SYNABUN_ALLOW_DEBUG_CLIENT is set: a loopback client started with --remote-debugging-port${debugPolicy.port ? `=${debugPolicy.port}` : ''} is taken as the owner (local profiling only; unset it when done)`); } catch { /* logger */ } }
   if (disabled) { try { log('[peer-identity] off (SYNABUN_PEER_IDENTITY=off): the page secret\'s rules from before apply, with no peer lookup'); } catch { /* logger */ } }
   const bySocket = new WeakMap();
   const chains = new Map(); // pid → { at, ucomm, chain }
@@ -679,7 +722,8 @@ export function createPeerIdentity({ platform = process.platform, selfPid = proc
     if (!chain || !chain.length) return { status: 'gone', reason: 'the client process exited before it was identified', pid: row.pid, ms: now() - started };
     let synabunMcp = 0;
     try { synabunMcp = await synabunMcpPid(chain[0], table.listening); } catch { synabunMcp = 0; }
-    const verdict = classifyPeerChain(chain, { selfPid, listening: table.listening, synabunMcp });
+    const verdict = classifyPeerChain(chain, { selfPid, listening: table.listening, synabunMcp, debugClient: isLoopbackAddress(remote) ? debugPolicy : null });
+    if (verdict.debugExempt) note(`debug:${row.pid}`, `[peer-identity] WARNING: accepted a debug client as the owner (pid ${row.pid}, ${row.name || chain[0].ucomm}) under SYNABUN_ALLOW_DEBUG_CLIENT`);
     return { status: 'ok', self: verdict.self, pid: row.pid, name: row.name || chain[0].ucomm, chain, refuse: verdict.refuse, ms: now() - started };
   }
 

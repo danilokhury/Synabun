@@ -1,3 +1,21 @@
+# SynaBun v.2.2.1
+
+2.2.1 is a fix release: shared browser runs work again with MoreLogin, screenshots reach OpenAI models in the Assistant, and the Assistant no longer keeps the CPU busy while a worker runs.
+
+## ✨ New
+
+- **Profiling the app with a debug client** — Developers can set `SYNABUN_ALLOW_DEBUG_CLIENT` to a port when starting SynaBun, so a local browser started with remote debugging on that port can load the app and profile it. It is off unless you set it.
+
+## 🛠 Fixed
+
+- **Shared browser runs refused with an unclear error** — With MoreLogin as the browser, tasks that needed the browser could fail with a generic "unverified OpenCode serve" error even when OpenCode had nothing to do with the task. They now run, and a real refusal names its cause.
+- **Screenshots ignored by OpenAI models in the Assistant** — Screenshots attached with the paperclip or sent from the whiteboard now reach Codex and OpenAI models as images.
+- **High CPU while a worker ran** — The Assistant window used most of a CPU core while a worker was running. It now stays near idle.
+- **Settings showed placeholders for ordinary MCP values** — When hiding secrets in MCP server settings, SynaBun also hid ordinary words such as the project name. Now only real credentials are hidden.
+- **File Explorer git menu hidden under the toolbar** — The branch and commit menu now opens above the top-right toolbar instead of underneath it.
+
+---
+
 # SynaBun v.2.2.0
 
 2.2.0 is a reliability release: it fixes a slow memory buildup in long-running chat panels, makes closing a minimized OpenCode tab actually stop that conversation, and cleans up terminal processes left behind by a crash.

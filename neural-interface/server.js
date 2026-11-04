@@ -1,5 +1,5 @@
 import { readStoredToolListRecord, toolListRecordForUpdate } from './lib/tool-lists.js';
-import { externalServerInventory, selectExternalServers, externalCatalog, EXTERNAL_SERVER_LIMITATIONS, scopeOpenCodeServers, retainExternalRefs, writePrivateMcpConfig, redactMcpValues, mcpDefinitionValues } from './lib/mcp-external-servers.js';
+import { externalServerInventory, selectExternalServers, externalCatalog, EXTERNAL_SERVER_LIMITATIONS, scopeOpenCodeServers, retainExternalRefs, writePrivateMcpConfig, redactMcpValues, mcpSecretValues } from './lib/mcp-external-servers.js';
 import { openCodeWorkerData } from './lib/opencode-worker-data.js';
 import { resumeSandboxPlan } from './lib/worker-resume.js';
 import { waitForSynabunTools, synabunConfigured, invalidateSynabunTools, synabunToolsTimeoutText } from './lib/opencode-mcp-ready.js';
@@ -25,7 +25,7 @@ import { SANDBOX_EXEC, buildWorkerSandboxProfile, canonicalPath, sandboxExecArgv
 import { createWorkerMcpChannel } from './lib/worker-mcp-channel.js';
 import { createPageSession, PAGE_SECRET_PATHS, PAGE_SECRET_REFRESH_PATH, SERVICE_WORKER_PATH } from './lib/page-session.js';
 import { normalizeViewUrl } from './public/shared/view-variant.js';
-import { createPeerIdentity } from './lib/peer-identity.js';
+import { createPeerIdentity, debugClientPolicy } from './lib/peer-identity.js';
 import { createOwnerAuthority } from './lib/owner-authority.js';
 import { collectRelayListenerPorts, localProxyPorts } from './lib/worker-relay-ports.js';
 import { machineNames } from './lib/machine-names.js';
@@ -205,7 +205,7 @@ import {
 } from './lib/native-loop-providers.js';
 import { createOpenCodeActivityRelay } from './lib/opencode-worker-activity.js';
 import { browserServePortDenial } from './lib/browser-tool-policy.js';
-import { createNativeServeBoundary, nativeServeCapability } from './lib/opencode-native-boundary.js';
+import { createNativeServeBoundary, nativeServeCapability, nativeServeReason, narrowOffenders } from './lib/opencode-native-boundary.js';
 const nativeServeBoundary = createNativeServeBoundary();
 import { setBrowserNetworkRule, usesNativeBrowserNetworkGuard, disposeBrowserNetworkGuard, recoverBrowserNetworkGuard, MONEY_PATTERNS, SERVE_PORT_PATTERNS } from './lib/browser-network-guard.js';
 import { browserPolicyRoots } from './lib/browser-policy-roots.js';
@@ -447,6 +447,9 @@ try {
 // allowed until a restart. What the environment itself gives is noted first and put back after the load; the
 // file's own line is read when a request asks (publicWebOrigins).
 const startedAllowedHosts = startedValueOf(process.env);
+// The profiling exemption (lib/peer-identity.js debugClientPolicy) is read from the started environment only, before
+// the data home's .env can add to it.
+const startedDebugClient = debugClientPolicy(process.env);
 dotenvConfig({ path: resolve(getDataHome(), '.env') });
 startedAllowedHosts.restore();
 
@@ -556,7 +559,7 @@ app.use(requestGates.features);
 // in front of every route (the page secret's pieces are made further down and read only when a request comes).
 // This install's root (PACKAGE_ROOT, defined further down): SynaBun's own MCP server over HTTP is the one listening
 // program the lookup knows, by its main script under it (mcp-server/dist/http.js, `npm run start:http`).
-const _peerIdentity = createPeerIdentity({ log: (line) => console.warn(line), disabled: String(process.env.SYNABUN_PEER_IDENTITY || '').toLowerCase() === 'off', synabunRoots: [resolve(__dirname, '..')] });
+const _peerIdentity = createPeerIdentity({ log: (line) => console.warn(line), disabled: String(process.env.SYNABUN_PEER_IDENTITY || '').toLowerCase() === 'off', synabunRoots: [resolve(__dirname, '..')], debugClient: startedDebugClient });
 // The one decision for the owner's routes and sockets (lib/owner-authority.js): every write to /api but the hooks'
 // and the agents' feature data, the two reads that hand out a secret, and the owner's sockets are refused to the
 // automation browser (its marker or its process), relays, other SynaBun servers, remote logins and an agent's tree
@@ -3755,22 +3758,25 @@ function opencodeServeLaunch(port, { env = process.env, password = null, passwor
   _noteCliLookup('opencode', found, 'OpenCode');
   const line = configuredCommandLine('opencode');
   const nativeWebSocketSafe = nativeServeCapability({ version: found.version, commandLine: !!line, passwordFrom });
-  nativeServeBoundary.assertLaunch(nativeWebSocketSafe);
+  // What the browser boundary names when this serve is the one that blocks a native (MoreLogin) context. A command
+  // line from Settings runs whatever it names: the resolver's version is of another binary, so none is reported.
+  const nativeServe = { version: line ? null : (found.version || null), path: line || found.launchPath || found.path || null, reason: nativeServeReason({ version: found.version, commandLine: !!line, passwordFrom }) };
+  nativeServeBoundary.assertLaunch(nativeWebSocketSafe, { port, ...nativeServe });
   const spec = serveSpecFor(port, { env, password, passwordFrom });
   const words = spec.args.join(' ');
   if (IS_WIN) {
     const spawnEnv = withPathEnv(spec.env, getAugmentedPath());
     if (!line && found.spec) {
       const launch = spawnArgsFor(found.spec, spec.args, { env: spawnEnv });
-      return { command: launch.command, args: launch.args, options: { ...launch.options, env: spawnEnv, windowsHide: true }, label: `${found.launchPath} ${words}`, password: spec.password, passwordFrom: spec.passwordFrom, nativeWebSocketSafe };
+      return { command: launch.command, args: launch.args, options: { ...launch.options, env: spawnEnv, windowsHide: true }, label: `${found.launchPath} ${words}`, password: spec.password, passwordFrom: spec.passwordFrom, nativeWebSocketSafe, nativeServe };
     }
     const text = `${line || 'opencode'} ${words}`;
-    return { command: DEFAULT_SHELL, args: ['/d', '/s', '/c', text], options: { env: spawnEnv, windowsHide: true }, label: text, password: spec.password, passwordFrom: spec.passwordFrom, nativeWebSocketSafe };
+    return { command: DEFAULT_SHELL, args: ['/d', '/s', '/c', text], options: { env: spawnEnv, windowsHide: true }, label: text, password: spec.password, passwordFrom: spec.passwordFrom, nativeWebSocketSafe, nativeServe };
   }
   const cmd = line || (found.path ? shellSingleQuote(found.path) : 'opencode');
   const unset = spec.passwordFrom === 'stdout' ? `${serveUnsetCommand()}; ` : '';
   // A packaged application's runtime and npm after the user's own (the login shell adds the user's profile on top).
-  return { command: DEFAULT_SHELL, args: ['-lc', `${unset}exec ${cmd} ${words}`], options: { env: withPackagedPathLast(spec.env) }, label: `${cmd} ${words}`, password: spec.password, passwordFrom: spec.passwordFrom, nativeWebSocketSafe };
+  return { command: DEFAULT_SHELL, args: ['-lc', `${unset}exec ${cmd} ${words}`], options: { env: withPackagedPathLast(spec.env) }, label: `${cmd} ${words}`, password: spec.password, passwordFrom: spec.passwordFrom, nativeWebSocketSafe, nativeServe };
 }
 
 // Which OpenCode the binary SynaBun starts is: the resolver's `--version` of it
@@ -8261,8 +8267,8 @@ function noteOpencodeServePort(port, delta) {
   if (next > 0) _opencodeServePortCounts.set(p, next); else _opencodeServePortCounts.delete(p);
 }
 
-function trackOpencodeServe(proc, { kind, id = null, port, token, nativeWebSocketSafe = false }) {
-  nativeServeBoundary.track(proc, { port, safe: nativeWebSocketSafe });
+function trackOpencodeServe(proc, { kind, id = null, port, token, nativeWebSocketSafe = false, nativeServe = null }) {
+  nativeServeBoundary.track(proc, { ...(nativeServe || {}), port, safe: nativeWebSocketSafe });
   const pid = Number(proc?.pid) || null;
   const exited = () => !proc || proc.exitCode != null || proc.signalCode != null;
   if (!exited()) {
@@ -8788,7 +8794,7 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, c
         entry.proc = proc;
         entry.password = launch.password || null;
         // On record from its spawn: a crash of SynaBun from here on does not leave it running for good.
-        const tracked = trackOpencodeServe(proc, { kind: 'isolated', id: termId, port, token, nativeWebSocketSafe: launch.nativeWebSocketSafe });
+        const tracked = trackOpencodeServe(proc, { kind: 'isolated', id: termId, port, token, nativeWebSocketSafe: launch.nativeWebSocketSafe, nativeServe: launch.nativeServe });
         // While it boots, its start sees an exit itself (another server on the port is a collision); afterwards
         // its exit ends the serve.
         let booting = true;
@@ -9658,7 +9664,7 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
         });
         _ocpProc = proc;
         // On record from its spawn: a crash of SynaBun from here on does not leave it running for good.
-        tracked = trackOpencodeServe(proc, { kind: 'shared', id: 'shared', port: _ocpPort, token, nativeWebSocketSafe: launch.nativeWebSocketSafe });
+        tracked = trackOpencodeServe(proc, { kind: 'shared', id: 'shared', port: _ocpPort, token, nativeWebSocketSafe: launch.nativeWebSocketSafe, nativeServe: launch.nativeServe });
         const readPassword = servePasswordReader();
         const outLog = createServeLogRedactor(line => console.log(`[opencode:stdout] ${line.trim()}`));
         const errLog = createServeLogRedactor(line => console.log(`[opencode:stderr] ${line.trim()}`));
@@ -14609,7 +14615,7 @@ app.post('/api/loop/launch', async (req, res) => {
       const acq = await acquireLoopBrowserAndTab({ requestedBrowserSessionId, terminalSessionId });
       if (acq.error) {
         loopLog(terminalSessionId, 'launch:browser', 'ABORT: browser acquisition failed — returning 500', { error: acq.error });
-        return res.status(500).json({ error: acq.error });
+        return res.status(500).json({ error: acq.error, ...(acq.code ? { code: acq.code, offenders: acq.offenders } : {}) });
       }
       browserSessionId = acq.browserSessionId;
       browserTabId = acq.browserTabId;
@@ -14935,7 +14941,7 @@ app.post('/api/loop/recover-browser', async (req, res) => {
     const terminalSessionId = req.body?.terminalSessionId || randomBytes(16).toString('hex');
     const acq = await acquireLoopBrowserAndTab({ terminalSessionId, logTag: 'recover:browser' });
     if (acq.error) {
-      return res.status(500).json({ error: acq.error });
+      return res.status(500).json({ error: acq.error, ...(acq.code ? { code: acq.code, offenders: acq.offenders } : {}) });
     }
     // Persist the new pins onto the loop's state file when we can identify it,
     // so resolve-from-ancestors and loop/stop operate on the live session/tab.
@@ -16934,7 +16940,7 @@ function spawnAgentProcess(agent, prompt, extraEnv = {}) {
     const sessionId = agent._activeSessionId || agent.sessionId;
 
     const serverMap = JSON.parse(agent._mcpConfig).mcpServers;
-    const mcpValues = Object.values(serverMap).flatMap(entry => [...Object.values(entry.env || {}), ...Object.values(entry.headers || {}), ...(entry.args || []), ...(entry.url ? [entry.url] : [])]).filter(value => typeof value === 'string' && value);
+    const mcpValues = mcpSecretValues(serverMap, { env: process.env });
     const mcpConfigPath = writePrivateMcpConfig(resolve(DATA_HOME, 'data', 'agents', agent.id, 'mcp.json'), serverMap);
     const args = [
       '--print',
@@ -17415,7 +17421,7 @@ app.post('/api/agents/launch', async (req, res) => {
       const acq = await acquireSharedBrowserTab({ ownerKey: `agent:${agentId}`, ownerType: 'interactive', logTag: 'agent:browser' });
       if (acq.error) {
         console.warn(`[agent] Browser tab acquire failed: ${acq.error}`);
-        return res.status(500).json({ error: `Could not start browser session for this automation: ${acq.error}` });
+        return res.status(500).json({ error: `Could not start browser session for this automation: ${acq.error}`, ...(acq.code ? { code: acq.code, offenders: acq.offenders } : {}) });
       }
       browserSessionId = acq.browserSessionId;
       browserTabId = acq.browserTabId;
@@ -18668,7 +18674,7 @@ const editorCompletionServe = createOpencodeCompletionEngine({
     const token = opencodeServeRecords.newToken();
     const launch = opencodeServeLaunch(port, { env: { ...env, [SERVE_TOKEN_ENV]: token }, passwordFrom: 'stdout' });
     const proc = spawn(launch.command, launch.args, { stdio: ['ignore', 'pipe', 'pipe'], ...launch.options, cwd, detached: false, shell: false, windowsHide: true });
-    editorCompletionServeTracks.set(proc, trackOpencodeServe(proc, { kind: 'completion', id: 'editor-complete', port, token, nativeWebSocketSafe: launch.nativeWebSocketSafe }));
+    editorCompletionServeTracks.set(proc, trackOpencodeServe(proc, { kind: 'completion', id: 'editor-complete', port, token, nativeWebSocketSafe: launch.nativeWebSocketSafe, nativeServe: launch.nativeServe }));
     const outLog = createServeLogRedactor(line => console.log(`[editor-complete:out] ${line.trim().slice(0, 500)}`));
     const errLog = createServeLogRedactor(line => console.log(`[editor-complete:err] ${line.trim().slice(0, 500)}`));
     proc.stdout?.on('data', d => outLog.push(d));
@@ -25209,7 +25215,7 @@ function externalToolsCatalog(cwd = null) {
 function applyOpenCodeExternalScope(xdgRoot, config, tools, cwd, { readProject = true } = {}) {
   const scoped = scopeOpenCodeServers(config, tools, externalInventory('opencode', cwd || PACKAGE_ROOT, { readProject }));
   Object.assign(config, scoped.config);
-  _externalMcpLogValues.set(xdgRoot, mcpDefinitionValues(scoped.config.mcp.servers));
+  _externalMcpLogValues.set(xdgRoot, mcpSecretValues(scoped.config.mcp.servers));
   writeFileSync(resolve(xdgRoot, 'synabun-external-scope.json'), JSON.stringify(scoped.scope), { mode: 0o600 });
   return scoped.scope;
 }
@@ -30991,7 +30997,7 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
           profileMode: result.profileMode, profileSource: result.profileSource,
         });
       } catch (err) {
-        createError = err.message;
+        createError = browserStartFailure(err);
         loopLog(ownerKey, logTag, 'strategy 2 FAILED: createBrowserSession threw', { err: err.message, stack: err.stack?.slice(0, 600) });
       }
     }
@@ -31001,8 +31007,9 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
       // run's log, lastRunResult and the schedule:failed toast.
       return {
         error: createError
-          ? `Could not start the shared browser session: ${createError}`
+          ? `Could not start the shared browser session: ${createError.error}`
           : 'Could not start the shared browser session. Open Browser Settings and verify the selected profile can launch.',
+        ...(createError?.code ? { code: createError.code, offenders: createError.offenders } : {}),
       };
     }
 
@@ -32167,34 +32174,72 @@ async function installMoneyGuardRoute(ctx) {
 // still aborted. Managed contexts also block WS through Playwright. MoreLogin
 // retains native WS only behind the verified server authentication boundary and
 // credentials confined to this server, never an environment, page or log.
-function protectNativeServeContext(ctx) {
-  return nativeServeBoundary.protect(ctx, {
-    ports: liveOpencodeServePorts(),
-    unverifiedRecords: opencodeServeRecords.list().filter(record =>
-      !opencodeServeRecords.ownedHere(record) && opencodeServeRecords.verifySync(record) !== 'gone'),
-  });
+// Records of serves this server did not start that may still run: each one could answer a page's WebSocket.
+function unverifiedServeRecords() {
+  return opencodeServeRecords.list().filter(record =>
+    !opencodeServeRecords.ownedHere(record) && opencodeServeRecords.verifySync(record) !== 'gone')
+    .map(record => ({ ...record, claimable: (() => { try { return opencodeServeRecords.claimable(record); } catch { return false; } })() }));
+}
+const NATIVE_SERVE_WAIT_MS = Number(process.env.SYNABUN_NATIVE_SERVE_WAIT_MS) || 20_000;
+const NATIVE_SERVE_SWEEP_MS = Number(process.env.SYNABUN_NATIVE_SERVE_SWEEP_MS) || 10_000;
+// Left of a request's deadline for the answer itself (the MCP client gives a session create 70 s).
+const NATIVE_SERVE_REPLY_MARGIN_MS = 5_000;
+// Before refusing, repair what SynaBun can itself, bounded: stop the serves an ended SynaBun left running (the records'
+// own sweep, which signals only a provably-SynaBun process whose owner has ended; at most NATIVE_SERVE_SWEEP_MS, in the
+// background while the rest is read) and wait for SynaBun's own verified serves still starting (at most
+// NATIVE_SERVE_WAIT_MS), both inside the request's deadline. The context is held by the boundary from before the
+// first look (nativeServeBoundary.attach), so no unverified serve starts meanwhile. Nothing is cached: every attempt
+// reads the live state again. Authentication is never relaxed: what is left is named.
+async function protectNativeServeContext(ctx, { deadline = Infinity, signal = null } = {}) {
+  try {
+    return await nativeServeBoundary.attach(ctx, {
+      state: () => ({ ports: [...liveOpencodeServePorts()], unverifiedRecords: unverifiedServeRecords() }),
+      sweep: () => opencodeServeRecords.sweep(),
+      waitMs: NATIVE_SERVE_WAIT_MS, sweepMs: NATIVE_SERVE_SWEEP_MS,
+      deadline: Number.isFinite(deadline) ? deadline - NATIVE_SERVE_REPLY_MARGIN_MS : Infinity, signal,
+    });
+  } catch (error) {
+    if (error?.offenders) console.warn(`[browser] native serve boundary refused: ${JSON.stringify(error.offenders)}`);
+    throw error;
+  }
 }
 
-async function installServePortGuard(ctx) {
+// The answer a failed browser start gives its caller: the sentence, and for the native serve boundary its code and
+// the serves it names (narrowed: never a token or a whole record).
+function browserStartFailure(err) {
+  const out = { error: err?.message || String(err) };
+  if (err?.code === 'NATIVE_SERVE_UNVERIFIED') { out.code = err.code; out.offenders = narrowOffenders(err.offenders); }
+  return out;
+}
+
+async function installServePortGuard(ctx, { deadline = Infinity, signal = null } = {}) {
   if (!ctx || ctx.__servePortGuardInstalled) return;
   // routeWebSocket installs page bindings and replaces WebSocket on navigation,
   // even with an empty matcher. Native contexts rely on the verified server's
   // authentication; never silently route or drop protection for unknown serves.
   const native = usesNativeBrowserNetworkGuard(ctx);
-  const release = native ? protectNativeServeContext(ctx) : null;
   const refused = (url) => { try { return !!browserServePortDenial(url?.href ?? url, liveOpencodeServePorts()); } catch { return false; } };
-  try {
-    await setBrowserNetworkRule(ctx, 'serve-port', {
-      patterns: SERVE_PORT_PATTERNS,
-      decide: request => refused(request.url) ? { abort: true } : null,
-    });
-    if (!native) {
-      if (typeof ctx.routeWebSocket !== 'function') throw new Error('WebSocket routing is unavailable');
-      await ctx.routeWebSocket(refused, ws => Promise.resolve(ws.close({ code: 1008, reason: 'SynaBun: not an address the browser opens' })).catch(() => {}));
+  const installRule = () => setBrowserNetworkRule(ctx, 'serve-port', {
+    patterns: SERVE_PORT_PATTERNS,
+    decide: request => refused(request.url) ? { abort: true } : null,
+  });
+  if (native) {
+    // Held first (assertLaunch refuses an unverified start from here on), then the HTTP rule, then the bounded check.
+    const release = nativeServeBoundary.reserve(ctx);
+    try { await installRule(); } catch (error) {
+      release();
+      throw new Error(`Failed to install the OpenCode serve guard: ${error.message}`);
     }
+    await protectNativeServeContext(ctx, { deadline, signal });
+    ctx.__servePortGuardInstalled = true;
+    return;
+  }
+  try {
+    await installRule();
+    if (typeof ctx.routeWebSocket !== 'function') throw new Error('WebSocket routing is unavailable');
+    await ctx.routeWebSocket(refused, ws => Promise.resolve(ws.close({ code: 1008, reason: 'SynaBun: not an address the browser opens' })).catch(() => {}));
     ctx.__servePortGuardInstalled = true;
   } catch (error) {
-    release?.();
     throw new Error(`Failed to install the OpenCode serve guard: ${error.message}`);
   }
 }
@@ -32874,7 +32919,7 @@ async function createBrowserSession(options = {}) {
     const startServeDenial = browserServePortDenial(startUrl, liveOpencodeServePorts());
     if (startServeDenial) throw new Error(startServeDenial);
     await installMoneyGuardRoute(context);
-    await installServePortGuard(context);
+    await installServePortGuard(context, { deadline: options.browserRequest?.deadline, signal: options.browserRequest?.signal });
     if (typeof _pageSession !== 'undefined') {
       const marked = await _pageSession.markWorkerBrowserContext(context, { port: PORT, hostNames: machineNames.names() });
       if (!marked) throw new Error('Cannot protect browser owner authority: local worker marker failed');
@@ -33989,6 +34034,8 @@ app.post('/api/browser/sessions', async (req, res) => {
     };
     const result = await createBrowserSession({
       url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone, _realHeaders,
+      // Its deadline bounds the native serve check (installServePortGuard) inside the caller's timeout.
+      browserRequest: req.browserRequest,
       // Optional per-session override to target a specific MoreLogin env (multi-identity)
       ...(connectMode === 'morelogin' ? { connectMode } : {}),
       ...(moreloginEnvId ? { moreloginEnvId: String(moreloginEnvId) } : {}),
@@ -34015,7 +34062,7 @@ app.post('/api/browser/sessions', async (req, res) => {
     });
   } catch (err) {
     console.error('Browser session create error:', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json(browserStartFailure(err));
   }
 });
 
@@ -34040,7 +34087,7 @@ app.post('/api/browser/acquire', async (req, res) => {
     const clientId = req.body?.clientId;
     if (!clientId) return res.status(400).json({ error: 'clientId is required' });
     const acq = await acquireSharedBrowserTab({ ownerKey: clientId, ownerType: 'interactive', logTag: 'acquire:interactive' });
-    if (acq.error) return res.status(500).json({ error: acq.error });
+    if (acq.error) return res.status(500).json({ error: acq.error, ...(acq.code ? { code: acq.code, offenders: acq.offenders } : {}) });
     res.json({ ok: true, sessionId: acq.browserSessionId, tabId: acq.browserTabId || null });
   } catch (err) {
     res.status(500).json({ error: err.message });

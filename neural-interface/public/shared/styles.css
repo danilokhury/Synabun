@@ -16744,7 +16744,9 @@
     border: 1px solid var(--fe-menu-border);
     border-radius: var(--r-card);
     box-shadow: var(--fe-menu-shadow);
-    z-index: 300;
+    /* Same tier as .fe-ctx-flyout: a float anchored to the panel, appended to body to escape it, must still
+       outrank what is drawn beside it (#topright-controls at 400) and above it (a floating terminal at 10000). */
+    z-index: 100010;
     padding: 10px;
     opacity: 0;
     transform: translateX(-8px) scale(0.96);
@@ -18574,6 +18576,11 @@
     opacity: 0;
     pointer-events: none;
   }
+  /* Faded out: nothing inside keeps animating (loading-teardown.js adds `gone` once the fade ends). */
+  #loading-overlay.hidden #loading-text,
+  #loading-overlay.hidden #loading-mascot,
+  #loading-overlay.hidden #loading-mascot * { animation: none !important; }
+  #loading-overlay.gone { display: none !important; }
 
   .loading-logo {
     height: 28px;

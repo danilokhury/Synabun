@@ -419,6 +419,7 @@ function buildPanel() {
       </div>
       <div class="cp-input-area">
         <div class="cp-input-wrap">
+          <span class="cp-spin-ring" aria-hidden="true"><i></i></span>
           <div class="cp-image-preview" id="cp-image-preview"></div>
           <div class="cp-input-inner">
             <textarea class="cp-input" id="cp-input" placeholder="Message SynaBun..." rows="1" autocomplete="off" spellcheck="false"></textarea>
@@ -1061,26 +1062,17 @@ function injectStyles() {
       margin-top: 8px; transition: opacity 0.3s, border-color 0.2s, box-shadow 0.3s;
     }
     .perm-card { position: relative; }
-    .perm-card::before {
-      content: '';
-      position: absolute; inset: 0;
-      border-radius: 8px;
-      padding: 1px;
-      pointer-events: none;
+    /* A card that waits on you turns an amber ring inside its edge: the shared .cp-spin-ring (with the
+       composer's, below), turning only while the card is .active-perm. */
+    .perm-card > .cp-spin-ring { border-radius: 8px; }
+    .perm-card > .cp-spin-ring > i {
       background: conic-gradient(
-        from var(--cp-border-angle, 0deg),
         rgba(245,180,60,0.0) 0%,
         rgba(245,180,60,0.55) 25%,
         rgba(245,180,60,0.1) 50%,
         rgba(245,180,60,0.55) 75%,
         rgba(245,180,60,0.0) 100%
       );
-      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-      -webkit-mask-composite: xor;
-      mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-      mask-composite: exclude;
-      opacity: 0;
-      transition: opacity 0.4s;
     }
     .perm-card.active-perm {
       border-color: rgba(245,180,60,0.25);
@@ -1088,9 +1080,10 @@ function injectStyles() {
       box-shadow: 0 0 16px rgba(245,180,60,0.08), 0 0 40px rgba(245,180,60,0.04);
       animation: cp-perm-glow 2.5s ease-in-out infinite;
     }
-    .perm-card.active-perm::before {
-      opacity: 1;
-      animation: cp-border-spin 3s linear infinite;
+    .perm-card.active-perm > .cp-spin-ring { opacity: 1; }
+    .perm-card.active-perm > .cp-spin-ring > i {
+      animation: cp-spin-ring-turn 3s linear infinite;
+      will-change: rotate;
     }
     .perm-card:hover { border-color: var(--b-light); }
     .perm-card.active-perm:hover { border-color: rgba(245,180,60,0.4); }
@@ -1234,20 +1227,20 @@ function injectStyles() {
       transition: background 0.4s;
       min-width: 0;
     }
-    .cp-input-wrap::before {
-      content: '';
+    /* ── Spinning border ring (composer focus, a waiting permission card) ──
+       A conic gradient turning inside the 1px edge, the mask keeping only the ring. The gradient is a
+       square box that turns (rotate, run by the compositor) under the mask, and only while its owner's
+       state is on; an animated custom property (the old --cp-border-angle, @property + a conic gradient
+       from it) restyled and repainted the owner on the main thread 60 times a second. The ring is a size
+       container and the square 142cqmax + 4px, wider than the owner's diagonal at any shape, so what
+       the mask shows is the same conic gradient at every angle. Markup: <span class="cp-spin-ring"
+       aria-hidden="true"><i></i></span>, the owner's first child. */
+    .cp-spin-ring {
       position: absolute; inset: 0;
-      border-radius: 14px;
       padding: 1px;
+      overflow: hidden;
       pointer-events: none;
-      background: conic-gradient(
-        from var(--cp-border-angle, 0deg),
-        rgba(212,162,127,0.0) 0%,
-        rgba(212,162,127,0.35) 25%,
-        rgba(212,162,127,0.10) 50%,
-        rgba(212,162,127,0.35) 75%,
-        rgba(212,162,127,0.0) 100%
-      );
+      container-type: size;
       -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
       -webkit-mask-composite: xor;
       mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
@@ -1255,25 +1248,42 @@ function injectStyles() {
       opacity: 0;
       transition: opacity 0.4s;
     }
-    .cp-input-wrap:focus-within::before {
-      opacity: 1;
-      animation: cp-border-spin 3s linear infinite;
+    .cp-spin-ring > i {
+      position: absolute; left: 50%; top: 50%;
+      width: calc(142cqmax + 4px);
+      aspect-ratio: 1;
+      translate: -50% -50%;
+    }
+    @keyframes cp-spin-ring-turn {
+      to { rotate: 360deg; }
+    }
+    body.ui-interacting .cp-spin-ring > i { animation-play-state: paused !important; }
+    /* Reduced motion: the ring holds still where the turn starts (the focus / waiting look stays). */
+    @media (prefers-reduced-motion: reduce) {
+      .cp-spin-ring > i { animation: none !important; will-change: auto !important; }
+    }
+    .cp-input-wrap > .cp-spin-ring { border-radius: 14px; }
+    .cp-input-wrap > .cp-spin-ring > i {
+      background: conic-gradient(
+        rgba(212,162,127,0.0) 0%,
+        rgba(212,162,127,0.35) 25%,
+        rgba(212,162,127,0.10) 50%,
+        rgba(212,162,127,0.35) 75%,
+        rgba(212,162,127,0.0) 100%
+      );
+    }
+    .cp-input-wrap:focus-within > .cp-spin-ring { opacity: 1; }
+    .cp-input-wrap:focus-within > .cp-spin-ring > i {
+      animation: cp-spin-ring-turn 3s linear infinite;
+      will-change: rotate;
     }
     .cp-input-wrap:focus-within {
       background: rgba(212,162,127,0.03);
       box-shadow: 0 0 20px rgba(212,162,127,0.04), 0 0 60px rgba(212,162,127,0.015);
     }
-    @keyframes cp-border-spin {
-      to { --cp-border-angle: 360deg; }
-    }
     @keyframes cp-perm-glow {
       0%, 100% { box-shadow: 0 0 16px rgba(245,180,60,0.08), 0 0 40px rgba(245,180,60,0.04); }
       50% { box-shadow: 0 0 20px rgba(245,180,60,0.14), 0 0 50px rgba(245,180,60,0.07); }
-    }
-    @property --cp-border-angle {
-      syntax: '<angle>';
-      initial-value: 0deg;
-      inherits: false;
     }
 
     .cp-input-inner {
@@ -2301,52 +2311,53 @@ function injectStyles() {
     }
 
     /* ── Claude session pills in shared tray ── */
-    @property --cp-pill-angle {
-      syntax: '<angle>';
-      initial-value: 0deg;
-      inherits: false;
-    }
     .cp-session-pill {
       position: relative;
       overflow: hidden;
       border-color: rgba(212, 162, 127, 0.14);
       transition: border-color 0.2s;
     }
-    .cp-session-pill::before {
-      content: '';
+    /* A working pill's ring: a conic gradient turning inside the 1px border (the mask keeps only the
+       ring). The gradient is a square box that turns (rotate, run by the compositor) under the mask; an
+       animated custom property (the old --cp-pill-angle) repainted the pill on the main thread every
+       frame for as long as a session worked. The square is wider than the pill's diagonal, so the ring
+       is the same conic gradient at every angle. */
+    .cp-pill-ring {
       position: absolute; inset: 0;
+      display: none;
       border-radius: 8px;
       padding: 1px;
+      overflow: hidden;
       pointer-events: none;
-      background: transparent;
       -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
       -webkit-mask-composite: xor;
       mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
       mask-composite: exclude;
-      opacity: 0;
     }
-    .cp-session-pill.cp-pill-running {
-      border-color: transparent;
-    }
-    .cp-session-pill.cp-pill-running::before {
+    .cp-pill-ring > i {
+      position: absolute; left: 50%; top: 50%;
+      width: calc(100% + 32px);
+      aspect-ratio: 1;
+      translate: -50% -50%;
       background: conic-gradient(
-        from var(--cp-pill-angle, 0deg),
         rgba(212,162,127,0.0) 0%,
         rgba(212,162,127,0.6) 25%,
         rgba(212,162,127,0.12) 50%,
         rgba(212,162,127,0.6) 75%,
         rgba(212,162,127,0.0) 100%
       );
-      animation: cp-pill-border-spin 2.4s linear infinite;
-      opacity: 1;
+      animation: cp-pill-ring-turn 2.4s linear infinite;
     }
-    @keyframes cp-pill-border-spin {
-      to { --cp-pill-angle: 360deg; }
+    .cp-session-pill.cp-pill-running {
+      border-color: transparent;
+    }
+    .cp-session-pill.cp-pill-running .cp-pill-ring { display: block; }
+    @keyframes cp-pill-ring-turn {
+      to { rotate: 360deg; }
     }
     .cp-session-pill:hover { border-color: rgba(212, 162, 127, 0.28); }
-    .cp-session-pill:hover.cp-pill-running::before {
+    .cp-session-pill:hover .cp-pill-ring > i {
       background: conic-gradient(
-        from var(--cp-pill-angle, 0deg),
         rgba(212,162,127,0.0) 0%,
         rgba(212,162,127,0.8) 25%,
         rgba(212,162,127,0.20) 50%,
@@ -2362,11 +2373,11 @@ function injectStyles() {
     html.desktop-titlebar--win32 .cp-session-pill.cp-pill-running:hover {
       border-color: rgba(212, 162, 127, 0.62);
     }
-    html.platform-win32 .cp-session-pill.cp-pill-running::before,
-    html.desktop-titlebar--win32 .cp-session-pill.cp-pill-running::before {
-      animation: none;
-      opacity: 0;
+    html.platform-win32 .cp-session-pill.cp-pill-running .cp-pill-ring,
+    html.desktop-titlebar--win32 .cp-session-pill.cp-pill-running .cp-pill-ring {
+      display: none;
     }
+    body.ui-interacting .cp-pill-ring > i { animation-play-state: paused; }
     .cp-session-pill .term-minimized-pill-icon { color: rgba(212, 162, 127, 0.45); transition: color 0.2s; }
     .cp-session-pill.cp-pill-running .term-minimized-pill-icon { color: rgba(212, 162, 127, 1); }
     .cp-session-pill:hover .term-minimized-pill-icon { color: rgba(212, 162, 127, 0.85); }
@@ -2401,6 +2412,12 @@ function injectStyles() {
       pointer-events: none;
     }
     @keyframes cp-pill-pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+    /* Reduced motion: the ring, the dot and the edge hold still (the working look stays). */
+    @media (prefers-reduced-motion: reduce) {
+      .cp-pill-ring > i,
+      .cp-session-pill.cp-pill-running .term-minimized-pill-label::before,
+      .cp-session-pill.cp-pill-running::after { animation: none; }
+    }
 
     /* ── Think intensity toggle ── */
     /* ── Shared toggle base ── */
@@ -3238,6 +3255,7 @@ function _createTrayPill(tab) {
   pill.className = 'term-minimized-pill cp-session-pill';
   pill.dataset.tabId = tab.id;
   pill.innerHTML = `
+    <span class="cp-pill-ring" aria-hidden="true"><i></i></span>
     <span class="term-minimized-pill-icon">${_CP_ICON_SVG}</span>
     <span class="term-minimized-pill-label">${escH(tab.label)}</span>
     <button class="term-minimized-pill-close" data-tooltip="Close" data-tooltip-pos="top">&times;</button>

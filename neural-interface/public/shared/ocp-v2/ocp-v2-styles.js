@@ -412,55 +412,56 @@ html.desktop-titlebar--win32 .ocpv2-panel { backdrop-filter: none; -webkit-backd
 }
 
 /* ── Tray pill (minimize-to-pill) ───────────────────────────────────────── */
-@property --ocpv2-pill-angle {
-  syntax: '<angle>';
-  initial-value: 0deg;
-  inherits: false;
-}
 .ocpv2-session-pill {
   position: relative;
   overflow: hidden;
   border-color: rgba(232, 224, 220, 0.12);
   transition: border-color 0.2s;
 }
-.ocpv2-session-pill::before {
-  content: '';
+/* A working pill's ring: a conic gradient turning inside the 1px border (the mask keeps only the
+   ring). The gradient is a square box that turns (rotate, run by the compositor) under the mask; an
+   animated custom property (the old --ocpv2-pill-angle) repainted the pill on the main thread every
+   frame for as long as the session worked. The square is wider than the pill's diagonal, so the
+   ring is the same conic gradient at every angle. */
+.ocpv2-pill-ring {
   position: absolute; inset: 0;
+  display: none;
   border-radius: 8px;
   padding: 1px;
+  overflow: hidden;
   pointer-events: none;
-  background: transparent;
   -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
   mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   mask-composite: exclude;
-  opacity: 0;
 }
-.ocpv2-session-pill.ocpv2-pill-running {
-  border-color: transparent;
-}
-.ocpv2-session-pill.ocpv2-pill-running::before {
+.ocpv2-pill-ring > i {
+  position: absolute; left: 50%; top: 50%;
+  width: calc(100% + 32px);
+  aspect-ratio: 1;
+  translate: -50% -50%;
   background: conic-gradient(
-    from var(--ocpv2-pill-angle, 0deg),
     rgba(232,224,220,0.0) 0%,
     rgba(232,224,220,0.55) 25%,
     rgba(232,224,220,0.10) 50%,
     rgba(232,224,220,0.55) 75%,
     rgba(232,224,220,0.0) 100%
   );
-  animation: ocpv2-pill-border-spin 2.4s linear infinite;
-  opacity: 1;
+  animation: ocpv2-pill-ring-turn 2.4s linear infinite;
 }
-@keyframes ocpv2-pill-border-spin {
-  to { --ocpv2-pill-angle: 360deg; }
+.ocpv2-session-pill.ocpv2-pill-running {
+  border-color: transparent;
+}
+.ocpv2-session-pill.ocpv2-pill-running .ocpv2-pill-ring { display: block; }
+@keyframes ocpv2-pill-ring-turn {
+  to { rotate: 360deg; }
 }
 .ocpv2-session-pill .term-minimized-pill-icon { color: rgba(232, 224, 220, 0.45); transition: color 0.2s; }
 .ocpv2-session-pill.ocpv2-pill-running .term-minimized-pill-icon { color: rgba(232, 224, 220, 1); }
 .ocpv2-session-pill:hover { border-color: rgba(232, 224, 220, 0.24); }
 .ocpv2-session-pill:hover .term-minimized-pill-icon { color: rgba(232, 224, 220, 0.85); }
-.ocpv2-session-pill:hover.ocpv2-pill-running::before {
+.ocpv2-session-pill:hover .ocpv2-pill-ring > i {
   background: conic-gradient(
-    from var(--ocpv2-pill-angle, 0deg),
     rgba(232,224,220,0.0) 0%,
     rgba(232,224,220,0.75) 25%,
     rgba(232,224,220,0.20) 50%,
@@ -476,11 +477,11 @@ html.platform-win32 .ocpv2-session-pill.ocpv2-pill-running:hover,
 html.desktop-titlebar--win32 .ocpv2-session-pill.ocpv2-pill-running:hover {
   border-color: rgba(232, 224, 220, 0.58);
 }
-html.platform-win32 .ocpv2-session-pill.ocpv2-pill-running::before,
-html.desktop-titlebar--win32 .ocpv2-session-pill.ocpv2-pill-running::before {
-  animation: none;
-  opacity: 0;
+html.platform-win32 .ocpv2-session-pill.ocpv2-pill-running .ocpv2-pill-ring,
+html.desktop-titlebar--win32 .ocpv2-session-pill.ocpv2-pill-running .ocpv2-pill-ring {
+  display: none;
 }
+body.ui-interacting .ocpv2-pill-ring > i { animation-play-state: paused; }
 .ocpv2-session-pill.ocpv2-pill-running .term-minimized-pill-label::before {
   content: '';
   display: inline-block;
@@ -508,6 +509,12 @@ html.desktop-titlebar--win32 .ocpv2-session-pill.ocpv2-pill-running::before {
 @keyframes ocpv2-pill-pulse {
   0%, 100% { opacity: 0.45; }
   50% { opacity: 1; }
+}
+/* Reduced motion: the ring, the dot and the edge hold still (the working look stays). */
+@media (prefers-reduced-motion: reduce) {
+  .ocpv2-pill-ring > i,
+  .ocpv2-session-pill.ocpv2-pill-running .term-minimized-pill-label::before,
+  .ocpv2-session-pill.ocpv2-pill-running::after { animation: none; }
 }
 
 /* Parent pill marker: sub-agent attached → arrow appears after the label.
@@ -1309,12 +1316,44 @@ html.desktop-titlebar--win32 .ocpv2-session-pill.ocpv2-pill-running::before {
 }
 
 /* ── SynaBun-branded tool cards (OpenCode cream palette) ───────────────── */
-@property --ocpv2-sb-angle {
-  syntax: '<angle>';
-  initial-value: 0deg;
-  inherits: false;
+/* ── Spinning border ring (a SynaBun tool card at work, the composer with focus) ──
+   A conic gradient turning inside the 1px edge, the mask keeping only the ring. The gradient is a
+   square box that turns (rotate, run by the compositor) under the mask, and only while its owner's
+   state is on; an animated custom property (the old --ocpv2-sb-angle / --ocpv2-border-angle,
+   @property + a conic gradient from it) restyled and repainted the owner on the main thread 60 times
+   a second. The ring is a size container and the square 142cqmax + 4px, wider than the owner's
+   diagonal at any shape, so what the mask shows is the same conic gradient at every angle. Markup:
+   <span class="ocpv2-spin-ring" aria-hidden="true"><i></i></span>, the owner's first child. */
+.ocpv2-spin-ring {
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  overflow: hidden;
+  pointer-events: none;
+  container-type: size;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity 0.4s;
 }
-@keyframes ocpv2-sb-spin { to { --ocpv2-sb-angle: 360deg; } }
+.ocpv2-spin-ring > i {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: calc(142cqmax + 4px);
+  aspect-ratio: 1;
+  translate: -50% -50%;
+}
+@keyframes ocpv2-spin-ring-turn {
+  to { rotate: 360deg; }
+}
+body.ui-interacting .ocpv2-spin-ring > i { animation-play-state: paused !important; }
+/* Reduced motion: the ring holds still where the turn starts (the working / focus look stays). */
+@media (prefers-reduced-motion: reduce) {
+  .ocpv2-spin-ring > i { animation: none !important; will-change: auto !important; }
+}
 
 .ocpv2-part-tool.ocpv2-tool-synabun {
   position: relative;
@@ -1329,33 +1368,27 @@ html.desktop-titlebar--win32 .ocpv2-session-pill.ocpv2-pill-running::before {
 .ocpv2-part-tool.ocpv2-tool-synabun[data-status="error"] {
   border-left-color: rgba(220,140,140,0.5);
 }
-.ocpv2-part-tool.ocpv2-tool-synabun::before {
-  content: '';
-  position: absolute;
-  inset: 0;
+.ocpv2-part-tool.ocpv2-tool-synabun > .ocpv2-spin-ring {
   border-radius: 12px;
-  padding: 1px;
+  z-index: 1;
+}
+.ocpv2-part-tool.ocpv2-tool-synabun > .ocpv2-spin-ring > i {
   background: conic-gradient(
-    from var(--ocpv2-sb-angle, 0deg),
     rgba(232,224,220,0.0) 0%,
     rgba(232,224,220,0.35) 25%,
     rgba(232,224,220,0.06) 50%,
     rgba(232,224,220,0.35) 75%,
     rgba(232,224,220,0.0) 100%
   );
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  mask-composite: exclude;
-  opacity: 0;
-  transition: opacity 0.4s;
-  pointer-events: none;
-  z-index: 1;
 }
-.ocpv2-part-tool.ocpv2-tool-synabun[data-status="running"]::before,
-.ocpv2-part-tool.ocpv2-tool-synabun[data-status="pending"]::before {
+.ocpv2-part-tool.ocpv2-tool-synabun[data-status="running"] > .ocpv2-spin-ring,
+.ocpv2-part-tool.ocpv2-tool-synabun[data-status="pending"] > .ocpv2-spin-ring {
   opacity: 1;
-  animation: ocpv2-sb-spin 3s linear infinite;
+}
+.ocpv2-part-tool.ocpv2-tool-synabun[data-status="running"] > .ocpv2-spin-ring > i,
+.ocpv2-part-tool.ocpv2-tool-synabun[data-status="pending"] > .ocpv2-spin-ring > i {
+  animation: ocpv2-spin-ring-turn 3s linear infinite;
+  will-change: rotate;
 }
 
 .ocpv2-tool-synabun .ocpv2-sb-head {
@@ -2105,15 +2138,7 @@ img.ocpv2-tool-screenshot {
   cursor: zoom-in;
 }
 
-/* Animated conic-gradient border wrapper — cream highlight on focus */
-@property --ocpv2-border-angle {
-  syntax: '<angle>';
-  initial-value: 0deg;
-  inherits: false;
-}
-@keyframes ocpv2-border-spin {
-  to { --ocpv2-border-angle: 360deg; }
-}
+/* Composer wrapper: a cream ring turns inside its edge on focus (the shared .ocpv2-spin-ring) */
 .ocpv2-input-wrap {
   flex: 1;
   position: relative;
@@ -2124,30 +2149,20 @@ img.ocpv2-tool-screenshot {
   min-width: 0;
   overflow: hidden;
 }
-.ocpv2-input-wrap::before {
-  content: '';
-  position: absolute; inset: 0;
-  border-radius: 14px;
-  padding: 1px;
-  pointer-events: none;
+.ocpv2-input-wrap > .ocpv2-spin-ring { border-radius: 14px; }
+.ocpv2-input-wrap > .ocpv2-spin-ring > i {
   background: conic-gradient(
-    from var(--ocpv2-border-angle, 0deg),
     rgba(232,224,220,0.0) 0%,
     rgba(232,224,220,0.45) 25%,
     rgba(232,224,220,0.10) 50%,
     rgba(232,224,220,0.45) 75%,
     rgba(232,224,220,0.0) 100%
   );
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  mask-composite: exclude;
-  opacity: 0;
-  transition: opacity 0.4s;
 }
-.ocpv2-input-wrap:focus-within::before {
-  opacity: 1;
-  animation: ocpv2-border-spin 3s linear infinite;
+.ocpv2-input-wrap:focus-within > .ocpv2-spin-ring { opacity: 1; }
+.ocpv2-input-wrap:focus-within > .ocpv2-spin-ring > i {
+  animation: ocpv2-spin-ring-turn 3s linear infinite;
+  will-change: rotate;
 }
 .ocpv2-input-wrap:focus-within {
   background: rgba(232,224,220,0.04);
@@ -3346,7 +3361,8 @@ const PARITY_CSS = `
   background: rgba(232,180,80,0.22);
   box-shadow: 0 0 20px rgba(232,180,80,0.04);
 }
-.ocpv2-input-wrap.ocpv2-shell-mode::before { opacity: 0; animation: none; }
+.ocpv2-input-wrap.ocpv2-shell-mode > .ocpv2-spin-ring { opacity: 0; }
+.ocpv2-input-wrap.ocpv2-shell-mode > .ocpv2-spin-ring > i { animation: none; will-change: auto; }
 .ocpv2-input-wrap.ocpv2-shell-mode .ocpv2-input-inner::before {
   content: '!';
   align-self: center;

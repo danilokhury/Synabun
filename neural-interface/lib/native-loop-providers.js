@@ -1,7 +1,7 @@
 import { codexWorkerReply, CODEX_QUESTIONS, elicitationReply, openCodeAnswers, workerQuestions } from './worker-question.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { externalServerInventory, selectExternalServers, codexMcpEnabledOverride, referenceClaudeMap, waitForClaudeMcpScope, redactMcpValues, writePrivateMcpConfig, mcpDefinitionValues } from './mcp-external-servers.js';
+import { externalServerInventory, selectExternalServers, codexMcpEnabledOverride, referenceClaudeMap, waitForClaudeMcpScope, redactMcpValues, writePrivateMcpConfig, mcpSecretValues } from './mcp-external-servers.js';
 import { resolveStoredTools, runtimeToolsValue, readDefaultTools } from './tool-lists.js';
 import { waitForSynabunTools, synabunToolsTimeoutText } from './opencode-mcp-ready.js';
 import { config as memoryConfig, detectProject as memoryProject } from '../../mcp-server/dist/config.js';
@@ -864,7 +864,8 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
       if (definition.oauth) privateMcpServers[name].oauth = structuredClone(definition.oauth);
       if (definition.headersHelper) privateMcpServers[name].headersHelper = definition.headersHelper;
     }
-    externalValues = [...Object.values(referenced.env), ...mcpDefinitionValues(definitions)];
+    // Only the external servers' secrets (expanded through the CLI's env); SynaBun's own headers are not secrets.
+    externalValues = mcpSecretValues(definitions, { env });
     externalScopeNames = Object.keys(definitions);
   }
   if (model) queryOptions.model = model;

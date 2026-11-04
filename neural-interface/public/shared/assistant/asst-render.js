@@ -55,6 +55,8 @@ import { injectRackStyles } from './asst-rack-styles.js';
 import { injectSceneStyles } from './asst-scene-styles.js';
 import { activityScene, compactActivity, isLivePhase, runChip, sceneOfClass, sceneSvg, stagePhase } from './asst-scenes.js';
 import { STAGE_TIMING, createWorkerStage } from './asst-run-stage.js';
+import { createMotionGate } from './asst-motion-gate.js';
+import { createStyleCache } from './asst-style-cache.js';
 import { formatRunTokens } from './asst-usage.js';
 import { sanitizeHtmlString, sanitizeInto } from './asst-sanitize.js';
 import { renderStreamingMarkdown } from '../streaming-markdown.js';
@@ -574,6 +576,16 @@ export function createRenderer(transcriptEl, hooks = {}) {
   const stageWidths = new WeakMap(); // stage element → { rack, width }
   const toRecut = new Set();
   let recutTimer = 0;
+  // What the stylesheet decides about a bubble (--rk-cut, the line's white-space) changes only with a container
+  // query, so only with the stage's width: read once, forgotten when the width changes (here) or the fonts load.
+  const styleCache = createStyleCache();
+  // A web font that arrives changes every measured width: the next paint of each bubble measures again.
+  const onFontsLoaded = () => { styleCache.invalidate(); for (const rack of racks) rack.budgetMemo = null; };
+  const fontSet = typeof document !== 'undefined' ? document.fonts : null;
+  try { fontSet?.addEventListener?.('loadingdone', onFontsLoaded); } catch { /* no FontFaceSet events */ }
+  const stopFontWatch = () => { try { fontSet?.removeEventListener?.('loadingdone', onFontsLoaded); } catch { /* gone */ } };
+  // The transcript's loops run only while their holder is on screen (run cards, racks, route lines).
+  const motion = createMotionGate();
   const stageResizes = typeof ResizeObserver === 'function' ? new ResizeObserver((entries) => {
     for (const entry of entries) {
       const seen = stageWidths.get(entry.target);
@@ -582,6 +594,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
       if (seen.width === null) { seen.width = width; continue; } // the first report: the width it was cut at
       if (width === seen.width) continue;
       seen.width = width;
+      forgetBubbleStyle(seen.rack);
       toRecut.add(seen.rack);
     }
     if (!toRecut.size) return;
@@ -1601,6 +1614,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
       sr: { last: 0, timer: 0, pending: '' },
     };
     row._rack = rack;
+    motion.watch(row); // its sweep, ticks and scene loop only while it is on screen
     rack.receipt.btn.addEventListener('click', () => setRackOpen(rack, !rack.open));
     row.querySelector('.asst-rack-view').addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-view]');
@@ -2080,6 +2094,22 @@ export function createRenderer(transcriptEl, hooks = {}) {
    */
   function subjectBudget(rack, verb, cut = 'middle') {
     const s = rack.stage;
+    // The same inputs give the same budget: the 1 Hz clock tick reuses it instead of measuring the stage again
+    // (a measure on the frame's path forces style and layout of whatever the frame dirtied). The key holds every
+    // input the measure reads: the stage's width (its ResizeObserver's), the scene beside the mascot, whether the
+    // bubble shows, the verb, the clock's length (tabular digits: same length, same width), the running reserve, the cut.
+    const seen = stageResizes ? stageWidths.get(s.el) : null;
+    const key = seen && seen.width != null
+      ? `${seen.width}|${rack.sceneId}|${s.bubble.hidden ? 0 : 1}|${verb}|${s.meta.textContent.length}|${rack.bubble.step?.state === 'running' ? 1 : 0}|${cut}`
+      : '';
+    if (key && rack.budgetMemo?.key === key) return rack.budgetMemo.value;
+    const value = measureSubjectBudget(rack, verb, cut);
+    rack.budgetMemo = key ? { key, value } : null;
+    return value;
+  }
+
+  function measureSubjectBudget(rack, verb, cut) {
+    const s = rack.stage;
     const width = s.el.clientWidth;
     if (!width) return 96;
     const face = (s.set || s.face).getBoundingClientRect(); // the mascot's column (with a scene under it, as wide as the scene)
@@ -2095,14 +2125,30 @@ export function createRenderer(transcriptEl, hooks = {}) {
     // Two lines, less what wrapping at token boundaries wastes (a head cut is one tail: close to two full
     // lines, a path's pieces wrapping at its separators); a guess on the generous side, since fitSubject
     // cuts what the clamp would hide or a piece would push past the edge.
-    const lines = getComputedStyle(s.line).whiteSpace === 'nowrap' ? 1 : cut === 'head' ? 2 : 1.85;
+    const lines = bubbleStyle(rack, s.line, 'white-space') === 'nowrap' ? 1 : cut === 'head' ? 2 : 1.85;
     const taken = Math.ceil((verbPx + 7 + (numbersPx ? numbersPx + 7 : 0)) / 7);
     return Math.max(24, Math.min(240, Math.floor(perLine * lines) - taken - 1));
   }
 
-  /** 'head' where the stylesheet says so (≤320 px: keep the tail), else 'middle'. */
+  /**
+   * A computed style of the bubble, read once while the stage keeps its width (styleCache; the stage's
+   * ResizeObserver forgets it). Without a ResizeObserver nothing would say when to forget: read it each time.
+   */
+  function bubbleStyle(rack, node, prop) {
+    if (stageResizes && stageWidths.has(rack.stage.el)) return styleCache.get(node, prop);
+    try { return getComputedStyle(node).getPropertyValue(prop).trim(); } catch { return ''; }
+  }
+
+  /** The stage's width changed (or the fonts did): its cut, its line's wrap and its budget are read again. */
+  function forgetBubbleStyle(rack) {
+    styleCache.invalidate(rack.stage.subject);
+    styleCache.invalidate(rack.stage.line);
+    rack.budgetMemo = null;
+  }
+
+  /** 'head' where the stylesheet says so (≤320 px: keep the tail), else 'middle'. Never read per frame: see bubbleStyle. */
   function subjectCut(rack) {
-    try { return getComputedStyle(rack.stage.subject).getPropertyValue('--rk-cut').trim() === 'head' ? 'head' : 'middle'; } catch { return 'middle'; }
+    return bubbleStyle(rack, rack.stage.subject, '--rk-cut') === 'head' ? 'head' : 'middle';
   }
 
   /**
@@ -2861,9 +2907,11 @@ export function createRenderer(transcriptEl, hooks = {}) {
   }
 
   // ── Rack upkeep ──
+  // The 1 Hz beats run only while the transcript is on screen (a hidden tab, a closed panel): they paint clocks
+  // and bubbles nobody would see. Back on screen, the ticker runs them at once.
   function needTicker() {
     if (unsubTick) return;
-    try { unsubTick = subscribe(tickRacks, { fps: 1 }); } catch { unsubTick = null; }
+    try { unsubTick = subscribe(tickRacks, { fps: 1, target: $msgs }); } catch { unsubTick = null; }
   }
 
   function stopTicker() {
@@ -2888,6 +2936,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     const stage = rack.stage.el;
     if (on && !stageWidths.has(stage)) {
       stageWidths.set(stage, { rack, width: null });
+      forgetBubbleStyle(rack); // read again from here on, while the observer watches the width
       stageResizes.observe(stage);
     } else if (!on && stageWidths.has(stage)) {
       stageWidths.delete(stage);
@@ -2914,6 +2963,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
 
   function dropRack(rack) {
     watchStageWidth(rack, false);
+    motion.unwatch(rack.row);
     clearTimeout(rack.stageTimer);
     clearTimeout(rack.clearTimer);
     clearTimeout(rack.sr.timer);
@@ -3178,6 +3228,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     runCards.set(run.runId, card);
     const { wrap } = assistantRow(rootScope);
     wrap.appendChild(card);
+    motion.watch(card); // its cameo, stage, scene and sweep loop only while it is on screen
     syncStage(run.runId, card, run);
     return card;
   }
@@ -3220,7 +3271,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
 
   function needStageTicker() {
     if (unsubStageTick) return;
-    try { unsubStageTick = subscribe(tickStages, { fps: 1 }); } catch { unsubStageTick = null; }
+    try { unsubStageTick = subscribe(tickStages, { fps: 1, target: $msgs }); } catch { unsubStageTick = null; }
   }
 
   function stopStageTicker() {
@@ -3399,6 +3450,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     const line = createRouteLine(route, routeLineOpts(phase));
     routeLines.set(routeId, line);
     append(line.el);
+    motion.watch(line.el); // its sweep and icon loop only while it is on screen
     syncRouteLive(routeId);
     enterRow(line.el);
     return line;
@@ -3409,6 +3461,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     if (!routeId || !line) return;
     const fresh = routeLines.get(routeId) !== line;
     routeLines.set(routeId, line);
+    if (line.el) motion.watch(line.el);
     syncRouteLive(routeId);
     if (fresh && line.el?.isConnected) enterRow(line.el);
   }
@@ -3430,7 +3483,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
 
   function removeRouteLine(routeId) {
     const line = routeLines.get(routeId);
-    if (line) { line.el.remove(); routeLines.delete(routeId); }
+    if (line) { motion.unwatch(line.el); line.el.remove(); routeLines.delete(routeId); }
   }
 
   // ── The automation trace ──
@@ -4094,6 +4147,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
     runActivity.clear();
     runCards.clear();
     routeLines.clear();
+    motion.disconnect(); // every holder it watched goes with the transcript
+    styleCache.invalidate();
     autoRows.clear();
     turnFrames = [];
     rootScope.stream = null;
@@ -4122,7 +4177,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
   return {
     el: $msgs,
     clear,
-    destroy: () => { clear(); stageResizes?.disconnect(); limitDock.destroy(); },
+    destroy: () => { clear(); stageResizes?.disconnect(); limitDock.destroy(); stopFontWatch(); },
     appendUser,
     appendAssistantMarkdown,
     appendStatus,

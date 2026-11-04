@@ -459,15 +459,15 @@ export function injectAssistantSidepanelStyles() {
 
     body.ui-interacting .asp-placeholder .asp-mark,
     body.ui-interacting .asp-placeholder-track::after,
-    body.ui-interacting .asp-status .syna-cameo-eye,
-    body.ui-interacting .asp-session-pill .syna-cameo-eye { animation-play-state: paused !important; }
+    body.ui-interacting .asp-status .syna-cameo-eyes,
+    body.ui-interacting .asp-session-pill .syna-cameo-eyes { animation-play-state: paused !important; }
 
     @media (prefers-reduced-motion: reduce) {
       .assistant-panel { transition: opacity 0.15s ease; }
       .asp-placeholder .asp-mark,
       .asp-placeholder-track::after,
-      .asp-status .syna-cameo-eye,
-      .asp-session-pill .syna-cameo-eye,
+      .asp-status .syna-cameo-eyes,
+      .asp-session-pill .syna-cameo-eyes,
       .assistant-panel .asst-send::before { animation: none !important; }
       .asp-placeholder-track::after { left: 31%; }
     }

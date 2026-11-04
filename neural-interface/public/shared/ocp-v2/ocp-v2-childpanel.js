@@ -517,7 +517,12 @@ export function createChildPanel({
     close.setAttribute('data-tooltip', 'Close');
     close.setAttribute('data-tooltip-pos', 'left');
     close.textContent = '×';
-    pill.append(icon, _pillLabel, _pillBadge, close);
+    // The working ring (ocp-v2-styles.js .ocpv2-pill-ring): a box the compositor turns under a mask.
+    const ring = document.createElement('span');
+    ring.className = 'ocpv2-pill-ring';
+    ring.setAttribute('aria-hidden', 'true');
+    ring.appendChild(document.createElement('i'));
+    pill.append(ring, icon, _pillLabel, _pillBadge, close);
     // A click shows this sub-agent's panel; on the pill of the panel that is
     // on screen it minimizes it (as the main panel's pill does).
     pill.addEventListener('click', (event) => {

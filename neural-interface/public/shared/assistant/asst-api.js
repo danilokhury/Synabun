@@ -98,8 +98,20 @@ export function escalateAssistantRun(runId, target) {
 
 // ── Desktop (computer use) ───────────────────
 
-export function getDesktopStatus() {
-  return jsonFetch('/api/desktop/status');
+/** How long the status check may take before it counts as failed (the tray must never spin forever). */
+export const DESKTOP_STATUS_TIMEOUT_MS = 10_000;
+
+export async function getDesktopStatus({ timeoutMs = DESKTOP_STATUS_TIMEOUT_MS } = {}) {
+  const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+  try {
+    return await jsonFetch('/api/desktop/status', ctrl ? { signal: ctrl.signal } : {});
+  } catch (err) {
+    if (ctrl?.signal.aborted) throw Object.assign(new Error('The status check timed out'), { code: 'TIMEOUT', timedOut: true });
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /** step: 'start'|'recheck'|'install_toolchain'|'request_screen'|'request_accessibility'|'open_settings' (+ { pane }). */

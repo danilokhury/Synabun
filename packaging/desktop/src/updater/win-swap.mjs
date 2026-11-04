@@ -247,10 +247,10 @@ export async function runWindowsSwap(params, ops) {
     show('waiting');
     try {
       const shown = await ops.openWindow();
-      if (!shown) return fail(`No install window could open; the installed copy was kept. Log: ${join(stateDir, 'swap.log')}`);
-      say(shown ? `the install window opened (pid ${shown})` : 'the install window could not be opened');
+      // The window only shows progress: without one the update still installs, out of sight.
+      say(shown ? `the install window opened (pid ${shown})` : 'no install window could open; installing without one');
     } catch (error) {
-      return fail(`the install window could not be opened: ${error?.message || error}; log: ${join(stateDir, 'swap.log')}`);
+      say(`no install window could open (${error?.message || error}); installing without one`);
     }
   }
   say(`update to v${version}: waiting for SynaBun (pid ${pid}) to quit`);
@@ -380,15 +380,17 @@ export async function openInstallWindow({ windowDir, stateDir, env = process.env
   const native = join(windowDir, 'SynaBun-install-window.exe');
   let ps = null;
   let mode = '';
-  const start = (file, args) => {
+  const start = (file, args, name) => {
     const child = spawnImpl(file, args, { detached: true, stdio: 'ignore', windowsHide: true, cwd: windowDir, env: appEnvironment(env) });
-    child.on('error', () => {}); child.unref(); return child;
+    child.on('error', (error) => { log(`${name} install window could not start: ${error?.code || 'no code'}${error?.errno !== undefined ? ` (errno ${error.errno})` : ''}: ${error?.message || error}`); });
+    child.on('exit', (code, signal) => { log(`${name} install window exited (code ${code ?? 'none'}${signal ? `, signal ${signal}` : ''})`); });
+    child.unref(); return child;
   };
   try {
     ps = start(windowsPowerShell(env), installWindowArgs({
       script: join(windowDir, 'install-window.ps1'), config: join(windowDir, 'install-window.json'),
       view: join(windowDir, 'install-view.json'), shown: marker, watchdog: process.pid, languageMode: modeFile,
-    }));
+    }), 'PowerShell');
     const until = now() + waitMs;
     do {
       try { mode = readText(modeFile).trim(); } catch {}
@@ -397,13 +399,13 @@ export async function openInstallWindow({ windowDir, stateDir, env = process.env
       if (ps.exitCode !== null && ps.exitCode !== undefined) break;
       await sleep(100);
     } while (now() < until);
-  } catch (error) { log(`PowerShell install window: ${error.message}`); }
-  log(`install window language mode: ${mode || 'blocked or no startup report'}; selecting native fallback`);
+  } catch (error) { log(`PowerShell install window: ${error?.code ? `${error.code}: ` : ''}${error?.message || error}`); }
+  log(`install window language mode: ${mode || 'blocked or no startup report'}${ps && ps.exitCode !== null && ps.exitCode !== undefined ? ` (PowerShell exit ${ps.exitCode})` : ''}; selecting native fallback`);
   try { ps?.kill(); } catch {}
   try { rmSync(marker, { force: true }); } catch {}
   if (installWindowChoice({ mode, nativeAvailable: exists(native) }) !== 'native') return null;
   try {
-    const child = start(native, [windowDir, stateDir, String(process.pid)]);
+    const child = start(native, [windowDir, stateDir, String(process.pid)], 'native');
     const until = now() + waitMs;
     do {
       if (exists(marker)) return child.pid || null;
@@ -411,7 +413,7 @@ export async function openInstallWindow({ windowDir, stateDir, env = process.env
       await sleep(100);
     } while (now() < until);
     try { child.kill(); } catch {}
-  } catch (error) { log(`native install window: ${error.message}`); }
+  } catch (error) { log(`native install window: ${error?.code ? `${error.code}: ` : ''}${error?.message || error}`); }
   return null;
 }
 

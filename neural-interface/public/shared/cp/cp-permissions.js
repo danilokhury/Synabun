@@ -16,6 +16,16 @@ import {
 const ICON_CHECK = '<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5 6.5-7"/></svg>';
 const ICON_X = '<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>';
 
+// A waiting card's spinning border (.cp-spin-ring in ui-claude-panel.js): a box the compositor turns
+// under the ring's mask while the card is .active-perm. The card's first child.
+function spinRing() {
+  const ring = document.createElement('span');
+  ring.className = 'cp-spin-ring';
+  ring.setAttribute('aria-hidden', 'true');
+  ring.appendChild(document.createElement('i'));
+  return ring;
+}
+
 // Modes, rule suggestions and the prompt's context are decided in
 // cp-permission-model.js (DOM-free, tested); this file renders them.
 export const PERMISSION_MODES = ALL_PERMISSION_MODES;
@@ -100,6 +110,7 @@ export function renderPermissionCard(tab, requestId, req, hooks) {
   const card = document.createElement('div');
   card.className = 'perm-card active-perm cp-perm-card';
   card.dataset.requestId = requestId;
+  card.appendChild(spinRing());
   if (ctx.toolUseId) card.dataset.toolUseId = ctx.toolUseId;
 
   const hdr = document.createElement('div');
@@ -283,6 +294,7 @@ export function renderElicitationCard(tab, requestId, req, hooks) {
   const card = document.createElement('div');
   card.className = 'perm-card active-perm cp-perm-card cp-elicit-card';
   card.dataset.requestId = requestId;
+  card.appendChild(spinRing());
   if (req.elicitation_id) card.dataset.elicitationId = req.elicitation_id;
 
   const hdr = document.createElement('div');

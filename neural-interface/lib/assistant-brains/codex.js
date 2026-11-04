@@ -181,8 +181,13 @@ export function createCodexBrain({ session, sink, deps = {}, persona = '' } = {}
       queryPlanMode = planMode;
       // "<id>[extended]" = the model at its extended context window (the sidepanel's contextMode).
       const picked = model || brain.model || null;
+      // The Assistant composer uses base64 + mediaType; the Codex skin persists
+      // data URLs as native localImage inputs. Translate at this protocol boundary.
+      const pictures = (Array.isArray(images) ? images : [])
+        .filter((image) => image?.base64)
+        .map((image) => ({ dataUrl: `data:${image.mediaType || 'image/png'};base64,${image.base64}` }));
       sendQuery({
-        prompt: text, images: Array.isArray(images) && images.length ? images : undefined,
+        prompt: text, images: pictures.length ? pictures : undefined,
         cwd: cwd || brain.cwd || deps.PACKAGE_ROOT || undefined, model: picked ? baseModelId(picked) : null, effort: effort || brain.effort || null,
         contextMode: contextVariantOf(picked) === 'extended' ? 'extended' : undefined,
         threadId: threadId || null, autoAccept: approvalMode === 'auto' && !planMode && !remoteReadOnly, planMode,

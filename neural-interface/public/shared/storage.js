@@ -1,4 +1,5 @@
 import { hostedSidepanelId, sidepanelHost } from './ui-sidepanel-runtime.js';
+import { createRetryState } from './storage-retry.js';
 // ═══════════════════════════════════════════
 // STORAGE — Server-synced persistent state
 // ═══════════════════════════════════════════
@@ -19,6 +20,8 @@ let _dirty = {};
 let _flushTimer = null;
 let _hydrated = false;
 const DEBOUNCE_MS = 500;
+// A refused flush is tried again with backoff (storage-retry.js); a 401 / 403 waits for a write or a reconnect.
+const _retry = createRetryState();
 // Keys that migrated to the per-entry blob store (see blob-store.js and the
 // server's FAT_KEY_ROUTES). Excluded from hydration so they can never re-enter
 // the whole-map PATCH cycle.
@@ -129,10 +132,20 @@ export const storage = (hostedSidepanelId && sidepanelHost()?.storageFor(hostedS
 
 // ── Debounced flush to server ────────────────────────
 
-function _scheduleDebouncedFlush() {
+/** `fromWrite`: a new write or a reconnect, which lifts a 401 / 403 block (the backoff still applies). */
+function _scheduleDebouncedFlush(fromWrite = true) {
   if (SHOWCASE_MODE) { _dirty = {}; return; }
+  const owed = fromWrite ? _retry.poke() : _retry.wait();
+  if (!Number.isFinite(owed)) return; // blocked: values stay in _dirty until something changes
   if (_flushTimer) clearTimeout(_flushTimer);
-  _flushTimer = setTimeout(_flushToServer, DEBOUNCE_MS);
+  _flushTimer = setTimeout(_flushToServer, Math.max(DEBOUNCE_MS, owed));
+}
+
+if (!SHOWCASE_MODE) {
+  const _reconnected = () => { if (Object.keys(_dirty).length) _scheduleDebouncedFlush(true); };
+  window.addEventListener('online', _reconnected);
+  window.addEventListener('focus', _reconnected);
+  window.addEventListener('synabun:auth-changed', _reconnected);
 }
 
 async function _flushToServer() {
@@ -150,20 +163,28 @@ async function _flushToServer() {
   _dirty = {};
   _flushTimer = null;
   if (Object.keys(payload).length === 0) return;
+  let status = null;
   try {
     const res = await fetch('/api/ui-state', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
+    status = res.status;
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _retry.ok();
   } catch (err) {
-    console.warn('[storage] Flush failed:', err.message, '— will retry');
     // Re-queue failed keys (don't overwrite newer dirty values)
     for (const [k, v] of Object.entries(payload)) {
       if (!(k in _dirty)) _dirty[k] = v;
     }
-    _scheduleDebouncedFlush();
+    const { blocked, delay } = _retry.fail(status);
+    if (blocked) {
+      if (_retry.attempt === 1 || _retry.attempt % 20 === 0) console.warn('[storage] Flush refused:', err.message, '— kept; will try again on the next change or reconnect');
+    } else {
+      if (_retry.attempt <= 3 || _retry.attempt % 20 === 0) console.warn('[storage] Flush failed:', err.message, `— will retry in ${Math.round(delay / 1000)} s`);
+      _scheduleDebouncedFlush(false);
+    }
   }
 }
 
