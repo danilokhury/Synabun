@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { callerDesktopGrant, callerRole, getIdentity, terminalIdFor } from './identity.js';
+import { callerDesktopGrant, callerRole, getIdentity, terminalHeaders } from './identity.js';
 
 const BASE_URL = process.env.NEURAL_INTERFACE_URL
   || `http://localhost:${process.env.NEURAL_PORT || '3344'}`;
@@ -38,7 +38,7 @@ async function post(path: string, body: Record<string, unknown>, timeoutMs = ACT
   try {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'X-Synabun-Terminal': terminalIdFor(getIdentity()),
+      ...terminalHeaders(getIdentity()),
       'X-Synabun-Desktop-Grant': grant,
       'X-Synabun-Request-Id': randomUUID(),
       'X-Synabun-Deadline': String(Date.now() + timeoutMs),

@@ -20,6 +20,8 @@
 import { escapeHtml, debounce } from './utils.js';
 import { storage } from './storage.js';
 import * as kit from './settings/settings-kit.js';
+import { logOriginFilter } from './judgments-log-origins.js';
+import { markNoAccess, noteOwnerAccessRefusal, ownerAccessSay, refusalOfError } from './ui-owner-access.js';
 
 // Mirrors ui-settings.js (module-local there; duplicated to avoid an import cycle).
 const CHEVRON_ICON = '<svg class="cc-section-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>';
@@ -47,6 +49,19 @@ const PRE = 'margin:0;white-space:pre-wrap;font-size:11px;max-height:160px;overf
 const LINK = 'color:var(--accent);text-decoration:underline dotted;text-underline-offset:2px;cursor:pointer';
 /** A server new enough to attribute log rows to sessions and count from the log. Older ones get the per-process view. */
 const serverV2 = (cfg) => Boolean(cfg && (Array.isArray(cfg.origins) || (cfg.logStats && typeof cfg.logStats === 'object')));
+/** The log's origin options for a config answer (judgments-log-origins.js decides which): the server's own list, with
+ *  the note on "live" in its tooltip (a select is as wide as its longest option), or an older server's three. */
+function logOriginOptions(cfg) {
+  const { listed, values } = logOriginFilter(cfg);
+  const all = '<option value="">' + kit.te('settings.redesign.judgments.allOrigins') + '</option>';
+  if (!listed) {
+    const label = { live: kit.te('settings.redesign.judgments.live'), backfill: kit.te('settings.redesign.judgments.backfill'), bench: kit.te('settings.redesign.judgments.bench') };
+    return all + values.map(o => `<option value="${attr(o)}">${label[o] ?? escapeHtml(o)}</option>`).join('');
+  }
+  return all + values.map(o => o === 'live'
+    ? '<option value="live" title="' + kit.te('settings.redesign.judgments.everyOriginExceptBackfillAndBench') + '">' + kit.te('settings.redesign.judgments.liveRealTime') + '</option>'
+    : `<option value="${attr(o)}">${escapeHtml(o)}</option>`).join('');
+}
 const fin = (v) => v != null && v !== '' && Number.isFinite(Number(v));
 const shortId = (id) => String(id ?? '').slice(0, 8);
 const memLink = (id) => (id == null || id === '') ? '' : `<a href="#" class="jv-entity" data-entity="${attr(id)}" title="${attr(id)}${kit.te('settings.redesign.judgments.showEveryJudgmentAboutThisMemory')}" style="${LINK};font-family:monospace">${escapeHtml(shortId(id))}</a>`;
@@ -280,7 +295,7 @@ export function buildJudgmentsTab() {
       ${section({ id: 'jv-sec-log', title: kit.tx('settings.redesign.judgments.judgmentLog'), badgeId: 'jv-log-badge', body: `
         <div class="settings-key-row" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
           <select id="jv-log-surface" style="${smallInput};width:auto"><option value="">${kit.te('settings.redesign.judgments.allSurfaces')}</option></select>
-          <select id="jv-log-origin" style="${smallInput};width:auto"><option value="">${kit.te('settings.redesign.judgments.allOrigins')}</option><option value="live">${kit.te('settings.redesign.judgments.live')}</option><option value="backfill">${kit.te('settings.redesign.judgments.backfill')}</option><option value="bench">${kit.te('settings.redesign.judgments.bench')}</option></select>
+          <select id="jv-log-origin" style="${smallInput};width:auto">${logOriginOptions(null)}</select>
           <input type="text" id="jv-log-session" placeholder="${kit.te('settings.redesign.judgments.sessionId')}" title="${kit.te('settings.redesign.judgments.rowsFromOneClaudeCodeSession')}" autocomplete="off" spellcheck="false" style="${smallInput};width:110px;display:none">
           <input type="text" id="jv-log-entity" placeholder="${kit.te('settings.redesign.judgments.memoryId')}" title="${kit.te('settings.redesign.judgments.rowsAboutOneMemory')}" autocomplete="off" spellcheck="false" style="${smallInput};width:110px">
           <input type="text" id="jv-log-project" placeholder="${kit.te('settings.redesign.judgments.project')}" title="${kit.te('settings.redesign.judgments.rowsFromOneProject')}" autocomplete="off" spellcheck="false" style="${smallInput};width:100px;display:none">
@@ -343,7 +358,7 @@ export function wireJudgmentsTab(overlay, { toast = () => {}, initial = null } =
     const text = await res.text();
     let json;
     try { json = JSON.parse(text); } catch { json = { ok: false, error: text.slice(0, 120) || `HTTP ${res.status}` }; }
-    if (!res.ok && json.ok !== false) json = { ok: false, error: json.error || `HTTP ${res.status}`, status: res.status };
+    if (!res.ok && json.ok !== false) json = { ok: false, error: json.error || `HTTP ${res.status}`, status: res.status, ...(typeof json.code === 'string' ? { code: json.code } : {}) };
     if (json.status === undefined) json.status = res.status;
     return json;
   };
@@ -389,6 +404,18 @@ export function wireJudgmentsTab(overlay, { toast = () => {}, initial = null } =
   // ── Renderers ──
   function setHeader(cfg) {
     const dot = $('jv-status-dot'), line = $('jv-status-line');
+    // No owner access (SynaBun's automation browser opened this page): "No access", the pane's controls off and no more
+    // polling, never "Off" (ui-owner-access.js).
+    const refusal = refusalOfError(cfg);
+    if (refusal) {
+      dot.className = 'settings-status-dot disconnected';
+      line.textContent = ownerAccessSay('panelTitle');
+      setNavStatus('refused');
+      noteOwnerAccessRefusal(refusal);
+      markNoAccess(tabBody);
+      stopAll();
+      return;
+    }
     if (!cfg || cfg.ok === false) {
       dot.className = 'settings-status-dot disconnected';
       line.textContent = cfg?.status === 404 ? kit.tx('settings.redesign.judgments.typesafeSettingsUnavailableTheServerIs') : kit.tx('settings.redesign.judgments.typesafeSettingsUnavailable', { error: cfg?.error || kit.tx('settings.redesign.judgments.noResponse') });
@@ -901,15 +928,15 @@ export function wireJudgmentsTab(overlay, { toast = () => {}, initial = null } =
     const v2 = serverV2(cfg);
     for (const id of ['jv-log-session', 'jv-log-project']) $(id).style.display = v2 ? '' : 'none';
     const origin = $('jv-log-origin');
-    const want = Array.isArray(cfg.origins) ? cfg.origins.filter(o => typeof o === 'string' && o) : [];
-    if (!want.length || document.activeElement === origin) return;
-    if (Array.from(origin.options, o => o.value).filter(Boolean).join('|') === want.join('|')) return;
+    if (document.activeElement === origin) return;
+    // The list follows this answer both ways: the tab may have opened from a kept answer of a server that listed
+    // more (settings-data.js), and a filter this server cannot apply is not offered.
+    const filter = logOriginFilter(cfg);
+    if ((origin.dataset.origins || logOriginFilter(null).key) === filter.key) return;
     const value = origin.value;
-    // A select is as wide as its longest option, so the note on "live" goes in its tooltip.
-    origin.innerHTML = '<option value="">' + kit.te('settings.redesign.judgments.allOrigins') + '</option>' + want.map(o => o === 'live'
-      ? '<option value="live" title="' + kit.te('settings.redesign.judgments.everyOriginExceptBackfillAndBench') + '">' + kit.te('settings.redesign.judgments.liveRealTime') + '</option>'
-      : `<option value="${attr(o)}">${escapeHtml(o)}</option>`).join('');
-    origin.value = want.includes(value) ? value : '';
+    origin.innerHTML = logOriginOptions(cfg);
+    origin.dataset.origins = filter.key;
+    origin.value = filter.values.includes(value) ? value : '';
   }
   /** Point the log at one memory or one session, clearing the other filters, and bring it into view. */
   function filterLogBy({ entity = '', session = '' }) {

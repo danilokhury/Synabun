@@ -1,5 +1,5 @@
 import { readStoredToolListRecord, toolListRecordForUpdate } from './lib/tool-lists.js';
-import { externalServerInventory, selectExternalServers, externalCatalog, EXTERNAL_SERVER_LIMITATIONS, scopeOpenCodeServers, retainExternalRefs, writePrivateMcpConfig, redactMcpValues, mcpSecretValues } from './lib/mcp-external-servers.js';
+import { externalServerInventory, selectExternalServers, externalCatalogReport, mergeExternalAvailability, EXTERNAL_SERVER_LIMITATIONS, scopeOpenCodeServers, retainExternalRefs, writePrivateMcpConfig, redactMcpValues, mcpSecretValues } from './lib/mcp-external-servers.js';
 import { openCodeWorkerData } from './lib/opencode-worker-data.js';
 import { resumeSandboxPlan } from './lib/worker-resume.js';
 import { waitForSynabunTools, synabunConfigured, invalidateSynabunTools, synabunToolsTimeoutText } from './lib/opencode-mcp-ready.js';
@@ -26,7 +26,7 @@ import { createWorkerMcpChannel } from './lib/worker-mcp-channel.js';
 import { createPageSession, PAGE_SECRET_PATHS, PAGE_SECRET_REFRESH_PATH, SERVICE_WORKER_PATH } from './lib/page-session.js';
 import { normalizeViewUrl } from './public/shared/view-variant.js';
 import { createPeerIdentity, debugClientPolicy } from './lib/peer-identity.js';
-import { createOwnerAuthority } from './lib/owner-authority.js';
+import { createOwnerAuthority, isAgentCall } from './lib/owner-authority.js';
 import { collectRelayListenerPorts, localProxyPorts } from './lib/worker-relay-ports.js';
 import { machineNames } from './lib/machine-names.js';
 import { draftConfinementSupport } from './lib/skills/draft-confinement.js';
@@ -36,7 +36,14 @@ import { createProviderPanelTerminalAuth, providerLoginSpec, registerProviderPan
 import { claudeLegacyPricing, claudeUsageCostUsd } from './lib/assistant-pricing.js';
 import { HOOK_SCRIPTS, hookDefinitionsForEvent, hookCommandString, hookInstallBlocker, hookInstallPlan, isSynaBunHookCommand, sweepSettingsHooks, ensureHookRoot } from '../lib/claude-hooks.js';
 import { claudeHooksStatus } from './lib/claude-hooks-status.js';
-import { browserV2Enabled, browserRequestMiddleware, assertBrowserRequestActive, browserActionTimeout, markBrowserActionStarted, runBrowserRequest, cancellableBrowserDelay, measureBrowserPhase, createEngagementScheduler, engagementTargetSelector, isEngagementWriteSelector, isXShortcutPublish, isXScriptedWrite } from './lib/browser-execution.js';
+import { createBrowserStartHandoff, startWaitMs } from './lib/browser-start-handoff.js';
+import { browserRequestDeadline, browserV2Enabled, browserRequestMiddleware, assertBrowserRequestActive, browserActionTimeout, markBrowserActionStarted, runBrowserRequest, cancellableBrowserDelay, measureBrowserPhase, createEngagementScheduler, engagementTargetSelector, isEngagementWriteSelector, isXShortcutPublish, isXScriptedWrite } from './lib/browser-execution.js';
+import { sessionCloseDecision, profileStopDecision, otherSessionOwners } from './lib/browser-session-close.js';
+import { isAutomationBrowserRoute, ownerOnlyCreateFields } from './lib/browser-automation-routes.js';
+import { browserOwnerId, listedOwners } from './lib/browser-owner.js';
+import { createTerminalTokenRegistry, TERMINAL_TOKEN_ENV, TERMINAL_TOKEN_HEADER, BRAIN_CREDENTIAL_HEADER, redactTerminalSecrets } from './lib/terminal-tokens.js';
+import { decideFailedTabRecovery } from './lib/browser-wedge-retire.js';
+import { createSocialWritePacer, socialPaceAccountKey, socialPaceRequest, socialPacingBlock, SOCIAL_PACE_LIMITS, SOCIAL_WRITE_GAPS } from './lib/social-write-pacing.js';
 import { describeLocatorMatches, healLocatorByText, validNthMatch, captureTargetIdentity, matchesTargetIdentity } from './lib/browser-targets.js';
 import { getInteractiveHints, collectSemanticContext, buildAssist, describeTargetFacts, verifyHealTarget, createAssistContextStore } from './lib/browser-semantic-context.js';
 import { createBrowserAssistRouter } from './lib/browser-assist-api.js';
@@ -204,7 +211,7 @@ import {
   LIVE_DATA_ENV,
 } from './lib/native-loop-providers.js';
 import { createOpenCodeActivityRelay } from './lib/opencode-worker-activity.js';
-import { browserServePortDenial } from './lib/browser-tool-policy.js';
+import { browserServePortDenial, browserSessionLossRule } from './lib/browser-tool-policy.js';
 import { createNativeServeBoundary, nativeServeCapability, nativeServeReason, narrowOffenders } from './lib/opencode-native-boundary.js';
 const nativeServeBoundary = createNativeServeBoundary();
 import { setBrowserNetworkRule, usesNativeBrowserNetworkGuard, disposeBrowserNetworkGuard, recoverBrowserNetworkGuard, MONEY_PATTERNS, SERVE_PORT_PATTERNS } from './lib/browser-network-guard.js';
@@ -555,11 +562,17 @@ app.use(requestGates.features);
 // for automation, an AI agent's process tree, another SynaBun server or a relay (ssh, socat, a proxy, a tunnel, any
 // program that listens and calls SynaBun) is never handed the secret and never counts as the owner, whatever host,
 // cookie or marker it sends. A brain credential (X-Synabun-Brain-Token) from a process outside the brain's own tree
-// is dropped from the request. A lookup that cannot run changes nothing (the rules from before apply). Mounted here,
-// in front of every route (the page secret's pieces are made further down and read only when a request comes).
+// is dropped from the request. Where the lookup does not run (Windows, Linux, SYNABUN_PEER_IDENTITY=off) nothing
+// changes: the rules from before apply. On macOS a lookup that fails (netstat or ps missing, denied, slow past the
+// cap) is no proof of who is asking: no page secret, no brain credential, and the owner's writes, reads and sockets
+// answer 503 PEER_UNAVAILABLE until a lookup works again (the start probe below says so in the log at once, GET
+// /api/health says so as `ownerAuthority`, and the page shows a banner). Mounted here, in front of every route (the
+// page secret's pieces are made further down and read only when a request comes).
 // This install's root (PACKAGE_ROOT, defined further down): SynaBun's own MCP server over HTTP is the one listening
 // program the lookup knows, by its main script under it (mcp-server/dist/http.js, `npm run start:http`).
 const _peerIdentity = createPeerIdentity({ log: (line) => console.warn(line), disabled: String(process.env.SYNABUN_PEER_IDENTITY || '').toLowerCase() === 'off', synabunRoots: [resolve(__dirname, '..')], debugClient: startedDebugClient });
+// netstat and ps once, now: a server that cannot identify its callers says so before the first owner's request does.
+_peerIdentity.probe();
 // The one decision for the owner's routes and sockets (lib/owner-authority.js): every write to /api but the hooks'
 // and the agents' feature data, the two reads that hand out a secret, and the owner's sockets are refused to the
 // automation browser (its marker or its process), relays, other SynaBun servers, remote logins and an agent's tree
@@ -2416,6 +2429,11 @@ async function runGracefulShutdown(reason) {
   let keepRuns = [];
   try { keepRuns = _assistantDispatcher?.suspendForShutdown?.(reason) || []; } catch (err) { console.warn('  assistant suspend err:', err?.message); }
   try { await _nativeLoopRuntime?.shutdown(reason, { keep: keepRuns }); } catch (err) { console.warn('  native loop stop err:', err?.message); }
+  // Browser starts kept for a caller that never came back (lib/browser-start-handoff.js): closed now, never left open
+  // in MoreLogin after the server is gone; a start still running is closed when it finishes. Bounded wait.
+  try {
+    await Promise.race([browserStartHandoff.clear(), new Promise((r) => setTimeout(r, 1500).unref?.())]);
+  } catch (err) { console.warn('  browser start handoff clear err:', err?.message); }
   try { stopAllIsolatedServes(); } catch (err) { console.warn('  isolated opencode stop err:', err?.message); }
   // The Antigravity panel's `agy acp` processes (one per open panel socket).
   try { await antigravityPanel.closeAll(); } catch (err) { console.warn('  antigravity panel stop err:', err?.message); }
@@ -4100,6 +4118,10 @@ function codexSandboxArgs() { return codexWindowsSandboxArgs(adminSandboxOn()); 
 // live restart never loses worker dispatch to a sandbox that could not be built. Codex is handled differently
 // (its own sandbox cannot be wrapped): a guarded Codex worker runs with its network off (lib/native-loop-providers.js).
 let _workerMcpChannel = null;
+// Who a run is (lib/terminal-tokens.js): one token per run SynaBun starts (an agent, a terminal or exec loop, a native
+// run, a dispatched worker), minted with its terminal id, handed to that run's SynaBun MCP alone, revoked at its end.
+// The browser routes take a run's X-Synabun-Terminal only with that run's token (browserCaller). In memory only.
+const _terminalTokens = createTerminalTokenRegistry({ log: (line) => console.warn(line) });
 /** The launch beacon's loopback port (lib/start-launcher.js startBeaconPort): a SynaBun listener while a launch lives. */
 function workerBeaconPort() { const p = Number(PORT) || 3344; return p + 10000 <= 65535 ? p + 10000 : p - 10000; }
 /** Browser-control ports a guarded worker must not reach, by fixed knowledge (dynamic ones come from detection,
@@ -4631,6 +4653,9 @@ CRITICAL — When you need clarification during planning:
     if (_codexToolsRuntimes.get(codexMcpRuntimeId) === codexMcpRuntimeBinding) {
       _codexToolsRuntimes.delete(codexMcpRuntimeId);
     }
+    // Every end of this connection's app-server comes through here: its MCP child's proof goes with it (the next
+    // app-server gets a new one), and the id is refused until then.
+    _terminalTokens.revoke(codexMcpRuntimeId);
     cancelRuntimeMcpToolsRefresh(codexMcpRuntimeId);
     codexMcpRuntimeBinding = null;
     if (cleanup) cleanupCodexRuntimeTools(codexMcpRuntimeId);
@@ -5772,6 +5797,13 @@ CRITICAL — When you need clarification during planning:
     activeCodexHome = launch.home;
     let codexBin = getCodexBin();
     const runtimeToolsPath = writeCodexRuntimeTools(codexMcpRuntimeId, ['all']);
+    // The MCP child's proof of codexMcpRuntimeId (lib/terminal-tokens.js): an Assistant brain's launch credential, bound
+    // to it (no second secret: the child already holds it), else a token of this app-server's own, new with every
+    // process. Its value is only in the app-server's environment, forwarded to the MCP child by name (env_vars), never
+    // on this command line; Codex's default shell policy keeps a *TOKEN* variable out of the commands it runs.
+    let codexTerminalToken = null;
+    if (codexRole === 'assistant' && codexBrainCredential) _terminalTokens.bind(codexMcpRuntimeId, codexBrainCredential);
+    else codexTerminalToken = _terminalTokens.rotate(codexMcpRuntimeId);
     const args = [
       '-c',
       `mcp_servers.SynaBun.env.SYNABUN_TOOLS=${JSON.stringify('all')}`,
@@ -5792,6 +5824,7 @@ CRITICAL — When you need clarification during planning:
     if (codexDesktopGrant) args.splice(args.length - 1, 0, '-c', `mcp_servers.SynaBun.env.SYNABUN_DESKTOP_GRANT=${JSON.stringify(codexDesktopGrant)}`);
     // The variable's name on the command line, its value only in the app-server's environment (below).
     if (codexRole === 'assistant' && codexBrainCredential) args.splice(args.length - 1, 0, '-c', 'mcp_servers.SynaBun.env_vars=["SYNABUN_BRAIN_TOKEN"]');
+    else if (codexTerminalToken) args.splice(args.length - 1, 0, '-c', `mcp_servers.SynaBun.env_vars=["${TERMINAL_TOKEN_ENV}"]`);
     if (codexRole === 'assistant' && codexRouteGate?.flags?.length) args.splice(args.length - 1, 0, ...codexRouteGate.flags);
     if (/\.js$/i.test(codexBin)) {
       args.unshift(codexBin);
@@ -5812,9 +5845,12 @@ CRITICAL — When you need clarification during planning:
       ...(codexDesktopGrant ? { SYNABUN_DESKTOP_GRANT: codexDesktopGrant } : {}),
       ...(codexRole === 'assistant' && codexRouteGate?.env ? codexRouteGate.env : {}),
       ...(codexRole === 'assistant' && codexBrainCredential ? { SYNABUN_BRAIN_TOKEN: codexBrainCredential } : {}),
+      ...(codexTerminalToken ? { [TERMINAL_TOKEN_ENV]: codexTerminalToken } : {}),
     };
     // Never one inherited from the launching shell: only this brain's own credential reaches its MCP child.
     if (!(codexRole === 'assistant' && codexBrainCredential)) delete env.SYNABUN_BRAIN_TOKEN;
+    // …and only this app-server's own terminal token.
+    if (!codexTerminalToken) delete env[TERMINAL_TOKEN_ENV];
     delete env.FORCE_COLOR;
     delete env.CLICOLOR_FORCE;
     const proc = spawn(shellCommand(codexBin, useShell, { isFile: existsSync }), args, {
@@ -8436,7 +8472,9 @@ function broadcastToOpencodeV2Clients(data, { nativeRunId = null } = {}) {
         nativeRootSessionId,
       }
     : data;
-  const payload = JSON.stringify(wireData);
+  // An OpenCode panel's, brain's or run's output never carries a SynaBun run secret an agent printed (its serve's
+  // environment holds the panel's token or the brain's credential): lib/terminal-token-redaction.js.
+  const payload = JSON.stringify(redactTerminalSecrets(wireData));
   for (const ws of _ocpV2WsClients) {
     if (nativeRun && !opencodeV2ClientOwnsRun(ws, nativeRun)) continue;
     if (ws.readyState === 1) {
@@ -8569,6 +8607,7 @@ function killIsolatedServeProcess(proc) {
 // bindings and its config folder, which has the same path.
 function endIsolatedStart(termId, entry) {
   if (_ocpIsoServes.get(termId) === entry) { stopIsolatedServe(termId); return; }
+  // A start a newer one replaced: its own proof was replaced too (the newer start bound or rotated the id).
   try { entry.unsub?.(); } catch {}
   try { entry.client?.stop(); } catch {}
   killIsolatedServeProcess(entry.proc);
@@ -8649,7 +8688,7 @@ function buildOpencodeRuntimeConfigOverlay(xdgRoot, { unattended = false } = {})
   return JSON.stringify(overlay);
 }
 
-function setupOpencodeSidepanelConfig(termId, selection = null, { cwd = PACKAGE_ROOT, scopeExternal = true } = {}) {
+function setupOpencodeSidepanelConfig(termId, selection = null, { cwd = PACKAGE_ROOT, scopeExternal = true, terminalToken = false } = {}) {
   const xdgRoot = resolve(DATA_HOME, 'data', 'sidepanel-configs', `opencode-${termId}`);
   const targetDir = resolve(xdgRoot, 'opencode');
   if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
@@ -8669,8 +8708,11 @@ function setupOpencodeSidepanelConfig(termId, selection = null, { cwd = PACKAGE_
       SYNABUN_TERMINAL_SESSION: termId,
       SYNABUN_TOOLS: runtimeToolsValue(resolvedTools),
       SYNABUN_TOOLS_PATH: runtimeToolsPath,
+      // A side panel's serve: its token's name only, never its value (only the serve's environment holds it; OpenCode
+      // expands the reference for the MCP child). ensureIsolatedServe({ panelToken }).
+      ...(terminalToken ? { [TERMINAL_TOKEN_ENV]: `{env:${TERMINAL_TOKEN_ENV}}` } : {}),
     },
-    clearEnv: ['SYNABUN_BROWSER_SESSION', 'SYNABUN_BROWSER_TAB', 'CLAUDECODE', 'SYNABUN_PROFILE', 'SYNABUN_RUNTIME_PROFILE_PATH'],
+    clearEnv: ['SYNABUN_BROWSER_SESSION', 'SYNABUN_BROWSER_TAB', 'CLAUDECODE', 'SYNABUN_PROFILE', 'SYNABUN_RUNTIME_PROFILE_PATH', ...(terminalToken ? [] : [TERMINAL_TOKEN_ENV])],
   }));
   ensureOpenCodeCoreMcpPermissions(baseCfg);
   if (scopeExternal) applyOpenCodeExternalScope(xdgRoot, baseCfg, resolvedTools, cwd);
@@ -8694,7 +8736,7 @@ function updateOpencodeRuntimeToolsConfig(xdgRoot, selection) {
   return true;
 }
 
-async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, cwd = PACKAGE_ROOT, keepAlive = false, tools = undefined, brainCredential = null, worker = false, sandboxProfile = null, extraEnv = null, hidePassword = false, persistentData = false } = {}) {
+async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, cwd = PACKAGE_ROOT, keepAlive = false, tools = undefined, brainCredential = null, worker = false, sandboxProfile = null, extraEnv = null, hidePassword = false, persistentData = false, terminalToken = null, panelToken = false } = {}) {
   if (_ocpHistoryClearInProgress) throw new Error('OpenCode history is being cleared');
   const requestedTools = toolsFromSelection(tools);
   let entry = _ocpIsoServes.get(termId);
@@ -8717,10 +8759,10 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, c
   const refusal = await opencodeStartRefusal();
   if (refusal) { console.warn(`[ocp-iso] serve ${termId.slice(-8)}: ${refusal.message}`); throw refusal; }
   let xdgRoot;
-  try { xdgRoot = requestedXdgRoot || setupOpencodeSidepanelConfig(termId, requestedTools, { cwd }); }
+  try { xdgRoot = requestedXdgRoot || setupOpencodeSidepanelConfig(termId, requestedTools, { cwd, terminalToken: !!panelToken && !terminalToken && !brainCredential }); }
   catch (err) { console.warn(`[ocp-iso] config setup failed: ${err.message}`); return null; }
   // Registered before anything is waited for: a second start for the same term id waits for this one.
-  entry = { termId, port: null, xdgRoot, persistentData, tools: requestedTools, toolsRefreshFailed: false, proc: null, client: null, ready: false, starting: true, keepAlive: !!keepAlive, unsub: null, sessions: new Set(), lastUsed: Date.now() };
+  entry = { termId, port: null, xdgRoot, persistentData, tools: requestedTools, toolsRefreshFailed: false, proc: null, client: null, ready: false, starting: true, keepAlive: !!keepAlive, unsub: null, sessions: new Set(), lastUsed: Date.now(), ownProof: null };
   _ocpIsoServes.set(termId, entry);
   // What an earlier SynaBun left running goes first (its ports with it); then the port is picked.
   await sweepLeftoverOpencodeServes();
@@ -8733,6 +8775,13 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, c
   if (port == null) { console.warn('[ocp-iso] no free port for isolated serve'); endIsolatedStart(termId, entry); return null; }
   entry.port = port;
   try {
+    // What the serve's SynaBun MCP child proves termId with (lib/terminal-tokens.js): a run's token (handed in by its
+    // provider), an Assistant brain's launch credential (bound to termId: the credential the child already has is its
+    // proof, no second secret), or a side panel's own token (panelToken), new with every serve. A brain's or a panel's
+    // proof is this serve's: revoked when it stops (stopIsolatedServe). A run's is its runtime's (revoked at its end).
+    let serveToken = terminalToken || null;
+    if (brainCredential) { if (_terminalTokens.bind(termId, brainCredential)) entry.ownProof = 'brain'; }
+    else if (!serveToken && panelToken) { serveToken = _terminalTokens.rotate(termId); if (serveToken) entry.ownProof = 'panel'; }
     const isolatedEnv = {
       ...process.env,
       XDG_CONFIG_HOME: xdgRoot,
@@ -8745,12 +8794,17 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, c
       // Keep this above the script's own deadlines while retaining a hard cap.
       OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS:
         process.env.OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || '300000',
+      // A run's terminal token (lib/terminal-tokens.js): its loop config names it ({env:SYNABUN_TERMINAL_TOKEN},
+      // setupOpencodeLoopConfig), only this serve's environment holds it (never one this server inherited: below).
+      // A side panel's serve holds its own the same way (setupOpencodeSidepanelConfig names it).
+      ...(serveToken ? { [TERMINAL_TOKEN_ENV]: serveToken } : {}),
       // A WhatsApp conversation's brain credential: the config names it ({env:SYNABUN_BRAIN_TOKEN}), only this
       // serve's environment holds it (a fresh serve per brain launch: the brain stops its serve when it ends).
       ...(brainCredential ? { SYNABUN_BRAIN_TOKEN: brainCredential } : {}),
     };
     delete isolatedEnv.CLAUDECODE;
     if (!brainCredential) delete isolatedEnv.SYNABUN_BRAIN_TOKEN;
+    if (!serveToken) delete isolatedEnv[TERMINAL_TOKEN_ENV];
     // A run's own settings for its serve (an evaluation run's, a protected worker's: lib/native-loop-providers.js
     // openCodeRunEnvFor), last: a string is set, null removes the variable (an inherited OPENCODE_CONFIG_DIR, GIT_DIR).
     if (extraEnv && typeof extraEnv === 'object') {
@@ -8914,6 +8968,8 @@ function stopIsolatedServe(termId, { preserveBindings = false } = {}) {
   if (!entry) return;
   cancelRuntimeMcpToolsRefresh(termId);
   _ocpIsoServes.delete(termId);
+  // A panel's or a brain's proof ends with its serve (a run's token is its runtime's, revoked at the run's end).
+  if (entry.ownProof) _terminalTokens.revoke(termId);
   if (!preserveBindings) {
     for (const sid of entry.sessions) {
       if (_ocpSessionToServe.get(sid) === termId) _ocpSessionToServe.delete(sid);
@@ -8966,7 +9022,7 @@ async function turnClientForSession(sessionId, requestedTools = null) {
     const session = await opencodeV2Client.session.get({ sessionID: sessionId });
     const cwd = session?.data?.directory;
     if (!cwd) throw new Error('OpenCode session directory is unavailable for MCP scope discovery');
-    const entry = await ensureIsolatedServe(termId, { tools, cwd });
+    const entry = await ensureIsolatedServe(termId, { tools, cwd, panelToken: true });
     if (!entry || !entry.client) throw new Error('OpenCode isolated session runtime failed to start');
     // Publish the binding only after the isolated serve is ready. Every waiter
     // shares this promise, so one cold session can never fork two serves.
@@ -9033,14 +9089,14 @@ async function restartOpenCodeSessionTools(sessionId, selection) {
     _ocpSessionTools.set(familySessionId, tools);
   }
   let entry, startError;
-  try { entry = await ensureIsolatedServe(termId, { tools, cwd }); }
+  try { entry = await ensureIsolatedServe(termId, { tools, cwd, panelToken: true }); }
   catch (error) { startError = error; }
   if (!entry?.client) {
     for (const familySessionId of familySessionIds) {
       _ocpSessionToServe.set(familySessionId, termId);
       _ocpSessionTools.set(familySessionId, previousTools);
     }
-    try { entry = await ensureIsolatedServe(termId, { tools: previousTools, cwd }); }
+    try { entry = await ensureIsolatedServe(termId, { tools: previousTools, cwd, panelToken: true }); }
     catch { entry = null; }
     if (entry?.client) {
       for (const familySessionId of familySessionIds) entry.sessions.add(familySessionId);
@@ -9153,7 +9209,8 @@ function handleOpencodeV2Ws(ws) {
 
   const send = (data) => {
     if (ws.readyState === 1) {
-      try { ws.send(JSON.stringify(data)); } catch {}
+      // A session's history and every answer of this socket: scrubbed of SynaBun's run secrets like the broadcast.
+      try { ws.send(JSON.stringify(redactTerminalSecrets(data))); } catch {}
     }
   };
   // Request bodies that live in lib/opencode-v2-ws-requests.js get these.
@@ -10801,6 +10858,9 @@ const _claudeBridgeReady = (async () => {
       // Per-chat-session SynaBun MCP entry (HTTP + X-Synabun-Terminal header)
       // so each sidepanel session gets its own browser tab.
       mcpUrl: `http://localhost:${PORT}/mcp`,
+      // A panel tab's id is proven by a token of its own (lib/terminal-tokens.js): minted with every CLI process the
+      // tab starts, named by its MCP header, revoked when the tab's session ends.
+      terminalTokens: _terminalTokens,
       // In-process release of a sidepanel session's owned tab on destroy.
       releaseBrowserOwner: (ownerKey) => {
         if (!ownerKey) return;
@@ -14528,6 +14588,8 @@ app.post('/api/sidepanel-runs/:runId/release', (req, res) => {
 // POST /api/loop/launch — create loop state + provider runtime atomically
 app.post('/api/loop/launch', async (req, res) => {
   let pendingNativeBrowserCleanup = null;
+  // A terminal or exec loop's terminal token (lib/terminal-tokens.js), revoked when the launch fails before it runs.
+  let issuedLoopTerminal = null;
   try {
     const { task: rawTask, context, iterations, maxMinutes, usesBrowser, cwd, profile, model: requestedModel, contextMode: requestedContextMode, effort, tools, platform, codexAccountId, browserSessionId: requestedBrowserSessionId, sidepanelWindowId, sidepanelClaimToken } = req.body;
     if (!rawTask?.trim()) return res.status(400).json({ error: 'task is required' });
@@ -14608,6 +14670,9 @@ app.post('/api/loop/launch', async (req, res) => {
     let browserTabId = null;
     const terminalSessionId = randomBytes(16).toString('hex');
     loopLog(terminalSessionId, 'launch:id', 'minted terminalSessionId', { terminalSessionId });
+    // A terminal or exec loop's token is minted with its id; a native run's by its runtime (NativeLoopRuntime.launch).
+    const loopTerminalToken = nativeRuntime ? null : _terminalTokens.issue(terminalSessionId);
+    if (loopTerminalToken) issuedLoopTerminal = terminalSessionId;
     if (usesBrowser) {
       // Serialized reuse-or-create of the shared loop browser + a dedicated tab.
       // The mutex inside acquireLoopBrowserAndTab() prevents concurrent launches
@@ -14669,6 +14734,10 @@ app.post('/api/loop/launch', async (req, res) => {
     // SYNABUN_TERMINAL_SESSION lets hooks correlate with the correct loop file
     // after /clear changes the Claude session ID. This is the key to multi-loop isolation.
     const loopExtraEnv = { SYNABUN_TERMINAL_SESSION: terminalSessionId };
+    // The loop's terminal token, in the PTY's environment only: its MCP config names the variable (Claude Code's
+    // header, OpenCode's {env:…}), Codex forwards it by name (env_vars), Antigravity's MCP child inherits it. The
+    // launch logs below name the keys of this environment, never its values.
+    if (loopTerminalToken) loopExtraEnv[TERMINAL_TOKEN_ENV] = loopTerminalToken;
     if (browserSessionId) loopExtraEnv.SYNABUN_BROWSER_SESSION = browserSessionId;
     if (browserTabId) loopExtraEnv.SYNABUN_BROWSER_TAB = browserTabId;
     // Codex reads auth.json from CODEX_HOME — pin the selected ChatGPT account.
@@ -14697,7 +14766,7 @@ app.post('/api/loop/launch', async (req, res) => {
           browserSessionId,
           browserTabId,
           cliTools,
-          model, {}, { cwd: loopCwd },
+          model, {}, { cwd: loopCwd, terminalToken: !!loopTerminalToken },
         );
         if (xdgRoot) {
           loopExtraEnv.XDG_CONFIG_HOME = xdgRoot;
@@ -14784,8 +14853,9 @@ app.post('/api/loop/launch', async (req, res) => {
     }
 
     // Browser ownership is now held by the successfully launched PTY; normal
-    // loop-stop cleanup owns it from this point onward.
+    // loop-stop cleanup owns it from this point onward (its terminal token too: endAutomationBrowser revokes it).
     pendingNativeBrowserCleanup = null;
+    issuedLoopTerminal = null;
     broadcastSync({ type: 'terminal:session-created', sessionId: terminalSessionId, profile: cliProfile });
 
     const responsePayload = {
@@ -14809,6 +14879,8 @@ app.post('/api/loop/launch', async (req, res) => {
         pendingNativeBrowserCleanup.ownerKey,
       ).catch(() => {});
     }
+    // The loop never ran: nothing may act as it.
+    if (issuedLoopTerminal) _terminalTokens.revoke(issuedLoopTerminal);
     loopLog(null, 'launch:error', 'POST /api/loop/launch threw', { err: err.message, stack: err.stack?.slice(0, 800) });
     res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
@@ -14816,9 +14888,24 @@ app.post('/api/loop/launch', async (req, res) => {
 
 // POST /api/loop/stop — force-stop loops and clean up PTY sessions
 // Body: { runId?: string, terminalSessionId?: string } — if provided, stop only that loop; otherwise stop all
+// Who may stop what: the owner's page (no agent header, this boot's page secret: every loop, or the one it names) and a
+// run its own loop only. A request that names a run (X-Synabun-Terminal) counts as it only with its proof (browserCaller:
+// its terminal token, a brain's launch credential), names nothing else in the body (403 TERMINAL_MISMATCH) and never
+// stops every loop; an automation that names no run (an agent header alone) stops nothing (403 TERMINAL_REQUIRED); a
+// request with neither an agent header nor the page secret is refused (403 PAGE_SECRET_REQUIRED). Before 2026-11-04
+// the header was not read here at all, and any local process stopped any loop.
 app.post('/api/loop/stop', async (req, res) => {
   try {
-    const targetTerminalId = req.body?.runId || req.body?.terminalSessionId || null;
+    const who = browserCaller(req);
+    if (!who.accepted) return res.status(who.httpStatus || 403).json({ ok: false, code: who.code, error: who.error });
+    const named = req.body?.runId || req.body?.terminalSessionId || null;
+    if (who.automation) {
+      if (!who.id) return res.status(403).json({ ok: false, code: 'TERMINAL_REQUIRED', error: 'An automation stops its own loop only, and this request does not say which run it is (X-Synabun-Terminal).' });
+      if (named && String(named) !== who.id) return res.status(403).json({ ok: false, code: 'TERMINAL_MISMATCH', error: `This caller (${who.id}) may not stop run ${String(named).slice(0, 128)}.` });
+    }
+    // No agent header at all: the owner's page, with its page secret (or an invite guest, whom the guest rules decide).
+    if (!who.automation && !browserPageOwner(req)) return refuseNotOwnerPage(req, res, 'Loops are stopped from SynaBun\'s own page (its page secret, which the page\'s browser sends by itself), or by a run itself (X-Synabun-Terminal with its terminal token). This request is neither: reload SynaBun\'s page and stop it there.');
+    const targetTerminalId = who.automation ? who.id : named;
     let directlyStopped = false;
     if (targetTerminalId && _nativeLoopRuntime?.isAlive(targetTerminalId)) {
       directlyStopped = await _nativeLoopRuntime.stop(targetTerminalId, 'user');
@@ -14876,6 +14963,9 @@ app.post('/api/loop/stop', async (req, res) => {
               }
             }
           }
+          // The loop's route may have moved (a recovery, its own browser_session create): what it owns elsewhere goes
+          // too, and a recovery that finishes after this stop opens nothing for it (endAutomationBrowser).
+          if (data.terminalSessionId) await endAutomationBrowser(data.terminalSessionId);
           // Per-CLI per-loop config dir cleanup (opencode XDG_CONFIG_HOME, etc.)
           if (data.profile === 'opencode' && data.terminalSessionId) {
             cleanupOpencodeLoopConfig(data.terminalSessionId);
@@ -14929,38 +15019,100 @@ app.post('/api/loop/resolve-from-ancestors', (req, res) => {
   }
 });
 
-// POST /api/loop/recover-browser — recover a dead pinned browser session.
+// POST /api/loop/recover-browser — a run's own browser tab: a recovery, its own create, or a tab of its own it moved to.
 // When a loop's pinned browser session has died, the MCP server calls this to
 // rejoin the SHARED loop browser with a FRESH, owned tab — instead of spawning
 // an isolated new browser and reusing a now-invalid tabId (which 404s on every
-// subsequent call). If terminalSessionId is known, the loop's state file is
-// updated so future ancestor lookups and /api/loop/stop stay consistent.
-// Body: { terminalSessionId?: string }. Returns { ok, sessionId, tabId }.
+// subsequent call). If terminalSessionId is known, the run's route is recorded
+// (noteAutomationBrowserRoute: its state file, the native run, the Assistant's
+// run record) so ancestor lookups, /api/loop/stop and agent_status follow it.
+// Body: { terminalSessionId?: string, reason?: 'create', lost?: { sessionId, tabId }, adopt?: { sessionId, tabId } }.
+// The caller is who it routes as (X-Synabun-Terminal, which SynaBun's MCP sends on every request): it is required,
+// a run named in the body must be that caller (403 TERMINAL_REQUIRED / TERMINAL_MISMATCH: no run moves another
+// run's browser), and with no run named the new tab is the caller's own (its routing id owns it, so its next call
+// with that tab is not refused as another owner's). An id is a server-minted one (lib/browser-owner.js: `agent:<uuid>`
+// included), and a run SynaBun gave a terminal token to is the caller only with that token (X-Synabun-Terminal-Token,
+// lib/terminal-tokens.js: 403 TERMINAL_TOKEN_REQUIRED without it, TERMINAL_TOKEN_INVALID with another or after the
+// run ended), so the header alone moves, adopts or opens nothing for a run.
+// - `adopt`: the run moved by itself to a tab it already owns (the MCP honours ids of a session of its own): that
+//   tab is recorded as its route, nothing is opened (409 NOT_OWNED for a tab that is not the run's).
+// - `reason: 'create'`: the run's own browser_session create: always a new tab.
+// - otherwise (a recovery) a run whose route already moved (another MCP process of the same run recovered or
+//   created first) gets that route back instead of one more tab.
+// A new tab is the run's one route: what the run owned in other sessions is released, and a tab it had in the same
+// session was replaced by acquireSharedBrowserTab (no orphan tab per re-create). A run that ended gets nothing (409
+// RUN_ENDED), and a tab that finished opening after its run ended is released at once.
+// Returns { ok, sessionId, tabId }, or 202 BROWSER_STARTING while the browser is still starting (the tab is kept for
+// the run's next request; one nobody takes is released, browserStartHandoff onUnclaimed).
 app.post('/api/loop/recover-browser', async (req, res) => {
   try {
-    const terminalSessionId = req.body?.terminalSessionId || randomBytes(16).toString('hex');
-    const acq = await acquireLoopBrowserAndTab({ terminalSessionId, logTag: 'recover:browser' });
-    if (acq.error) {
-      return res.status(500).json({ error: acq.error, ...(acq.code ? { code: acq.code, offenders: acq.offenders } : {}) });
+    const rawName = req.body?.terminalSessionId;
+    const named = browserOwnerId(rawName);
+    if (rawName !== undefined && rawName !== null && rawName !== '' && !named) {
+      return res.status(400).json({ error: 'terminalSessionId is not a run id SynaBun minted.', code: 'BAD_TERMINAL' });
     }
-    // Persist the new pins onto the loop's state file when we can identify it,
-    // so resolve-from-ancestors and loop/stop operate on the live session/tab.
-    if (req.body?.terminalSessionId) {
-      const loopFile = findLoopFileForTerminal(req.body.terminalSessionId);
-      if (loopFile) {
-        try {
-          const fp = resolve(LOOP_DIR, loopFile);
-          const data = JSON.parse(readFileSync(fp, 'utf-8'));
-          data.browserSessionId = acq.browserSessionId;
-          data.browserTabId = acq.browserTabId || null;
-          writeFileSync(fp, JSON.stringify(data, null, 2));
-        } catch (err) {
-          console.warn(`[loop/recover-browser] Failed to update loop state file: ${err.message}`);
-        }
+    // The caller is the run it proves it is (browserCaller): a run SynaBun gave a terminal token to only with that
+    // token, so naming a run (or routing as it) moves nothing without it (403 TERMINAL_TOKEN_REQUIRED / _INVALID).
+    const who = browserCaller(req);
+    if (!who.accepted) return refuseBrowserCaller(res, who);
+    const caller = browserOwnerId(who.id);
+    if (!caller) {
+      return res.status(403).json({ error: 'A browser recovery says who asks (X-Synabun-Terminal, sent by SynaBun\'s MCP on every request); this request did not.', code: 'TERMINAL_REQUIRED' });
+    }
+    if (named && caller !== named) {
+      return res.status(403).json({ error: `This caller (${caller}) may not take over the browser of run ${named}.`, code: 'TERMINAL_MISMATCH' });
+    }
+    const owner = named || caller;
+    if (named && automationRunState(named, { files: true }) === 'ended') {
+      return res.status(409).json({ error: `Run ${named} has ended: its browser is not reopened.`, code: 'RUN_ENDED' });
+    }
+    const adopt = req.body?.adopt && typeof req.body.adopt === 'object' ? req.body.adopt : null;
+    if (adopt) {
+      const sessionId = browserOwnerId(adopt.sessionId);
+      const tabId = browserOwnerId(adopt.tabId);
+      const cfg = loadBrowserConfig();
+      const owned = !!named && !!sessionId && !!tabId && startedTabAlive(sessionId, tabId, named)
+        && (cfg.connectMode !== 'morelogin' || sessionServesMoreLoginDefault(browserSessions.get(sessionId), cfg));
+      if (!owned) return res.status(409).json({ error: `That tab is not an open tab of run ${named || caller} in the default browser.`, code: 'NOT_OWNED' });
+      noteAutomationBrowserRoute(named, { browserSessionId: sessionId, browserTabId: tabId }, 'adopted');
+      return res.json({ ok: true, sessionId, tabId, adopted: true });
+    }
+    const fresh = req.body?.reason === 'create';
+    const lost = req.body?.lost && typeof req.body.lost === 'object' ? req.body.lost : null;
+    if (named && !fresh) {
+      const current = liveAutomationRoute(named, { files: true });
+      if (current && !(current.browserSessionId === lost?.sessionId && (current.browserTabId || null) === (lost?.tabId || null))) {
+        return res.json({ ok: true, sessionId: current.browserSessionId, tabId: current.browserTabId || null, current: true });
       }
     }
-    res.json({ ok: true, sessionId: acq.browserSessionId, tabId: acq.browserTabId || null });
+    const start = async () => {
+      const acq = await acquireLoopBrowserAndTab({ terminalSessionId: owner, logTag: fresh ? 'create:browser' : 'recover:browser' });
+      if (acq.error) throw Object.assign(new Error(acq.error), { acquisition: acq });
+      // The run ended while its tab was being opened (a cold start): the tab goes at once, never left to a dead run.
+      if (named && automationRunState(named, { files: true }) === 'ended') {
+        await releaseSharedBrowserTab(acq.browserSessionId, owner).catch(() => {});
+        throw Object.assign(new Error(`Run ${named} ended while its browser tab was being opened; the tab was closed.`), { status: 409, code: 'RUN_ENDED' });
+      }
+      // One route per run: what it still owned in other sessions goes (acquireSharedBrowserTab replaced a tab it had
+      // in this one).
+      await releaseBrowserOwnerEverywhere(owner, { except: acq.browserSessionId });
+      // Recorded when the tab exists, whether or not its caller still waits: the run's next request finds it.
+      if (named) noteAutomationBrowserRoute(named, acq, fresh ? 'created' : 'recovered');
+      return acq;
+    };
+    const outcome = await browserStartHandoff.run(`run:${owner}`, start, {
+      gone: browserCallerGone(req, res),
+      waitMs: startWaitMs(browserRequestDeadline(req)),
+      alive: (acq) => startedTabAlive(acq.browserSessionId, acq.browserTabId, owner),
+      // Nobody took it: released unless the run uses it (its recorded route, or a call went there since).
+      onUnclaimed: (acq, info) => closeUnclaimedBrowserStart(acq.browserSessionId, owner, { tabId: acq.browserTabId, since: info?.parkedAt, run: named }),
+    });
+    if (outcome.pending) return res.status(202).json(browserStartingAnswer('tab'));
+    const acq = outcome.value;
+    res.json({ ok: true, sessionId: acq.browserSessionId, tabId: acq.browserTabId || null, ...(outcome.from !== 'started' && { handedOver: outcome.from }) });
   } catch (err) {
+    const acq = err?.acquisition;
+    if (acq) return res.status(500).json({ error: acq.error, ...(acq.code ? { code: acq.code, offenders: acq.offenders } : {}) });
     res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
@@ -15411,6 +15563,8 @@ async function launchScheduledLoop(schedule) {
   let scheduledLaunchTerminalId = null;
   let scheduledLaunchPendingId = null;
   let scheduledLaunchProfile = null;
+  // The terminal token this launcher issued (a terminal or exec loop's), revoked when the launch fails before it runs.
+  let issuedSchedTerminal = null;
   try {
     if (!existsSync(LOOP_DIR)) mkdirSync(LOOP_DIR, { recursive: true });
 
@@ -15473,11 +15627,16 @@ async function launchScheduledLoop(schedule) {
     // (e.g., a sidepanel plan session and a scheduled CLI loop in the same cwd).
     const terminalSessionId = randomBytes(16).toString('hex');
     scheduledLaunchTerminalId = terminalSessionId;
+    // A terminal or exec loop's token is minted with its id (lib/terminal-tokens.js); a native run's by its runtime.
+    const schedTerminalToken = nativeRuntime ? null : _terminalTokens.issue(terminalSessionId);
+    if (schedTerminalToken) issuedSchedTerminal = terminalSessionId;
 
     // Reuse the shared browser session and create a fresh tab for this scheduled loop.
     let scheduledBrowserSessionId = null;
     let scheduledBrowserTabId = null;
     const schedExtraEnv = { SYNABUN_TERMINAL_SESSION: terminalSessionId };
+    // In the PTY's environment only (the loop's MCP config names it): never in the loop file or a log.
+    if (schedTerminalToken) schedExtraEnv[TERMINAL_TOKEN_ENV] = schedTerminalToken;
     schedExtraEnv.SYNABUN_TOOLS = runtimeToolsValue(cliTools);
     // Codex reads auth.json from CODEX_HOME — pin the schedule's selected ChatGPT account.
     if (cliProfile === 'codex') {
@@ -15508,7 +15667,7 @@ async function launchScheduledLoop(schedule) {
           scheduledBrowserSessionId,
           scheduledBrowserTabId,
           cliTools,
-          cliModel, {}, { cwd: PACKAGE_ROOT },
+          cliModel, {}, { cwd: PACKAGE_ROOT, terminalToken: !!schedTerminalToken },
         );
         if (xdgRoot) {
           schedExtraEnv.XDG_CONFIG_HOME = xdgRoot;
@@ -15728,11 +15887,12 @@ async function launchScheduledLoop(schedule) {
       attachExecLoopDriver(terminalSessionId);
     }
     // Browser ownership is now held by the successfully launched runtime/PTY;
-    // from this point normal loop-stop cleanup owns it rather than this catch.
+    // from this point normal loop-stop cleanup owns it rather than this catch (its terminal token too).
     pendingNativeBrowserCleanup = null;
     scheduledLaunchTerminalId = null;
     scheduledLaunchPendingId = null;
     scheduledLaunchProfile = null;
+    issuedSchedTerminal = null;
     if (!nativeRuntime) {
       broadcastSync({ type: 'terminal:session-created', sessionId: terminalSessionId, profile: cliProfile });
     }
@@ -15753,6 +15913,8 @@ async function launchScheduledLoop(schedule) {
     console.log(`[schedule] Launched loop for "${schedule.name}" → ${nativeRuntime ? 'sidepanel run' : 'terminal'} ${terminalSessionId} (${cliProfile}/${cliModel || 'default'}/${cliEffort || 'off'}${'/tools:' + serializeToolList(cliTools)})`);
   } catch (err) {
     if (registeredScheduledRunId) _runningScheduledLoops.delete(registeredScheduledRunId);
+    // The loop never ran: nothing may act as it.
+    if (issuedSchedTerminal) _terminalTokens.revoke(issuedSchedTerminal);
     if (scheduledLaunchTerminalId) {
       const terminal = terminalSessions.get(scheduledLaunchTerminalId);
       if (terminal) {
@@ -16917,6 +17079,9 @@ function buildAgentMcpConfig(withSynabun, browserSessionId, browserTabId, termin
   // matches this agent's _tabOwners key on the server (tab-less calls route to the
   // agent's own dedicated tab instead of the shared activeTab).
   if (terminalSessionId) env.SYNABUN_TERMINAL_SESSION = terminalSessionId;
+  // The agent's terminal token (lib/terminal-tokens.js) proves that identity: this file (it is under data/, in every
+  // backup) only names the variable; the CLI expands it from its own environment (spawnAgentProcess).
+  if (terminalSessionId && _terminalTokens.has(terminalSessionId)) env[TERMINAL_TOKEN_ENV] = `\${${TERMINAL_TOKEN_ENV}}`;
   // Agents run with --strict-mcp-config, so they see only what this file lists.
   // External servers come from the captured list and owner switches; SynaBun is added last
   // so its per-agent pins always win over a same-named registry entry.
@@ -16940,7 +17105,12 @@ function spawnAgentProcess(agent, prompt, extraEnv = {}) {
     const sessionId = agent._activeSessionId || agent.sessionId;
 
     const serverMap = JSON.parse(agent._mcpConfig).mcpServers;
-    const mcpValues = mcpSecretValues(serverMap, { env: process.env });
+    // The agent's terminal token: in the CLI's environment only, which the SynaBun entry names (buildAgentMcpConfig).
+    // An entry that names it while the agent holds none (revoked) loses the name, so the CLI never fails to expand it.
+    const terminalToken = _terminalTokens.tokenFor(agent._agentTerminalId);
+    if (!terminalToken && serverMap.SynaBun?.env && TERMINAL_TOKEN_ENV in serverMap.SynaBun.env) delete serverMap.SynaBun.env[TERMINAL_TOKEN_ENV];
+    // The token is redacted from the agent's events and stderr like the external servers' secrets.
+    const mcpValues = [...mcpSecretValues(serverMap, { env: process.env }), ...(terminalToken ? [terminalToken] : [])];
     const mcpConfigPath = writePrivateMcpConfig(resolve(DATA_HOME, 'data', 'agents', agent.id, 'mcp.json'), serverMap);
     const args = [
       '--print',
@@ -16973,8 +17143,11 @@ function spawnAgentProcess(agent, prompt, extraEnv = {}) {
     const cleanEnv = Object.fromEntries(
       Object.entries(process.env).filter(([k]) =>
         !k.startsWith('VSCODE_') && k !== 'TERM_PROGRAM' && k !== 'TERM_PROGRAM_VERSION'
+        // Only this agent's own token, never one this server inherited.
+        && k !== TERMINAL_TOKEN_ENV
       )
     );
+    if (terminalToken) cleanEnv[TERMINAL_TOKEN_ENV] = terminalToken;
 
     console.log(`[agent] ${agent.id} spawn: ${claudeBin} ${args.map(a => a.length > 80 ? a.slice(0, 80) + '…' : a).join(' ')}`);
 
@@ -17080,7 +17253,12 @@ async function launchAgentController(opts) {
   const agentId = providedAgentId || randomUUID();
   const agentTerminalId = `agent:${agentId}`;
   const agentTools = requireToolList(resolveToolList(opts.tools ?? [], { source: 'runtime' })).items;
-  const mcpConfig = buildAgentMcpConfig(withSynabun, browserSessionId, browserTabId, agentTerminalId, agentTools, cwd || PACKAGE_ROOT);
+  // Minted with the agent's terminal id, before its MCP config names it (lib/terminal-tokens.js); revoked at its end,
+  // or now when the launch fails before it runs.
+  if (withSynabun) _terminalTokens.issue(agentTerminalId);
+  let mcpConfig;
+  try { mcpConfig = buildAgentMcpConfig(withSynabun, browserSessionId, browserTabId, agentTerminalId, agentTools, cwd || PACKAGE_ROOT); }
+  catch (error) { _terminalTokens.revoke(agentTerminalId); throw error; }
   const agentCwd = cwd || PACKAGE_ROOT;
 
   // Build default system prompt for agents — overrides the boot sequence in the agent's instructions
@@ -17202,13 +17380,9 @@ async function launchAgentController(opts) {
       // share it under the persistent profile) then acquire a fresh dedicated tab.
       // This keeps the "fresh per iteration" intent without nuking co-owners' tabs.
       if (agent._usesBrowser && i > 1) {
-        if (agent.browserSessionId) {
-          await releaseSharedBrowserTab(agent.browserSessionId, agent._agentTerminalId).catch(e =>
-            console.warn(`[agent] ${agentId} tab release: ${e.message}`)
-          );
-          agent.browserSessionId = null;
-          agent.browserTabId = null;
-        }
+        // Everything the agent owns, wherever its route moved during the last iteration (a recovery, its own
+        // browser_session create: noteAutomationBrowserRoute), not only the session it started the iteration in.
+        await releaseAgentBrowser(agent).catch(e => console.warn(`[agent] ${agentId} tab release: ${e.message}`));
         for (let attempt = 1; attempt <= 3; attempt++) {
           const acq = await acquireSharedBrowserTab({ ownerKey: agent._agentTerminalId, ownerType: 'interactive', logTag: 'agent:browser' });
           if (!acq.error) {
@@ -17353,13 +17527,10 @@ async function launchAgentController(opts) {
     // Clean up the agent's tab when the loop ends — release just this agent's tab and
     // clear its ownership markers. The shared browser is left for co-owners (the grace
     // timer reaps it once no loop/interactive/agent owner remains).
-    if (agent._usesBrowser && agent.browserSessionId) {
-      const finalBs = browserSessions.get(agent.browserSessionId);
-      finalBs?._agentOwnedSet?.delete(agentId);
-      await releaseSharedBrowserTab(agent.browserSessionId, agent._agentTerminalId).catch(() => {});
-      agent.browserSessionId = null;
-      agent.browserTabId = null;
-    }
+    // Wherever its route moved (releaseAgentBrowser), and also when its last tab acquisition failed.
+    if (agent._usesBrowser) await releaseAgentBrowser(agent, { ended: true }).catch(() => {});
+    // Nothing may act as the agent any more (endAutomationBrowser revokes too, for an agent with a browser).
+    _terminalTokens.revoke(agent._agentTerminalId);
 
     agent.endedAt = new Date().toISOString();
     agent.exitCode = agent._stopped ? null : 0;
@@ -17375,13 +17546,9 @@ async function launchAgentController(opts) {
     const message = err?.message || String(err);
     console.error(`[agent] ${agentId} failed in iteration ${agent.currentIteration}/${iterations}: ${message}`);
     try {
-      if (agent._usesBrowser && agent.browserSessionId) {
-        browserSessions.get(agent.browserSessionId)?._agentOwnedSet?.delete(agentId);
-        await releaseSharedBrowserTab(agent.browserSessionId, agent._agentTerminalId).catch(() => {});
-        agent.browserSessionId = null;
-        agent.browserTabId = null;
-      }
+      if (agent._usesBrowser) await releaseAgentBrowser(agent, { ended: true }).catch(() => {});
     } catch {}
+    _terminalTokens.revoke(agent._agentTerminalId);
     agent.error = message;
     agent.endedAt = new Date().toISOString();
     agent.exitCode = -1;
@@ -19249,6 +19416,51 @@ app.post('/api/discord/test', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 function _moreLoginOpts() { return { savedCfg: loadBrowserConfig() }; }
 
+// ── Who may call the MoreLogin routes (2026-11-05, review 972afb74, finding 7) ──
+// They act with the owner's powers: MoreLogin's local API with the owner's credentials, the default AI browser (a
+// setting), the profiles' browsers. The owner's page (this boot's page secret, never an invite guest) calls every one
+// of them; an automation that says who it is calls the ones the `morelogin` MCP tool uses (status, list, create, start,
+// stop, use_default) with rails: start and use_default only for a run SynaBun started (its terminal token, never an id
+// merely said), start answers no CDP port, stop only a profile the caller holds, use_default never while another
+// automation works in the browser. The API settings (config), the probe (test) and MoreLogin's own MCP registration
+// (register-mcp, which writes a command into the agents' configurations) are the owner's page's only. Before, every
+// route answered whatever asked, and a request with no header stopped any profile as the owner.
+/** [method path] under /api/morelogin an automation may call (the `morelogin` MCP tool, mcp-server services). */
+const MORELOGIN_AUTOMATION_ROUTES = new Set(['GET /status', 'GET /profiles', 'POST /profiles', 'POST /start', 'POST /stop', 'POST /use-default']);
+/** Of those, the ones a run must prove (verified: its terminal token or a brain's credential), never an id said. */
+const MORELOGIN_VERIFIED_ROUTES = new Set(['POST /start', 'POST /use-default']);
+/** envId → the automations that started that profile through POST /api/morelogin/start (what stop counts as held). */
+const _moreLoginStartedBy = new Map();
+function moreLoginGate(req, res, next) {
+  const caller = browserCaller(req);
+  if (!caller.accepted) return refuseBrowserCaller(res, caller);
+  const method = String(req.method || '').toUpperCase() === 'HEAD' ? 'GET' : String(req.method || '').toUpperCase();
+  const key = `${method} ${String(req.path || '').replace(/\/$/, '')}`;
+  if (browserOwnerPageOnly(req)) return next();
+  if (caller.id && MORELOGIN_AUTOMATION_ROUTES.has(key)) {
+    if (MORELOGIN_VERIFIED_ROUTES.has(key) && caller.status !== 'verified') {
+      return res.status(403).json({ ok: false, code: 'VERIFIED_RUN_REQUIRED', error: `Starting a MoreLogin profile or making one the default AI browser is for a run SynaBun started (it proves its id with its terminal token), or the owner in Settings → Browser. ${String(caller.id).slice(0, 128)} is an id SynaBun gave no token.` });
+    }
+    return next();
+  }
+  let guest = false;
+  try { guest = !!isGuestRequest(req); } catch { guest = true; }
+  if (caller.id || guest) {
+    return res.status(403).json({ ok: false, code: 'OWNER_ROUTE', error: 'This MoreLogin route is the owner\'s (SynaBun\'s page, Settings → Browser).' });
+  }
+  if (caller.automation) {
+    return res.status(403).json({ ok: false, code: 'TERMINAL_REQUIRED', error: 'An automation says which run it is (X-Synabun-Terminal, sent by SynaBun\'s MCP on every request); an agent header alone is not the owner\'s page.' });
+  }
+  return refuseNotOwnerPage(req, res, 'The MoreLogin routes answer SynaBun\'s own page (its page secret, which the page\'s browser sends by itself) or an automation that says who it is through SynaBun\'s MCP tools. This request is neither: reload SynaBun\'s page.');
+}
+/** Whether any automation other than `caller` works in a browser session (its tab, or a hold on the session). */
+function otherAutomationsInBrowser(caller) {
+  const others = new Set();
+  for (const session of browserSessions.values()) for (const owner of otherSessionOwners(session, caller)) others.add(owner);
+  return [...others];
+}
+app.use('/api/morelogin', moreLoginGate);
+
 // GET /api/morelogin/status — install + running + port + default-profile state
 app.get('/api/morelogin/status', async (req, res) => {
   try {
@@ -19337,7 +19549,18 @@ app.post('/api/morelogin/start', async (req, res) => {
     const envId = req.body && req.body.envId;
     if (!envId) return res.status(400).json({ ok: false, error: 'envId is required' });
     const out = await moreLogin.startProfile(envId, _moreLoginOpts());
-    res.json({ ok: true, ...out });
+    const who = browserCaller(req);
+    if (!who.automation) return res.json({ ok: true, ...out });
+    // An automation's start: the profile is the caller's to stop later (POST /api/morelogin/stop), and the answer
+    // carries no CDP port (a raw debugging connection drives the profile's browser past every check SynaBun makes;
+    // SynaBun's browser tools reach the default profile without it).
+    if (who.id) {
+      const starters = _moreLoginStartedBy.get(String(envId)) || new Set();
+      starters.add(who.id);
+      _moreLoginStartedBy.set(String(envId), starters);
+      if (_moreLoginStartedBy.size > 200) _moreLoginStartedBy.delete(_moreLoginStartedBy.keys().next().value);
+    }
+    res.json({ ok: true, started: true, envId: String(envId) });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -19348,7 +19571,27 @@ app.post('/api/morelogin/stop', async (req, res) => {
   try {
     const envId = req.body && req.body.envId;
     if (!envId) return res.status(400).json({ ok: false, error: 'envId is required' });
+    // Stopping the profile closes every run's tab in it (lib/browser-session-close.js): an automation may stop only a
+    // profile it holds (a tab or a hold on a session there, or it started the profile) and no other automation works
+    // in. The owner's stop (Settings: the page secret, moreLoginGate) is unchanged. A run is the caller only with its
+    // terminal token (browserCaller: a forged one is refused, so it cannot pass for the one run left there).
+    const who = browserCaller(req);
+    if (!who.accepted) return refuseBrowserCaller(res, who);
+    const caller = who.automation ? who.ownerKey : null;
+    const decision = profileStopDecision(browserSessions, envId, caller, { startedBy: (id) => _moreLoginStartedBy.get(id) || [] });
+    if (decision.action === 'refuse' && decision.reason === 'not_owned') {
+      console.warn(`[morelogin] stop of env ${envId} by ${caller} refused: it holds nothing on that profile`);
+      return res.status(403).json({ ok: false, code: 'NOT_OWNED', error: `MoreLogin profile ${envId} was not stopped: you did not start it and have no tab in it. Stop only a profile you started; the owner stops the others in Settings → Browser.` });
+    }
+    if (decision.action === 'refuse') {
+      console.warn(`[morelogin] stop of env ${envId} by ${caller} refused: ${decision.others.length} other automation(s) work in it (${decision.others.join(', ')})`);
+      return res.status(409).json({
+        ok: false, code: 'PROFILE_IN_USE', others: decision.others.length, sessionIds: decision.sessionIds,
+        error: `MoreLogin profile ${envId} was not stopped: ${decision.others.length} other automation(s) have a tab in it, and stopping the profile would close their tabs. To start over in a fresh tab, close only your own (browser_session close, which keeps a shared session for the others); to stop the profile, ask the owner or wait until the other runs end.`,
+      });
+    }
     await moreLogin.stopProfile(envId, _moreLoginOpts());
+    _moreLoginStartedBy.delete(String(envId));
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -19357,8 +19600,20 @@ app.post('/api/morelogin/stop', async (req, res) => {
 
 // POST /api/morelogin/use-default — make a MoreLogin profile the default AI browser
 // { envId } to set, or { clear: true } to revert to the normal mirror browser.
-app.post('/api/morelogin/use-default', (req, res) => {
+app.post('/api/morelogin/use-default', async (req, res) => {
   try {
+    // An automation's change of the default AI browser (moreLoginGate let a verified run through): to a profile
+    // MoreLogin lists, never back to another browser (`clear` is the owner's), and never while another automation works
+    // in the browser (its next call would be refused NOT_DEFAULT_BROWSER mid-task).
+    const who = browserCaller(req);
+    if (who.automation) {
+      if (req.body?.clear || !req.body?.envId) return res.status(403).json({ ok: false, code: 'OWNER_ROUTE', error: 'Going back from MoreLogin to another default browser is the owner\'s (Settings → Browser).' });
+      const busy = otherAutomationsInBrowser(who.ownerKey);
+      if (busy.length) return res.status(409).json({ ok: false, code: 'BROWSER_IN_USE', others: busy.length, error: `The default AI browser was not changed: ${busy.length} other automation(s) work in the browser now, and their next call would land in another profile. Try again when they are done, or ask the owner.` });
+      let envs = [];
+      try { envs = await moreLogin.listProfiles(_moreLoginOpts()); } catch (err) { return res.status(502).json({ ok: false, error: `MoreLogin's profile list could not be read: ${err.message}` }); }
+      if (!(envs || []).some((env) => String(env?.id) === String(req.body.envId))) return res.status(404).json({ ok: false, code: 'ENV_NOT_FOUND', error: `MoreLogin has no profile ${String(req.body.envId).slice(0, 64)}. Use the "list" action for its ids.` });
+    }
     const cfg = loadBrowserConfig();
     if (req.body && req.body.clear) {
       cfg.connectMode = 'mirror';
@@ -22896,6 +23151,8 @@ registerSkillsV2Routes(app, {
   assistantOf: (req) => skillsAssistantOf(req),
   // The owner's writes carry the page secret (lib/page-session.js); the Studio's reads hand it to the page.
   pageSession: _pageSession,
+  // An agent's X-Synabun-Terminal (its author's name) counts only with its proof (browserCaller).
+  terminalRefusal: (req) => { const who = browserCaller(req); return who.accepted ? null : { status: who.httpStatus || 403, code: who.code, error: who.error }; },
 });
 
 // ── AI skill creation (docs/skills-studio.md → AI creation (P3)) ──
@@ -23032,12 +23289,16 @@ function skillsAssistantOf(req) {
 /**
  * Who an agent's request to the creation routes is: an Assistant brain, by the credential its launch was given
  * (resolved to its session by the runtime; X-Synabun-Role and X-Synabun-Terminal prove nothing, any local process can
- * send them), a dispatched worker (its terminal is a run id: refused), or nobody known.
+ * send them), a dispatched worker (its terminal is a run id: refused), or nobody known. The pin counts only with its
+ * proof (browserCaller): a request that names a run or a brain it cannot prove it is gets that refusal (kind
+ * 'refused', 403 TERMINAL_TOKEN_REQUIRED / _INVALID), whatever credential it also carries.
  */
 function skillCreationCaller(req) {
+  const who = browserCaller(req);
+  if (!who.accepted) return { kind: 'refused', code: who.code, error: who.error, status: who.httpStatus || 403 };
   const sessionId = skillsAssistantOf(req);
   if (sessionId) return { kind: 'assistant', assistantSessionId: sessionId };
-  const pin = String(req.get('x-synabun-terminal') || '').trim();
+  const pin = String(who.id || '').trim();
   if (pin && _assistantDispatcher?.peek?.(pin)) return { kind: 'worker' };
   return null;
 }
@@ -25124,6 +25385,10 @@ app.get('/api/health', (req, res) => {
       // page showing the restart tells this one from the one that replaces it.
       bootId: SERVER_BOOT_ID,
       ...(_restartRequestedAt && !_stopOverridesRestart ? { restarting: true } : {}),
+      // Whether the owner's authority can be checked (lib/peer-identity.js): ok / degraded (macOS, the lookup fails:
+      // the owner's actions answer 503 until it works) / unsupported (no lookup on this platform) / off
+      // (SYNABUN_PEER_IDENTITY=off). The page's banner reads it (public/shared/ui-owner-authority.js).
+      ownerAuthority: _peerIdentity.authorityState(),
     });
   } catch (err) {
     res.json({ ok: false, reason: 'db_error', detail: err.message });
@@ -25201,16 +25466,26 @@ function redactOpenCodeMcpOutput(text, xdgRoot, env, captured = null) {
 function externalInventory(provider, cwd = PACKAGE_ROOT, options = {}) {
   return { ...externalServerInventory({ provider, cwd, dataHome: DATA_HOME, registry: readMcpRegistry(), ...(provider === 'opencode' ? { opencodeConfig: readOpencodeGlobalConfig().config } : {}), ...options }), catalog: () => externalToolsCatalog(cwd) };
 }
-function externalToolsCatalog(cwd = null) {
-  const rows = new Map();
+// Strict unless `strict: false`: a provider whose configuration cannot be read fails the catalog, which is what
+// every validation and grant path needs. Only the page's read (GET /api/mcp/tools) asks for the degraded report,
+// where that provider is `unknown` on every row and named in `errors`.
+function externalToolsCatalogReport(cwd = null, { strict = true } = {}) {
+  const rows = new Map(), errors = new Map();
   const roots = cwd ? [cwd] : [PACKAGE_ROOT, ...loadHookProjects().map(project => project.path).filter(Boolean)];
-  for (const directory of new Set(roots)) for (const row of externalCatalog({ cwd: directory, dataHome: DATA_HOME, registry: readMcpRegistry(), opencodeConfig: readOpencodeGlobalConfig().config })) {
-    const previous = rows.get(row.ref);
-    if (!previous) rows.set(row.ref, row);
-    else for (const [provider, availability] of Object.entries(row.providers)) if (availability === 'deliverable' || previous.providers[provider] === 'absent') previous.providers[provider] = availability;
+  for (const directory of new Set(roots)) {
+    const report = externalCatalogReport({ cwd: directory, dataHome: DATA_HOME, registry: readMcpRegistry(), opencodeConfig: readOpencodeGlobalConfig().config }, { strict });
+    for (const error of report.errors) if (!errors.has(error.provider)) errors.set(error.provider, error);
+    for (const row of report.servers) {
+      const previous = rows.get(row.ref);
+      if (!previous) rows.set(row.ref, row);
+      else for (const [provider, availability] of Object.entries(row.providers)) previous.providers[provider] = mergeExternalAvailability(previous.providers[provider], availability);
+    }
   }
-  return [...rows.values()];
+  // A provider unreadable in one folder is unknown everywhere: another folder's answer is not the whole answer.
+  for (const provider of errors.keys()) for (const row of rows.values()) if (row.providers[provider] !== 'deliverable') row.providers[provider] = 'unknown';
+  return { servers: [...rows.values()], errors: [...errors.values()] };
 }
+function externalToolsCatalog(cwd = null) { return externalToolsCatalogReport(cwd).servers; }
 
 function applyOpenCodeExternalScope(xdgRoot, config, tools, cwd, { readProject = true } = {}) {
   const scoped = scopeOpenCodeServers(config, tools, externalInventory('opencode', cwd || PACKAGE_ROOT, { readProject }));
@@ -25231,7 +25506,12 @@ function toolsFromSelection(value) {
   return launchToolList(Array.isArray(value) ? { tools: value } : { mcpProfile: value }).items;
 }
 app.get('/api/mcp/tools', (req, res) => {
-  try { res.json({ ok: true, ...toolCatalogView({ browserV2: process.env.SYNABUN_BROWSER_V2 !== '0' }), defaultTools: defaultToolList(), externalServersVersion: 2, externalServerLimitations: EXTERNAL_SERVER_LIMITATIONS, servers: externalToolsCatalog(req.query?.cwd || null) }); }
+  try {
+    // One provider's unreadable configuration degrades that provider only; the rest of the catalog still answers.
+    const external = externalToolsCatalogReport(req.query?.cwd || null, { strict: false });
+    for (const error of external.errors) console.warn(`[mcp/tools] ${error.provider} MCP configuration ${error.reason}${error.errno ? ` (${error.errno})` : ''}; its servers are reported as unknown`);
+    res.json({ ok: true, ...toolCatalogView({ browserV2: process.env.SYNABUN_BROWSER_V2 !== '0' }), defaultTools: defaultToolList(), externalServersVersion: 2, externalServerLimitations: EXTERNAL_SERVER_LIMITATIONS, servers: external.servers, externalServerErrors: external.errors });
+  }
   catch (err) { res.status(err.status || 500).json({ ok: false, code: err.code, problems: err.problems, error: err.message }); }
 });
 // Read-time conversion for a saved page preference. This never launches a runtime or writes a default.
@@ -25245,23 +25525,40 @@ app.put('/api/mcp/tools/default', (req, res) => {
   try {
     const requested = storedToolList({ tools: req.body?.tools });
     if (requested === null) throw Object.assign(new Error('tools must be an array'), { code: 'TOOLS_INVALID', status: 400 });
-    const servers = externalToolsCatalog().map(row => ({ name: row.ref.slice(4), blocked: row.blocked, deliverable: Object.values(row.providers).includes('deliverable') }));
-    selectExternalServers(requested, { servers });
+    // The default list is a preference, never a grant (every launch re-reads its provider strictly), so an
+    // unreadable provider does not stop a save. A ref only that provider could hold is still refused: it cannot be checked.
+    const external = externalToolsCatalogReport(null, { strict: false });
+    const servers = external.servers.map(row => ({ name: row.ref.slice(4), blocked: row.blocked, deliverable: Object.values(row.providers).includes('deliverable') }));
+    try { selectExternalServers(requested, { servers }); }
+    catch (err) {
+      if (!external.errors.length || !Array.isArray(err.problems)) throw err;
+      const unread = external.errors.map(error => error.provider).join(', ');
+      throw Object.assign(err, { message: `${err.message} The MCP configuration of ${unread} could not be read, so a server configured only there cannot be checked.`, externalServerErrors: external.errors });
+    }
     const tools = writeDefaultTools(DATA_HOME, requested);
     broadcastSync({ type: 'mcp:tools-default-changed', tools, source: 'api' });
-    res.json({ ok: true, tools, defaultTools: tools });
-  } catch (err) { res.status(err.status || 500).json({ ok: false, code: err.code, problems: err.problems, error: err.message }); }
+    res.json({ ok: true, tools, defaultTools: tools, externalServerErrors: external.errors });
+  } catch (err) { res.status(err.status || 500).json({ ok: false, code: err.code, problems: err.problems, error: err.message, ...(err.externalServerErrors ? { externalServerErrors: err.externalServerErrors } : {}) }); }
 });
 
 // An MCP child can change its own enabled tools through the always-on tool_groups
 // tool. Reconcile only the runtime named by its launch identity header; never
 // accept a sidepanel session/run id from the body and never touch the shared
-// future-session default from this path.
+// future-session default from this path. The header counts only with that runtime's
+// proof (browserCaller: its terminal token, or a brain's launch credential): a runtime
+// SynaBun gave one to is never re-scoped by another process that merely names it
+// (403 TERMINAL_TOKEN_REQUIRED / TERMINAL_TOKEN_INVALID).
 function applyRuntimeTools(req, res) {
-  const terminalId = String(req.get('X-Synabun-Terminal') || '').trim();
-  if (!terminalId) {
+  const asserted = String(req.get('X-Synabun-Terminal') || '').trim();
+  if (!asserted) {
     return res.status(400).json({ ok: false, error: 'Missing X-Synabun-Terminal runtime identity' });
   }
+  const who = browserCaller(req);
+  if (!who.accepted) {
+    noteRefusedBrowserCaller(`runtime-tools:${who.code}:${asserted.slice(0, 128)}`, `[mcp/tools] runtime tools of ${asserted.slice(0, 128)} refused: ${who.code}`);
+    return res.status(who.httpStatus || 403).json({ ok: false, code: who.code, error: who.error });
+  }
+  const terminalId = who.id || asserted;
   let tools;
   try {
     if (!Array.isArray(req.body?.tools)) throw Object.assign(new Error('tools must be an array'), { status: 400, code: 'TOOLS_INVALID' });
@@ -26341,7 +26638,11 @@ try {
     console.error('  MCP HTTP eager init failed:', err.message);
   });
 
-  const mcpRouter = createMcpRoutes();
+  // A request that names a run (X-Synabun-Terminal) without that run's terminal token is not that run here either
+  // (lib/terminal-tokens.js): the MCP server routes it as its own MCP session, so it never shares the run's identity
+  // (its browser pins, its recovered tab) and never sends the run's id to the browser routes.
+  const terminalAuth = (pin, token) => _terminalTokens.accepts(pin, token);
+  const mcpRouter = createMcpRoutes({ terminalAuth });
 
   // Keyed path: /mcp/<key> — validates key, then forwards to MCP router
   app.use('/mcp/:key', (req, res, next) => {
@@ -26364,7 +26665,8 @@ try {
   // guard) and dispatch is never blocked. macOS only; elsewhere nothing uses it.
   if (sandboxSupported() && sandboxExecAvailable()) {
     try {
-      _workerMcpChannel = createWorkerMcpChannel({ createMcpRoutes, mainPort: Number(PORT) || 3344, log: (line) => console.log(line) });
+      // The channel's path token names the run; the channel adds that run's terminal token itself (never the worker's).
+      _workerMcpChannel = createWorkerMcpChannel({ createMcpRoutes, mainPort: Number(PORT) || 3344, log: (line) => console.log(line), terminalToken: (runId) => _terminalTokens.tokenFor(runId), terminalAuth });
       _workerMcpChannel.start().catch((error) => { console.warn('  worker-only MCP channel did not start (guarded workers run without OS isolation):', error?.message || error); _workerMcpChannel = null; });
     } catch (error) {
       console.warn('  worker-only MCP channel unavailable:', error?.message || error);
@@ -26704,6 +27006,8 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
       // data/loop-configs until they piled into multi-GB. Clean it here too.
       cleanupOpencodeLoopConfig(sessionId);
       cleanupExecLoopArtifacts(session);
+      // The loop's terminal is gone, so is the loop: its browser tabs, wherever its route moved.
+      endAutomationBrowser(sessionId).catch(() => {});
     }
 
     // Clean up loop driver interval
@@ -26740,6 +27044,9 @@ function createTerminalSession(profile, cols, rows, cwd, opts = {}) {
     name: 'xterm-256color',
     tap: isLoopOwned,
     loopOwned: isLoopOwned,
+    // A loop's PTY holds its run's terminal token: what it prints is scrubbed of tokens in the terminal host
+    // (lib/pty-host/core.js), before its clients, its reconnect snapshot and the tap (loop logs, link captures).
+    redactTokens: isLoopOwned || !!opts.extraEnv?.[TERMINAL_TOKEN_ENV],
     profile,
   }, {
     onSpawned: ({ pid }) => {
@@ -27230,6 +27537,9 @@ function buildLoopTaskPrompt(loopState, iteration = null) {
       ? `Pass sessionId: "${loopState.browserSessionId}"${loopState.browserTabId ? ` and tabId: "${loopState.browserTabId}"` : ''} to EVERY browser tool call. Omitting them can hijack another loop's browser.`
       : 'Use the SynaBun browser tools only. Do not use external browser/search tools for visual browsing.',
     'Use ONLY SynaBun MCP browser tools such as browser_navigate, browser_click, browser_snapshot, browser_content, browser_evaluate, browser_wait, and the browser_extract_* tools.',
+    // The rule the worker prompts and the Assistant get (lib/browser-tool-policy.js): a lost session is replaced, never another browser.
+    browserSessionLossRule(),
+    'Never substitute another browser or tool for the SynaBun browser.',
     'If the browser shows a login page, CAPTCHA, 2FA, or any wall requiring human action, stop and report the blocker. Do not bypass it or fall back to web search.',
     '=== END BROWSER ENFORCEMENT ===',
     '',
@@ -27254,9 +27564,12 @@ function buildLoopTaskPrompt(loopState, iteration = null) {
     `NATIVE LOOP ITERATION: ${iteration}/${loopState.totalIterations || 1}`,
     'Continue the same native conversation and make concrete progress on the task.',
     'This run is unattended. Do not ask the user questions, enter plan mode, or wait for interactive approval. If blocked, record the blocker in your final response and stop this iteration cleanly.',
+    'Do not end your turn to wait for something (a pacing gap, a timer): keep working, or call the tool that does the wait for you.',
     '',
   ].join('\n') : '';
-  const wrappedTask = `${iterationBlock}AUTHORIZATION: This task is running inside SynaBun Automation Studio, a user-supervised automation platform. The user has explicitly configured and launched this automation. All browser tools are first-party MCP tools under user control. Execute the task as instructed.${browserBlock}${fbPlaybook}${resumeBlock}\n\nTASK:\n${loopState.task}`;
+  // Social writes are spaced by SynaBun's own tools (lib/social-write-pacing.js): the agent must not pace them itself.
+  const pacingBlock = socialPacingBlock(loopState);
+  const wrappedTask = `${iterationBlock}AUTHORIZATION: This task is running inside SynaBun Automation Studio, a user-supervised automation platform. The user has explicitly configured and launched this automation. All browser tools are first-party MCP tools under user control. Execute the task as instructed.${browserBlock}${pacingBlock}${fbPlaybook}${resumeBlock}\n\nTASK:\n${loopState.task}`;
   return loopState.context ? `${wrappedTask}\n\nCONTEXT:\n${loopState.context}` : wrappedTask;
 }
 
@@ -27362,6 +27675,8 @@ async function releaseNativeLoopResources(run) {
       await closeSessionTab(session, run.browserSessionId, run.browserTabId).catch(() => {});
     }
   }
+  // Its route may have moved during the run (a recovery, its own browser_session create): what it owns elsewhere goes too.
+  await releaseBrowserOwnerEverywhere(run.runId);
   reconcileKeepAwake();
 }
 
@@ -27370,6 +27685,9 @@ const openCodeWorkerActivity = createOpenCodeActivityRelay({ send: (message) => 
 
 _nativeLoopRuntime = new NativeLoopRuntime({
   toolListOptions,
+  // Every native run (a loop, a schedule, a dispatched worker) gets its terminal token at launch and resume, and loses it
+  // at its end (lib/terminal-tokens.js).
+  terminalTokens: _terminalTokens,
   stateDir: LOOP_DIR,
   ledgerPath: resolve(LOOP_DATA_DIR, 'native-loop-runs.json'),
   buildPrompt: (state, iteration) => buildLoopTaskPrompt(state, iteration),
@@ -27528,6 +27846,11 @@ _nativeLoopRuntime = new NativeLoopRuntime({
         },
       } : null;
       if (state.resumingWorker) openCodeWorkerData(resolve(DATA_HOME, 'data', 'loop-configs', `opencode-${state.runId}`), { resume: true });
+      // The run's terminal token (lib/terminal-tokens.js): its local SynaBun entry names the variable and only the serve's
+      // environment holds it. Through the worker-only channel (remoteMcp) the channel adds it by itself, and a drafting
+      // or evaluation run starts no MCP server: neither gets it in its serve's environment.
+      const runTerminalToken = !remoteMcp && !state.confinement && typeof state.terminalTokenProvider === 'function'
+        ? (state.terminalTokenProvider() || null) : null;
       const xdgRoot = setupOpencodeLoopConfig(
         state.runId,
         state.browserSessionId,
@@ -27541,7 +27864,7 @@ _nativeLoopRuntime = new NativeLoopRuntime({
         // Assistant task runs: the browser policy plugin (loops and schedules unchanged) with the registered code
         // projects its test runners may run in (the sandboxed serve cannot read the registry), and the run's confinement
         // (lib/worker-confinement.js, lib/skills/draft-confinement.js): its permission rules, tool switches, MCP.
-        { browserPolicy: state.runMode === 'task', cwd: state.cwd || null, policyRoots: taskBrowserPolicyRoots(state), confinement: openCodeRunConfigFor(state), remoteMcp, readProject: !(protectedWorker || state.confinement) },
+        { browserPolicy: state.runMode === 'task', cwd: state.cwd || null, policyRoots: taskBrowserPolicyRoots(state), confinement: openCodeRunConfigFor(state), remoteMcp, readProject: !(protectedWorker || state.confinement), terminalToken: !!runTerminalToken },
       );
       // An evaluation trial with the skill: its copy goes into this run's own configuration folder, which OpenCode reads
       // as its global one (never OPENCODE_CONFIG_DIR, which would take the place of this configuration).
@@ -27559,6 +27882,7 @@ _nativeLoopRuntime = new NativeLoopRuntime({
         ...(evalEnv || evalShell ? { extraEnv: { ...(evalEnv || {}), ...(evalShell ? evalShell.env : {}) } } : {}),
         hidePassword: protectedWorker,
         persistentData: !!state.persistentOpenCode,
+        terminalToken: runTerminalToken,
       });
       if (!entry?.client) throw new Error('OpenCode isolated native serve failed to start');
       let providerSessionId = null;
@@ -27727,14 +28051,21 @@ _nativeLoopRuntime = new NativeLoopRuntime({
     // Model catalog (tier · price · vision) for routing, the persona and agent_catalog.
     const assistantCatalog = createAssistantCatalog({
       fetchJson: catalogFetch,
+      // Degraded on purpose (the catalog only lists): an unreadable provider is named in `errors` and is
+      // `unknown` on its rows. Dispatch and worker launch keep the strict externalToolsCatalog / inventories.
       getExternalServers: (projects = []) => {
-        const rows = new Map();
-        for (const cwd of new Set([PACKAGE_ROOT, ...projects.map(project => project.path || project.cwd).filter(Boolean)])) for (const row of externalToolsCatalog(cwd)) {
-          const previous = rows.get(row.ref);
-          if (!previous) rows.set(row.ref, row);
-          else for (const [provider, availability] of Object.entries(row.providers)) if (availability === 'deliverable' || previous.providers[provider] === 'absent') previous.providers[provider] = availability;
+        const rows = new Map(), errors = new Map();
+        for (const cwd of new Set([PACKAGE_ROOT, ...projects.map(project => project.path || project.cwd).filter(Boolean)])) {
+          const report = externalToolsCatalogReport(cwd, { strict: false });
+          for (const error of report.errors) if (!errors.has(error.provider)) errors.set(error.provider, error);
+          for (const row of report.servers) {
+            const previous = rows.get(row.ref);
+            if (!previous) rows.set(row.ref, row);
+            else for (const [provider, availability] of Object.entries(row.providers)) previous.providers[provider] = mergeExternalAvailability(previous.providers[provider], availability);
+          }
         }
-        return [...rows.values()];
+        for (const provider of errors.keys()) for (const row of rows.values()) if (row.providers[provider] !== 'deliverable') row.providers[provider] = 'unknown';
+        return { servers: [...rows.values()], errors: [...errors.values()] };
       },
       codexPrice: (model) => assistantPricing.codexPrice(model),
       listAccounts: () => accountUsage.list(),
@@ -28149,6 +28480,8 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       greeting: _greeting,
       // The Admin sandbox setting: every session view shows it (features.adminSandbox gates the panel's control).
       adminSandbox: _agentSandbox,
+      // A brain's pin is proven by its launch credential (lib/terminal-tokens.js bind), revoked with the brain.
+      terminalTokens: _terminalTokens,
     });
     assistantDesktop?.attach?.({ runtime: _assistantRuntime, dispatcher: _assistantDispatcher });
     // Warm the catalog so brain capabilities (vision, tier) are known on first attach,
@@ -28211,6 +28544,8 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       workerGuard: _workerGuard,
       // A request without an agent pin is the owner's page only with this boot's page secret (lib/page-session.js).
       pageSession: _pageSession,
+      // A pin counts only with its proof (lib/terminal-tokens.js): a worker's run id, a brain's id.
+      terminalVerdict: (pin, req) => _terminalTokens.verdict(pin, presentedTerminalProof(req)),
     }));
     const shutdownAssistant = () => {
       // Running skill creations first: what their workers wrote is kept as drafts before the workers go.
@@ -28251,7 +28586,7 @@ _nativeLoopRuntime = new NativeLoopRuntime({
  * plugin (lib/assistant-brains/opencode2-browser-policy/), `cwd` the run's project, `policyRoots` the registered code
  * projects its test runners may also run in.
  */
-function setupOpencodeLoopConfig(terminalSessionId, browserSessionId, browserTabId, selection = null, model = null, extraMcpEnv = {}, { browserPolicy = false, cwd = null, policyRoots = [], confinement = null, remoteMcp = null, readProject = true } = {}) {
+function setupOpencodeLoopConfig(terminalSessionId, browserSessionId, browserTabId, selection = null, model = null, extraMcpEnv = {}, { browserPolicy = false, cwd = null, policyRoots = [], confinement = null, remoteMcp = null, readProject = true, terminalToken = false } = {}) {
   const xdgRoot = resolve(DATA_HOME, 'data', 'loop-configs', `opencode-${terminalSessionId}`);
   const targetDir = resolve(xdgRoot, 'opencode');
   if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
@@ -28279,6 +28614,10 @@ function setupOpencodeLoopConfig(terminalSessionId, browserSessionId, browserTab
   };
   if (browserSessionId) pinOverrides.SYNABUN_BROWSER_SESSION = browserSessionId;
   if (browserTabId) pinOverrides.SYNABUN_BROWSER_TAB = browserTabId;
+  // The run's terminal token (lib/terminal-tokens.js): this file (under data/, in every backup) and the
+  // OPENCODE_CONFIG_CONTENT overlay copied from it only name the variable; the value is in the environment of the
+  // opencode process that reads them (the loop's PTY, the worker's serve).
+  if (terminalToken) pinOverrides[TERMINAL_TOKEN_ENV] = `{env:${TERMINAL_TOKEN_ENV}}`;
   // Assistant task runs: e.g. SYNABUN_DESKTOP_GRANT for computer-use workers.
   for (const [key, value] of Object.entries(extraMcpEnv || {})) if (value) pinOverrides[key] = String(value);
   setMcpServer(baseCfg, 'SynaBun', buildManagedOpenCodeSynabunEntry(existingEntry, {
@@ -28293,6 +28632,7 @@ function setupOpencodeLoopConfig(terminalSessionId, browserSessionId, browserTab
       ...(!browserSessionId ? ['SYNABUN_BROWSER_SESSION'] : []),
       ...(!browserTabId ? ['SYNABUN_BROWSER_TAB'] : []),
       ...(!extraMcpEnv?.SYNABUN_DESKTOP_GRANT ? ['SYNABUN_DESKTOP_GRANT'] : []),
+      ...(!terminalToken ? [TERMINAL_TOKEN_ENV] : []),
       'CLAUDECODE', 'SYNABUN_PROFILE', 'SYNABUN_RUNTIME_PROFILE_PATH',
     ],
   }));
@@ -28344,6 +28684,9 @@ function setupClaudeLoopMcpConfig(terminalSessionId, browserSessionId, browserTa
   const dir = resolve(DATA_HOME, 'data', 'loop-configs');
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const headers = { 'X-Synabun-Terminal': terminalSessionId };
+  // The loop's terminal token (lib/terminal-tokens.js): the header names the variable, the CLI expands it from the
+  // PTY's environment (the launch sets it with the token it issued): never the value in this file or in argv.
+  if (_terminalTokens.has(terminalSessionId)) headers['X-Synabun-Terminal-Token'] = `\${${TERMINAL_TOKEN_ENV}}`;
   if (browserSessionId) headers['X-Synabun-Browser-Session'] = browserSessionId;
   if (browserTabId) headers['X-Synabun-Browser-Tab'] = browserTabId;
   const inventory = externalInventory('claude-code', cwd);
@@ -28452,6 +28795,9 @@ function prepareExecWrapperFile(terminalSessionId, loopState, taskFile, sentinel
     model: loopState.model,
     effort: loopState.effort,
     mcpEnvOverrides,
+    // The loop's terminal token is in the PTY's environment (the launch issued it): Codex's SynaBun MCP takes it by
+    // name, so neither this wrapper file nor the command line holds it.
+    mcpEnvVars: _terminalTokens.has(terminalSessionId) ? [TERMINAL_TOKEN_ENV] : [],
     // The Admin sandbox setting the loop started with (a loop file from before it: the current one).
     codexConfigArgs: codexWindowsSandboxArgs(typeof loopState.adminSandbox === 'boolean' ? loopState.adminSandbox : adminSandboxOn()),
   });
@@ -28569,6 +28915,8 @@ function attachExecLoopDriver(terminalSessionId) {
     if (!loopState.active) {
       clearInterval(interval);
       cleanupExecLoopArtifacts(session);
+      // Ended elsewhere (a PTY exit, a stop that left the file): its browser tabs go too (idempotent).
+      endAutomationBrowser(terminalSessionId).catch(() => {});
       console.log('[exec-loop-driver] Loop inactive, stopping driver');
       return;
     }
@@ -28616,6 +28964,8 @@ function attachExecLoopDriver(terminalSessionId) {
           clearInterval(interval);
           console.log(`[exec-loop-driver] Loop complete: ${iter}/${loopState.totalIterations}`);
           cleanupExecLoopArtifacts(session);
+          // Its browser tabs, wherever its route moved (a recovery, its own browser_session create).
+          await endAutomationBrowser(terminalSessionId).catch(() => {});
           driving = false;
           return;
         }
@@ -28631,15 +28981,22 @@ function attachExecLoopDriver(terminalSessionId) {
           clearInterval(interval);
           console.log(`[exec-loop-driver] Time cap reached: ${Math.round(elapsedMin)}/${loopState.maxMinutes}min`);
           cleanupExecLoopArtifacts(session);
+          await endAutomationBrowser(terminalSessionId).catch(() => {});
           driving = false;
           return;
         }
 
-        // Prepare task file on first iteration (reused across all iterations)
-        if (!session._execTaskFile) {
-          session._execTaskFile = prepareExecTaskFile(terminalSessionId, loopState);
-          loopLog(terminalSessionId, 'exec-driver:taskfile', 'task file prepared', { path: session._execTaskFile });
+        // The task file is written again for every iteration (same path): the prompt names the loop's browser
+        // session and tab, and a recovery or the loop's own browser_session create moves them during a run
+        // (noteAutomationBrowserRoute writes the new ones to the state file read above). Written once, every later
+        // iteration was told the dead ids.
+        const taskFile = prepareExecTaskFile(terminalSessionId, loopState);
+        if (!session._execTaskFile) loopLog(terminalSessionId, 'exec-driver:taskfile', 'task file prepared', { path: taskFile });
+        else if (session._execTaskRoute !== `${loopState.browserSessionId || ''}/${loopState.browserTabId || ''}`) {
+          loopLog(terminalSessionId, 'exec-driver:taskfile', 'task file rewritten: the loop\'s browser route moved', { browserSessionId: loopState.browserSessionId || null, browserTabId: loopState.browserTabId || null });
         }
+        session._execTaskFile = taskFile;
+        session._execTaskRoute = `${loopState.browserSessionId || ''}/${loopState.browserTabId || ''}`;
 
         // Generate the platform-native wrapper. It owns exit-code capture and
         // sentinel output; the PTY receives only the short wrapper invocation.
@@ -28710,6 +29067,7 @@ function attachExecLoopDriver(terminalSessionId) {
             });
             clearInterval(interval);
             cleanupExecLoopArtifacts(session);
+            await endAutomationBrowser(terminalSessionId).catch(() => {});
             try { session.pty?.kill?.(); } catch { /* ok */ }
             driving = false;
             return;
@@ -28732,6 +29090,7 @@ function attachExecLoopDriver(terminalSessionId) {
       loopLog(terminalSessionId, 'exec-driver:error', 'fatal exec driver error', { error: err.message });
       clearInterval(interval);
       cleanupExecLoopArtifacts(session);
+      endAutomationBrowser(terminalSessionId).catch(() => {});
       try { session.pty?.kill?.(); } catch {}
     }
     driving = false;
@@ -28744,18 +29103,22 @@ function attachExecLoopDriver(terminalSessionId) {
 
 const LAST_SESSION_PATH = resolve(DATA_HOME, 'data', 'last-session.json');
 
+// Nothing to resume is the usual answer, not a missing route: 200 with no sessions and the reason (the page's
+// checkResumePrompt offers a resume only when `sessions` has some). Before 2026-11-05 these were 404s, which every
+// page load logged as a failed request.
+const noLastSession = (res, reason) => res.json({ sessions: [], reason });
 app.get('/api/last-session', (req, res) => {
   try {
     const fileExists = existsSync(LAST_SESSION_PATH);
     const activeCount = [...terminalSessions.values()].filter(s => s.profile === 'claude-code').length;
+    if (!fileExists) return noLastSession(res, 'none');
     console.log(`[last-session] Check: file=${fileExists}, activeClaude=${activeCount}`);
-    if (!fileExists) return res.status(404).json({ error: 'No saved session' });
     // If there are currently active claude-code sessions, the snapshot is live — don't offer resume
-    if (activeCount > 0) return res.status(404).json({ error: 'Sessions still active' });
+    if (activeCount > 0) return noLastSession(res, 'active');
     const raw = readFileSync(LAST_SESSION_PATH, 'utf-8').trim();
     if (!raw) {
       unlinkSync(LAST_SESSION_PATH);
-      return res.status(404).json({ error: 'Empty snapshot — cleaned up' });
+      return noLastSession(res, 'empty');
     }
     const data = JSON.parse(raw);
     // Enrich with labels from ui-state
@@ -28771,7 +29134,7 @@ app.get('/api/last-session', (req, res) => {
     // Corrupt file — clean it up so it doesn't keep failing
     if (err instanceof SyntaxError) {
       try { unlinkSync(LAST_SESSION_PATH); } catch {}
-      return res.status(404).json({ error: 'Corrupt snapshot — cleaned up' });
+      return noLastSession(res, 'corrupt');
     }
     res.status(500).json({ error: err.message });
   }
@@ -31062,7 +31425,16 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
     // owner back to its own tab instead of the shared activeTab.
     if (claimedSession && browserTabId) {
       if (!claimedSession._tabOwners) claimedSession._tabOwners = new Map();
+      // An owner routes to one tab per session: a tab it already had here (a re-create, a recovery whose old tab
+      // still answers) is closed, not left open and unowned. MoreLogin sessions are never idle-reaped, so before
+      // 2026-11-04 every re-create left one more tab there. The new tab exists first, so this is never the last tab.
+      const previousTabId = claimedSession._tabOwners.get(ownerKey);
       claimedSession._tabOwners.set(ownerKey, browserTabId);
+      if (previousTabId && previousTabId !== browserTabId && claimedSession.tabs.has(previousTabId)
+        && ![...claimedSession._tabOwners].some(([owner, tid]) => owner !== ownerKey && tid === previousTabId)) {
+        await closeSessionTab(claimedSession, browserSessionId, previousTabId).catch(() => {});
+        loopLog(ownerKey, logTag, `closed the ${ownerType} owner's previous tab in this session`, { browserSessionId, previousTabId, browserTabId });
+      }
     }
 
     return { browserSessionId, browserTabId };
@@ -31095,6 +31467,227 @@ async function releaseSharedBrowserTab(sessionId, ownerKey) {
       await closeSessionTab(session, sessionId, tabId).catch(() => {});
     }
   }
+}
+
+/**
+ * Release every tab and claim `ownerKey` holds in any session. A run's route can move during its life (a recovery,
+ * its own browser_session create), so its end releases what it owns now, not only the session it started with.
+ * `except`: a session to leave alone (the one a new tab of the run was just opened in).
+ */
+async function releaseBrowserOwnerEverywhere(ownerKey, { except = null } = {}) {
+  if (!ownerKey) return;
+  for (const [sessionId, session] of [...browserSessions]) {
+    if (except && sessionId === except) continue;
+    if (session._tabOwners?.has(ownerKey) || session._loopOwned?.has(ownerKey) || session._interactiveOwned?.has(ownerKey)) {
+      await releaseSharedBrowserTab(sessionId, ownerKey).catch(() => {});
+    }
+  }
+}
+
+// ── Browser starts its caller stopped waiting for, and a run's own route ──
+// lib/browser-start-handoff.js: one start per caller at a time; a start that finishes after its request ended is kept
+// for that caller's next create / acquire / recovery (no second browser, no session nobody knows about).
+const browserStartHandoff = createBrowserStartHandoff({ log: (line) => console.log(`[browser] ${line}`) });
+
+/** gone() for browserStartHandoff.run: true once this request can no longer be answered (408 sent, client left). */
+function browserCallerGone(req, res) {
+  let closed = false;
+  res.once?.('close', () => { closed = true; });
+  return () => closed || res.headersSent === true || res.writableEnded === true || req.browserRequest?.signal?.aborted === true;
+}
+
+/** The answer of a create / acquire / recovery whose browser is still starting when its caller's time is up. */
+function browserStartingAnswer(kind = 'create') {
+  return {
+    ok: false, starting: true, code: 'BROWSER_STARTING',
+    error: kind === 'create'
+      ? 'The browser is still starting (a cold MoreLogin start can take about two minutes). Call browser_session with action "create" again: it returns this browser as soon as it is ready and never starts a second one.'
+      : 'The browser is still starting (a cold MoreLogin start can take about two minutes). Call the browser tool again in a moment: the tab being opened for you is kept for you.',
+  };
+}
+
+/** A started session (and tab) still exists, and the tab is still `ownerKey`'s. */
+function startedTabAlive(sessionId, tabId, ownerKey) {
+  const session = sessionId ? browserSessions.get(sessionId) : null;
+  if (!session) return false;
+  if (tabId && session.tabs && !session.tabs.has(tabId)) return false;
+  if (ownerKey && tabId && session._tabOwners?.get(ownerKey) !== tabId) return false;
+  return true;
+}
+
+/** A call of `ownerKey` (the page's: 'anon') was routed to `tabId` of this session at or after `since` (getTargetPage trackRoute). */
+function browserStartUsedSince(session, ownerKey, tabId, since) {
+  const seen = session?._routeLog?.get(ownerKey || 'anon');
+  return !!seen && Number(seen.lastSeen) >= Number(since || 0) && (!tabId || seen.tabId === tabId);
+}
+
+/**
+ * A start nobody took (BROWSER_START_HANDOFF_TTL_MS, or a shutdown): closed, or only its owner's tab when others
+ * joined the session since. Kept when its owner took it after all by another way than the hand-over: a run whose
+ * recorded route it is (its MCP followed yourRoute; the run's end releases it), a call routed to it since it was
+ * parked, or (a session the owner's page created: no owner key) a page watching it or an automation working in it.
+ * @param {{ tabId?: string|null, since?: number, run?: string|null }} [opts]
+ */
+async function closeUnclaimedBrowserStart(sessionId, ownerKey, { tabId = null, since = 0, run = null } = {}) {
+  const session = browserSessions.get(sessionId);
+  if (!session) return;
+  if (run && automationRunState(run) !== 'ended') {
+    const current = recordedAutomationRoute(run, { files: true });
+    if (current && current.browserSessionId === sessionId && (!tabId || current.browserTabId === tabId)) return;
+  }
+  if (browserStartUsedSince(session, ownerKey, tabId, since)) return;
+  if (!ownerKey) {
+    if ((session.clients?.size || 0) > 0 || otherSessionOwners(session, null).length > 0) return;
+  } else if (tabId && session._tabOwners?.get(ownerKey) !== tabId) {
+    // Not this owner's tab any more (closed, or the owner has another one there now): nothing of this start is left.
+    return;
+  }
+  const decision = sessionCloseDecision(session, ownerKey);
+  if (decision.action === 'release') await releaseSharedBrowserTab(sessionId, ownerKey);
+  else await destroyBrowserSession(sessionId, { closeOwnTabs: true });
+  console.warn(`[browser] a browser start nobody took was ${decision.action === 'release' ? 'released' : 'closed'}: session ${sessionId} of ${ownerKey || 'the page'}`);
+}
+
+// Native runs the runtime still runs (or will resume): every other status has ended.
+const LIVE_NATIVE_RUN_STATUSES = new Set(['starting', 'running', 'suspended']);
+// Where a PTY / exec loop's or an agent's route moved (noteAutomationBrowserRoute). Native runs keep it on their record.
+// Read from memory by GET /api/browser/sessions (yourRoute) on every resolve; forgotten at the run's end.
+const _movedAutomationRoutes = new Map();
+// PTY / exec loops and agents that ended (endAutomationBrowser): a late recovery for them opens nothing. Bounded.
+const _endedAutomationRuns = new Set();
+const ENDED_AUTOMATION_RUNS_MAX = 2000;
+
+/** The automation-window agent whose routing id (`agent:<uuid>`) this is, or null. */
+function agentForTerminal(terminalSessionId) {
+  if (!terminalSessionId || !String(terminalSessionId).startsWith('agent:')) return null;
+  for (const agent of agentRegistry.values()) if (agent._agentTerminalId === terminalSessionId) return agent;
+  return null;
+}
+
+/**
+ * Whether a run is 'live', 'ended' or 'unknown' (not a run the server knows: a sidepanel, an interactive caller, a
+ * loop whose state file is gone). `files`: a PTY / exec loop's state file is read too (a recovery; never per resolve).
+ */
+function automationRunState(terminalSessionId, { files = false } = {}) {
+  if (!terminalSessionId) return 'unknown';
+  if (_endedAutomationRuns.has(terminalSessionId)) return 'ended';
+  const run = _nativeLoopRuntime?.get?.(terminalSessionId);
+  if (run) return LIVE_NATIVE_RUN_STATUSES.has(run.status) ? 'live' : 'ended';
+  const agent = agentForTerminal(terminalSessionId);
+  if (agent) return agent.status === 'running' ? 'live' : 'ended';
+  if (!files) return _movedAutomationRoutes.has(terminalSessionId) ? 'live' : 'unknown';
+  const loopFile = findLoopFileForTerminal(terminalSessionId);
+  if (!loopFile) return 'unknown';
+  try {
+    return JSON.parse(readFileSync(resolve(LOOP_DIR, loopFile), 'utf-8')).active === false ? 'ended' : 'live';
+  } catch { return 'unknown'; }
+}
+
+/**
+ * A PTY / exec loop or an agent ended (its natural end, its time cap, a failure, a stop, its terminal closing): what
+ * it owns in any session is released, its moved route forgotten, and a recovery that finishes later opens nothing for
+ * it. Native runs end through releaseNativeLoopResources.
+ */
+async function endAutomationBrowser(terminalSessionId) {
+  if (!terminalSessionId) return;
+  // Nothing may act as the run any more (lib/terminal-tokens.js): its token stops working, its id stays refused.
+  _terminalTokens.revoke(terminalSessionId);
+  _endedAutomationRuns.add(terminalSessionId);
+  while (_endedAutomationRuns.size > ENDED_AUTOMATION_RUNS_MAX) _endedAutomationRuns.delete(_endedAutomationRuns.values().next().value);
+  _movedAutomationRoutes.delete(terminalSessionId);
+  await releaseBrowserOwnerEverywhere(terminalSessionId);
+}
+
+/**
+ * The route the server last recorded for a run: its native run record, its agent, the move recorded for a PTY / exec
+ * loop, else (`files`) its loop state file. Nothing for a run that ended. The state files are read only on request (a
+ * recovery): GET /api/browser/sessions asks on every resolve and reads memory only.
+ */
+function recordedAutomationRoute(terminalSessionId, { files = false } = {}) {
+  if (!terminalSessionId || _endedAutomationRuns.has(terminalSessionId)) return null;
+  const run = _nativeLoopRuntime?.get?.(terminalSessionId);
+  if (run) {
+    if (!LIVE_NATIVE_RUN_STATUSES.has(run.status)) return null;
+    return run.browserSessionId ? { browserSessionId: run.browserSessionId, browserTabId: run.browserTabId || null } : null;
+  }
+  const agent = agentForTerminal(terminalSessionId);
+  if (agent) {
+    if (agent.status !== 'running') return null;
+    return agent.browserSessionId ? { browserSessionId: agent.browserSessionId, browserTabId: agent.browserTabId || null } : null;
+  }
+  const moved = _movedAutomationRoutes.get(terminalSessionId);
+  if (moved) return { ...moved };
+  if (!files) return null;
+  const loopFile = findLoopFileForTerminal(terminalSessionId);
+  if (!loopFile) return null;
+  try {
+    const data = JSON.parse(readFileSync(resolve(LOOP_DIR, loopFile), 'utf-8'));
+    if (data.active === false) return null;
+    return data.browserSessionId ? { browserSessionId: data.browserSessionId, browserTabId: data.browserTabId || null } : null;
+  } catch { return null; }
+}
+
+/** The run's recorded route when it is still usable: its tab open, still the run's, in the default browser. */
+function liveAutomationRoute(terminalSessionId, { files = false, cfg: knownCfg = null } = {}) {
+  const route = recordedAutomationRoute(terminalSessionId, { files });
+  if (!route?.browserTabId || !startedTabAlive(route.browserSessionId, route.browserTabId, terminalSessionId)) return null;
+  const cfg = knownCfg || loadBrowserConfig();
+  if (cfg.connectMode === 'morelogin' && !sessionServesMoreLoginDefault(browserSessions.get(route.browserSessionId), cfg)) return null;
+  return route;
+}
+
+/**
+ * A run's browser route moved (a recovery, its own browser_session create, a tab of its own it moved to): its state
+ * file (ancestor lookups, /api/loop/stop, the exec loop's next iteration), the native run's record or the agent's
+ * (GET /api/browser/sessions yourRoute, the agent's iteration and end) and the Assistant's run record (agent_status)
+ * say where it is now. A run that ended is not moved.
+ */
+function noteAutomationBrowserRoute(terminalSessionId, acq, reason = 'recovered') {
+  const route = { browserSessionId: acq?.browserSessionId || null, browserTabId: acq?.browserTabId || null };
+  if (!terminalSessionId || !route.browserSessionId) return;
+  if (automationRunState(terminalSessionId) === 'ended') return;
+  const agent = agentForTerminal(terminalSessionId);
+  if (_nativeLoopRuntime?.get?.(terminalSessionId)) {
+    try { _nativeLoopRuntime.setBrowserRoute(terminalSessionId, route); } catch (err) { console.warn(`[browser] run ${terminalSessionId}: route not recorded: ${err.message}`); }
+  } else if (agent) {
+    // The agent's record and its claim on the session (grace / reuse checks) move with it; its iteration and its end
+    // release what it owns wherever that is (releaseAgentBrowser).
+    if (agent.browserSessionId && agent.browserSessionId !== route.browserSessionId) browserSessions.get(agent.browserSessionId)?._agentOwnedSet?.delete(agent.id);
+    const now = browserSessions.get(route.browserSessionId);
+    if (now) (now._agentOwnedSet ||= new Set()).add(agent.id);
+    agent.browserSessionId = route.browserSessionId;
+    agent.browserTabId = route.browserTabId;
+  } else {
+    _movedAutomationRoutes.set(terminalSessionId, { ...route });
+    const loopFile = findLoopFileForTerminal(terminalSessionId);
+    if (loopFile) {
+      try {
+        const fp = resolve(LOOP_DIR, loopFile);
+        const data = JSON.parse(readFileSync(fp, 'utf-8'));
+        data.browserSessionId = route.browserSessionId;
+        data.browserTabId = route.browserTabId;
+        writeFileSync(fp, JSON.stringify(data, null, 2));
+      } catch (err) {
+        console.warn(`[loop/recover-browser] Failed to update loop state file: ${err.message}`);
+      }
+    }
+  }
+  try { _assistantDispatcher?.noteBrowserRoute?.(terminalSessionId, { ...route, reason }); } catch (err) { console.warn(`[browser] run ${terminalSessionId}: run record not updated: ${err.message}`); }
+  loopLog(terminalSessionId, 'browser:route', `browser route ${reason}`, route);
+}
+
+/**
+ * An automation-window agent's browser goes (between iterations, at its end, on a failure): every tab and claim of
+ * its routing id in any session (its route may have moved), and its agent mark on every session.
+ */
+async function releaseAgentBrowser(agent, { ended = false } = {}) {
+  if (!agent) return;
+  for (const session of browserSessions.values()) session._agentOwnedSet?.delete(agent.id);
+  // At its end the agent is marked ended first, so a recovery that finishes later opens nothing for it.
+  if (ended) await endAutomationBrowser(agent._agentTerminalId);
+  else await releaseBrowserOwnerEverywhere(agent._agentTerminalId);
+  agent.browserSessionId = null;
+  agent.browserTabId = null;
 }
 
 // ── Real-time sync WebSocket (multi-client state broadcast) ──
@@ -32182,7 +32775,8 @@ function unverifiedServeRecords() {
 }
 const NATIVE_SERVE_WAIT_MS = Number(process.env.SYNABUN_NATIVE_SERVE_WAIT_MS) || 20_000;
 const NATIVE_SERVE_SWEEP_MS = Number(process.env.SYNABUN_NATIVE_SERVE_SWEEP_MS) || 10_000;
-// Left of a request's deadline for the answer itself (the MCP client gives a session create 70 s).
+// Left of a request's deadline for the answer itself (a browser request is answered within BROWSER_REQUEST_MAX_MS,
+// 120 s, lib/browser-execution.js; the MCP client waits 150 s for a create, SESSION_CREATE_TIMEOUT).
 const NATIVE_SERVE_REPLY_MARGIN_MS = 5_000;
 // Before refusing, repair what SynaBun can itself, bounded: stop the serves an ended SynaBun left running (the records'
 // own sweep, which signals only a provably-SynaBun process whose owner has ended; at most NATIVE_SERVE_SWEEP_MS, in the
@@ -33451,6 +34045,24 @@ async function recoverSessionTabPage(session, sessionId, tabId, reason = 'page b
       }
 
       console.warn(`[browser] Failed during ${recoveryStage} for tab ${tabId} in session ${sessionId}: ${error.message}`);
+      // One slow tab does not end the other runs' tabs (lib/browser-wedge-retire.js): while the session's other
+      // tabs still answer, only this tab is retired; its owner's next call gets "Tab not found" and a new tab.
+      if (!session._invalidating && browserSessions.get(sessionId) === session && session.tabs.get(tabId)?.page === oldPage) {
+        const verdict = await decideFailedTabRecovery(session, tabId);
+        if (verdict.action === 'retire-tab' && !session._invalidating && browserSessions.get(sessionId) === session
+          && session.tabs.get(tabId)?.page === oldPage) {
+          unrouteScreenshotTab(session, sessionId, tabId, oldPage);
+          if (oldEntry?.cdpSession?.detach) {
+            await withBrowserOperationDeadline(oldEntry.cdpSession.detach(), 1_000, 'Detaching wedged browser tab CDP session').catch(() => {});
+          }
+          if (oldPage && !oldPage.isClosed?.()) {
+            await withBrowserOperationDeadline(oldPage.close({ runBeforeUnload: false }), 1_000, 'Closing wedged browser tab').catch(() => {});
+          }
+          console.warn(`[browser] Retired only the wedged tab ${tabId} of session ${sessionId}: ${verdict.otherTabsAnswering} of its ${verdict.otherTabs} other tab(s) still answer, so the session stays (remaining: ${session.tabs.size})`);
+          return { recovered: false, wedgedTabRetired: true, error: error.message };
+        }
+        console.warn(`[browser] Retiring session ${sessionId}: ${verdict.why === 'disconnected' ? 'its browser is disconnected' : `none of its ${verdict.otherTabs ?? 0} other tab(s) answers`}`);
+      }
       if (!session._invalidating) {
         session._invalidating = true;
         // destroyBrowserSession removes the registry entry synchronously before
@@ -33532,6 +34144,9 @@ function browserRecoveryErrorMessage(error, recovery) {
   }
   if (recovery?.sessionInvalidated) {
     return `${error.message} The unhealthy browser session was retired and will be reacquired on the next browser call.`;
+  }
+  if (recovery?.wedgedTabRetired) {
+    return `${error.message} The tab stopped answering and no replacement could be opened in time, so it was closed; the browser session stays for its other tabs. The next browser call gets a new tab.`;
   }
   if (recovery?.error) return `${error.message} Automatic tab recovery failed: ${recovery.error}`;
   return error.message;
@@ -33793,6 +34408,165 @@ async function otherOpenPageCount(session, own) {
   }
 }
 
+// ── Who a browser request is (lib/terminal-tokens.js) ──
+// A run's X-Synabun-Terminal counts only with that run's terminal token (X-Synabun-Terminal-Token): a request that
+// names a run SynaBun gave a token to without it, with another one, or after the run ended is refused before any
+// browser route runs (browserTerminalGate on /api/browser, and /api/loop/recover-browser and /api/morelogin/stop,
+// which live elsewhere). The same reading decides who a request is on the other routes that act for the run a header
+// names (POST /api/mcp/runtime-tools, POST /api/loop/stop, the Skills creation and evaluation routes, the Assistant
+// API's callerContext) and on the browser panel's socket (/ws/browser/:id). Side panels and Assistant brains prove
+// their ids too: a panel with a token of its own, a brain with its launch credential (bound to its pin; read from
+// X-Synabun-Brain-Token when no X-Synabun-Terminal-Token came). An id SynaBun gave no proof (an MCP process's own
+// client id, a CLI window's MCP session, a run from before this server started) is taken as it is said, as before. A
+// request that carries an agent header (lib/owner-authority.js isAgentCall) but names no run is an automation without
+// an id, never the owner's page, and since 2026-11-05 no automation at all for the gate either: an agent header proves
+// nothing (any local process can send one), so such a request needs the page secret like a bare one, but for the
+// pre-websearch hook's read of which sessions exist (review 972afb74, finding 2). An automation drives only the tabs
+// it owns (getTargetPage) and calls only the routes SynaBun's browser tools call (lib/browser-automation-routes.js);
+// every other /api/browser route is the owner's page's (its page secret, or an invite guest the guest rules let in),
+// whatever agent headers the request carries (finding 1).
+const BROWSER_CALLER = Symbol('synabun.browserCaller');
+/** The owner key of an automation that names no run: no owner id can look like it (lib/browser-owner.js). */
+const ANONYMOUS_AUTOMATION = 'anonymous automation';
+/** What a request presents as the proof of the id it names: its terminal token, else a brain's launch credential. */
+function presentedTerminalProof(req) {
+  const header = (name) => (req?.get && req.get(name)) || req?.headers?.[name] || null;
+  return header(TERMINAL_TOKEN_HEADER) || header(BRAIN_CREDENTIAL_HEADER) || null;
+}
+/**
+ * Who `req` is to the browser routes (read once per request).
+ * @returns {{ id: string|null, ownerKey: string|null, automation: boolean, accepted: boolean, status: string,
+ *   asserted: string|null, code?: string, error?: string, httpStatus?: number, grace?: boolean }}
+ *   `id`: the run id the request may act as (null for the owner's page, an automation that names none, a refusal);
+ *   `ownerKey`: `id`, else ANONYMOUS_AUTOMATION for an automation, else null (the owner's page);
+ *   `accepted`: false when it names a run it cannot prove it is (then `code` / `error` / `httpStatus` say why).
+ */
+function browserCaller(req) {
+  if (req && req[BROWSER_CALLER]) return req[BROWSER_CALLER];
+  const raw = (req?.get && req.get('X-Synabun-Terminal')) || req?.headers?.['x-synabun-terminal'] || null;
+  const asserted = typeof raw === 'string' && raw ? raw : null;
+  const presented = presentedTerminalProof(req);
+  const verdict = asserted ? _terminalTokens.verdict(asserted, presented) : { status: 'none', accepted: true };
+  const automation = !!asserted || isAgentCall(req);
+  const id = verdict.accepted ? asserted : null;
+  const caller = { ...verdict, asserted, automation, id, ownerKey: id || (automation ? ANONYMOUS_AUTOMATION : null) };
+  if (req && typeof req === 'object') { try { Object.defineProperty(req, BROWSER_CALLER, { value: caller, configurable: true }); } catch { /* frozen */ } }
+  return caller;
+}
+/** The answer to a request that names a run it cannot prove it is (TERMINAL_TOKEN_REQUIRED / TERMINAL_TOKEN_INVALID). */
+function refuseBrowserCaller(res, caller) {
+  return res.status(caller.httpStatus || 403).json({ error: caller.error, code: caller.code });
+}
+/** When each refused id was last logged (one line a minute per id and code, so a stale MCP cannot flood the log). */
+const _refusedBrowserCallersLogged = new Map();
+/** Log a refusal once a minute per key (never a token: the code and the id only). */
+function noteRefusedBrowserCaller(key, line) {
+  const now = Date.now();
+  if (now - (_refusedBrowserCallersLogged.get(key) || 0) < 60_000) return;
+  _refusedBrowserCallersLogged.set(key, now);
+  if (_refusedBrowserCallersLogged.size > 500) _refusedBrowserCallersLogged.delete(_refusedBrowserCallersLogged.keys().next().value);
+  console.warn(line);
+}
+/**
+ * Whether a request with no agent header at all may act as the owner's page on the browser routes: this boot's page
+ * secret (lib/page-session.js verify: the cookie the app's own pages carry, never with the automation browser's marker
+ * or from a peer the owner-authority lookup refuses), or an invite guest, whom the guest rules in front decided.
+ */
+function browserPageOwner(req) {
+  try { if (isGuestRequest(req)) return true; } catch { return false; }
+  try { return _pageSession.verify(req) === true; } catch { return false; }
+}
+/**
+ * Whether a request is the owner's own page, an invite guest excluded: this boot's page secret, never a guest's
+ * session. The owner's browser routes (the browser settings, the money guard, CDP, tab management) and the MoreLogin
+ * settings ask this one: a guest the owner let use the browser drives it through the browser panel's routes, never
+ * the owner's settings.
+ */
+function browserOwnerPageOnly(req) {
+  try { if (isGuestRequest(req)) return false; } catch { return false; }
+  try { return _pageSession.verify(req) === true; } catch { return false; }
+}
+/**
+ * Whether `req` is the pre-websearch hook's read of which sessions exist (hooks/claude-code/pre-websearch.mjs): an
+ * agent's call that names no run (X-Synabun-Role: hook) and lists the sessions. It is answered the sessions' ids and
+ * nothing else (GET /api/browser/sessions: no address, title, tab or owner key), so the hook can block WebSearch while
+ * a browser session is open without a page secret it cannot have.
+ */
+function browserSessionCountRead(req, caller = browserCaller(req)) {
+  const method = String(req?.method || 'GET').toUpperCase();
+  // req.path is '/sessions' under the gate's mount and '/api/browser/sessions' in the route itself.
+  const path = String(req?.path || '').replace(/^\/api\/browser(?=\/)/, '').replace(/\/$/, '');
+  return caller.automation && !caller.id && (method === 'GET' || method === 'HEAD') && path === '/sessions';
+}
+/**
+ * Mounted before every /api/browser route: a refused caller reaches none of them. A request that names a run it cannot
+ * prove it is gets 403 TERMINAL_TOKEN_REQUIRED / _INVALID. An automation that names its id (a run with its token, an id
+ * SynaBun gave none) reaches the routes SynaBun's browser tools call (lib/browser-automation-routes.js) and no other:
+ * the browser settings, the money guard's lift, the CDP endpoints and tab management are the owner's page's (403
+ * OWNER_ROUTE; review 972afb74, finding 1). Every other request is the owner's page only with this boot's page secret, or
+ * an invite guest the guest rules let in: an agent header that names no run proves nothing (403 TERMINAL_REQUIRED; the
+ * hook's session count is the one read it gets, browserSessionCountRead; finding 2), a bare request is refused 403
+ * PAGE_SECRET_REQUIRED (503 PEER_UNAVAILABLE where the caller could not be identified on macOS). Before 2026-11-04 a bare
+ * request was the owner's page whatever sent it (review c0eab425, M2); before 2026-11-05 any agent header was enough.
+ */
+function browserTerminalGate(req, res, next) {
+  const caller = browserCaller(req);
+  if (!caller.accepted) {
+    noteRefusedBrowserCaller(`${caller.code}:${String(caller.asserted).slice(0, 128)}`, `[browser] ${req.method} ${String(req.path || '').slice(0, 80)} refused: ${caller.code} (X-Synabun-Terminal ${String(caller.asserted).slice(0, 128)})`);
+    return refuseBrowserCaller(res, caller);
+  }
+  const automationRoute = isAutomationBrowserRoute(req.method, req.path);
+  if (caller.id && automationRoute) return next();
+  // The owner's page; an invite guest the guest rules let use the browser, on the browser panel's routes only.
+  if (automationRoute ? browserPageOwner(req) : browserOwnerPageOnly(req)) return next();
+  if (browserSessionCountRead(req, caller)) return next();
+  let guest = false;
+  try { guest = !!isGuestRequest(req); } catch { guest = true; }
+  if (caller.id || guest) {
+    noteRefusedBrowserCaller(`OWNER_ROUTE:${String(req.path || '').slice(0, 80)}`, `[browser] ${req.method} ${String(req.path || '').slice(0, 80)} refused: OWNER_ROUTE (automation ${String(caller.id).slice(0, 128)})`);
+    return res.status(403).json({ ok: false, code: 'OWNER_ROUTE', error: 'This browser route is the owner\'s (SynaBun\'s page: the browser settings, the money guard, CDP, tab management). An automation drives the browser through SynaBun\'s browser tools only.' });
+  }
+  if (caller.automation) {
+    noteRefusedBrowserCaller(`TERMINAL_REQUIRED:${String(req.path || '').slice(0, 80)}`, `[browser] ${req.method} ${String(req.path || '').slice(0, 80)} refused: TERMINAL_REQUIRED (an agent header without X-Synabun-Terminal)`);
+    return res.status(403).json({ ok: false, code: 'TERMINAL_REQUIRED', error: 'An automation says which run it is (X-Synabun-Terminal, sent by SynaBun\'s MCP on every request); an agent header alone is not the owner\'s page. Call the browser through SynaBun\'s MCP tools, or reload SynaBun\'s page.' });
+  }
+  return refuseNotOwnerPage(req, res, 'The browser routes answer SynaBun\'s own page (its page secret, which the page\'s browser sends by itself) or an automation that says who it is (X-Synabun-Terminal, sent by SynaBun\'s MCP on every request). This request is neither: reload SynaBun\'s page, or call the browser through SynaBun\'s MCP tools.');
+}
+/**
+ * The answer to a request with no agent header and no page secret on a route that is the owner's page's (the browser
+ * routes, a loop's stop): 503 PEER_UNAVAILABLE where the caller could not be identified on macOS (a reload may cure it),
+ * else 403 PAGE_SECRET_REQUIRED, which the page's fetch recovers by itself after a restart (public/shared/page-session.js).
+ */
+function refuseNotOwnerPage(req, res, error) {
+  let down = null;
+  try { down = _pageSession.peerUnavailable?.(req) || null; } catch { down = null; }
+  if (down) return _pageSession.sendUnavailable(res, req, down);
+  noteRefusedBrowserCaller(`PAGE_SECRET_REQUIRED:${String(req.path || '').slice(0, 80)}`, `[browser] ${req.method} ${String(req.path || '').slice(0, 80)} refused: PAGE_SECRET_REQUIRED (no agent header and no page secret)`);
+  return res.status(403).json({ ok: false, code: 'PAGE_SECRET_REQUIRED', error });
+}
+/**
+ * Why the browser panel's socket for session `sessionId` (/ws/browser/:id) is refused, or null when it may open: the
+ * owner's page (this boot's page secret) or an invite guest the upgrade's guest rules let in, and nobody else. The
+ * socket drives any tab of the session (switch tab, close tab, navigate, click, type: handleBrowserWebSocket never knows
+ * who sent a command), and only the browser panel of SynaBun's own pages opens it: a run drives its own tab through the
+ * browser routes, which check the tab of every call (getTargetPage). Until 2026-11-05 a run that owned one tab of the
+ * session opened its socket and drove every tab there (review 972afb74, finding 3). → { status, code, retryable? } | null
+ */
+function browserSocketRefusal(req, sessionId) {
+  if (browserPageOwner(req)) return null;
+  const who = browserCaller(req);
+  const logRefusal = (code) => noteRefusedBrowserCaller(`ws:${code}:${String(who.asserted || '').slice(0, 128)}`, `[ws-browser] socket for session ${String(sessionId).slice(0, 80)} refused: ${code}${who.asserted ? ` (X-Synabun-Terminal ${String(who.asserted).slice(0, 128)})` : ''}`);
+  if (!who.accepted) { logRefusal(who.code); return { status: who.httpStatus || 403, code: who.code }; }
+  if (!who.automation) {
+    let down = null;
+    try { down = _pageSession.peerUnavailable?.(req) || null; } catch { down = null; }
+    if (down) return { status: 503, code: 'PEER_UNAVAILABLE', retryable: down.retryable === true };
+  }
+  const code = who.automation ? 'OWNER_SOCKET' : 'PAGE_SECRET_REQUIRED';
+  logRefusal(code);
+  return { status: 403, code };
+}
+
 // ── Tab-level page routing (concurrent loop isolation) ──
 
 /** Automation owners (loops, interactive MCP processes, agents) on a session. */
@@ -33816,24 +34590,33 @@ function trackRoute(session, identityKey, tabId, source) {
 
 /**
  * Resolve the Playwright page for an API request.
- * If tabId is provided (body or query), targets that specific tab's page directly.
- * Otherwise routes by caller identity (X-Synabun-Terminal → _tabOwners), and
- * only serves ownership-free fallbacks when no automation owns the session —
- * a caller without identity must NEVER receive another automation's tab.
+ * An automation (a run id, or any agent header: browserCaller) gets the tab it owns (session._tabOwners) and no other:
+ * an explicit tabId must be its own, and a tab-less call routes to its own tab. A tab it does not own, a manual tab
+ * of the owner's included, is never handed to it (null: the route answers 404 and the MCP-side recovery gives the run
+ * a tab of its own). Until 2026-11-05 an automation also got an explicit tab nobody owned and the lone tab of a session
+ * nobody held, so any local process that said an id read and drove the owner's manual tab (review 972afb74, finding 2).
+ * The owner's page (no agent header, its page secret) keeps the manual-control fallbacks.
+ * The caller is browserCaller's: a run's id only with its terminal token (a request that names a run without it never
+ * gets here: browserTerminalGate).
  */
 function getTargetPage(session, req) {
-  const terminalId = (req.get && req.get('X-Synabun-Terminal')) || req.headers?.['x-synabun-terminal'] || null;
+  const caller = browserCaller(req);
+  // null for the owner's page, an automation that names no run, and (never routed here) a refused one.
+  const terminalId = caller.id;
+  // An automation (a run id, or any agent header) drives its own tab only; only the owner's page (no agent header at
+  // all) keeps the manual-control fallbacks.
+  const isAutomation = caller.automation;
+  const ownTabId = terminalId ? (session._tabOwners?.get(terminalId) || null) : null;
 
-  // 1. An explicit tab must still belong to this caller. Manual UI requests
-  // carry no terminal header and may intentionally inspect any tab.
+  // 1. An explicit tab: an automation's own only. Manual UI requests carry no agent header and may intentionally
+  // inspect any tab.
   const tabId = req.body?.tabId || req.query?.tabId;
   if (tabId) {
     const tab = session.tabs?.get(tabId);
     if (!tab) return null;
-    if (terminalId) {
-      const owned = session._tabOwners?.get(terminalId);
-      const claimedByOther = [...(session._tabOwners || [])].some(([owner, id]) => id === tabId && owner !== terminalId);
-      if ((owned && owned !== tabId) || claimedByOther) return null;
+    if (isAutomation && ownTabId !== tabId) {
+      console.warn(`[browser] tab-not-owned: refusing explicit tab ${String(tabId).slice(0, 40)} to an automation that does not own it (id=${terminalId || 'none'})`);
+      return null;
     }
     trackRoute(session, terminalId, tabId, 'explicit-tab');
     return { page: tab.page, cdpSession: tab.cdpSession, tabId };
@@ -33842,60 +34625,45 @@ function getTargetPage(session, req) {
   // 2. No tabId — route by caller identity. The MCP child sends X-Synabun-Terminal
   // (its loop terminalSessionId, sidepanel owner key, or per-caller client id).
   // If that caller owns a tab here, use it — never the shared activeTab.
-  if (terminalId && session._tabOwners?.has(terminalId)) {
-    const ownedTabId = session._tabOwners.get(terminalId);
-    const tab = session.tabs?.get(ownedTabId);
+  if (ownTabId) {
+    const tab = session.tabs?.get(ownTabId);
     if (tab) {
-      trackRoute(session, terminalId, ownedTabId, 'owner-map');
-      return { page: tab.page, cdpSession: tab.cdpSession, tabId: ownedTabId };
+      trackRoute(session, terminalId, ownTabId, 'owner-map');
+      return { page: tab.page, cdpSession: tab.cdpSession, tabId: ownTabId };
     }
     // Owned tab vanished — drop the stale mapping and fall through.
     session._tabOwners.delete(terminalId);
   }
 
-  // Every SynaBun MCP caller ALWAYS sends X-Synabun-Terminal (per-caller
-  // identity with a guaranteed clientId fallback). So a request that carries
-  // the header but matched nothing above is an AUTOMATION whose pin is lost —
-  // it must fail closed rather than inherit someone else's tab. A request with
-  // NO header is the NI web UI (manual control) — it keeps legacy activeTab
-  // semantics; manual takeover of an automation's session is a supervised
-  // user action, not a cross-automation collision.
-  const isAutomation = !!terminalId;
+  // 3. An automation that owns no open tab here: FAIL CLOSED. It never inherits another automation's tab, a tab nobody
+  // owns, or the owner's manual tab; the MCP-side recovery acquires it a fresh owned tab instead.
+  if (isAutomation) {
+    console.warn(`[browser] tab-pin-missing: refusing a tab the automation does not own (id=${terminalId || 'none'}, tabs=${session.tabs?.size ?? 0}, owners=${sessionOwnerCount(session)}) — returning 404 to avoid cross-automation leak`);
+    return null;
+  }
 
-  // 3. Single-tab session — unambiguous for manual callers; for an automation
-  // this means its own tab is gone (or never registered): fail closed so the
-  // MCP-side recovery acquires it a fresh owned tab instead of hijacking the
-  // lone tab another automation may own.
+  // The owner's page (no agent header, its page secret): manual control. Taking over an automation's session is a
+  // supervised user action, not a cross-automation collision.
+
+  // 4. Single-tab session — unambiguous for the owner's page.
   if (session.tabs && session.tabs.size === 1) {
     const onlyTabId = session.tabs.keys().next().value;
     const only = session.tabs.get(onlyTabId);
-    const tabClaimed = session._tabOwners ? [...session._tabOwners.values()].includes(onlyTabId) : false;
-    if (only && (!isAutomation || (sessionOwnerCount(session) === 0 && !tabClaimed))) {
+    if (only) {
       trackRoute(session, terminalId, onlyTabId, 'single-tab');
       return { page: only.page, cdpSession: only.cdpSession, tabId: onlyTabId };
     }
-    if (only) {
-      console.warn(`[browser] tab-pin-missing:single: refusing lone tab for unmatched automation (id=${terminalId}, owners=${sessionOwnerCount(session)}, claimed=${tabClaimed}) — returning 404 to avoid cross-automation leak`);
-      return null;
-    }
   }
 
-  // 4. Multi-tab session with a tab-less call and no resolvable identity: FAIL CLOSED
-  // for everyone (pre-existing behavior). Falling back to the shared activeTab hands
-  // the caller whatever tab another automation navigated last — the exact cause of
-  // cross-automation website leaks. The NI UI drives multi-tab sessions via explicit
-  // tab activation / CDP input, not tab-less REST calls.
+  // 5. Multi-tab session with a tab-less call: FAIL CLOSED (pre-existing behavior). Falling back to the shared activeTab
+  // hands the caller whatever tab an automation navigated last. The NI UI drives multi-tab sessions via explicit tab
+  // activation / CDP input, not tab-less REST calls.
   if (session.tabs && session.tabs.size > 1) {
-    console.warn(`[browser] tab-pin-missing: refusing activeTab fallback (id=${terminalId || 'none'}, tabs=${session.tabs.size}, owners=${sessionOwnerCount(session)}, persistent=${!!session._isPersistent}) — returning 404 to avoid cross-automation leak`);
+    console.warn(`[browser] tab-pin-missing: refusing activeTab fallback (id=none, tabs=${session.tabs.size}, owners=${sessionOwnerCount(session)}, persistent=${!!session._isPersistent}) — returning 404 to avoid cross-automation leak`);
     return null;
   }
 
-  // 5. Zero/uninitialized tabs — legacy single active-tab behavior (local UI
-  // session). Automations with a lost pin fail closed here too.
-  if (isAutomation && sessionOwnerCount(session) > 0) {
-    console.warn(`[browser] tab-pin-missing:legacy: refusing activeTab on owner-held session (id=${terminalId}, owners=${sessionOwnerCount(session)}) — returning 404 to avoid cross-automation leak`);
-    return null;
-  }
+  // 6. Zero/uninitialized tabs — legacy single active-tab behavior (local UI session).
   // No active page at all (the last tab closed or was retired): there is nothing to route to.
   if (!session.page) return null;
   trackRoute(session, terminalId, session.activeTabId, 'legacy');
@@ -33922,6 +34690,8 @@ async function getBrowserActionState(session, routed, compact) {
 
 // ── Browser REST endpoints ──
 
+// First: a request that names a run it cannot prove it is (its terminal token) reaches no browser route at all.
+app.use('/api/browser', browserTerminalGate);
 app.use('/api/browser', browserRequestMiddleware);
 app.use('/api/browser', (req, res, next) => { res.setHeader('X-Synabun-Browser-Default', browserDefaultSignature()); next(); });
 // Agents act on the default browser only. MCP callers (browser tools, platform
@@ -33947,7 +34717,8 @@ app.use('/api/browser/sessions/:id', (req, res, next) => {
       res.once('finish', release);
       res.once('close', release);
     }
-    if (!req.get('X-Synabun-Terminal') || exempt) return next();
+    // An agent's request (a run id, or any agent header: browserCaller) acts on the default browser only.
+    if (!browserCaller(req).automation || exempt) return next();
     const session = browserSessions.get(req.params.id);
     if (!session) return next();
     const cfg = loadBrowserConfig();
@@ -33974,12 +34745,34 @@ app.get('/api/browser/sessions', (req, res) => {
   // The server decides which sessions may carry normal-page work: with MoreLogin as
   // the default, only a MoreLogin session on the default env does (MCP callers
   // require servesDefault). Every session serves the default in other setups.
+  // A run named without its terminal token learns nothing here, not even its own route (browserTerminalGate too).
+  const who = browserCaller(req);
+  if (!who.accepted) return refuseBrowserCaller(res, who);
+  // The pre-websearch hook's read (an agent header that names no run, no page secret: browserSessionCountRead) learns
+  // which sessions exist and nothing of them: it blocks WebSearch while one is open.
+  if (browserSessionCountRead(req, who) && !browserPageOwner(req)) {
+    return res.json({ sessions: [...browserSessions.keys()].map((id) => ({ id })), countOnly: true });
+  }
   const policyCfg = loadBrowserConfig();
   const moreLoginDefault = policyCfg.connectMode === 'morelogin';
-  const sessions = [...browserSessions.entries()].map(([id, s]) => ({
+  const caller = browserOwnerId(who.id);
+  // Owner keys are what X-Synabun-Terminal names: only the owner's own page sees them all (collision debugging); an
+  // automation sees its own and the others as `other-N` (lib/browser-owner.js listedOwners), never another run's id.
+  const revealOwners = (() => { try { return _pageSession.verify(req) === true; } catch { return false; } })();
+  // An automation sees its own tab of a session (id, live URL, title) and how many others there are, never another
+  // run's or the owner's tabs, nor the session's address and title, which are its active tab's (2026-11-05: workers
+  // listed every tab of the shared MoreLogin session and could not tell theirs).
+  const automationView = who.automation && !revealOwners;
+  const liveUrl = (t) => { try { return t.page?.url?.() || t.url; } catch { return t.url; } };
+  const sessions = [...browserSessions.entries()].map(([id, s]) => {
+    const allTabs = s.tabs ? [...s.tabs.entries()] : [];
+    const ownTabId = automationView && caller ? (s._tabOwners?.get(caller) || null) : null;
+    const shownTabs = automationView ? allTabs.filter(([tid]) => tid === ownTabId) : allTabs;
+    const ownTab = automationView && shownTabs.length ? shownTabs[0][1] : null;
+    return {
     id,
-    url: s.currentUrl,
-    title: s.title,
+    url: automationView ? (ownTab ? liveUrl(ownTab) : null) : s.currentUrl,
+    title: automationView ? (ownTab ? ownTab.title || '' : null) : s.title,
     createdAt: s.createdAt,
     clients: s.clients.size,
     persistent: !!s._isPersistent,
@@ -33987,38 +34780,50 @@ app.get('/api/browser/sessions', (req, res) => {
     profileSource: s._profileSourceName || null,
     moreloginEnvId: s._mlEnvId || null,
     servesDefault: moreLoginDefault ? sessionServesMoreLoginDefault(s, policyCfg) : true,
-    wsEndpoint: s._isPersistent ? null : (s.browser.wsEndpoint?.() || null),
-    activeTabId: s.activeTabId || null,
+    // The browser's own CDP endpoint drives every tab past every check here: the owner's page's only.
+    wsEndpoint: who.automation || s._isPersistent ? null : (s.browser.wsEndpoint?.() || null),
+    activeTabId: automationView ? (ownTabId && s.activeTabId === ownTabId ? ownTabId : null) : (s.activeTabId || null),
     loopOwned: (s._loopOwned?.size || 0) > 0,
     interactiveOwned: (s._interactiveOwned?.size || 0) > 0,
     // Also check agent registry as fallback — covers the race window between
     // session creation and agent ownership being set
     agentOwned: (s._agentOwnedSet?.size || 0) > 0 || [...agentRegistry.values()].some(a => a.status === 'running' && a.browserSessionId === id),
-    // Identity → tab attribution for collision debugging:
-    // `curl :3344/api/browser/sessions` shows exactly who owns which tab.
-    owners: {
-      loops: [...(s._loopOwned || [])],
-      interactive: [...(s._interactiveOwned || [])],
-      agents: [...(s._agentOwnedSet || [])],
-    },
-    tabOwners: s._tabOwners ? Object.fromEntries(s._tabOwners) : {},
-    tabs: s.tabs ? [...s.tabs.entries()].map(([tid, t]) => ({
+    // Identity → tab attribution (owners, tabOwners): every key for the owner's page, an automation's own key and
+    // `other-N` for the rest otherwise.
+    ...listedOwners(s._tabOwners, { loops: s._loopOwned || [], interactive: s._interactiveOwned || [], agents: s._agentOwnedSet || [] }, { caller, reveal: revealOwners }),
+    tabs: shownTabs.map(([tid, t]) => ({
       id: tid,
-      url: t.url,
+      url: automationView ? liveUrl(t) : t.url,
       title: t.title,
       active: tid === s.activeTabId,
-    })) : [],
-  }));
+    })),
+    ...(automationView && { otherTabs: allTabs.length - shownTabs.length, ownTabsOnly: true }),
+    };
+  });
+  // A run's own route as the server last recorded it (a recovery or a browser_session create moved it): the MCP
+  // follows it even after its process restarted and forgot (mcp-server neural-interface.ts resolveSessionUncached).
+  const yourRoute = caller ? liveAutomationRoute(caller, { cfg: policyCfg }) : null;
   res.json({
     sessions,
     defaultBrowser: moreLoginDefault
       ? { connectMode: 'morelogin', moreloginEnvId: moreLoginDefaultEnvId(policyCfg) }
       : { connectMode: policyCfg.connectMode || null },
+    ...(yourRoute ? { yourRoute: { sessionId: yourRoute.browserSessionId, tabId: yourRoute.browserTabId } } : {}),
+    // POST /api/loop/recover-browser records a run's move to a tab of its own (`adopt`): an MCP asks it only of a
+    // server that says so (an older one reads the request as a recovery and opens a tab).
+    adoptRoute: true,
   });
 });
 
 app.post('/api/browser/sessions', async (req, res) => {
   const { url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone, connectMode, moreloginEnvId } = req.body;
+  // Which browser or MoreLogin profile a session starts on is the owner's choice (Settings → Browser): an automation's
+  // create opens the default browser and names neither (lib/browser-automation-routes.js; review 972afb74, finding 1).
+  const creator = browserCaller(req);
+  const ownerFields = creator.automation ? ownerOnlyCreateFields(req.body) : [];
+  if (ownerFields.length) {
+    return res.status(403).json({ ok: false, code: 'OWNER_ONLY_FIELDS', fields: ownerFields, error: `An automation opens the default browser: ${ownerFields.join(' and ')} ${ownerFields.length === 1 ? 'is' : 'are'} the owner's choice (Settings → Browser). Leave ${ownerFields.length === 1 ? 'it' : 'them'} out.` });
+  }
   // A create-session startUrl that points at one of SynaBun's own live OpenCode serve ports is refused up front, like
   // navigate and new-tab: the serve's API can change what a worker session may do, and createBrowserSession navigates
   // to the startUrl while the rest of the session is still being wired. (createBrowserSession enforces the same denial
@@ -34032,14 +34837,6 @@ app.post('/api/browser/sessions', async (req, res) => {
     const _realHeaders = {
       'accept-language': req.headers['accept-language'],
     };
-    const result = await createBrowserSession({
-      url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone, _realHeaders,
-      // Its deadline bounds the native serve check (installServePortGuard) inside the caller's timeout.
-      browserRequest: req.browserRequest,
-      // Optional per-session override to target a specific MoreLogin env (multi-identity)
-      ...(connectMode === 'morelogin' ? { connectMode } : {}),
-      ...(moreloginEnvId ? { moreloginEnvId: String(moreloginEnvId) } : {}),
-    });
     // Tab ownership for the creating automation. An MCP child sends its routing
     // identity in X-Synabun-Terminal; register it as the owner of this session's
     // active tab. Without this, a plain-created tab is "unowned" and the creator's
@@ -34047,18 +34844,50 @@ app.post('/api/browser/sessions', async (req, res) => {
     // acquires a second tab in the same shared persistent browser — the root of the
     // sidepanel-vs-CLI "lost browser session" collision. Manual NI-UI creates send
     // no header → stay unowned (legacy activeTab semantics preserved).
-    const creatorTerminalId = req.get('X-Synabun-Terminal') || req.headers['x-synabun-terminal'] || null;
-    if (creatorTerminalId && /^[A-Za-z0-9_-]{1,128}$/.test(creatorTerminalId)) {
+    // An id the server minted (lib/browser-owner.js), `agent:<uuid>` included, and a run's only with its terminal token
+    // (browserCaller: a forged one is refused here and by browserTerminalGate, never the owner of a new tab).
+    const who = browserCaller(req);
+    if (!who.accepted) return refuseBrowserCaller(res, who);
+    const creatorTerminalId = browserOwnerId(who.id);
+    // The start, its owner and its broadcast: once per start, whoever ends up with it.
+    const start = async () => {
+      const result = await createBrowserSession({
+        url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone, _realHeaders,
+        // Its deadline bounds the native serve check (installServePortGuard) inside the caller's timeout.
+        browserRequest: req.browserRequest,
+        // Optional per-session override to target a specific MoreLogin env (multi-identity)
+        ...(connectMode === 'morelogin' ? { connectMode } : {}),
+        ...(moreloginEnvId ? { moreloginEnvId: String(moreloginEnvId) } : {}),
+      });
       const createdSession = browserSessions.get(result.sessionId);
-      if (createdSession) {
+      if (creatorTerminalId && createdSession) {
         if (!createdSession._tabOwners) createdSession._tabOwners = new Map();
         createdSession._tabOwners.set(creatorTerminalId, createdSession.activeTabId);
       }
-    }
-    broadcastSync({ type: 'browser:session-created', sessionId: result.sessionId, url: url || 'about:blank', profileMode: result.profileMode, profileSource: result.profileSource });
+      broadcastSync({ type: 'browser:session-created', sessionId: result.sessionId, url: url || 'about:blank', profileMode: result.profileMode, profileSource: result.profileSource });
+      return { ...result, tabId: createdSession?.activeTabId || null };
+    };
+    // A create runs once at a time per caller, and a start its caller stopped waiting for (a cold MoreLogin start
+    // takes up to two minutes) is handed to its next create instead of starting a second browser
+    // (lib/browser-start-handoff.js). An automation is answered 202 BROWSER_STARTING before its deadline. The owner's
+    // page (no X-Synabun-Terminal) reads no 202, so it waits for the start as before; one that outlives its request
+    // (the deadline's 408) is kept for the page's next create, and closed when nobody takes, watches or joins it.
+    const outcome = await browserStartHandoff.run(creatorTerminalId ? `create:${creatorTerminalId}` : 'create:page', start, {
+      gone: browserCallerGone(req, res),
+      waitMs: creatorTerminalId ? startWaitMs(req.browserRequest?.deadline) : Infinity,
+      alive: (value) => startedTabAlive(value.sessionId, value.tabId, creatorTerminalId),
+      onUnclaimed: (value, info) => closeUnclaimedBrowserStart(value.sessionId, creatorTerminalId, { tabId: value.tabId, since: info?.parkedAt }),
+    });
+    if (outcome.pending) return res.status(202).json(browserStartingAnswer('create'));
+    const result = outcome.value;
+    const handedOver = outcome.from !== 'started' ? outcome.from : null;
+    // A start handed over from an earlier request may not be at this request's URL: say where it is.
+    const landedUrl = handedOver ? (browserSessions.get(result.sessionId)?.page?.url?.() || 'about:blank') : (url || 'about:blank');
     res.json({
-      sessionId: result.sessionId, url: url || 'about:blank', wsEndpoint: result.wsEndpoint, profileMode: result.profileMode, profileSource: result.profileSource,
+      // The CDP endpoint drives every tab past every check: the owner's page's only.
+      sessionId: result.sessionId, tabId: result.tabId || null, url: landedUrl, wsEndpoint: who.automation ? null : result.wsEndpoint, profileMode: result.profileMode, profileSource: result.profileSource,
       ...(result.moreLoginBlocked && { moreLoginBlocked: true, notice: result.moreLoginBlocked }),
+      ...(handedOver && { handedOver }),
     });
   } catch (err) {
     console.error('Browser session create error:', err.message);
@@ -34068,6 +34897,25 @@ app.post('/api/browser/sessions', async (req, res) => {
 
 app.delete('/api/browser/sessions/:id', async (req, res) => {
   try {
+    // An automation's close of a session other automations still work in closes only its own tab there
+    // (lib/browser-session-close.js): one run's cleanup must not end the others' tabs mid-write. The caller is
+    // browserCaller's: a run only with its terminal token (a forged one is refused), and an agent's request that
+    // names no run closes as an automation that owns nothing there, never as the owner's page.
+    const who = browserCaller(req);
+    if (!who.accepted) return refuseBrowserCaller(res, who);
+    const caller = who.ownerKey;
+    const decision = sessionCloseDecision(browserSessions.get(req.params.id), caller);
+    // An automation closes only a session it works in (a tab of its own, or a hold on the session): the owner's manual
+    // session, or a session nobody holds, is the owner's to close (review 972afb74, finding 4).
+    if (decision.action === 'refuse') {
+      console.warn(`[browser] close of session ${req.params.id} by ${caller} refused: it owns no tab and holds nothing there`);
+      return res.status(403).json({ ok: false, code: 'NOT_OWNED', error: `Session ${req.params.id} is not yours to close: you have no tab in it. Close only the sessions you opened; the owner closes the others from SynaBun's page.` });
+    }
+    if (decision.action === 'release') {
+      await releaseSharedBrowserTab(req.params.id, caller);
+      console.warn(`[browser] close of shared session ${req.params.id} by ${caller}: kept for ${decision.others.length} other owner(s) (${decision.others.join(', ')}); ${decision.ownTabId ? `closed only its tab ${decision.ownTabId}` : 'it had no tab of its own there'}`);
+      return res.json({ ok: true, sessionKept: true, releasedTabId: decision.ownTabId, otherOwners: decision.others.length });
+    }
     // An explicit close (browser_session close, the UI): in MoreLogin or the user's Chrome, the tabs SynaBun opened for it close too.
     await destroyBrowserSession(req.params.id, { closeOwnTabs: true });
     res.json({ ok: true });
@@ -34078,29 +34926,58 @@ app.delete('/api/browser/sessions/:id', async (req, res) => {
 
 // POST /api/browser/acquire — interactive (non-loop) MCP process claims a dedicated
 // tab in the ONE shared browser instead of launching a second browser on the same
-// persistent profile (which fails with "Browser profile is locked"). The clientId is
-// a stable per-MCP-process id; it becomes the routing key in _tabOwners so this
-// caller's tab-less browser calls (carrying X-Synabun-Terminal: <clientId>) route to
-// its own tab. Body: { clientId, url? }. Returns { ok, sessionId, tabId }.
+// persistent profile (which fails with "Browser profile is locked"). The tab is owned
+// by the id the caller routes as (X-Synabun-Terminal, required): getTargetPage checks
+// an explicit tab against that header, so a tab filed under anything else (before
+// 2026-11-04 the MCP sent its process id here while a run without browser pins routed
+// as its run id) was refused to its own caller. Body: { clientId, url? } (clientId is
+// what an older MCP sent; the header decides). Returns { ok, sessionId, tabId }.
 app.post('/api/browser/acquire', async (req, res) => {
   try {
-    const clientId = req.body?.clientId;
-    if (!clientId) return res.status(400).json({ error: 'clientId is required' });
-    const acq = await acquireSharedBrowserTab({ ownerKey: clientId, ownerType: 'interactive', logTag: 'acquire:interactive' });
-    if (acq.error) return res.status(500).json({ error: acq.error, ...(acq.code ? { code: acq.code, offenders: acq.offenders } : {}) });
-    res.json({ ok: true, sessionId: acq.browserSessionId, tabId: acq.browserTabId || null });
+    // A run's id only with its terminal token (browserCaller; browserTerminalGate refuses it first).
+    const who = browserCaller(req);
+    if (!who.accepted) return refuseBrowserCaller(res, who);
+    if (!req.body?.clientId) return res.status(400).json({ error: 'clientId is required' });
+    const owner = browserOwnerId(who.id);
+    if (!owner) return res.status(403).json({ error: 'A tab is acquired for the caller that routes as it (X-Synabun-Terminal, sent by SynaBun\'s MCP on every request); this request did not say who it is.', code: 'TERMINAL_REQUIRED' });
+    // One acquisition per caller at a time; one it stopped waiting for (a cold browser start) is handed to its next
+    // request (lib/browser-start-handoff.js), and one nobody takes is released. The tab stays the caller's:
+    // /api/browser/release closes it on exit.
+    const outcome = await browserStartHandoff.run(`acquire:${owner}`, async () => {
+      const acq = await acquireSharedBrowserTab({ ownerKey: owner, ownerType: 'interactive', logTag: 'acquire:interactive' });
+      if (acq.error) throw Object.assign(new Error(acq.error), { acquisition: acq });
+      return acq;
+    }, {
+      gone: browserCallerGone(req, res),
+      waitMs: startWaitMs(req.browserRequest?.deadline),
+      alive: (acq) => startedTabAlive(acq.browserSessionId, acq.browserTabId, owner),
+      onUnclaimed: (acq, info) => closeUnclaimedBrowserStart(acq.browserSessionId, owner, { tabId: acq.browserTabId, since: info?.parkedAt, run: owner }),
+    });
+    if (outcome.pending) return res.status(202).json(browserStartingAnswer('tab'));
+    const acq = outcome.value;
+    res.json({ ok: true, sessionId: acq.browserSessionId, tabId: acq.browserTabId || null, ...(outcome.from !== 'started' && { handedOver: outcome.from }) });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    const acq = err?.acquisition;
+    if (acq) return res.status(500).json({ error: acq.error, ...(acq.code ? { code: acq.code, offenders: acq.offenders } : {}) });
+    res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code } : {}) });
   }
 });
 
 // POST /api/browser/release — interactive MCP process relinquishes its owned tab on
 // exit. Closes the dedicated tab and drops the ownership/routing entries so the shared
 // browser can be grace-reaped once no owners remain. Best-effort; body: { clientId }.
+// A caller releases its own tabs only: the id it routes as (X-Synabun-Terminal), which
+// a clientId in the body must match (403 TERMINAL_REQUIRED / TERMINAL_MISMATCH).
 app.post('/api/browser/release', async (req, res) => {
   try {
+    // A run's id only with its terminal token (browserCaller; browserTerminalGate refuses it first).
+    const who = browserCaller(req);
+    if (!who.accepted) return refuseBrowserCaller(res, who);
     const clientId = req.body?.clientId;
     if (!clientId) return res.status(400).json({ error: 'clientId is required' });
+    const caller = browserOwnerId(who.id);
+    if (!caller) return res.status(403).json({ error: 'A release names its caller (X-Synabun-Terminal).', code: 'TERMINAL_REQUIRED' });
+    if (caller !== clientId) return res.status(403).json({ error: `This caller (${caller}) may not release the tabs of ${clientId}.`, code: 'TERMINAL_MISMATCH' });
     let released = 0;
     for (const [sessionId, session] of browserSessions) {
       if (!session._interactiveOwned?.has(clientId)) continue;
@@ -34171,8 +35048,9 @@ app.delete('/api/browser/sessions/:id/tabs/:tabId', async (req, res) => {
 const engagementScheduler = createEngagementScheduler();
 const _paceRand = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
 
+/** The run a browser request may act as (browserCaller: a run's id only with its terminal token), or null. */
 function _paceTerminalId(req) {
-  return (req.get && req.get('X-Synabun-Terminal')) || req.headers?.['x-synabun-terminal'] || null;
+  return browserCaller(req).id;
 }
 function isLoopPaced(session, req) {
   if (process.env.SYNABUN_HUMAN_PACING === '0') return false;
@@ -34192,6 +35070,40 @@ function loopTypeDelay(session, req) {
 async function rateLimitEngagement(session, req, selector, execute) {
   if (!isLoopPaced(session, req) || !isEngagementWriteSelector(selector)) return execute();
   return engagementScheduler.run(req.params.id, req, execute);
+}
+// Social writes a tool makes through a page script (Bluesky's bluesky_post / bluesky_action / bluesky_dm send) name
+// their platform in the evaluate body (`pace`): a loop's write waits out the account's gap inside this call, or
+// answers how much is left when more than the call may wait (lib/social-write-pacing.js). Never the agent's sleep.
+const socialWritePacer = createSocialWritePacer({ delay: (ms, req) => measureBrowserPhase('intentionalPacing', () => cancellableBrowserDelay(ms, req)) });
+function socialPaceWaitBudget(req, requested) {
+  const state = req?.browserRequest;
+  const byDeadline = state ? state.deadline - Date.now() - SOCIAL_PACE_LIMITS.writeReserveMs : requested;
+  return Math.max(0, Math.min(requested, byDeadline));
+}
+/** The account a session's writes go out as (its browser profile), so a session closed and opened again keeps the gap. */
+function socialPaceKey(platform, session, sessionId) {
+  return socialPaceAccountKey(platform, {
+    profileMode: session?._profileMode,
+    moreloginEnvId: session?._mlEnvId,
+    profileDir: session?._selectedProfilePath || session?._launchUserDataDir || null,
+    storageStatePath: session?._storageStatePath || null,
+  }, sessionId);
+}
+/**
+ * Why a page routed earlier in this request may no longer be used, or null. A request that awaited before acting
+ * (a paced write waits up to 90 s) can find its session closed meanwhile (another automation's browser_session
+ * close, a retired wedged session) or its tab gone. The answer is the error the routes give for a missing session or
+ * tab, so the client knows nothing started and finds the run's tab again.
+ */
+function routedPageGone(sessionId, session, routed) {
+  if (browserSessions.get(sessionId) !== session) return 'Session not found';
+  const tabGone = routed.tabId
+    ? (session.tabs?.size && session.tabs.get(routed.tabId)?.page !== routed.page)
+    : false;
+  let closed = false;
+  try { closed = routed.page?.isClosed?.() === true; } catch { closed = false; }
+  if (tabGone || closed) return routed.tabId ? `Tab ${routed.tabId} not found in session` : 'Session not found';
+  return null;
 }
 
 // ── X/Twitter compose-state probe + publish gate ──
@@ -34418,6 +35330,7 @@ app.post('/api/browser/sessions/:id/navigate', async (req, res) => {
       error: browserRecoveryErrorMessage(err, recovery),
       ...(recovery && { tabRecovered: !!recovery.recovered }),
       ...(recovery?.sessionInvalidated && { sessionInvalidated: true }),
+      ...(recovery?.wedgedTabRetired && { wedgedTabRetired: true }),
     });
   }
 });
@@ -34442,6 +35355,7 @@ app.post('/api/browser/sessions/:id/back', async (req, res) => {
       error: browserRecoveryErrorMessage(err, recovery),
       ...(recovery && { tabRecovered: !!recovery.recovered }),
       ...(recovery?.sessionInvalidated && { sessionInvalidated: true }),
+      ...(recovery?.wedgedTabRetired && { wedgedTabRetired: true }),
     });
   }
 });
@@ -34466,6 +35380,7 @@ app.post('/api/browser/sessions/:id/forward', async (req, res) => {
       error: browserRecoveryErrorMessage(err, recovery),
       ...(recovery && { tabRecovered: !!recovery.recovered }),
       ...(recovery?.sessionInvalidated && { sessionInvalidated: true }),
+      ...(recovery?.wedgedTabRetired && { wedgedTabRetired: true }),
     });
   }
 });
@@ -34487,6 +35402,7 @@ app.post('/api/browser/sessions/:id/reload', async (req, res) => {
       error: browserRecoveryErrorMessage(err, recovery),
       ...(recovery && { tabRecovered: !!recovery.recovered }),
       ...(recovery?.sessionInvalidated && { sessionInvalidated: true }),
+      ...(recovery?.wedgedTabRetired && { wedgedTabRetired: true }),
     });
   }
 });
@@ -34945,21 +35861,43 @@ app.post('/api/browser/sessions/:id/evaluate', async (req, res) => {
   if (!script) return res.status(400).json({ error: 'script required' });
   const xRefusal = xGateBypassRefusal(session, req, routed, 'evaluate', script);
   if (xRefusal) return res.status(409).json(xRefusal);
-  try {
+  const run = async () => {
+    // A paced write may have waited a minute: run it only on the page this request was routed to, if it is still
+    // there. Otherwise nothing starts (no pacing slot is taken) and the answer is a missing session or tab.
+    const gone = routedPageGone(req.params.id, session, routed);
+    if (gone) throw Object.assign(new Error(gone), { writeStarted: false, routeGone: true });
     markBrowserActionStarted(req);
-    const result = await withBrowserOperationDeadline(
+    return withBrowserOperationDeadline(
       routed.page.evaluate(script),
       BROWSER_EVALUATE_DEADLINE_MS,
       'browser_evaluate',
     );
+  };
+  const pace = socialPaceRequest(req.body);
+  try {
+    if (pace && isLoopPaced(session, req)) {
+      const outcome = await socialWritePacer.run(socialPaceKey(pace.platform, session, req.params.id), {
+        platform: pace.platform, maxWaitMs: socialPaceWaitBudget(req, pace.maxWaitMs), signal: req,
+      }, run);
+      const gap = SOCIAL_WRITE_GAPS[pace.platform];
+      if (outcome.status === 'paced') {
+        return res.json({ ok: true, paced: { pending: true, retryAfterMs: outcome.retryAfterMs, waitedMs: outcome.waitedMs, gapMinMs: gap.minMs, gapMaxMs: gap.maxMs } });
+      }
+      const result = outcome.result;
+      return res.json({ ok: true, result: result === undefined ? null : result, paced: { pending: false, waitedMs: outcome.waitedMs, gapMinMs: gap.minMs, gapMaxMs: gap.maxMs } });
+    }
+    const result = await run();
     // Ensure result is JSON-serializable (undefined becomes null)
     res.json({ ok: true, result: result === undefined ? null : result });
   } catch (err) {
+    // Gone before it started: never "recover" a tab of a session that is closed (that would open a page in it).
+    if (err?.routeGone) return res.status(404).json({ error: err.message });
     const recovery = await recoverBrowserRouteFailure(session, req.params.id, routed, req, 'evaluate', err);
     res.status(500).json({
       error: browserRecoveryErrorMessage(err, recovery),
       ...(recovery && { tabRecovered: !!recovery.recovered }),
       ...(recovery?.sessionInvalidated && { sessionInvalidated: true }),
+      ...(recovery?.wedgedTabRetired && { wedgedTabRetired: true }),
     });
   }
 });
@@ -36399,14 +37337,18 @@ httpServer.on('upgrade', function onUpgrade(req, socket, head) {
   // Owner authority by peer identity (lib/owner-authority.js): an owner's socket (a terminal, the agent panels, the
   // Assistant, the browser panel) is refused to SynaBun's automation browser, a relay, another SynaBun server, a
   // remote login and an agent's tree that does not say it is an agent's call; the sync socket stays open for them,
-  // read-only. The peer is looked up once, then the handler runs again from the top with the answer on the request.
+  // read-only. On macOS a caller that could not be identified gets no owner socket either (503: the lookup failed) and a
+  // read-only sync socket. The peer is looked up once, then the handler runs again from the top with the answer on the
+  // request. checkUpgrade never rejects; should it, upgradeFailed() decides as for a failed lookup (on macOS an owner
+  // socket is refused and the sync socket read-only), never the rules from before by accident.
   if (!req._synabunOwnerChecked && (_ownerAuthority.socketScope(url.pathname).owner || _ownerAuthority.socketScope(url.pathname).readOnly)) {
     req._synabunOwnerChecked = true;
-    _ownerAuthority.checkUpgrade(req, url.pathname).then((verdict) => {
-      if (verdict.refuse) { refuseUpgrade(socket, 403); return; }
+    const settle = (verdict) => {
+      if (verdict.refuse) { if (verdict.status === 503) refuseUpgrade(socket, 503, 'Service Unavailable', { 'Retry-After': verdict.retryable ? '2' : '30' }); else refuseUpgrade(socket, 403); return; }
       if (verdict.readOnly) req._synabunReadOnly = true;
       onUpgrade(req, socket, head);
-    }, () => onUpgrade(req, socket, head));
+    };
+    _ownerAuthority.checkUpgrade(req, url.pathname).then(settle, (error) => settle(_ownerAuthority.upgradeFailed(req, url.pathname, error)));
     return;
   }
 
@@ -36418,6 +37360,19 @@ httpServer.on('upgrade', function onUpgrade(req, socket, head) {
     try { sessionId = decodeURIComponent(sessionId); } catch {}
     terminalHost.handoffUpgrade(req, socket, head, sessionId);
     return;
+  }
+
+  // The browser panel's socket drives a session's tabs (navigate, click, type, new tab, switch tab): the owner's page
+  // (this boot's page secret) or an invite guest the rules above let in, and nobody else (browserSocketRefusal). Before
+  // 2026-11-04 nothing asked who opened it, so any local client without an Origin drove any session (review c0eab425,
+  // finding L3); until 2026-11-05 a run that owned one tab of the session drove all of them (review 972afb74, finding 3).
+  if (url.pathname.startsWith('/ws/browser/')) {
+    const refused = browserSocketRefusal(req, url.pathname.slice('/ws/browser/'.length));
+    if (refused) {
+      if (refused.status === 503) refuseUpgrade(socket, 503, 'Service Unavailable', { 'Retry-After': refused.retryable ? '2' : '30' });
+      else refuseUpgrade(socket, 403);
+      return;
+    }
   }
 
   if (url.pathname.startsWith('/ws/browser/') || url.pathname.startsWith('/ws/assistant/') || url.pathname === '/ws/whiteboard' || url.pathname === '/ws/cards' || url.pathname === '/ws/sync' || url.pathname === '/ws/claude-skin' || url.pathname === '/ws/codex-skin' || url.pathname === '/ws/opencode-v2' || url.pathname === '/ws/antigravity' || url.pathname === '/ws/sessions') {

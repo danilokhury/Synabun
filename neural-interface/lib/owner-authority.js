@@ -38,12 +38,22 @@
 //
 // Never refused by this module: the owner's own browser and the SynaBun app (the peer lookup allows them), this
 // server itself, a request from outside (the tunnel, the invite proxy: the guest rules decide those, and the
-// tunnel's own process would otherwise read as a relay), and any request whose peer could not be looked up (the
-// rules from before apply: a failed lookup never locks the owner out).
+// tunnel's own process would otherwise read as a relay), and wherever the lookup does not run (another platform than
+// macOS, or SYNABUN_PEER_IDENTITY=off: the rules from before apply, so Windows and Linux work as they always did).
+//
+// A lookup that failed on macOS (lib/peer-identity.js: netstat or ps missing, denied, slow past the cap, unreadable)
+// proves nothing about who is asking, so it holds none of the owner's powers: every request this module covers —
+// the owner's writes (an agent's pinned call and an agent-open route too: a relay can send a pin), the owner's reads,
+// the secret reads, the owner's sockets — is answered 503 PEER_UNAVAILABLE (`retryable` when the lookup timed out,
+// with Retry-After), and /ws/sync stays open, read-only. The app's pages and every other read still load. Two writes
+// keep the rules from before even then (DEGRADED_OPEN_PATHS): the server's restart and stop, which take nothing from
+// the request, are what the desktop app's quit, the uninstaller and the owner's way out (SYNABUN_PEER_IDENTITY=off,
+// then a restart) need, and an agent's tree may call them anyway. A request it should have looked up and has no
+// verdict for (`required`: a server whose lookup runs) is taken as a failed lookup, never as the rules from before.
 
 import { readFileSync } from 'node:fs';
 import { AGENT_HEADERS, sendGuardError } from './http-guards.js';
-import { BRAIN_HEADER, PEER_VERDICT } from './peer-identity.js';
+import { BRAIN_HEADER, PEER_VERDICT, failedPeerVerdict, peerAuthority } from './peer-identity.js';
 import { ADMIN_ONLY_PREFIXES, routedForms } from './request-gate.js';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -73,6 +83,12 @@ export const AGENT_CALL_KINDS = Object.freeze(['agent', 'synabun-mcp']);
  * it can reach SynaBun at all, and the CLI and the MCP tools read some of them). The hooks' own routes are not here.
  */
 export const OWNER_READ_PREFIXES = Object.freeze([...ADMIN_ONLY_PREFIXES.filter((prefix) => prefix !== '/api/hook-'), '/api/git']);
+/**
+ * The writes a failed lookup does not refuse (the rules from before): the server's restart and stop. They take nothing
+ * from the request, an agent's tree may call them anyway, and the desktop app's quit, the uninstaller and the in-app
+ * Restart (the way out of a degraded server: SYNABUN_PEER_IDENTITY=off, then a restart) depend on them. Whole paths.
+ */
+export const DEGRADED_OPEN_PATHS = Object.freeze(['/api/server/restart', '/api/server/shutdown']);
 /** The owner's sockets: a terminal, the agent panels, the Assistant, the browser panel. */
 export const OWNER_SOCKET_PREFIXES = Object.freeze(['/ws/terminal/', '/ws/claude-skin', '/ws/codex-skin', '/ws/opencode-v2', '/ws/antigravity', '/ws/assistant/', '/ws/browser/']);
 /** Sockets that stay open for the app's pages to draw, read-only for a peer the owner's powers are refused to. */
@@ -129,6 +145,29 @@ export function proxyRefusalText(req, refuse) {
   return template.replace(/\{(\w+)\}/g, (whole, key) => (params[key] != null ? params[key] : whole));
 }
 
+// ── A lookup that failed (macOS): 503 PEER_UNAVAILABLE ───────────────────────
+
+/** The code of every answer to a request whose peer could not be identified (lib/peer-identity.js, macOS). */
+export const PEER_UNAVAILABLE = 'PEER_UNAVAILABLE';
+/** Retry-After for it: soon after a timeout or a busy moment, later for a lookup that cannot run at all. */
+export function retryAfterSeconds(down) { return down?.retryable === true ? 2 : 30; }
+/** Why SynaBun did not act as the owner, and what to do (`ownerAuthority.peerUnavailable`), in the request's language. */
+export function peerUnavailableText(req, down) {
+  const template = ownerCopy(requestLocale(req)).peerUnavailable;
+  const params = { reason: String(down?.reason || 'the lookup failed').slice(0, 160) };
+  if (typeof template !== 'string' || !template) return `SynaBun could not check which program sent this (${params.reason}), so it refused to act as the owner. Reload the page to try again.`;
+  return template.replace(/\{(\w+)\}/g, (whole, key) => (params[key] != null ? params[key] : whole));
+}
+/** The answer's body: { ok: false, code: 'PEER_UNAVAILABLE', error, retryable, reason }. */
+export function peerUnavailableBody(req, down) {
+  return { ok: false, code: PEER_UNAVAILABLE, error: peerUnavailableText(req, down), retryable: down?.retryable === true, reason: String(down?.reason || 'the lookup failed') };
+}
+/** Answer 503 PEER_UNAVAILABLE (never cached, Retry-After). Used by the owner gate, the page secret and the Assistant API. */
+export function sendPeerUnavailable(res, req, down) {
+  try { res.setHeader?.('Retry-After', String(retryAfterSeconds(down))); res.setHeader?.('Cache-Control', 'no-store'); } catch { /* headers already sent */ }
+  return res.status(503).json(peerUnavailableBody(req, down));
+}
+
 /** Does a request say it is an agent's own call (a pin, or a brain credential that survived the peer check)? */
 export function isAgentCall(req) {
   const h = req?.headers || {};
@@ -136,28 +175,34 @@ export function isAgentCall(req) {
 }
 
 /**
- * Where an HTTP request stands: `gated` (one of the owner's writes, one of the owner's reads, or a secret read), and
+ * Where an HTTP request stands: `gated` (one of the owner's writes, one of the owner's reads, or a secret read),
  * `agentOpen` (an agent's tree may call it without a pin: every owner's read but the secret ones, and the
- * AGENT_OPEN_PREFIXES writes). A path with no safe reading is gated.
+ * AGENT_OPEN_PREFIXES writes) and `degradedOpen` (a failed lookup does not refuse it: DEGRADED_OPEN_PATHS, every
+ * reading of the path one of them). A path with no safe reading is gated.
  */
 export function restScope(req) {
   const method = String(req?.method || 'GET').toUpperCase();
   const forms = routedForms(String(req?.path ?? req?.url ?? ''));
-  if (!forms) return { gated: !SAFE_METHODS.has(method), agentOpen: false, reason: 'no safe reading of the path' };
+  if (!forms) return { gated: !SAFE_METHODS.has(method), agentOpen: false, degradedOpen: false, reason: 'no safe reading of the path' };
   if (SAFE_METHODS.has(method)) {
-    if (method === 'OPTIONS') return { gated: false, agentOpen: false };
+    if (method === 'OPTIONS') return { gated: false, agentOpen: false, degradedOpen: false };
     const reveal = String(req?.query?.reveal || '') === '1';
     if (forms.some((form) => form === '/api/mcp-key' || (reveal && form.startsWith('/api/mcp/env/')))) {
-      return { gated: true, agentOpen: false, reason: 'a read that hands out a secret' };
+      return { gated: true, agentOpen: false, degradedOpen: false, reason: 'a read that hands out a secret' };
     }
     // (ADMIN_ONLY_PREFIXES are plain prefixes, as lib/request-gate.js reads them)
     const ownerRead = forms.some((form) => OWNER_READ_PREFIXES.some((prefix) => form.startsWith(prefix)));
-    return { gated: ownerRead, agentOpen: true, reason: ownerRead ? 'one of the owner\'s reads' : null };
+    return { gated: ownerRead, agentOpen: true, degradedOpen: false, reason: ownerRead ? 'one of the owner\'s reads' : null };
   }
-  if (!forms.some((form) => under(form, '/api'))) return { gated: false, agentOpen: false };
+  if (!forms.some((form) => under(form, '/api'))) return { gated: false, agentOpen: false, degradedOpen: false };
   const open = (form) => FEATURE_OPEN_PREFIXES.some((prefix) => under(form, prefix)) && !NEVER_OPEN_PREFIXES.some((prefix) => under(form, prefix));
-  if (forms.every(open)) return { gated: false, agentOpen: false };
-  return { gated: true, agentOpen: forms.every((form) => AGENT_OPEN_PREFIXES.some((prefix) => under(form, prefix))), reason: 'one of the owner\'s writes' };
+  if (forms.every(open)) return { gated: false, agentOpen: false, degradedOpen: false };
+  return {
+    gated: true,
+    agentOpen: forms.every((form) => AGENT_OPEN_PREFIXES.some((prefix) => under(form, prefix))),
+    degradedOpen: forms.every((form) => DEGRADED_OPEN_PATHS.includes(form)),
+    reason: 'one of the owner\'s writes',
+  };
 }
 
 /** Where a socket stands: `owner` (refused to the peers below) or `readOnly` (open, read-only for them). */
@@ -169,37 +214,48 @@ export function socketScope(pathname) {
 }
 
 /**
- * The decision for one request whose peer verdict is on it (or not: then only the marker counts).
+ * The decision for one request whose peer verdict is on it (or not: then only the marker counts, unless `required`).
  * @param {object} req
- * @param {{ agentOpen?: boolean, fromWorkerBrowser?: (req) => boolean }} o
- * @returns {{ code: string, error: string, hint?: string, peer?: object } | null} `hint: 'proxy'` (with the relay's
- *   kind, pid and name) when the peer carries requests for others: `error` then says what to do, in the request's language
+ * @param {{ agentOpen?: boolean, degradedOpen?: boolean, required?: boolean, fromWorkerBrowser?: (req) => boolean }} o
+ *   `required`: the lookup runs on this server (macOS, not off), so a covered request without a verdict was never
+ *   identified and is taken as a failed lookup; `degradedOpen`: a failed lookup leaves this one to the rules from before
+ * @returns {{ status: 403|503, code: string, error: string, hint?: string, peer?: object, retryable?: boolean, reason?: string } | null}
+ *   `hint: 'proxy'` (with the relay's kind, pid and name) when the peer carries requests for others: `error` then says
+ *   what to do, in the request's language; status 503 with code PEER_UNAVAILABLE when the peer could not be identified
  */
-export function ownerRefusal(req, { agentOpen = false, fromWorkerBrowser = () => false } = {}) {
+export function ownerRefusal(req, { agentOpen = false, degradedOpen = false, required = false, fromWorkerBrowser = () => false } = {}) {
   let marked = false;
   try { marked = !!fromWorkerBrowser(req); } catch { marked = false; }
-  if (marked) return { code: 'WORKER_BROWSER', error: 'SynaBun\'s automation browser cannot act as the owner: it reads SynaBun\'s pages, clicks and screenshots; the owner\'s own settings, files and actions are the owner\'s, from the owner\'s browser or the app.' };
-  const peer = req?.[PEER_VERDICT];
-  if (!peer) return null;
-  if (peer.status === 'gone') return { code: 'PEER_REFUSED', error: `This is the owner's, and ${peer.reason || 'the connection closed before its request was identified'}.` };
-  if (peer.status !== 'ok' || peer.self || !peer.refuse) return null;
-  if (AGENT_CALL_KINDS.includes(peer.refuse.kind) && (agentOpen || isAgentCall(req))) return null; // an agent's own call: its route's rules
-  if (PROXY_REFUSAL_KINDS.includes(peer.refuse.kind)) {
-    return { code: 'PEER_REFUSED', error: proxyRefusalText(req, peer.refuse), hint: 'proxy', peer: { kind: peer.refuse.kind, pid: peer.refuse.pid, name: peer.refuse.name } };
+  if (marked) return { status: 403, code: 'WORKER_BROWSER', error: 'SynaBun\'s automation browser cannot act as the owner: it reads SynaBun\'s pages, clicks and screenshots; the owner\'s own settings, files and actions are the owner\'s, from the owner\'s browser or the app.' };
+  const verdict = req?.[PEER_VERDICT];
+  const auth = verdict == null && required ? peerAuthority(failedPeerVerdict('the request was not identified')) : peerAuthority(verdict);
+  if (auth.decision === 'before' || auth.decision === 'allowed') return null;
+  if (auth.decision === 'unavailable') {
+    if (degradedOpen) return null; // the server's restart and stop: the rules from before (DEGRADED_OPEN_PATHS)
+    return { status: 503, code: PEER_UNAVAILABLE, error: peerUnavailableText(req, auth), retryable: auth.retryable, reason: auth.reason };
   }
-  return { code: 'PEER_REFUSED', error: `This is the owner's, from the owner's own browser or the app; this request comes from ${peer.refuse.why}: pid ${peer.refuse.pid} (${peer.refuse.name}).` };
+  if (auth.gone) return { status: 403, code: 'PEER_REFUSED', error: `This is the owner's, and ${auth.why}.` };
+  if (AGENT_CALL_KINDS.includes(auth.kind) && (agentOpen || isAgentCall(req))) return null; // an agent's own call: its route's rules
+  if (PROXY_REFUSAL_KINDS.includes(auth.kind)) {
+    return { status: 403, code: 'PEER_REFUSED', error: proxyRefusalText(req, auth), hint: 'proxy', peer: { kind: auth.kind, pid: auth.pid, name: auth.name } };
+  }
+  return { status: 403, code: 'PEER_REFUSED', error: `This is the owner's, from the owner's own browser or the app; this request comes from ${auth.why}: pid ${auth.pid} (${auth.name}).` };
 }
 
 /**
  * @param {object} o
  * @param {() => ({ fromWorkerBrowser(req): boolean } | null)} [o.pageSession] the page session (read at request time)
  * @param {(req) => boolean} [o.isRemote] a request from outside (the tunnel, the invite proxy): the guest rules decide
- * @param {{ lookup(req): Promise<object> }} [o.peer] lib/peer-identity.js (for sockets: no middleware runs for them)
+ * @param {{ lookup(req): Promise<object>, supported?: boolean }} [o.peer] lib/peer-identity.js (for sockets: no
+ *   middleware runs for them). `supported` (macOS, not off): a covered request without a verdict, or a socket whose
+ *   lookup threw, is a failed lookup (503), never the rules from before.
  * @param {(line: string) => void} [o.log]
  */
 export function createOwnerAuthority({ pageSession = () => null, isRemote = () => false, peer = null, log = () => {} } = {}) {
   const fromWorkerBrowser = (req) => { const s = pageSession(); return typeof s?.fromWorkerBrowser === 'function' ? s.fromWorkerBrowser(req) : false; };
   const remote = (req) => { try { return isRemote(req) === true; } catch { return false; } };
+  /** The lookup runs here (macOS, not off): no verdict is no proof. */
+  const required = peer?.supported === true;
   const logged = new Map();
   const note = (key, line) => {
     const now = Date.now();
@@ -216,34 +272,54 @@ export function createOwnerAuthority({ pageSession = () => null, isRemote = () =
   }
 
   /** Express middleware, mounted after the peer middleware: 403 for a refused request to one of the owner's routes
-   *  (its writes, its reads, a secret read). */
+   *  (its writes, its reads, a secret read), 503 PEER_UNAVAILABLE (with Retry-After) for one whose peer could not be
+   *  identified on macOS. */
   function restGate(req, res, next) {
     let scope;
-    try { scope = restScope(req); } catch { scope = { gated: true, agentOpen: false }; }
+    try { scope = restScope(req); } catch { scope = { gated: true, agentOpen: false, degradedOpen: false }; }
     if (!scope.gated || remote(req)) return next();
-    const refused = ownerRefusal(req, { agentOpen: scope.agentOpen, fromWorkerBrowser });
+    const refused = ownerRefusal(req, { agentOpen: scope.agentOpen, degradedOpen: scope.degradedOpen, required, fromWorkerBrowser });
     if (!refused) return next();
-    note(`${refused.code}:${req[PEER_VERDICT]?.pid || 'marker'}:${String(req.path).slice(0, 80)}`, `[owner-authority] refused ${req.method} ${String(req.path).slice(0, 120)}: ${refused.hint === 'proxy' ? `${req[PEER_VERDICT]?.refuse?.why}: pid ${refused.peer?.pid} (${refused.peer?.name})` : refused.error}`);
+    note(`${refused.code}:${req[PEER_VERDICT]?.pid || (refused.code === PEER_UNAVAILABLE ? refused.reason : 'marker')}:${String(req.path).slice(0, 80)}`, `[owner-authority] ${refused.code === PEER_UNAVAILABLE ? 'unavailable (503)' : 'refused'} ${req.method} ${String(req.path).slice(0, 120)}: ${refused.hint === 'proxy' ? `${req[PEER_VERDICT]?.refuse?.why}: pid ${refused.peer?.pid} (${refused.peer?.name})` : refused.code === PEER_UNAVAILABLE ? `the caller could not be identified (${refused.reason})` : refused.error}`);
+    if (refused.code === PEER_UNAVAILABLE) return sendPeerUnavailable(res, req, refused);
     if (refused.hint) return res.status(403).json({ ok: false, code: refused.code, error: refused.error, hint: refused.hint, peer: refused.peer });
     return sendGuardError(res, 403, refused.code, refused.error);
   }
 
   /**
    * The decision for a WebSocket upgrade (no middleware runs for one): looks the peer up for an owner socket and for
-   * /ws/sync. → { refuse: boolean, readOnly: boolean, code?, error? }. Never rejects; a lookup that cannot run
-   * refuses nothing.
+   * /ws/sync. → { refuse: boolean, readOnly: boolean, status?: 403|503, code?, error?, retryable? }. Never rejects. A
+   * peer that could not be identified on macOS gets no owner socket (status 503) and a read-only /ws/sync; where the
+   * lookup does not run, nothing is refused for it.
    */
   async function checkUpgrade(req, pathname) {
     const scope = socketScope(pathname);
     if ((!scope.owner && !scope.readOnly) || remote(req)) return { refuse: false, readOnly: false };
     if (peer && typeof peer.lookup === 'function' && !req[PEER_VERDICT]) {
-      try { req[PEER_VERDICT] = await peer.lookup(req); } catch { /* unknown: the rules from before */ }
+      try { req[PEER_VERDICT] = await peer.lookup(req); } catch (error) {
+        // A lookup that threw is a lookup that failed where it runs; elsewhere the rules from before.
+        if (required) req[PEER_VERDICT] = failedPeerVerdict(`the lookup failed (${error?.message || error})`);
+      }
     }
-    const refused = ownerRefusal(req, { agentOpen: false, fromWorkerBrowser });
+    const refused = ownerRefusal(req, { agentOpen: false, required, fromWorkerBrowser });
     if (!refused) return { refuse: false, readOnly: false };
-    note(`ws:${refused.code}:${req[PEER_VERDICT]?.pid || 'marker'}:${pathname}`, `[owner-authority] ${scope.owner ? 'refused' : 'read-only'} socket ${pathname}: ${refused.error}`);
+    note(`ws:${refused.code}:${req[PEER_VERDICT]?.pid || 'marker'}:${pathname}`, `[owner-authority] ${scope.owner ? (refused.code === PEER_UNAVAILABLE ? 'unavailable (503)' : 'refused') : 'read-only'} socket ${pathname}: ${refused.code === PEER_UNAVAILABLE ? `the caller could not be identified (${refused.reason})` : refused.error}`);
     return scope.owner ? { refuse: true, readOnly: false, ...refused } : { refuse: false, readOnly: true, ...refused };
   }
 
-  return { needsLookup, restGate, checkUpgrade, restScope, socketScope };
+  /**
+   * The decision for an upgrade whose check itself broke (checkUpgrade never rejects; this is the guard for what it
+   * cannot foresee, server.js's rejection path): where the lookup runs, as for a failed lookup (an owner socket refused
+   * with 503, /ws/sync read-only); elsewhere, and for a request from outside, the rules from before.
+   */
+  function upgradeFailed(req, pathname, error) {
+    const scope = socketScope(pathname);
+    if (!required || (!scope.owner && !scope.readOnly) || remote(req)) return { refuse: false, readOnly: false };
+    const reason = `the socket's check failed (${error?.message || error || 'no reason'})`;
+    note(`ws-failed:${pathname}`, `[owner-authority] ${scope.owner ? 'unavailable (503)' : 'read-only'} socket ${pathname}: ${reason}`);
+    const refused = { status: 503, code: PEER_UNAVAILABLE, error: peerUnavailableText(req, { reason }), retryable: false, reason };
+    return scope.owner ? { refuse: true, readOnly: false, ...refused } : { refuse: false, readOnly: true, ...refused };
+  }
+
+  return { needsLookup, restGate, checkUpgrade, upgradeFailed, restScope, socketScope };
 }

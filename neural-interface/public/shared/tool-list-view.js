@@ -23,6 +23,8 @@ export const TOOL_LIST_COPY = Object.freeze({
   noServers: 'No external servers',
   blockedServer: 'Blocked by Agents may use it',
   unavailableServer: 'Unavailable on this provider',
+  unknownServer: 'Not checked: the provider\'s MCP configuration could not be read',
+  serversUnreadable: 'Could not read the MCP configuration of {providers}; servers configured only there are not listed.',
   agentAccess: 'Agents may use it',
   agentAccessHelp: 'Applies to task workers and automations on Codex, OpenCode and Claude, including FleetView, plus the OpenCode tools picker. Other sessions you drive keep their servers.',
   loadFailed: 'Could not load the tool catalog. Try again.',
@@ -45,7 +47,20 @@ function groupWord(group, field, translate) {
   return group[field];
 }
 
-export const strictToolHost = provider => provider === 'opencode' || provider === 'antigravity';
+// Product names, never translated.
+const PROVIDER_NAMES = Object.freeze({ codex: 'Codex', opencode: 'OpenCode', 'claude-code': 'Claude Code', antigravity: 'Antigravity' });
+/** Providers whose MCP configuration the server could not read (`externalServerErrors`), for `provider` or every one. */
+export function unreadableProviders(catalog, provider = 'all') {
+  const rows = Array.isArray(catalog?.externalServerErrors) ? catalog.externalServerErrors : [];
+  return [...new Set(rows.map(row => row?.provider).filter(id => typeof id === 'string' && (!provider || provider === 'all' || id === provider)))];
+}
+/** One sentence naming those providers, or null when every provider was read. */
+export function unreadableServersNote(catalog, provider = 'all', translate) {
+  const providers = unreadableProviders(catalog, provider);
+  return providers.length ? toolListWord('serversUnreadable', { providers: providers.map(id => PROVIDER_NAMES[id] || id).join(', ') }, translate) : null;
+}
+
+export const strictToolHost =provider => provider === 'opencode' || provider === 'antigravity';
 export const taskToolHost = provider => strictToolHost(provider) || provider === 'claude-code' || provider === 'codex';
 
 /** Hidden-input encoding: inheritance differs from an explicit empty group list. */
@@ -92,13 +107,17 @@ export function toolListView(catalog, tools, { inheritLabel = null, usesBrowser,
     const rows = (catalog.servers || []).filter(row => row.selectable !== false);
     // A saved unavailable ref stays visible and round-trips; loading a catalog never silently clears it.
     for (const ref of refs) if (ref !== 'mcp:*' && !rows.some(row => row.ref === ref)) rows.push({ ref, label: ref.slice(4), providers: {} });
+    // A provider the server could not read is `unknown` on every row: disabled like an unavailable one, said apart.
+    const unreadable = unreadableServersNote(catalog, provider, translate);
     const options = [
-      { value: 'mcp:*', scope: 'servers', label: word('allServers'), exclusive: true, selected: !inherited && wildcard },
+      { value: 'mcp:*', scope: 'servers', label: word('allServers'), exclusive: true, selected: !inherited && wildcard, ...(unreadable ? { caption: unreadable } : {}) },
       { value: '__no_servers__', scope: 'servers', label: word('noServers'), exclusive: true, selected: !inherited && !refs.length },
       ...rows.map(row => {
         const availability = row.providers?.[provider];
-        const unavailable = provider && provider !== 'all' ? availability !== 'deliverable' : !Object.values(row.providers || {}).includes('deliverable');
-        return { value: row.ref, scope: 'servers', label: row.label || row.ref.slice(4), selected: !inherited && !wildcard && refs.includes(row.ref), disabled: row.blocked || unavailable, caption: row.blocked ? word('blockedServer') : unavailable ? word('unavailableServer') : row.ref };
+        const specific = provider && provider !== 'all';
+        const unavailable = specific ? availability !== 'deliverable' : !Object.values(row.providers || {}).includes('deliverable');
+        const unknown = unavailable && (specific ? availability === 'unknown' : Object.values(row.providers || {}).includes('unknown'));
+        return { value: row.ref, scope: 'servers', label: row.label || row.ref.slice(4), selected: !inherited && !wildcard && refs.includes(row.ref), disabled: row.blocked || unavailable, caption: row.blocked ? word('blockedServer') : unknown ? word('unknownServer') : unavailable ? word('unavailableServer') : row.ref };
       }),
     ];
     entries.push({ group: word('servers'), options });

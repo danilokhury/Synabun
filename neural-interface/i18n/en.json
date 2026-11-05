@@ -12416,7 +12416,29 @@
     "kindInterrupted": "interrupted"
   },
   "ownerAuthority": {
+    "peerUnavailable": "SynaBun could not check which program sent this ({reason}), so it refused to act as the owner. Reload the page to try again. If it keeps happening, start SynaBun outside any sandbox, or turn this check off with SYNABUN_PEER_IDENTITY=off in ~/.synabun/.env and restart SynaBun.",
     "proxyRefused": "Your browser reaches SynaBun through {name} (pid {pid}), a proxy or relay, so SynaBun can't tell it is you and refused this. Let the browser connect directly: add localhost and 127.0.0.1 to the proxy's bypass list (macOS: System Settings › Network › your network › Details › Proxies › Bypass proxy settings for these Hosts & Domains; or the list in the proxy app or browser extension), or turn the proxy off for SynaBun, then reload."
+  },
+  "ownerAuthorityNotice": {
+    "label": "Owner actions paused",
+    "title": "SynaBun can't verify which program is calling it, so the owner's actions are paused.",
+    "body": "Settings, files, terminals, the agent panels and dispatching are refused until the check works again. Pages and memories still load.",
+    "reason": "Reason: {reason}",
+    "hint": "If this persists, start SynaBun outside any sandbox, or add SYNABUN_PEER_IDENTITY=off to ~/.synabun/.env and restart SynaBun (this turns the check off).",
+    "reload": "Reload to retry",
+    "dismiss": "Dismiss"
+  },
+  "ownerAccess": {
+    "label": "No owner access",
+    "title": "This page doesn't have owner access.",
+    "bodyAutomation": "It was opened from SynaBun's automation browser, which can read SynaBun's pages but not your settings, files or actions. Open SynaBun in your own browser or the desktop app.",
+    "bodyOwner": "SynaBun refused this page your settings and actions. Reload the page; if it persists, open SynaBun in your own browser or the desktop app.",
+    "reload": "Reload",
+    "dismiss": "Dismiss",
+    "panelTitle": "No access",
+    "panelBody": "This page doesn't have owner access, so this can't be shown or changed here. Open SynaBun in your own browser or the desktop app.",
+    "navStatus": "No access",
+    "actionDisabled": "Needs owner access"
   },
   "toolList": {
     "label": "Tools and MCP servers",
@@ -12447,6 +12469,8 @@
     "noServers": "No external servers",
     "blockedServer": "Blocked by Agents may use it",
     "unavailableServer": "Unavailable on this provider",
+    "unknownServer": "Not checked: the provider's MCP configuration could not be read",
+    "serversUnreadable": "Could not read the MCP configuration of {providers}; servers configured only there are not listed.",
     "configuredExternally": "Configured in provider"
   },
   "toolGroups": {

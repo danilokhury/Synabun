@@ -61,7 +61,10 @@ async function handleInput() {
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 2000);
-      const res = await fetch(`${NI_BASE}/api/browser/sessions`, { signal: controller.signal });
+      // An agent's own call (X-Synabun-Role): the browser routes answer a request with no agent header only from
+      // SynaBun's own page (its page secret), so a bare request would be refused and read as "not reachable".
+      // Naming no run, it is an automation without an id: the list still shows every session (owner keys masked).
+      const res = await fetch(`${NI_BASE}/api/browser/sessions`, { signal: controller.signal, headers: { 'X-Synabun-Role': 'hook' } });
       clearTimeout(timeout);
       if (res.ok) {
         niReachable = true;

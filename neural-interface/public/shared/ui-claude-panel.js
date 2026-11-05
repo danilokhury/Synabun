@@ -17,6 +17,7 @@ import { state, emit, on } from './state.js';
 import { forgetGreeting, mountGreeting } from './greeting/greeting-card.js';
 import { fetchClaudeSessions, fetchBrowserSessions, searchSessions } from './api.js';
 import { createFrameRenderer } from './utils.js';
+import { refreshPageSession } from './page-session.js';
 import { notify, NOTIF_TYPE } from './ui-notifications.js';
 import { registerSidepanel, setSidepanelVisible, syncSidepanelLayout, focusSidepanel, openAnotherSidepanelSession, isHostedSessionFocused } from './ui-sidepanel-windows.js';
 import { mountCliBanner } from './ui-cli-banner.js';
@@ -36,7 +37,7 @@ import { buildAgentCard, ensureAgentScope, noteAgentActivity, updateAgentTodoBad
 import { renderPermissionCard, renderPlanApprovalCard, renderElicitationCard, decorateAskCard, askAnnotations, markAskAnswered, PERMISSION_MODES, MODE_LABELS } from './cp/cp-permissions.js';
 import { normalizeSession, changedStartSettings, sessionFlags, sessionRows, fastModeSupported, fastModeReason, mergeSessionModels, parseMcpServerLines, formatMcpServerLines } from './cp/cp-session-model.js';
 import { renderSessionSettingsCard } from './cp/cp-session-settings.js';
-import { describeOrigin, reconcileTasks, adoptLiveTasks, describeHistorySystemRow, workEndedByRestart, isTaskRunning } from './cp/cp-tasks-model.js';
+import { describeOrigin, reconcileTasks, adoptLiveTasks, describeHistorySystemRow, workEndedByRestart, isTaskRunning, endRunningTasks, backgroundWaitLine } from './cp/cp-tasks-model.js';
 import { renderTasksCard } from './cp/cp-tasks.js';
 import { sessionListLabel, collectTags, tagSession as tagClaudeSession, sessionActionsAvailable, sessionOpsSupported, labelledSessionIds, mergeSessionSearch, writeSessionTitle, forkSession as forkClaudeSession, deleteSession as deleteClaudeSession, fetchSubagentMessages, forkTitle, entryBefore, promptText, removeFrom, sessionRowParts, fillSelectOptions } from './cp/cp-sessions.js';
 import { contextCard, usageCard, mcpRows, rewindPreviewText, rewindResultText } from './cp/cp-usage-model.js';
@@ -50,6 +51,8 @@ import { CP_STYLES } from './cp/cp-styles.js';
 import { TEMPORARY_CAPABILITY, keepsNothing, chooseTemporary, applyTemporary, temporaryRefusal, endTemporary, leaveTemporary, tabAfterTemporary, persistableTabs, temporaryBlocks, reattaches } from './cp/cp-temporary.js';
 import { paintTemporary } from './cp/cp-temporary-view.js';
 import { renderMarkdown } from './cp/cp-markdown.js';
+import { synabunToolKey, synabunToolLabel, synabunToolSummary, synabunToolGroup } from './synabun-tools.js';
+import { normalizeToolHeartbeat } from './tool-heartbeat.js';
 import { sanitizeStoredHtml } from './assistant/asst-sanitize.js';
 import { escapeHtml, classToken } from './cp/cp-markdown.js';
 import { rehydrateStoredTranscript } from './cp/cp-rehydrate.js';
@@ -85,9 +88,12 @@ const ICON_CHECK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" s
 const ICON_X = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
 
 // ── SynaBun MCP tool registry ──
-const SYNABUN_PREFIX = 'mcp__SynaBun__';
-function isSynaBunTool(name) { return name?.startsWith(SYNABUN_PREFIX); }
-function synaBunToolKey(name) { return name?.replace(SYNABUN_PREFIX, '') || ''; }
+// Which call is SynaBun's, and the name and summary of one this registry does not
+// list, come from synabun-tools.js (every panel's): `mcp__SynaBun__x` in any letter
+// case, a plugin's copy of the server, OpenCode's `SynaBun_x`. Every SynaBun tool
+// gets the branded card; the registry only adds an icon and a summary of its own.
+function isSynaBunTool(name) { return synabunToolKey(name) != null; }
+function synaBunToolKey(name) { return synabunToolKey(name) || ''; }
 
 const SB_ICON_RECALL = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2C5.2 2 3 4.2 3 7c0 1.8 1 3.4 2.4 4.2V13h5.2v-1.8C12 10.4 13 8.8 13 7c0-2.8-2.2-5-5-5z"/><path d="M6 13.5h4M6.5 15h3"/><circle cx="11.5" cy="4" r="2.5"/><path d="M10.5 4h2M11.5 3v2"/></svg>';
 const SB_ICON_REMEMBER = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2C5.2 2 3 4.2 3 7c0 1.8 1 3.4 2.4 4.2V13h5.2v-1.8C12 10.4 13 8.8 13 7c0-2.8-2.2-5-5-5z"/><path d="M6 13.5h4M6.5 15h3"/><path d="M7 6.5h2M8 5.5v2"/></svg>';
@@ -118,25 +124,17 @@ const SYNABUN_TOOLS = {
   loop:      { label: 'Loop',      group: 'system', icon: SB_ICON_LOOP,      detailFn: i => i.action || '' },
   tictactoe: { label: 'Tic-Tac-Toe', group: 'fun',  icon: SB_ICON_TICTACTOE, detailFn: i => i.action || '' },
 };
-const SYNABUN_GROUPS = {
-  browser:    { label: 'Browser',    group: 'browser',    icon: SB_ICON_BROWSER,    detailFn: i => i.url || i.selector || i.text || '' },
-  discord:    { label: 'Discord',    group: 'discord',    icon: SB_ICON_DISCORD,    detailFn: i => i.action || i.channel_id || '' },
-  whiteboard: { label: 'Whiteboard', group: 'whiteboard', icon: SB_ICON_WHITEBOARD, detailFn: i => i.id || '' },
-  card:       { label: 'Card',       group: 'card',       icon: SB_ICON_CARD,       detailFn: i => i.card_id || '' },
-  browser_extract: { label: 'Extract', group: 'browser', icon: SB_ICON_BROWSER, detailFn: i => i.url || i.selector || '' },
-};
+// The icon of a SynaBun tool the registry does not list, by its group (the logo otherwise).
+const SYNABUN_GROUP_ICONS = { browser: SB_ICON_BROWSER, discord: SB_ICON_DISCORD, whiteboard: SB_ICON_WHITEBOARD, card: SB_ICON_CARD, memory: SB_ICON_MEMORIES };
 
+/** The card of a SynaBun tool: { label, group, icon, detailFn }; null only for a call that is not SynaBun's. */
 function getSynaBunMeta(name) {
-  const key = synaBunToolKey(name);
+  const raw = synabunToolKey(name);
+  if (raw == null) return null;
+  const key = raw.toLowerCase();
   if (Object.prototype.hasOwnProperty.call(SYNABUN_TOOLS, key)) return SYNABUN_TOOLS[key];
-  for (const [prefix, meta] of Object.entries(SYNABUN_GROUPS)) {
-    if (key.startsWith(prefix + '_') || key === prefix) {
-      const action = key.slice(prefix.length + 1) || '';
-      const actionLabel = action.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-      return { ...meta, label: actionLabel ? `${meta.label}: ${actionLabel}` : meta.label };
-    }
-  }
-  return null;
+  const group = synabunToolGroup(key);
+  return { label: synabunToolLabel(key), group, icon: SYNABUN_GROUP_ICONS[group] || SYNABUN_LOGO_ICON, detailFn: i => synabunToolSummary(key, i) };
 }
 
 function toolIconSvg(name) {
@@ -1880,7 +1878,9 @@ function injectStyles() {
     .cp-messages pre code[class*="diff"] {
       display: block; white-space: pre;
     }
-    .cp-messages pre:has(code[class*="diff"]) {
+    /* A diff block, as addCopyButtons() found it (data-diff-wrapped, set once). Not :has(code[class*="diff"]): a
+       class test inside :has() re-checked the page on every class change anywhere (css-has-performance test). */
+    .cp-messages pre:has(code[data-diff-wrapped]) {
       background: rgba(0,0,0,0.4);
       border-color: rgba(140,160,200,0.15);
     }
@@ -1893,6 +1893,7 @@ function injectStyles() {
 
     /* ── MCP collapse markers ── */
     .tool-mcp-badge {
+      border: none; cursor: pointer; line-height: 1.4;
       margin-left: 6px; padding: 1px 6px; border-radius: 4px;
       background: rgba(255,195,0,0.14); color: rgba(255,210,60,0.9);
       font-size: 9px; font-family: 'JetBrains Mono', monospace; font-weight: 600;
@@ -4746,6 +4747,28 @@ function _renderHistoryRow(tab, $msgs, m) {
     return;
   }
   if (m.role === 'assistant') {
+    // Only calls, right after an assistant row (its words, or the calls before them): the same
+    // row, as the live path shows a run of calls (toolRunRow).
+    const onlyCalls = !m.text && !m.thinking && Array.isArray(m.tools) && m.tools.length > 0
+      && m.tools.every(t => t && typeof t === 'object' && t.name && t.name !== 'AskUserQuestion' && t.name !== 'ExitPlanMode');
+    const runRow = onlyCalls ? toolRunRowIn($msgs, live ? tab.thinkingEl : null, { afterWords: true }) : null;
+    if (runRow) {
+      const runWrap = runRow.querySelector(':scope > .msg-content');
+      for (const t of m.tools) {
+        const card = buildTool(t, tab);
+        if (!card) continue;
+        if (t.id && $msgs._replayCards instanceof Map) $msgs._replayCards.set(String(t.id), card);
+        runWrap.appendChild(card);
+      }
+      if (m.uuid) runRow.dataset.uuids = [runRow.dataset.uuids, m.uuid].filter(Boolean).join(' ');
+      if (live && tab._pendingResults instanceof Map && tab._pendingResults.size) {
+        for (const t of m.tools) {
+          const ev = t?.id ? takePendingResult(tab, t.id) : null;
+          if (ev) { try { updateToolResult(tab, ev); } catch {} }
+        }
+      }
+      return;
+    }
     const el = document.createElement('div'); el.className = 'msg msg-assistant';
     if (m.uuid) el.dataset.uuids = m.uuid;
     const avatar = document.createElement('div'); avatar.className = 'msg-avatar';
@@ -5788,6 +5811,10 @@ function _processTabMsg(tab, msg) {
 
 function handleTabEvent(tab, ev) {
   if (!ev?.type) return;
+  // A call running past 30 s gets a heartbeat whose parent_tool_use_id is the call
+  // itself, not a subagent: it is progress of that call, never a subagent's card
+  // (tool-heartbeat.js).
+  ev = normalizeToolHeartbeat(ev);
 
   // ── Subagent scope routing (SDK engine) ──
   // Messages emitted by a Task subagent carry parent_tool_use_id; route them to
@@ -6281,6 +6308,13 @@ function handleStreamDelta(tab, apiEvent) {
     // (with full input) when the complete message arrives. No buildTool side
     // effects fire for ghosts.
     if (tab._stream.blockType === 'tool_use' && apiEvent.content_block?.id && apiEvent.content_block?.name !== 'AskUserQuestion') {
+      // A message that opens with a tool call, right after a row of tool calls: the same row.
+      const joined = !tab._stream.el ? toolRunRow(tab) : null;
+      if (joined) {
+        tab._stream.el = joined;
+        tab._stream.joined = true;
+        if (tab._stream.msgId) { tab.currentMsgId = tab._stream.msgId; tab.currentMsgEl = joined; tab._joinedMsgId = tab._stream.msgId; }
+      }
       if (!tab._stream.el) {
         const el = document.createElement('div');
         el.className = 'msg msg-assistant';
@@ -6304,7 +6338,11 @@ function handleStreamDelta(tab, apiEvent) {
         ghost.className = 'tool-card tool-streaming';
         ghost.dataset.toolId = cb.id;
         ghost.dataset.toolName = cb.name || '';
-        ghost.innerHTML = `<div class="tool-hdr"><span class="tool-icon">${toolIconSvg(cb.name)}</span><span class="tool-name">${esc(cb.name || 'tool')}</span><span class="tool-detail">…</span></div>`;
+        const sbMeta = getSynaBunMeta(cb.name);
+        if (sbMeta) ghost.classList.add('synabun-card');
+        ghost.innerHTML = sbMeta
+          ? `<div class="tool-hdr synabun-hdr"><span class="tool-icon synabun-icon">${SYNABUN_LOGO_ICON}</span><span class="tool-name synabun-name">${esc(sbMeta.label)}</span><span class="tool-detail">…</span></div>`
+          : `<div class="tool-hdr"><span class="tool-icon">${toolIconSvg(cb.name)}</span><span class="tool-name">${esc(cb.name || 'tool')}</span><span class="tool-detail">…</span></div>`;
         wrapEl.appendChild(ghost);
         try { if (!tab._agentScope) setActivity(tab, cpActivityVerb(cb.name, {})); } catch {}
         if (tab === activeTab()) scrollEnd();
@@ -6378,6 +6416,7 @@ function handleStreamDelta(tab, apiEvent) {
       // Lazy-create row + body on first visible text. Keeps empty/whitespace-only
       // text blocks from leaving a blank row next to the avatar.
       if (!tab._stream.bodyEl && tab._stream.textBuf.trim()) {
+        if (tab._stream.joined) { tab._stream.el = null; tab._stream.joined = false; tab._joinedMsgId = null; }
         if (!tab._stream.el) {
           const el = document.createElement('div');
           el.className = 'msg msg-assistant';
@@ -6693,6 +6732,25 @@ function _cleanupEmptyAssistantRow(el) {
   return false;
 }
 
+/**
+ * The assistant row a message of tool calls alone continues: the last row of the
+ * transcript (the thinking indicator aside), with an avatar, ending on a tool card.
+ * Anything after it (a note, a permission or question card, a turn footer, a status
+ * line, the user's prompt) ends the run. null when there is none.
+ */
+function toolRunRowIn($msgs, skip = null, { afterWords = false } = {}) {
+  if (!$msgs) return null;
+  let prev = $msgs.lastElementChild;
+  if (prev && skip && prev === skip) prev = prev.previousElementSibling;
+  if (!prev?.classList?.contains('msg-assistant') || prev.dataset.workerQuestionId) return null;
+  if (!prev.querySelector(':scope > .msg-avatar')) return null;
+  const last = prev.querySelector(':scope > .msg-content')?.lastElementChild;
+  if (last?.classList?.contains('tool-card')) return prev;
+  // (History: a transcript keeps the words and the calls of one message on two lines.)
+  return afterWords && last?.classList?.contains('msg-body') ? prev : null;
+}
+function toolRunRow(tab) { return toolRunRowIn(tab?.messagesEl, tab?.thinkingEl); }
+
 function renderAssistant(tab, msg) {
   const $msgs = tab.messagesEl;
   if (!$msgs) return;
@@ -6733,6 +6791,14 @@ function renderAssistant(tab, msg) {
     if (!hasCapability(tab, 'mode_statements') && sessionEnteredPlan(tab)) _paintMode(tab);
     _planEntered(tab);
     saveTabs();
+  }
+
+  // A message whose cards joined the row before it (toolRunRow) and that now carries words or
+  // thinking: those go in a row of their own, below; its cards stay where they are.
+  let ownRow = false;
+  if (msgId && msgId === tab._joinedMsgId && msgId === tab.currentMsgId && tab.currentMsgEl
+      && (texts.some(b => (b.text || '').trim()) || thinks.some(b => (b.thinking || '').trim()))) {
+    tab.currentMsgEl = null; tab.currentMsgId = null; tab._joinedMsgId = null; ownRow = true;
   }
 
   // Partial message dedup
@@ -6786,7 +6852,10 @@ function renderAssistant(tab, msg) {
       const existingToolIds = new Set([...wrap.querySelectorAll('.tool-card, .plan-card')].map(c => c.dataset.toolId));
       for (const t of regularTools) {
         if (!existingToolIds.has(t.id || '')) {
-          wrap.appendChild(buildTool(t, tab));
+          // (Already shown in another row: the cards of a message split by toolRunRow.)
+          const elsewhere = t.id ? $msgs.querySelector(`.tool-card[data-tool-id="${CSS.escape(t.id)}"], .plan-card[data-tool-id="${CSS.escape(t.id)}"]`) : null;
+          if (!elsewhere) wrap.appendChild(buildTool(t, tab));
+          else if (elsewhere.classList.contains('tool-streaming')) elsewhere.replaceWith(buildTool(t, tab));
         } else {
           // Backfill streaming ghost stubs with the real card now that full input arrived
           const ghost = wrap.querySelector(`.tool-card.tool-streaming[data-tool-id="${CSS.escape(t.id || '')}"]`);
@@ -6815,7 +6884,23 @@ function renderAssistant(tab, msg) {
     return;
   }
 
-  // New assistant message
+  // New assistant message. One that is only tool calls, right after a row whose last item is a
+  // tool card, is the same stretch of work: its cards join that row (one avatar for the run of
+  // calls, the way parallel calls share one), instead of a row per call.
+  const shownTools = ownRow ? regularTools.filter(t => !t.id || !$msgs.querySelector(`.tool-card[data-tool-id="${CSS.escape(t.id)}"]`)) : regularTools;
+  const joined = !ownRow && !thinks.length && !texts.some(b => (b.text || '').trim()) && !askTools.length && !extras.any && shownTools.length
+    ? toolRunRow(tab) : null;
+  if (joined) {
+    const joinedWrap = joined.querySelector(':scope > .msg-content');
+    for (const t of shownTools) joinedWrap.appendChild(buildTool(t, tab));
+    if (msgId) { tab.currentMsgId = msgId; tab.currentMsgEl = joined; tab._joinedMsgId = msgId; }
+    const postPlanJ = $msgs.querySelector('.post-plan-card')?.closest('.msg');
+    if (postPlanJ && postPlanJ !== $msgs.lastElementChild) $msgs.appendChild(postPlanJ);
+    if (tab.thinkingEl && tab.thinkingEl.parentNode === $msgs && tab.thinkingEl !== $msgs.lastElementChild) $msgs.appendChild(tab.thinkingEl);
+    if (tab === activeTab()) scrollEnd();
+    scheduleSessionSnapshotSave(tab);
+    return;
+  }
   const el = document.createElement('div');
   el.className = 'msg msg-assistant';
   const avatar = document.createElement('div');
@@ -6847,7 +6932,7 @@ function renderAssistant(tab, msg) {
       wrap.appendChild(body);
     }
   }
-  for (const t of regularTools) wrap.appendChild(buildTool(t, tab));
+  for (const t of shownTools) wrap.appendChild(buildTool(t, tab));
   for (const t of askTools) wrap.appendChild(buildAskFromToolUse(tab, t));
   el.appendChild(wrap);
   $msgs.appendChild(el);
@@ -10121,7 +10206,9 @@ function showBrowserEmbed(sessionId, url) {
       if (!_cpWsReconnAttempted) {
         _cpWsReconnAttempted = true;
         console.log('[claude-panel] Browser WS closed, retrying once for', sessionId);
-        setTimeout(() => {
+        setTimeout(async () => {
+          // A socket refused for an earlier boot's page secret never says why: ask for this boot's first.
+          await refreshPageSession(window);
           if (_browserEmbed?.sessionId !== sessionId) return;
           const proto2 = location.protocol === 'https:' ? 'wss:' : 'ws:';
           const ws2 = new WebSocket(`${proto2}//${location.host}/ws/browser/${sessionId}`);
@@ -10536,6 +10623,16 @@ function _onMessagesClick(e) {
     });
     return;
   }
+  // A run of repeated MCP calls: its badge shows or folds the calls after the first.
+  const mcpBadge = e.target.closest('.tool-mcp-badge');
+  if (mcpBadge) {
+    const first = mcpBadge.closest('.tool-card');
+    if (first) {
+      first.dataset.mcpOpen = first.dataset.mcpOpen === '1' ? '0' : '1';
+      try { collapseAdjacentMcpTools(first.parentElement); } catch {}
+    }
+    return;
+  }
   // File links (a.file-link, and the links of a message's Markdown) are taken by _fileLinkOptions below.
   const hdr = e.target.closest('.tool-hdr');
   if (hdr && !e.target.closest('button, a, input, select, textarea')) {
@@ -10717,6 +10814,8 @@ export async function attachClaudeAutomation(run, { focus = !!run?.focus, isCanc
   tab._automationResumes = Math.max(tab._automationResumes || 0, resumes);
   if (suspended) _showRunSuspended(tab, run);
   else tab._automationSuspendedAt = null;
+  // An ended run's CLI is gone, and every background shell or Monitor with it.
+  if (!running && !suspended) _endRunBackgroundWork(tab);
   // (A dispatched worker's failure, with its reason, is on its end card.)
   if (run.status === 'failed' && run.error && !isDispatchedRun(run) && tab._automationLifecycleError !== run.error) {
     tab._automationLifecycleError = run.error;
@@ -10766,6 +10865,13 @@ export function handleClaudeAutomationEvent(runId, payload) {
     // Every run's end disposes its SDK query, and the SDK says so in these words: not a failure.
     if (isEndOfRunAbort(event.message)) return true;
     appendError(tab, event.message || 'Claude Code automation failed');
+    return true;
+  }
+  // The run's turn waits for its own background work (lib/claude-background-hold.js): say so once per change.
+  if (event.type === 'synabun.background_wait') {
+    const line = backgroundWaitLine(event);
+    if (line && line !== tab._backgroundWaitLine) appendStatus(tab, line);
+    tab._backgroundWaitLine = line || null;
     return true;
   }
   handleTabMsg(tab, { type: 'event', event, fromRun: true });
@@ -10837,6 +10943,23 @@ function _closeCutOffTools(tab) {
   }
   if (shells) { try { renderBgTray(tab); } catch {} }
   _setBackgroundWork(tab, []);
+}
+
+// A run that ended (completed, stopped, failed): its CLI process is gone, so nothing it ran in the background runs
+// any more. The tasks it never reported the end of (the run closed its query first) are ended here, or the
+// Background work card shows them running forever.
+function _endRunBackgroundWork(tab) {
+  let changed = false;
+  try { changed = endRunningTasks(tab.tasks) > 0; } catch {}
+  let shells = false;
+  for (const task of tab.bgTasks?.values?.() || []) {
+    if (task?.status === 'running') { task.status = 'stopped'; shells = true; }
+  }
+  if (shells) { try { renderBgTray(tab); } catch {} }
+  if ((tab.backgroundWork || []).length) _setBackgroundWork(tab, []);
+  else if (changed || shells) updatePillRunning(tab);
+  // An open tasks card follows along.
+  if ((changed || shells) && tab.messagesEl?.querySelector('.cp-tasks-card')) { try { _openTasks(tab); } catch {} }
 }
 
 // The end of a worker the Assistant dispatched (ui-worker-end.js): one card,
@@ -11563,11 +11686,18 @@ function collapseAdjacentMcpTools($msgs) {
   const flush = () => {
     if (group.length < 2) { group = []; return; }
     const first = group[0];
-    const badge = document.createElement('span');
+    // The badge shows the calls it folds away and folds them again (_onMessagesClick):
+    // what each of them did stays one click away.
+    const open = first.dataset.mcpOpen === '1';
+    const badge = document.createElement('button');
+    badge.type = 'button';
     badge.className = 'tool-mcp-badge';
     badge.textContent = `×${group.length}`;
-    first.querySelector('.tool-hdr')?.appendChild(badge);
-    for (let i = 1; i < group.length; i++) group[i].classList.add('cp-mcp-collapsed');
+    badge.setAttribute('aria-expanded', open ? 'true' : 'false');
+    badge.title = open ? 'Fold the repeated calls' : `Show all ${group.length} calls`;
+    const hdr = first.querySelector('.tool-hdr');
+    if (hdr) hdr.insertBefore(badge, hdr.querySelector(':scope > .tool-chevron'));
+    if (!open) for (let i = 1; i < group.length; i++) group[i].classList.add('cp-mcp-collapsed');
     group = [];
   };
   // True if `c` is the next tool-card sibling after `prev` (same parent, only

@@ -67,6 +67,8 @@ import { createAskTail } from './asst-ask-tail.js';
 import { limitFromText } from './asst-limit.js';
 import { createLimitDock } from './asst-limit-dock.js';
 import { createLimitWait } from './asst-limit-wait.js';
+import { synabunToolKey, synabunToolLabel } from '../synabun-tools.js';
+import { normalizeToolHeartbeat } from '../tool-heartbeat.js';
 
 // ── Markdown (lazy marked, the vendored build the sidepanels use too) ───────────────
 let _marked = null;
@@ -111,9 +113,8 @@ export function mdInto(node, text) {
 export const ICON_ASSISTANT = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="8" y="5.5" width="11" height="5" rx="2.5" transform="rotate(-12 13.5 8)"/><rect x="4.5" y="12.5" width="11" height="5" rx="2.5" transform="rotate(-12 10 15)"/></svg>';
 const ICON_MEMORY = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="8" y="5.5" width="11" height="5" rx="2.5" transform="rotate(-12 13.5 8)"/><rect x="4.5" y="12.5" width="11" height="5" rx="2.5" transform="rotate(-12 10 15)"/></svg>';
 const ICON_ESCALATE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
-// SynaBun's own MCP tools: Claude/Codex `mcp__SynaBun__x`, OpenCode `SynaBun_x`.
-const SYNABUN_TOOL_RE = /^(?:mcp__synabun__|synabun_)(.+)$/i;
-export function synabunToolName(name) { const m = SYNABUN_TOOL_RE.exec(String(name || '')); return m ? m[1] : null; }
+// SynaBun's own MCP tools: Claude/Codex `mcp__SynaBun__x`, OpenCode `SynaBun_x` (synabun-tools.js, every panel's).
+export function synabunToolName(name) { return synabunToolKey(name); }
 const RESULT_ERRORS = { error_max_turns: 'Stopped: the turn limit was reached.', error_max_budget_usd: 'Stopped: the budget cap was reached.', error_during_execution: 'The turn failed.', error_max_structured_output_retries: 'Stopped: structured output kept failing.' };
 const INTERRUPTED_RE = /\b(?:interrupted|aborted|cancell?ed)\b/i;
 
@@ -2509,7 +2510,10 @@ export function createRenderer(transcriptEl, hooks = {}) {
   function stepTitle(step) {
     if (step.type === 'think') return t('assistant.rack.kind.think', 'Thinking');
     if (step.kind === 'computer') { const base = computerToolName(step.name) || 'computer'; return t(`assistant.computer.tool.${base}`, COMPUTER_TOOL_TITLES[base] || 'Computer'); }
-    if (step.kind === 'mcp' || synabunToolName(step.name) != null) return toolWords(step.name);
+    // A SynaBun tool by the name every panel gives it ('Bluesky · Post'); any other MCP tool by its words.
+    const sbKey = synabunToolName(step.name);
+    if (sbKey != null) return synabunToolLabel(sbKey);
+    if (step.kind === 'mcp') return toolWords(step.name);
     return step.name || 'tool';
   }
 
@@ -3880,6 +3884,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
   }
 
   function dispatch(ev, silent) {
+    // A long call's heartbeat names the call as its parent: progress of that call, not a subagent's feed.
+    ev = normalizeToolHeartbeat(ev);
     if (ev.type !== 'stream_event') for (const k of idKeys(ev)) markSeen(k); // deltas are never replayed as themselves
     const parentId = ev.parent_tool_use_id || ev.message?.parent_tool_use_id || null;
     const scope = scopeFor(parentId);

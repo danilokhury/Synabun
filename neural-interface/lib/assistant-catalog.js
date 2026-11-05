@@ -1,4 +1,4 @@
-import { EXTERNAL_SERVER_LIMITATIONS } from './mcp-external-servers.js';
+import { EXTERNAL_SERVER_LIMITATIONS, externalDiscoveryError } from './mcp-external-servers.js';
 import { toolCatalogView } from '../../mcp-server/dist/services/tool-catalog.js';
 // ═══════════════════════════════════════════
 // SynaBun — Assistant model catalog (providers · models · tier · price · vision)
@@ -681,6 +681,21 @@ export function createAssistantCatalog({
   let epoch = 0; // bumped by invalidate(): a build that began before it is not kept
   let lastListed = null; // provider → signature of the rows the last build listed
 
+  // External servers are read degraded here (the catalog only lists): a provider whose MCP configuration
+  // cannot be read is reported in `errors`, its rows say `unknown`, and every other provider's servers and
+  // every model stay listed. Dispatch and worker launch read their own strict inventories and refuse.
+  // getExternalServers answers { servers, errors } or plain rows (older form).
+  function externalServersReport(projectRows) {
+    try {
+      const answer = getExternalServers(projectRows);
+      if (Array.isArray(answer)) return { servers: answer, errors: [] };
+      return { servers: Array.isArray(answer?.servers) ? answer.servers : [], errors: Array.isArray(answer?.errors) ? answer.errors : [] };
+    } catch (error) {
+      log('catalog:external-servers-error', error?.code || error?.message || String(error));
+      return { servers: [], errors: [externalDiscoveryError(error?.provider || null, error)] };
+    }
+  }
+
   const pickArray = (value, keys = []) => {
     if (Array.isArray(value)) return value;
     for (const key of keys) if (Array.isArray(value?.[key])) return value[key];
@@ -783,8 +798,11 @@ export function createAssistantCatalog({
     const listedNow = Object.fromEntries(CATALOG_PROVIDERS.map((p) => [p, listedSignature(all[p])]));
     const changed = lastListed ? CATALOG_PROVIDERS.filter((p) => listedNow[p] !== lastListed[p]) : [];
     lastListed = listedNow;
+    const external = externalServersReport(pickArray(projects, ['projects']));
     return {
       generatedAt: new Date(now()).toISOString(),
+      // Providers whose MCP server list could not be checked: { provider, code, reason, errno? }, no paths.
+      externalServerErrors: external.errors,
       // Providers whose listed models differ from the build before (not part of the value's meaning: full() reports it).
       changedProviders: changed,
       models,
@@ -801,7 +819,7 @@ export function createAssistantCatalog({
       opencodeListed: listedCounts.opencode,
       opencodeHidden: hidden.opencode,
       projects: pickArray(projects, ['projects']),
-      tools: { ...toolCatalogView(), servers: getExternalServers(pickArray(projects, ['projects'])), externalServerLimitations: EXTERNAL_SERVER_LIMITATIONS },
+      tools: { ...toolCatalogView(), servers: external.servers, externalServerErrors: external.errors, externalServerLimitations: EXTERNAL_SERVER_LIMITATIONS },
       accounts,
       // Efforts are per model (row.efforts); a provider's list is the union of its rows'.
       providers: [

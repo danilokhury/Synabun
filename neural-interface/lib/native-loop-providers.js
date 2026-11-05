@@ -10,6 +10,7 @@ import { CodexWorkerAppServer } from './codex-worker-app-server.js';
 import { query as claudeQuery } from '@anthropic-ai/claude-agent-sdk';
 import { CLAUDE_EFFORT_LEVELS } from './claude-model-catalog.js';
 import { CLAUDE_NOT_INSTALLED, resolveClaudeSdkExecutable } from './claude-executable.js';
+import { BACKGROUND_HOLD_DEFAULTS, createBackgroundTasks, createTurnHold, resultDeclaresDone } from './claude-background-hold.js';
 import { extractOpenCodeText } from './session-title-generator.js';
 import { withServeEnv } from './opencode-protocol.js';
 import { patchCodexLineSplitting } from './jsonl-lines.js';
@@ -18,6 +19,7 @@ import { codexReasoningEffort } from './effort-levels.js';
 import { spawn as spawnProcess } from 'node:child_process';
 import { codexStreamMedia, collectCodexMedia, openCodeMediaPart, ownCodexImages } from './assistant-media.js';
 import { browserToolDenial } from './browser-tool-policy.js';
+import { TERMINAL_TOKEN_ENV } from './terminal-tokens.js';
 import { CODEX_BROWSER_POLICY_UNTRUSTED_NOTE, codexBrowserPolicyHook } from './assistant-route-gate-codex.js';
 import { codexWindowsSandbox, codexWindowsSandboxConfig } from './agent-sandbox-elevation.js';
 import { DRAFT_DISALLOWED_TOOLS, DRAFT_TOOLS, codexDraftOptions, draftOpenCodeDecision, draftPreToolUseHook, draftToolDecision, openCodeDraftConfig, resolveDraftConfinement } from './skills/draft-confinement.js';
@@ -87,6 +89,12 @@ function createInputQueue() {
     },
   };
 }
+
+/**
+ * Pushed into a Claude turn that waited for its background work when that work ended and the CLI did not come back
+ * to it by itself (lib/claude-background-hold.js): the same turn continues.
+ */
+export const BACKGROUND_RESUME_PROMPT = 'SynaBun: the background work you were waiting for has ended. Continue the task from where you stopped. Do not end your turn to wait for something: start the wait and keep working, or call the tool that does the wait for you.';
 
 function asAbortError(reason = 'aborted') {
   const error = new Error(reason);
@@ -364,6 +372,8 @@ export async function createCodexNativeLoopAdapter(options = {}) {
     CodexClass = Codex,
     extraEnv = {}, permissionPolicy: rawPolicy = 'auto', permissionBroker = null, capability: rawCapability = 'full',
     outputSchema = null, desktopGrantProvider = null, modelContextWindow = null, contextMode = null,
+    // The run's terminal token (lib/terminal-tokens.js, NativeLoopRuntime): a function, never in the state file.
+    terminalTokenProvider = null,
     // Image creation runs (assistant dispatch): 'image' → each turn returns the images it generated.
     collectMedia = null,
     // Assistant task runs: the browser policy's hook and the run's notes (a function: never in the state file), and
@@ -435,14 +445,21 @@ export async function createCodexNativeLoopAdapter(options = {}) {
   for (const key of Array.isArray(unsetEnv) ? unsetEnv : []) delete inherited[key];
   // A worker never holds a brain's launch credential (the Assistant's own identity) or an owner's page secret.
   delete inherited.SYNABUN_BRAIN_TOKEN;
+  // …nor another run's terminal token: only its own, below.
+  delete inherited[TERMINAL_TOKEN_ENV];
   // The worker's shell must not inherit the owner's live-data paths (its MCP child gets them through its own
   // config: server.js buildCodexMcpEnv). A worker that boots a temp server or runs the suite stays off the live DB.
   for (const key of LIVE_DATA_ENV) delete inherited[key];
   // The hook reads the run's project and the other projects its test runners may run in (a JSON list) from its env.
   const policyEnv = browserPolicy ? { SYNABUN_BROWSER_POLICY_CWD: cwd || process.cwd(), SYNABUN_BROWSER_POLICY_ROOTS: JSON.stringify(Array.isArray(policyRoots) ? policyRoots : []) } : {};
-  const env = withServeEnv(stringEnv({ ...inherited, ...pins, CODEX_HOME: codexHome, ...policyEnv, ...stringEnv(extraEnv) }), evaluated ? evalGitSafetyEnv(evaluated.held.root) : null);
+  // The run's terminal token (lib/terminal-tokens.js): in the Codex process's environment only, which its SynaBun MCP
+  // server takes by name (env_vars). The pins above travel as `-c` values on a command line every account of the
+  // computer can read; the token never does. Codex's default shell policy keeps a *TOKEN* variable out of the shell
+  // commands it runs. A drafting or evaluation run starts no MCP server, so it gets none.
+  const terminalToken = !boxed && typeof terminalTokenProvider === 'function' ? (terminalTokenProvider() || null) : null;
+  const env = withServeEnv(stringEnv({ ...inherited, ...pins, CODEX_HOME: codexHome, ...policyEnv, ...stringEnv(extraEnv), ...(terminalToken ? { [TERMINAL_TOKEN_ENV]: terminalToken } : {}) }), evaluated ? evalGitSafetyEnv(evaluated.held.root) : null);
   const config = { ...codexWindowsSandboxConfig(adminSandbox) };
-  if (Object.keys(pins).length) config.mcp_servers = { SynaBun: { env: pins, ...(task ? { tool_timeout_sec: Math.ceil((options.questionTimeoutMs || 30 * 60_000) / 1000) + 30 } : {}) } };
+  if (Object.keys(pins).length) config.mcp_servers = { SynaBun: { env: pins, ...(terminalToken ? { env_vars: [TERMINAL_TOKEN_ENV] } : {}), ...(task ? { tool_timeout_sec: Math.ceil((options.questionTimeoutMs || 30 * 60_000) / 1000) + 30 } : {}) } };
   if (!boxed) {
     const inventory = externalServerInventory({ provider: 'codex', cwd, codexHome, env, home: env.HOME, dataHome: memoryConfig.dataHome, ...options.externalMcpContext });
     const list = nativeToolSelection(options, 'codex');
@@ -655,6 +672,8 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
     extraEnv = {}, permissionPolicy: rawPolicy = 'auto', permissionBroker = null,
     capability: rawCapability = 'full', maxBudgetUsd = null, outputSchema = null, runMode = 'loop',
     desktopGrantProvider = null,
+    // The run's terminal token (lib/terminal-tokens.js, NativeLoopRuntime): a function, never in the state file.
+    terminalTokenProvider = null,
     // Inherited variables to remove before extraEnv applies (the Claude account's launch:
     // credentials the server was started with never reach a worker).
     unsetEnv = [],
@@ -675,6 +694,10 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
     // Told the CLI's process once it is spawned ({ pid, startedAt, command }): a run that outlives this server is
     // found by it (the next start ends an orphan before it resumes the session).
     onProcess = null,
+    // A turn that ends while a background shell or Monitor it started still runs waits for that work: the CLI
+    // comes back by itself when it settles (lib/claude-background-hold.js). false turns it off; an object sets
+    // its limits ({ idleMs, resumeGraceMs, followGraceMs }).
+    backgroundHold = true,
   } = options;
   const permissionPolicy = normalizePermissionPolicy(rawPolicy);
   const capability = normalizeCapability(rawCapability);
@@ -696,11 +719,20 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
   let alive = true;
   let sessionId = null;
   let activeTurn = null;
+  // The session's live background tasks (shells, Monitors, agents): what a turn of this run waits for.
+  const bgTasks = createBackgroundTasks();
+  const holdLimits = backgroundHold && typeof backgroundHold === 'object' ? { ...BACKGROUND_HOLD_DEFAULTS, ...backgroundHold } : BACKGROUND_HOLD_DEFAULTS;
   const inherited = cleanClaudeEnvironment();
   for (const key of ['SYNABUN_PROFILE', 'SYNABUN_RUNTIME_PROFILE_PATH', 'SYNABUN_TOOLS', 'SYNABUN_TOOLS_PATH']) delete inherited[key];
   for (const key of Array.isArray(unsetEnv) ? unsetEnv : []) delete inherited[key];
   // A worker never holds a brain's launch credential (the Assistant's own identity) or an owner's page secret.
   delete inherited.SYNABUN_BRAIN_TOKEN;
+  // …nor another run's terminal token: its own goes in its MCP header (below).
+  delete inherited[TERMINAL_TOKEN_ENV];
+  // The run's terminal token (lib/terminal-tokens.js): the X-Synabun-Terminal-Token header of its SynaBun MCP entry,
+  // which referenceClaudeMap turns into a variable the CLI expands from its own environment (never its argv or a
+  // file). A drafting or evaluation run has no MCP server, so it gets none.
+  const terminalToken = !held && typeof terminalTokenProvider === 'function' ? (terminalTokenProvider() || null) : null;
   // The worker's shell must not inherit the owner's live-data paths: a Claude worker's MCP is in-process HTTP (it
   // reaches the DB through the Neural Interface, never from this env), so nothing here needs them.
   for (const key of LIVE_DATA_ENV) delete inherited[key];
@@ -734,6 +766,8 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
     'X-Synabun-Browser-Tab': browserTabId,
     // Computer-use workers: the grant unlocks the `computer` MCP group.
     'X-Synabun-Desktop-Grant': typeof desktopGrantProvider === 'function' ? desktopGrantProvider() || undefined : undefined,
+    // Proves X-Synabun-Terminal to the browser routes (lib/terminal-tokens.js).
+    'X-Synabun-Terminal-Token': terminalToken || undefined,
   });
   // Questions use the broker under every policy, independently of tool approvals.
   // ExitPlanMode stays denied: asking does not need a separate plan turn.
@@ -864,8 +898,9 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
       if (definition.oauth) privateMcpServers[name].oauth = structuredClone(definition.oauth);
       if (definition.headersHelper) privateMcpServers[name].headersHelper = definition.headersHelper;
     }
-    // Only the external servers' secrets (expanded through the CLI's env); SynaBun's own headers are not secrets.
-    externalValues = mcpSecretValues(definitions, { env });
+    // The external servers' secrets (expanded through the CLI's env), and of SynaBun's own headers its one secret, the
+    // run's terminal token: redacted from the run's events and the CLI's stderr.
+    externalValues = [...mcpSecretValues(definitions, { env }), ...(terminalToken ? [terminalToken] : [])];
     externalScopeNames = Object.keys(definitions);
   }
   if (model) queryOptions.model = model;
@@ -997,6 +1032,56 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
     reportedCostUsd = total;
     return { costUsd: Number(costUsd.toFixed(8)), totalCostUsd: total };
   };
+  // ── Background work a turn waits for (lib/claude-background-hold.js) ──
+  const holdEvent = (state, meta) => forwardEvent({
+    type: 'synabun.background_wait',
+    state: state.state,
+    ...(state.reason ? { reason: state.reason } : {}),
+    iteration: meta?.iteration,
+    tasks: (state.tasks || []).map((task) => ({ id: task.id, type: task.type, description: task.description })),
+  });
+  const turnHoldFor = (turn, meta) => createTurnHold({
+    tasks: bgTasks,
+    idleMs: holdLimits.idleMs,
+    resumeGraceMs: holdLimits.resumeGraceMs,
+    followGraceMs: holdLimits.followGraceMs,
+    deadlineAt: Number(meta?.deadlineAt) || null,
+    // A dispatched worker that wrote its ## Result block is done, whatever it left running.
+    shouldHold: runMode === 'task' ? (value) => !resultDeclaresDone(value?.text) : () => true,
+    onState: (state) => holdEvent(state, meta),
+    // The work ended and the CLI did not come back by itself: one prompt to continue the same turn.
+    nudge: () => {
+      if (!alive || activeTurn !== turn) return false;
+      forwardEvent({ type: 'synabun.user_prompt', text: BACKGROUND_RESUME_PROMPT, iteration: meta?.iteration, synthetic: 'background-resume' });
+      return input.push({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'text', text: BACKGROUND_RESUME_PROMPT }] },
+        parent_tool_use_id: null,
+        session_id: sessionId || '',
+      });
+    },
+    // The hold ended by itself (idle, deadline, the CLI never came back): the turn ends with its last result.
+    onRelease: (reason, live) => {
+      if (reason !== 'drained') bgTasks.excuse(live);
+      if (activeTurn !== turn) return;
+      activeTurn = null;
+      turn.resolve({
+        ...(turn.hold?.value() || { text: '', usage: null, costUsd: 0, totalCostUsd: reportedCostUsd, result: null, structured: null }),
+        providerSessionId: sessionId,
+        background: { released: reason, tasks: live.map((task) => ({ id: task.id, type: task.type, description: task.description })) },
+      });
+    },
+  });
+  /** The CLI ended (the run's end, or by itself): every task it still ran ended with it. */
+  const endBackgroundTasks = (summary) => {
+    const live = bgTasks.live();
+    bgTasks.clear();
+    if (!live.length) return;
+    for (const task of live) {
+      forwardEvent({ type: 'system', subtype: 'task_notification', task_id: task.id, status: 'stopped', summary, output_file: '', session_id: sessionId || '', synthetic: true });
+    }
+    forwardEvent({ type: 'system', subtype: 'background_tasks_changed', tasks: [], session_id: sessionId || '', synthetic: true });
+  };
   let pumpError = null;
   const pump = (async () => {
     try {
@@ -1009,12 +1094,12 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
           onIdentity({ providerSessionId: sessionId });
         }
         emitEvent(event);
+        bgTasks.apply(event, Date.now());
         if (event?.type === 'result' && activeTurn) {
           const turn = activeTurn;
-          activeTurn = null;
           const cost = turnCost(event);
           if (event.subtype === 'success') {
-            turn.resolve({
+            const value = {
               providerSessionId: sessionId,
               result: event,
               text: typeof event.result === 'string' ? event.result : '',
@@ -1022,17 +1107,27 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
               costUsd: cost.costUsd,
               totalCostUsd: cost.totalCostUsd,
               structured: event.structured_output ?? null,
-            });
+            };
+            // A turn whose background work still runs is not over: the CLI comes back to it by itself.
+            if (turn.hold && turn.hold.onResult(event, value) === 'hold') continue;
+            activeTurn = null;
+            turn.resolve(turn.hold ? { ...turn.hold.value(), providerSessionId: sessionId } : value);
           } else {
+            activeTurn = null;
+            const earlier = turn.hold?.value();
+            turn.hold?.cancel();
             const error = new Error((event.errors && event.errors[0]) || event.error || event.result || 'Claude turn failed');
             error.subtype = event.subtype || null;
             if (event.subtype === 'error_max_budget_usd') error.code = 'BUDGET_CAP';
             else if (event.subtype === 'error_max_turns') error.code = 'MAX_TURNS';
-            error.costUsd = cost.costUsd;
+            // A held turn's earlier results were charged too.
+            error.costUsd = Number(((Number(earlier?.costUsd) || 0) + cost.costUsd).toFixed(8));
             error.totalCostUsd = cost.totalCostUsd;
             error.usage = event.usage || null;
             turn.reject(error);
           }
+        } else if (activeTurn?.hold) {
+          activeTurn.hold.onEvent(event);
         }
       }
     } catch (error) {
@@ -1050,9 +1145,12 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
         input.close();
         if (activeTurn) {
           const turn = activeTurn; activeTurn = null;
+          turn.hold?.cancel();
           turn.reject(pumpError || new Error('Claude session ended before the turn completed'));
         }
       }
+      // The CLI is gone, and every background task with it: say so, or a panel shows them running forever.
+      endBackgroundTasks('The Claude Code process of this run ended.');
     }
     if (pumpError) throw pumpError;
   })();
@@ -1087,7 +1185,9 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
         event: { type: 'synabun.user_prompt', text: String(prompt || ''), iteration: meta.iteration },
       });
       return new Promise((resolveTurn, rejectTurn) => {
-        activeTurn = { resolve: resolveTurn, reject: rejectTurn, iteration: meta.iteration };
+        const turn = { resolve: resolveTurn, reject: rejectTurn, iteration: meta.iteration, hold: null };
+        if (backgroundHold) turn.hold = turnHoldFor(turn, meta);
+        activeTurn = turn;
         const ok = input.push({
           type: 'user',
           message: { role: 'user', content: [{ type: 'text', text: prompt }] },
@@ -1096,6 +1196,7 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
         });
         if (!ok) {
           activeTurn = null;
+          turn.hold?.cancel();
           rejectTurn(new Error('Claude input stream is closed'));
         }
       });
@@ -1103,6 +1204,7 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
     async abort(reason = 'aborted') {
       if (activeTurn) {
         const turn = activeTurn; activeTurn = null;
+        turn.hold?.cancel();
         turn.reject(asAbortError(reason));
       }
       if (!alive) return true;
@@ -1120,8 +1222,12 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
     async dispose(options = {}) {
       if (activeTurn) {
         const turn = activeTurn; activeTurn = null;
+        turn.hold?.cancel();
         turn.reject(asAbortError('disposed'));
       }
+      // Closing the query ends the CLI and every background task it runs; the CLI's own notices of that are never
+      // read (the pump stops with the run): the run's viewers are told here.
+      endBackgroundTasks('Stopped when the run ended.');
       if (options?.terminate === true) {
         terminating = true;
         await endProcess(Number(options.graceMs) > 0 ? Number(options.graceMs) : 1500);
@@ -1673,6 +1779,8 @@ export async function createAntigravityNativeLoopAdapter(options = {}) {
     permissionPolicy: rawPolicy = 'auto', permissionBroker = null,
     capability: rawCapability = 'full', outputSchema = null, runMode = 'loop',
     browserSessionId = null, browserTabId = null, desktopGrantProvider = null,
+    // The run's terminal token (lib/terminal-tokens.js, NativeLoopRuntime): a function, never in the state file.
+    terminalTokenProvider = null,
     extraEnv = {}, unsetEnv = [], resumeSessionId = null,
     confinement = null,
     guardMode = WORKER_GUARD_DEFAULT, scratchDir = null, serverPort = null, localPortRange = null,
@@ -1721,9 +1829,12 @@ export async function createAntigravityNativeLoopAdapter(options = {}) {
     SYNABUN_BROWSER_TAB: browserTabId,
     SYNABUN_TOOLS: runtimeToolsValue(tools.items.includes('all') ? tools.items : [...tools.groups, ...tools.servers]),
     SYNABUN_DESKTOP_GRANT: typeof desktopGrantProvider === 'function' ? desktopGrantProvider() || undefined : undefined,
+    // The run's terminal token (lib/terminal-tokens.js): agy's environment only, which its SynaBun MCP child inherits
+    // (the run's home lists the server, not this value).
+    [TERMINAL_TOKEN_ENV]: typeof terminalTokenProvider === 'function' ? terminalTokenProvider() || undefined : undefined,
   });
   const inherited = { ...process.env };
-  for (const key of ['SYNABUN_PROFILE', 'SYNABUN_RUNTIME_PROFILE_PATH', 'SYNABUN_TOOLS', 'SYNABUN_TOOLS_PATH', 'SYNABUN_TOOL_CATALOG_MODE', 'SYNABUN_ROLE', 'SYNABUN_AGY_POLICY_URL', 'SYNABUN_AGY_POLICY_TOKEN']) delete inherited[key];
+  for (const key of ['SYNABUN_PROFILE', 'SYNABUN_RUNTIME_PROFILE_PATH', 'SYNABUN_TOOLS', 'SYNABUN_TOOLS_PATH', 'SYNABUN_TOOL_CATALOG_MODE', 'SYNABUN_ROLE', 'SYNABUN_AGY_POLICY_URL', 'SYNABUN_AGY_POLICY_TOKEN', TERMINAL_TOKEN_ENV]) delete inherited[key];
   for (const key of Array.isArray(unsetEnv) ? unsetEnv : []) delete inherited[key];
   delete inherited.SYNABUN_BRAIN_TOKEN;
   for (const key of LIVE_DATA_ENV) delete inherited[key];

@@ -6358,7 +6358,7 @@
     transition: background 0.2s, border-color 0.2s;
   }
   #toolbar-show-btn[hidden],
-  body:not(:has(#static-bg.visible)) #toolbar-show-btn,
+  :root:not(.static-bg-visible) #toolbar-show-btn,
   body.fe-editor-open #toolbar-show-btn {
     display: none;
   }
@@ -6411,7 +6411,10 @@
     --topright-row: calc(298px + var(--topright-buttons));
     --topright-compact: clamp(0, tan(atan2(calc(var(--topright-row) + 45px - var(--topright-band)), 0.01px)), 1);
   }
-  :root:has(#topright-update-btn[style*="none"]) {
+  /* No update button in the row. The state is a class on <html> (ui-update.js applyTopRightButton), not
+     `:root:has(#topright-update-btn[style*="none"])`: a `[style]` test anchored on the root made every inline style
+     change anywhere re-style the whole page (tests/css-has-performance.test.mjs). */
+  :root:not(.topright-update-shown) {
     --topright-row: calc(266px + var(--topright-buttons));
   }
   @container style(--topright-compact: 1) {
@@ -6431,7 +6434,8 @@
   :root {
     --topright-tray-inset: 0px;
   }
-  :root:has(#static-bg.visible) {
+  /* Focus Mode's board is showing: html.static-bg-visible, set with #static-bg.visible (static-bg-state.js). */
+  :root.static-bg-visible {
     --topright-tray-inset: 50px;
   }
   #topright-controls > #term-minimized-tray {
@@ -6628,7 +6632,7 @@
     box-shadow: 0 0 0 2px rgba(18, 18, 22, 0.9);
     pointer-events: none;
   }
-  #topright-controls.tools-hidden:has(#topright-update-btn:not([style*="none"])) .topright-tools-dot {
+  :root.topright-update-shown #topright-controls.tools-hidden .topright-tools-dot {
     display: block;
   }
 
@@ -13830,6 +13834,8 @@
   .settings-panel .settings-nav-item[data-status="disconnected"]::after { background: transparent; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.5); }
   .settings-panel .settings-nav-item.active[data-status="connected"]::after { background: #fff; }
   .settings-panel .settings-nav-item.active[data-status="disconnected"]::after { box-shadow: inset 0 0 0 1px rgba(255,255,255,0.85); }
+  /* No owner access (ui-owner-access.js): the inline alert's warning tint, a ring like "Off" so it is not a state */
+  .settings-panel .settings-nav-item[data-status="refused"]::after { background: transparent; box-shadow: inset 0 0 0 1.5px #ffb74d; }
 
   .stg-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
   .stg-main > .settings-content { flex: 1; min-height: 0; padding: 22px 24px 28px; }
@@ -13993,7 +13999,9 @@
     display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 16px; align-items: center;
   }
   .settings-panel .stg-field:has(> :is(.cc-dropdown, select, .recall-toggle, input[type="number"], .cc-toggle)) > label { grid-column: 1; margin: 0; }
-  .settings-panel .stg-field:has(> :is(.cc-dropdown, select, .recall-toggle, input[type="number"], .cc-toggle)) > :not(label):not(.stg-help) { grid-column: 2; grid-row: 1 / span 2; justify-self: end; }
+  /* The control itself, named: a subject that matches nearly every element (`> :not(label):not(.stg-help)`) behind a
+     :has() made each whole-page re-style cost tens of ms (tests/css-has-performance.test.mjs). */
+  .settings-panel .stg-field:has(> :is(.cc-dropdown, select, .recall-toggle, input[type="number"], .cc-toggle)) > :is(.cc-dropdown, select, .recall-toggle, input[type="number"], .cc-toggle) { grid-column: 2; grid-row: 1 / span 2; justify-self: end; }
   .settings-panel .stg-field:has(> :is(.cc-dropdown, select, .recall-toggle, input[type="number"], .cc-toggle)) > .stg-help { grid-column: 1; grid-row: 2; }
   .settings-panel .stg-toggle-field {
     display: flex; align-items: center; gap: 16px;
@@ -15112,7 +15120,7 @@
   .settings-panel .stg-card-body > :is(.stg-help, .settings-hint, .cc-hint, .setup-hint, p):first-child { margin-top: 10px !important; }
   /* a closed row-card keeps no trace of its body (no stray hairline or gap under the row) */
   .settings-panel .stg-card-body .stg-card[data-collapsible].collapsed > .stg-card-body,
-  .settings-panel .stg-card-body .stg-card[data-collapsible] > .stg-card-body:not(:has(> :not([style*="display:none"]):not([style*="display: none"]):not([hidden]))) { margin-top: 0; border-top: 0; }
+  .settings-panel .stg-card-body .stg-card[data-collapsible] > .stg-card-body[data-empty] { margin-top: 0; border-top: 0; }
 
   /* ── Chevrons and disclosure triangles: 10px, quiet ── */
   .settings-panel :is(.cc-section-chevron, .cc-panel-chevron, .stg-model-expand-icon) { width: 10px !important; height: 10px !important; stroke: rgba(255,255,255,0.45) !important; }
@@ -29092,8 +29100,94 @@
   outline: 2px solid var(--stg-focus, #93c5fd);
   outline-offset: 2px;
 }
-body:has(.update-check-toast:not(.crash-notice)) .crash-notice { bottom: auto; top: 64px; }
+/* Another update toast on the page (both are children of <body>): its sibling, before or after it. Not
+   `body:has(…)`, which re-checks the whole page on every change (tests/css-has-performance.test.mjs). */
+.update-check-toast:not(.crash-notice) ~ .crash-notice,
+.crash-notice:has(~ .update-check-toast:not(.crash-notice)) { bottom: auto; top: 64px; }
 @media (prefers-reduced-motion: reduce) { .crash-notice { transition: none; } }
+/* The banner of a degraded owner authority (ui-owner-authority.js): the update toast's glass and type (DESIGN.md
+   `toast`), at the top centre of the page so it never meets the bottom-right toasts, which replace each other (it is
+   not an .update-check-toast for that reason), non-modal (nothing behind it is blocked), with the warning tint of the
+   inline alert (DESIGN.md `alert`: rgba(255,183,77,.22) border, #ffb74d). */
+.owner-authority-notice {
+  position: fixed;
+  top: 64px;
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  z-index: 300050;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  width: max-content;
+  min-width: 240px;
+  max-width: min(520px, calc(100vw - 40px));
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(20, 20, 24, 0.85);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid rgba(255, 183, 77, 0.22);
+  color: var(--t-text);
+  font-size: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  pointer-events: auto;
+}
+.owner-authority-notice.show { opacity: 1; transform: translateY(0); }
+.owner-authority-icon {
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 14px;
+  flex-shrink: 0;
+  background: rgba(255, 183, 77, 0.18);
+  color: #ffb74d;
+}
+.owner-authority-body { flex: 1; min-width: 0; }
+.owner-authority-title { font-weight: 600; margin-bottom: 4px; }
+.owner-authority-sub { color: var(--t-muted); overflow-wrap: anywhere; margin-top: 2px; }
+.owner-authority-reason { font-family: var(--ff-mono, ui-monospace, Menlo, monospace); font-size: 11px; }
+.owner-authority-hint { color: var(--t-muted); opacity: 0.7; margin-top: 6px; font-size: 11px; overflow-wrap: anywhere; }
+.owner-authority-notice .action-btn:focus-visible {
+  outline: 2px solid var(--stg-focus, #93c5fd);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) { .owner-authority-notice { transition: none; } }
+/* The banner of a page without the owner's access (ui-owner-access.js): the same banner, below the one above when
+   both show. A panel whose data was refused shows the "No access" block (the inline alert's warning tint, DESIGN.md
+   `alert`; the card radius and the md spacing) in place of an empty list or default values. */
+.owner-authority-notice ~ .owner-access-notice { top: 168px; }
+.owner-no-access {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 183, 77, 0.22);
+  background: rgba(255, 183, 77, 0.06);
+  color: var(--t-text);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: left;
+}
+.owner-no-access--compact { margin: 12px; }
+.owner-no-access-icon {
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 12px;
+  flex-shrink: 0;
+  background: rgba(255, 183, 77, 0.18);
+  color: #ffb74d;
+}
+.owner-no-access-body { flex: 1; min-width: 0; }
+.owner-no-access-title { font-weight: 600; margin-bottom: 2px; }
+.owner-no-access-desc { color: var(--t-muted); overflow-wrap: anywhere; }
+.owner-access-disabled { cursor: not-allowed; opacity: 0.5; }
 
 .update-channel-pill {
   display: inline-block;

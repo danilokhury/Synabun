@@ -207,7 +207,10 @@ const HELPERS = [BSKY_SESSION_JS, BSKY_XRPC_JS, BSKY_NORMURI_JS, BSKY_UPLOAD_JS,
 interface SessionArgs { sessionId?: string; tabId?: string }
 interface CursorArgs extends SessionArgs { limit?: number; cursor?: string; maxItems?: number }
 /** `expired`: the server rejected the token; `wrote`: a write had already landed in that script. */
-type BskyResult = { data: any } | { error: string; expired?: boolean; wrote?: boolean };
+type PacedWrite = { retryAfterMs: number; waitedMs: number; gapMinMs: number; gapMaxMs: number };
+/** `missingRoute`: the script did not run, because its session or tab was gone. */
+type BskyRead = { data: any } | { error: string; expired?: boolean; wrote?: boolean; missingRoute?: true };
+type BskyResult = BskyRead | { paced: PacedWrite };
 
 const BSKY_APP_URL = 'https://bsky.app/';
 const BSKY_TARGET_PROBE_JS = `(() => {
@@ -241,9 +244,34 @@ function isSafeBlankTarget(target: BskyPageTarget): boolean {
   return href === '' || /^about:blank(?:[?#].*)?$/.test(href);
 }
 
-async function inspectBlueskyTarget(sessionId: string, tabId?: string): Promise<BskyPageTarget | { error: string }> {
-  const inspected = await ni.evaluate(sessionId, BSKY_TARGET_PROBE_JS, tabId);
-  if (inspected.error) return { error: `Could not inspect the assigned BlueSky tab: ${inspected.error}` };
+/**
+ * The session and tab one tool call works in. When the session or tab a step names is gone, the Neural Interface
+ * client may run that step on the run's replacement tab instead and say so (`rerouted`); every later step of the
+ * call then follows it. Keeping the old id is what failed on 2026-11-04: the probe read the replacement tab
+ * (about:blank), the navigation went to the closed session and answered "Session not found".
+ */
+type PageRoute = { sessionId: string; tabId?: string };
+/** A step that failed because its session or tab is gone, before anything ran: the call may find its tab again once. */
+type StepError = { error: string; missingRoute?: true };
+
+function follow(route: PageRoute, res: ni.NiResponse | null | undefined): void {
+  const next = res?.rerouted;
+  if (next && typeof next.sessionId === 'string' && next.sessionId) {
+    route.sessionId = next.sessionId;
+    route.tabId = next.tabId || undefined;
+  }
+}
+
+/** Same test as the client's isMissingRoute: the server refused before starting anything (SESSION_NOT_FOUND / TAB_NOT_FOUND). */
+function missingRoute(res: ni.NiResponse | null | undefined): boolean {
+  return !!res && res.actionStarted === false && (res.code === 'SESSION_NOT_FOUND' || res.code === 'TAB_NOT_FOUND');
+}
+const stepError = (error: string, res?: ni.NiResponse | null): StepError => (missingRoute(res) ? { error, missingRoute: true } : { error });
+
+async function inspectBlueskyTarget(route: PageRoute): Promise<BskyPageTarget | StepError> {
+  const inspected = await ni.evaluate(route.sessionId, BSKY_TARGET_PROBE_JS, route.tabId);
+  follow(route, inspected);
+  if (inspected.error) return stepError(`Could not inspect the assigned BlueSky tab: ${inspected.error}`, inspected);
   const target = inspected.result as Partial<BskyPageTarget> | null;
   if (!target || typeof target.href !== 'string') {
     return { error: 'Could not inspect the assigned BlueSky tab: invalid page context response.' };
@@ -265,10 +293,11 @@ async function inspectBlueskyTarget(sessionId: string, tabId?: string): Promise<
 export async function ensureBlueskyPageTarget(
   sessionId: string,
   tabId?: string,
-): Promise<{ ok: true; target: BskyPageTarget } | { error: string }> {
-  const inspected = await inspectBlueskyTarget(sessionId, tabId);
+  route: PageRoute = { sessionId, tabId },
+): Promise<{ ok: true; target: BskyPageTarget; route: PageRoute } | StepError> {
+  const inspected = await inspectBlueskyTarget(route);
   if ('error' in inspected) return inspected;
-  if (isBlueskyTarget(inspected)) return { ok: true, target: inspected };
+  if (isBlueskyTarget(inspected)) return { ok: true, target: inspected, route };
 
   const pageLabel = inspected.href || '(empty URL)';
   if (!inspected.topLevel) {
@@ -280,17 +309,18 @@ export async function ensureBlueskyPageTarget(
     };
   }
 
-  const navigated = await ni.navigate(sessionId, BSKY_APP_URL, tabId, undefined, 'none');
+  const navigated = await ni.navigate(route.sessionId, BSKY_APP_URL, route.tabId, undefined, 'none');
+  follow(route, navigated);
   if (navigated.error) {
-    return { error: `Could not initialize the blank BlueSky tab at ${BSKY_APP_URL}: ${navigated.error}` };
+    return stepError(`Could not initialize the blank BlueSky tab at ${BSKY_APP_URL}: ${navigated.error}`, navigated);
   }
 
-  const verified = await inspectBlueskyTarget(sessionId, tabId);
+  const verified = await inspectBlueskyTarget(route);
   if ('error' in verified) return verified;
   if (!isBlueskyTarget(verified)) {
     return { error: `BlueSky tab initialization ended at ${verified.href || '(empty URL)'} instead of ${BSKY_APP_URL}.` };
   }
-  return { ok: true, target: verified };
+  return { ok: true, target: verified, route };
 }
 
 // JSON literal safe to embed inside JS source (escape the two line separators
@@ -306,14 +336,22 @@ function clampLimit(n?: number, def = 50, max = 100): number {
   return Math.min(n, max);
 }
 
-async function evalBsky(sessionId: string, tabId: string | undefined, body: string): Promise<BskyResult> {
+async function evalBsky(sessionId: string, tabId: string | undefined, body: string, pace?: ni.SocialWritePace): Promise<BskyResult> {
   // The Neural Interface runs this via page.evaluate(string), which compiles the
   // whole string as ONE expression — so the helper function declarations must
   // live INSIDE the IIFE, not before it (a leading `function ...` is not an
   // expression and throws "Unexpected token").
   const script = `(async () => {\n${HELPERS}\n${body}\n})()`;
-  const res = await ni.evaluate(sessionId, script, tabId);
-  if (res.error) return { error: `BlueSky call failed: ${res.error}` };
+  // Never run on a replacement tab the client picks by itself: that tab is about:blank, not the bsky.app page this
+  // call prepared. A gone session or tab comes back as missingRoute, and runPrepared prepares the run's new tab first.
+  const res = await ni.evaluate(sessionId, script, tabId, { recover: false, ...(pace && { pace }) });
+  if (res.error) return { error: `BlueSky call failed: ${res.error}`, ...(missingRoute(res) && { missingRoute: true as const }) };
+  // An automation's write waits out the account's gap inside the Neural Interface; when more of it is left than
+  // this call may wait, nothing ran and the answer says how much is left (the next call waits the rest).
+  const paced = res.paced as (Partial<PacedWrite> & { pending?: boolean }) | undefined;
+  if (paced?.pending) {
+    return { paced: { retryAfterMs: Number(paced.retryAfterMs) || 0, waitedMs: Number(paced.waitedMs) || 0, gapMinMs: Number(paced.gapMinMs) || 0, gapMaxMs: Number(paced.gapMaxMs) || 0 } };
+  }
   const r = res.result as any;
   if (r && r.__bskyError) return { error: r.__bskyError, expired: r.__bskyExpired === true, wrote: r.__bskyWrote === true };
   return { data: r };
@@ -341,8 +379,9 @@ type TokenState = {
   error?: string;
   expiresAt?: number;
   pageAgeMs?: number | null;
+  missingRoute?: true;
 };
-type FreshSession = { ok: true; reloaded: boolean } | { error: string };
+type FreshSession = { ok: true; reloaded: boolean } | StepError;
 type OutOfTime = { error: string; timedOut: true };
 
 const NOT_LOGGED_IN = 'Not logged in to BlueSky (no session token found on this page). Open a bsky.app tab, sign in, then retry.';
@@ -360,10 +399,11 @@ function beforeDeadline<T>(work: Promise<T>, deadlineAt: number, what: string): 
 }
 const timedOut = (value: unknown): value is OutOfTime => !!value && typeof value === 'object' && (value as OutOfTime).timedOut === true;
 
-async function readTokenState(sessionId: string, tabId: string | undefined, deadlineAt: number): Promise<TokenState> {
-  const res = await beforeDeadline(ni.evaluate(sessionId, TOKEN_STATE_SCRIPT, tabId), deadlineAt, 'reading the BlueSky session token');
+async function readTokenState(route: PageRoute, deadlineAt: number): Promise<TokenState> {
+  const res = await beforeDeadline(ni.evaluate(route.sessionId, TOKEN_STATE_SCRIPT, route.tabId), deadlineAt, 'reading the BlueSky session token');
   if (timedOut(res)) return { state: 'error', error: res.error };
-  if (res.error) return { state: 'error', error: `BlueSky call failed: ${res.error}` };
+  follow(route, res);
+  if (res.error) return { state: 'error', error: `BlueSky call failed: ${res.error}`, ...(missingRoute(res) && { missingRoute: true as const }) };
   const r = res.result as TokenState | null;
   if (!r || typeof r.state !== 'string') return { state: 'error', error: 'BlueSky call failed: invalid session probe response.' };
   return r;
@@ -371,10 +411,12 @@ async function readTokenState(sessionId: string, tabId: string | undefined, dead
 
 /** Poll until the page holds a usable token (or none at all), the wait ends, or the
  *  call's deadline passes. `staleExpiresAt` names a token the server already rejected. */
-async function waitForToken(sessionId: string, tabId: string | undefined, timeoutMs: number, deadlineAt: number, staleExpiresAt?: number): Promise<TokenState> {
+async function waitForToken(route: PageRoute, timeoutMs: number, deadlineAt: number, staleExpiresAt?: number): Promise<TokenState> {
   const waitUntil = Math.min(Date.now() + timeoutMs, deadlineAt);
   for (;;) {
-    const st = await readTokenState(sessionId, tabId, deadlineAt);
+    const st = await readTokenState(route, deadlineAt);
+    // The tab is gone: polling it again cannot help (the caller finds it again).
+    if (st.missingRoute) return st;
     const renewed = staleExpiresAt === undefined || st.expiresAt !== staleExpiresAt;
     // A page mid-reload can fail to evaluate for a moment; keep polling.
     if (st.state === 'none' || (tokenUsable(st) && renewed)) return st;
@@ -392,52 +434,90 @@ async function waitForToken(sessionId: string, tabId: string | undefined, timeou
 export async function ensureFreshBlueskySession(
   sessionId: string,
   tabId: string | undefined,
-  opts: { forceReload?: boolean; deadlineAt?: number } = {},
+  opts: { forceReload?: boolean; deadlineAt?: number; route?: PageRoute } = {},
 ): Promise<FreshSession> {
   const by = opts.deadlineAt ?? Date.now() + BSKY_CALL_BUDGET_MS - BSKY_SCRIPT_RESERVE_MS;
-  const first = await readTokenState(sessionId, tabId, by);
+  const route = opts.route || { sessionId, tabId };
+  const first = await readTokenState(route, by);
   if (first.state === 'none') return { error: first.error || NOT_LOGGED_IN };
-  if (first.state === 'error') return { error: first.error || 'BlueSky call failed.' };
+  if (first.state === 'error') return { error: first.error || 'BlueSky call failed.', ...(first.missingRoute && { missingRoute: true as const }) };
   if (!opts.forceReload) {
     if (tokenUsable(first)) return { ok: true, reloaded: false };
     const pageAge = typeof first.pageAgeMs === 'number' ? first.pageAgeMs : Infinity;
     if (pageAge < TOKEN_BOOT_WINDOW_MS) {
-      const booted = await waitForToken(sessionId, tabId, TOKEN_BOOT_WAIT_MS, by);
+      const booted = await waitForToken(route, TOKEN_BOOT_WAIT_MS, by);
       if (booted.state === 'none') return { error: booted.error || NOT_LOGGED_IN };
+      if (booted.missingRoute) return { error: booted.error || 'BlueSky call failed.', missingRoute: true };
       if (tokenUsable(booted)) return { ok: true, reloaded: false };
     }
   }
   // Reload this bsky.app tab once so the app resumes its session and renews the token.
-  const reloaded = await beforeDeadline(ni.reload(sessionId, tabId), by, 'reloading the bsky.app tab to renew the session');
+  const reloaded = await beforeDeadline(ni.reload(route.sessionId, route.tabId), by, 'reloading the bsky.app tab to renew the session');
   if (timedOut(reloaded)) return { error: `BlueSky token expired, and this call ran out of its ${BSKY_CALL_BUDGET_MS / 1000} s time limit while reloading the bsky.app tab to renew it. Try again; the next call starts with a fresh time limit.` };
-  if (reloaded.error) return { error: `BlueSky token expired, and reloading the bsky.app tab to renew it failed: ${reloaded.error}` };
-  const after = await waitForToken(sessionId, tabId, TOKEN_RELOAD_WAIT_MS, by, opts.forceReload ? first.expiresAt : undefined);
+  follow(route, reloaded);
+  if (reloaded.error) return stepError(`BlueSky token expired, and reloading the bsky.app tab to renew it failed: ${reloaded.error}`, reloaded);
+  const after = await waitForToken(route, TOKEN_RELOAD_WAIT_MS, by, opts.forceReload ? first.expiresAt : undefined);
   if (after.state === 'none') {
     return { error: 'Not logged in to BlueSky: after reloading the bsky.app tab the page holds no session (the account was signed out). Sign in again in this browser profile, then retry.' };
   }
   if (tokenUsable(after)) return { ok: true, reloaded: true };
-  if (after.state === 'error') return { error: `BlueSky token expired, and the bsky.app tab could not be read after reloading it: ${after.error}` };
+  if (after.state === 'error') return { error: `BlueSky token expired, and the bsky.app tab could not be read after reloading it: ${after.error}`, ...(after.missingRoute && { missingRoute: true as const }) };
   if (Date.now() >= by) return { error: 'BlueSky token was still expired when this call\'s time limit ran out (the bsky.app tab was reloaded once). Try again; the next call starts with a fresh time limit.' };
   return { error: 'BlueSky token is still expired after waiting for bsky.app to renew it and reloading the tab once, so the saved session could not be renewed. Open bsky.app in this browser profile and sign in again if it asks.' };
 }
 
-type BskyRoute = { sessionId: string; tabId?: string; reloaded: boolean; deadlineAt: number };
+type BskyRoute = { sessionId: string; tabId?: string; reloaded: boolean; deadlineAt: number; args: SessionArgs };
 
 /** Resolve the caller's tab in the default browser, make sure it is a
  *  top-level bsky.app page, and make sure it holds a usable session token — all
- *  before the call's deadline minus the time kept for the tool's own request. */
-async function prepareBsky(args: SessionArgs, deadlineAt = Date.now() + BSKY_CALL_BUDGET_MS): Promise<BskyRoute | { error: string }> {
+ *  before the call's deadline minus the time kept for the tool's own request.
+ *  `refresh`: the route this caller had is gone; resolve it again without the cache (a pinned run gets its
+ *  replacement tab, the one the next calls use too). */
+async function prepareOnce(args: SessionArgs, deadlineAt: number, refresh: boolean): Promise<BskyRoute | StepError> {
   const prepBy = deadlineAt - BSKY_SCRIPT_RESERVE_MS;
-  const resolved = await beforeDeadline(ni.resolveSession(args.sessionId, undefined, args.tabId, { platform: true }), prepBy, 'finding the bsky.app tab');
+  const find = refresh ? ni.refreshSession : ni.resolveSession;
+  const resolved = await beforeDeadline(find(args.sessionId, undefined, args.tabId, { platform: true }), prepBy, 'finding the bsky.app tab');
   if ('error' in resolved) return { error: resolved.error };
-  const ready = await beforeDeadline(ensureBlueskyPageTarget(resolved.sessionId, resolved.tabId), prepBy, 'opening bsky.app');
-  if ('error' in ready) return { error: ready.error };
-  const fresh = await ensureFreshBlueskySession(resolved.sessionId, resolved.tabId, { deadlineAt: prepBy });
+  const route: PageRoute = { sessionId: resolved.sessionId, tabId: resolved.tabId };
+  const ready = await beforeDeadline(ensureBlueskyPageTarget(route.sessionId, route.tabId, route), prepBy, 'opening bsky.app');
+  if ('error' in ready) return ready;
+  const fresh = await ensureFreshBlueskySession(route.sessionId, route.tabId, { deadlineAt: prepBy, route });
   if ('error' in fresh) return fresh;
-  return { sessionId: resolved.sessionId, tabId: resolved.tabId, reloaded: fresh.reloaded, deadlineAt };
+  return { sessionId: route.sessionId, tabId: route.tabId, reloaded: fresh.reloaded, deadlineAt, args };
 }
 
+/** Time enough before the script's reserve to find the run's tab again and prepare it. */
+const canFindAgain = (deadlineAt: number) => deadlineAt - BSKY_SCRIPT_RESERVE_MS - Date.now() >= BSKY_RENEW_MIN_MS;
+
+async function prepareBsky(args: SessionArgs, deadlineAt = Date.now() + BSKY_CALL_BUDGET_MS): Promise<BskyRoute | StepError> {
+  const first = await prepareOnce(args, deadlineAt, false);
+  // The session or tab this caller had is gone (another automation closed the browser, a wedged session was
+  // retired) and the client could not move the step by itself: find the run's tab again, once.
+  if ('error' in first && first.missingRoute && canFindAgain(deadlineAt)) {
+    const again = await prepareOnce(args, deadlineAt, true);
+    if ('error' in again) return { error: `${ROUTE_GONE} Finding this run's tab again failed: ${again.error}` };
+    return again;
+  }
+  return first;
+}
+
+/** What a call says when the browser tab it used went away under it. */
+const ROUTE_GONE = 'The browser tab this BlueSky call used was closed (its browser session ended or was replaced).';
+
 const UNCERTAIN = 'It may still finish in the page, so check the account before repeating a post, like, follow or message.';
+const UNCERTAIN_PACED = 'It may still be waiting for its pacing gap and then finish in the page, so check the account before repeating it.';
+
+/** Bluesky writes of an automation are spaced by SynaBun: what a write tool's description says about it. */
+const PACING_NOTE = ' In a scheduled automation SynaBun spaces Bluesky writes (posts, replies, likes, reposts, follows and their undos, DMs) a minute or two apart inside this call: never sleep, start a background shell or a Monitor, or end your turn to wait between writes. When the gap needs longer than one call, the call writes nothing, says so, and the next identical call waits the rest.';
+
+function pacedText(tool: string, paced: PacedWrite) {
+  const secs = (ms: number) => Math.max(1, Math.ceil((Number(ms) || 0) / 1000));
+  const range = paced.gapMinMs && paced.gapMaxMs ? ` ${secs(paced.gapMinMs)}-${secs(paced.gapMaxMs)} s apart` : '';
+  return text(`Not written yet: SynaBun spaces this automation's Bluesky writes${range}`
+    + `${paced.waitedMs > 0 ? `, and this call waited ${secs(paced.waitedMs)} s of the gap` : ''}; about ${secs(paced.retryAfterMs)} s are left. `
+    + `Call ${tool} again now with the same arguments: the call itself waits out the rest, then writes. `
+    + 'Do not sleep, start a background shell or a Monitor, or end your turn to wait.');
+}
 
 /**
  * Run a script on a prepared tab, within the call's deadline. When the server still
@@ -445,30 +525,58 @@ const UNCERTAIN = 'It may still finish in the page, so check the account before 
  * once more — only if nothing was written yet, the tab was not already reloaded
  * for this call, and there is time left — so no post, like or message can repeat.
  */
-async function runPrepared(route: BskyRoute, body: string): Promise<BskyResult> {
-  const first = await beforeDeadline(evalBsky(route.sessionId, route.tabId, body), route.deadlineAt, 'waiting for BlueSky to answer');
-  if (timedOut(first)) return { error: `${first.error} ${UNCERTAIN}` };
-  if (!('error' in first) || !first.expired) return first;
+async function runPrepared(route: BskyRoute, body: string, opts: { write?: boolean } = {}): Promise<BskyResult> {
+  // A write may wait for the account's pacing gap with whatever this call's budget leaves after the script's own
+  // reserve; the Neural Interface paces only an automation's writes (an interactive call never waits).
+  const paceNow = () => (opts.write ? { platform: 'bluesky' as const, maxWaitMs: Math.max(0, route.deadlineAt - BSKY_SCRIPT_RESERVE_MS - Date.now()) } : undefined);
+  let pace = paceNow();
+  let first = await beforeDeadline(evalBsky(route.sessionId, route.tabId, body, pace), route.deadlineAt, 'waiting for BlueSky to answer');
+  if (timedOut(first)) return { error: `${first.error} ${pace ? UNCERTAIN_PACED : UNCERTAIN}` };
+  if ('error' in first && first.missingRoute) {
+    // The script never ran (and took no pacing slot): its tab was closed before it started, or while the write
+    // waited for its gap. Find the run's tab again (a replacement starts blank: it is opened at bsky.app and its
+    // token checked), then run the script there once. Never more than once, so nothing can repeat.
+    const nothing = opts.write ? 'Nothing was written' : 'Nothing was read';
+    if (!canFindAgain(route.deadlineAt)) return { error: `${ROUTE_GONE} ${nothing}; call it again now: the next call finds the run's tab first.` };
+    const again = await prepareOnce(route.args, route.deadlineAt, true);
+    if ('error' in again) return { error: `${ROUTE_GONE} ${nothing}, and finding this run's tab again failed: ${again.error}` };
+    Object.assign(route, again);
+    pace = paceNow();
+    first = await beforeDeadline(evalBsky(route.sessionId, route.tabId, body, pace), route.deadlineAt, 'waiting for BlueSky to answer');
+    if (timedOut(first)) return { error: `${first.error} ${pace ? UNCERTAIN_PACED : UNCERTAIN}` };
+    if ('error' in first && first.missingRoute) return { error: `${ROUTE_GONE} ${nothing}; the replacement tab closed too. ${first.error}` };
+  }
+  if ('paced' in first || !('error' in first) || !first.expired) return first;
   if (first.wrote || route.reloaded) {
     return { error: `${first.error} The bsky.app tab was ${route.reloaded ? 'already reloaded once for this call' : 'not retried because part of this action was already written'}; check the account before trying again.`, expired: true, wrote: first.wrote };
   }
   if (route.deadlineAt - Date.now() < BSKY_SCRIPT_RESERVE_MS + BSKY_RENEW_MIN_MS) {
     return { error: `${first.error} Not enough of this call's time limit is left to renew the session and try again; the next BlueSky call renews it first.`, expired: true, wrote: false };
   }
-  const renewed = await ensureFreshBlueskySession(route.sessionId, route.tabId, { forceReload: true, deadlineAt: route.deadlineAt - BSKY_SCRIPT_RESERVE_MS });
-  if ('error' in renewed) return renewed;
-  const second = await beforeDeadline(evalBsky(route.sessionId, route.tabId, body), route.deadlineAt, 'waiting for BlueSky to answer the retry');
+  const renewed = await ensureFreshBlueskySession(route.sessionId, route.tabId, { forceReload: true, deadlineAt: route.deadlineAt - BSKY_SCRIPT_RESERVE_MS, route });
+  if ('error' in renewed) return { error: renewed.error };
+  // The first attempt wrote nothing (it took no pacing slot): the retry goes through the same queue, at once.
+  const second = await beforeDeadline(evalBsky(route.sessionId, route.tabId, body, pace ? { platform: 'bluesky', maxWaitMs: 0 } : undefined), route.deadlineAt, 'waiting for BlueSky to answer the retry');
   if (timedOut(second)) return { error: `${second.error} ${UNCERTAIN}` };
+  if ('paced' in second) return second;
   if ('error' in second && second.expired) {
     return { error: `${second.error} It was still rejected after the bsky.app tab renewed its session; sign in again in this browser profile if bsky.app asks.`, expired: true, wrote: second.wrote };
   }
   return second;
 }
 
-async function runBsky(args: SessionArgs, body: string): Promise<BskyResult> {
+/** A read: never paced. */
+async function runBsky(args: SessionArgs, body: string): Promise<BskyRead> {
   const route = await prepareBsky(args);
   if ('error' in route) return route;
-  return runPrepared(route, body);
+  return runPrepared(route, body) as Promise<BskyRead>;
+}
+
+/** A write (post, reply, like, follow, DM…): an automation's waits out the account's pacing gap. */
+async function runBskyWrite(args: SessionArgs, body: string): Promise<BskyResult> {
+  const route = await prepareBsky(args);
+  if ('error' in route) return route;
+  return runPrepared(route, body, { write: true });
 }
 
 // ── Trimmers: shrink verbose AT Proto views to the useful, token-cheap fields ──
@@ -849,7 +957,7 @@ const blueskyPostSchema = {
   ...sessionFields,
 };
 const blueskyPostDescription =
-  'BlueSky: publish a post. Supports plain text with auto-facets (@mentions, links, #hashtags), replies (replyTo), quote-posts (quote), and up to 4 images (by url or local path, each with alt text). A link card (OG preview with thumbnail) is auto-generated for the first URL when the post has no images and no quote. Returns the new post uri+cid.';
+  'BlueSky: publish a post. Supports plain text with auto-facets (@mentions, links, #hashtags), replies (replyTo), quote-posts (quote), and up to 4 images (by url or local path, each with alt text). A link card (OG preview with thumbnail) is auto-generated for the first URL when the post has no images and no quote. Returns the new post uri+cid.' + PACING_NOTE;
 async function handleBlueskyPost(args: {
   text: string; replyTo?: string; quote?: string;
   images?: Array<{ url?: string; path?: string; alt?: string }>; langs?: string[];
@@ -971,7 +1079,8 @@ async function handleBlueskyPost(args: {
     if (cr.__bskyError) return cr;
     return { uri: cr.uri, cid: cr.cid };`;
 
-  const r = await runPrepared(resolved, body);
+  const r = await runPrepared(resolved, body, { write: true });
+  if ('paced' in r) return pacedText('bluesky_post', r.paced);
   if ('error' in r) return text(r.error);
   return text(`Posted to BlueSky: ${JSON.stringify({ uri: r.data.uri, cid: r.data.cid })}`);
 }
@@ -987,7 +1096,8 @@ const blueskyActionSchema = {
   ...sessionFields,
 };
 const blueskyActionDescription =
-  'BlueSky: act on a post or actor. Post: like/unlike, repost/unrepost, delete (your own). Actor: follow/unfollow, mute/unmute, block/unblock. Undo actions resolve the record key automatically — never pass rkeys.';
+  'BlueSky: act on a post or actor. Post: like/unlike, repost/unrepost, delete (your own). Actor: follow/unfollow, mute/unmute, block/unblock. Undo actions resolve the record key automatically — never pass rkeys.' + PACING_NOTE;
+const PACED_ACTIONS = new Set(['like', 'unlike', 'repost', 'unrepost', 'follow', 'unfollow']);
 async function handleBlueskyAction(args: { action: string; target: string } & SessionArgs) {
   const body = `
     var ACTION = ${jsLit(args.action)};
@@ -1064,7 +1174,9 @@ async function handleBlueskyAction(args: { action: string; target: string } & Se
       return { ok:true, action:'delete', uri: uri };
     }
     return { __bskyError: 'Unknown action: ' + ACTION };`;
-  const r = await runBsky(args, body);
+  // Engagement and its undos are spaced like posts; moderation and deleting one's own record are not.
+  const r = PACED_ACTIONS.has(args.action) ? await runBskyWrite(args, body) : await runBsky(args, body);
+  if ('paced' in r) return pacedText('bluesky_action', r.paced);
   if ('error' in r) return text(r.error);
   return text(`BlueSky action: ${JSON.stringify(r.data)}`);
 }
@@ -1104,7 +1216,7 @@ const blueskyDmSchema = {
   ...cursorFields, ...sessionFields,
 };
 const blueskyDmDescription =
-  'BlueSky DMs (chat.bsky.*): list_convos, read messages in a convo, send a message (by convoId or members), or mark_read. Returns compact JSON.';
+  'BlueSky DMs (chat.bsky.*): list_convos, read messages in a convo, send a message (by convoId or members), or mark_read. Returns compact JSON.' + PACING_NOTE;
 async function handleBlueskyDm(args: { action: string; convoId?: string; members?: string[]; text?: string } & CursorArgs) {
   const proxy = jsLit(CHAT_PROXY);
   if (args.action === 'list_convos') {
@@ -1145,7 +1257,8 @@ async function handleBlueskyDm(args: { action: string; convoId?: string; members
       var sm = await __bskyXrpc('chat.bsky.convo.sendMessage', { verb:'POST', proxy: ${proxy}, body:{ convoId: convoId, message: { text: ${jsLit(args.text)} } } });
       if (sm.__bskyError) return sm;
       return { ok:true, convoId: convoId, messageId: sm.id, sentAt: sm.sentAt };`;
-    const r = await runBsky(args, body);
+    const r = await runBskyWrite(args, body);
+    if ('paced' in r) return pacedText('bluesky_dm', r.paced);
     if ('error' in r) return text(r.error);
     return text(`DM sent: ${JSON.stringify(r.data)}`);
   }

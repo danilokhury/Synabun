@@ -27,6 +27,7 @@ import { registerDiscordTools } from './tools/discord.js';
 import { registerGitTools } from './tools/git.js';
 import { registerImageTools } from './tools/image.js';
 import { registerGscTools } from './tools/gsc.js';
+import { withRouteFlows } from './services/browser-route-flow.js';
 import { registerYoutubeTools } from './tools/youtube.js';
 import { registerStyleGuideTools } from './tools/style-guide.js';
 import { registerMoreLoginTools } from './tools/morelogin.js';
@@ -80,17 +81,22 @@ function buildServerInstructions(runtime: ToolRuntime): string {
 let _lastInstructionsSig: string | null = null;
 
 /** One registrar per catalog group (services/tool-catalog.ts): registering is iterating the catalog. */
+// Browser groups register on a server whose handlers run in a route flow (services/browser-route-flow.ts): a call
+// whose tab is lost midway stops (or, for a read that opens its own page, runs once more) instead of answering for
+// the blank replacement tab. Bluesky recovers by itself (bluesky.ts) and registers on the plain server.
+const routed = (register: (server: McpServer) => RegisteredTool[]) => (server: McpServer) => register(withRouteFlows(server));
+
 const GROUP_REGISTRARS: Readonly<Record<string, (server: McpServer) => RegisteredTool[]>> = Object.freeze({
-  browser: registerBrowserCoreTools,
-  browser_twitter: registerBrowserTwitterTools,
-  browser_facebook: registerBrowserFacebookTools,
-  browser_tiktok: registerBrowserTiktokTools,
-  browser_whatsapp: registerBrowserWhatsappTools,
-  browser_instagram: registerBrowserInstagramTools,
-  browser_linkedin: registerBrowserLinkedinTools,
+  browser: routed(registerBrowserCoreTools),
+  browser_twitter: routed(registerBrowserTwitterTools),
+  browser_facebook: routed(registerBrowserFacebookTools),
+  browser_tiktok: routed(registerBrowserTiktokTools),
+  browser_whatsapp: routed(registerBrowserWhatsappTools),
+  browser_instagram: routed(registerBrowserInstagramTools),
+  browser_linkedin: routed(registerBrowserLinkedinTools),
   browser_bluesky: registerBlueskyTools,
-  gsc: registerGscTools,
-  youtube: registerYoutubeTools,
+  gsc: routed(registerGscTools),
+  youtube: routed(registerYoutubeTools),
   discord: registerDiscordTools,
   whiteboard: registerWhiteboardTools,
   card: registerCardTools,

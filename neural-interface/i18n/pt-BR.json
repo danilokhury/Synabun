@@ -12416,7 +12416,29 @@
     "kindInterrupted": "interrompido"
   },
   "ownerAuthority": {
+    "peerUnavailable": "O SynaBun não conseguiu verificar qual programa enviou isto ({reason}), então se recusou a agir como o dono. Recarregue a página para tentar de novo. Se continuar acontecendo, inicie o SynaBun fora de qualquer sandbox, ou desative esta verificação com SYNABUN_PEER_IDENTITY=off em ~/.synabun/.env e reinicie o SynaBun.",
     "proxyRefused": "Seu navegador chega ao SynaBun por meio de {name} (pid {pid}), um proxy ou relay, então o SynaBun não consegue confirmar que é você e recusou isto. Deixe o navegador se conectar diretamente: adicione localhost e 127.0.0.1 à lista de exceções do proxy (macOS: Ajustes do Sistema › Rede › sua rede › Detalhes › Proxies › Ignorar as configurações de proxy para estes Hosts e Domínios; ou a lista do app de proxy ou da extensão do navegador), ou desative o proxy para o SynaBun e recarregue a página."
+  },
+  "ownerAuthorityNotice": {
+    "label": "Ações do dono pausadas",
+    "title": "O SynaBun não consegue verificar qual programa o está chamando, então as ações do dono estão pausadas.",
+    "body": "Ajustes, arquivos, terminais, os painéis de agentes e o envio de tarefas são recusados até a verificação voltar a funcionar. As páginas e as memórias continuam carregando.",
+    "reason": "Motivo: {reason}",
+    "hint": "Se continuar, inicie o SynaBun fora de qualquer sandbox, ou adicione SYNABUN_PEER_IDENTITY=off a ~/.synabun/.env e reinicie o SynaBun (isso desativa a verificação).",
+    "reload": "Recarregar para tentar de novo",
+    "dismiss": "Dispensar"
+  },
+  "ownerAccess": {
+    "label": "Sem acesso de dono",
+    "title": "Esta página não tem acesso de dono.",
+    "bodyAutomation": "Ela foi aberta pelo navegador de automação do SynaBun, que lê as páginas do SynaBun mas não os seus ajustes, arquivos ou ações. Abra o SynaBun no seu próprio navegador ou no app para desktop.",
+    "bodyOwner": "O SynaBun recusou a esta página os seus ajustes e ações. Recarregue a página; se continuar, abra o SynaBun no seu próprio navegador ou no app para desktop.",
+    "reload": "Recarregar",
+    "dismiss": "Dispensar",
+    "panelTitle": "Sem acesso",
+    "panelBody": "Esta página não tem acesso de dono, então isto não pode ser exibido nem alterado aqui. Abra o SynaBun no seu próprio navegador ou no app para desktop.",
+    "navStatus": "Sem acesso",
+    "actionDisabled": "Requer acesso de dono"
   },
   "toolList": {
     "label": "Ferramentas e servidores MCP",
@@ -12447,6 +12469,8 @@
     "noServers": "Nenhum servidor externo",
     "blockedServer": "Bloqueado em Agentes podem usar",
     "unavailableServer": "Indisponível neste provedor",
+    "unknownServer": "Não verificado: a configuração MCP do provedor não pôde ser lida",
+    "serversUnreadable": "Não foi possível ler a configuração MCP de {providers}; servidores configurados só ali não aparecem.",
     "configuredExternally": "Configurado no provedor"
   },
   "toolGroups": {

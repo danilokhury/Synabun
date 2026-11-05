@@ -15,11 +15,13 @@
 import { sectionOpensByDefault } from './settings-ia.js';
 import { searchSettings, runtimeSearchEntries, highlightParts, SEARCH_LIMIT, SEARCH_QUERY_MAX } from './settings-search.js';
 import { tx, esc } from './settings-kit.js';
+import { watchEmpty } from '../shown-children.js';
 
 const TOGGLE_KEYS = new Set(['Enter', ' ']);
 const KEY_ROLES = '[role="button"], [role="radio"], [role="switch"], [role="checkbox"], [role="tab"], [role="option"]';
 const NATIVE_CONTROLS = 'button, a[href], input, select, textarea, summary';
 const STATE_MIRRORS = '[data-stg-pressed], [data-stg-checked], [data-stg-selected]';
+export const COLLAPSIBLE_BODY = '.stg-card[data-collapsible] > .stg-card-body';
 
 // ── Sections: which ones the user left open ──
 // One localStorage entry, { "<section id>": true | false }. A section the user never touched
@@ -216,6 +218,11 @@ export function wireSettingsShell(overlay, { activate }) {
   });
   observer.observe(content, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
   overlay.addEventListener('settings-close', () => observer.disconnect());
+
+  // ── A collapsible card's body with nothing left to show says so (data-empty): styles.css drops its hairline
+  //    and gap through that, never through a :has() (tests/css-has-performance.test.mjs) ──
+  const emptyBodies = watchEmpty(content, COLLAPSIBLE_BODY);
+  overlay.addEventListener('settings-close', () => emptyBodies.disconnect());
 
   // ── A pane's save bar sits over the bottom of the scroll area: the scroller is told how tall it is,
   //    so a control that takes focus (or a deep link) never lands under the bar ──

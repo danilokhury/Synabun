@@ -766,6 +766,32 @@ export function createAssistantDispatcher({
     notifyWaiters(entry.runId, reason);
   }
 
+  // ── browser route (a run's browser moved while it works) ───────────────────
+  /**
+   * The worker's browser session or tab changed while the run lives: SynaBun recovered a lost one, or the worker
+   * opened a new one with browser_session create (server.js noteAutomationBrowserRoute). The run record names the
+   * route it uses now, so agent_status and the panel never show the dead one. Like markDelivered, persisted WITHOUT a
+   * version bump or a waiter wake-up (a route change is not news a waiting brain must stop for); the panel gets the
+   * view. Returns false for an unknown, ended or browser-less run.
+   */
+  function noteBrowserRoute(runId, { browserSessionId = null, browserTabId = null, reason = 'recovered' } = {}) {
+    const entry = entries.get(runId);
+    if (!entry || !entry.usesBrowser || !ACTIVE_STATES.has(entry.state) || !browserSessionId) return false;
+    const sessionId = String(browserSessionId);
+    const tabId = browserTabId ? String(browserTabId) : null;
+    if (entry.browserSessionId === sessionId && (entry.browserTabId || null) === tabId) return true;
+    const was = entry.browserSessionId ? `${entry.browserSessionId}${entry.browserTabId ? ` tab ${entry.browserTabId}` : ''}` : 'none';
+    entry.browserSessionId = sessionId;
+    entry.browserTabId = tabId;
+    if (!Array.isArray(entry.notes)) entry.notes = [];
+    entry.notes.push(`browser ${reason === 'created' ? 'replaced by the worker (browser_session create)' : 'recovered by SynaBun'}: session ${sessionId}${tabId ? ` tab ${tabId}` : ''} (was ${was})`);
+    persist();
+    const payload = { type: 'assistant:dispatch', reason: 'browser_route', run: view(entry) };
+    try { broadcastSync(payload); } catch {}
+    for (const listener of listeners) { try { listener(payload); } catch {} }
+    return true;
+  }
+
   // ── delivery (what the owning brain already read) ──────────────────────────
   /**
    * High-water mark of the run results a brain has read (agent_wait,
@@ -3970,7 +3996,7 @@ export function createAssistantDispatcher({
     respondPermission, subscribe, shutdown, limits, suspendForShutdown,
     sessionBudget, checkSession, refreshLimits, providerSpend, coverFollowUp, budget,
     resolveRoute, declineRoute, heldRouteRefusal, escalate,
-    markDelivered, deliveryState,
+    markDelivered, deliveryState, noteBrowserRoute,
     remove, removeFinished,
     mediaFile,
     accountInUse: (provider, accountId) => activeEntries((e) => e.provider === provider && e.accountId === accountId).length > 0,

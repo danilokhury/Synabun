@@ -775,6 +775,7 @@ export async function stopTunnel() {
 
 // ─── Last Session (resume after restart) ──
 
+/** The sessions to offer for resume: `{ sessions: [] , reason }` when there are none (an older server answered 404). */
 export async function fetchLastSession() {
   const r = await fetch('/api/last-session');
   if (!r.ok) return null;

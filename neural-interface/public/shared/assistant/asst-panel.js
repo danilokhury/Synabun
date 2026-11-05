@@ -39,6 +39,7 @@ import { isGuest, hasPermission } from '../ui-sync.js';
 import { getWhiteboardElementById } from '../ui-whiteboard.js';
 import { focusNativeLoopRun } from '../ui-native-loop-router.js';
 import { wireFileLinks } from '../ui-file-links.js';
+import { watchEmpty } from '../shown-children.js';
 import { injectAssistantStyles } from './asst-styles.js';
 import { tipsSeen, tourOffered } from '../tour/tour-state.js';
 import { createAssistantSocket } from './asst-ws.js';
@@ -59,7 +60,7 @@ import { createUsageGauge } from './asst-usage.js';
 import { closeMenu, currentMenuAnchor, isMenuOpen, openMenu } from './asst-menu.js';
 import { createRouteModeControl, openModelsManager, openRoutesEditor, refreshModelsManager, renderRouteCard, routeModeLabel } from './asst-route.js';
 import { budgetChipText, budgetSpendText, budgetTone, closeBudgetEditor, createBudgetController, mountBudgetChip, openBudgetEditor } from './asst-budget.js';
-import { computerRemoteView, createComputerPanel, createComputerToggle, normalizeComputerRemote, openFrameLightbox, closeFrameLightbox, requestDesktopStop } from './asst-computer.js';
+import { computerRemoteView, createComputerPanel, createComputerToggle, normalizeComputerRemote, openFrameLightbox, closeFrameLightbox, requestDesktopStatus, requestDesktopStop } from './asst-computer.js';
 import {
   applyLimit, applyLimitPacket, applyUsagePacket, BRAIN_PROVIDERS, brainLabel, createRenameWriter, createTabState, DEFAULT_ROUTE_MODE, deserializeTabState, fmtCost, fmtRunLine, limitExpiresIn, limitNoticeText, modelShortName,
   brainModePatch, isBrainProvider, normalizeBrain, normalizeComputerMode, permissionModeLabel, normalizeRouteMode, normalizeTestDensity, projectLabel, providerMeta, providerShortLabel, readStoredBrain, runFromPayload,
@@ -67,7 +68,7 @@ import {
 } from './asst-state.js';
 import {
   closeAssistantSession, dispatchAssistantRun, escalateAssistantRun, focusAssistantRun, getAssistantRun,
-  fetchManageCatalog, getAssistantRunResult, getAssistantSession, getAssistantSessionUsage, getDesktopStatus, getRouting, killAllAssistantRuns, removeAssistantRun, clearFinishedAssistantRuns,
+  fetchManageCatalog, getAssistantRunResult, getAssistantSession, getAssistantSessionUsage, getRouting, killAllAssistantRuns, removeAssistantRun, clearFinishedAssistantRuns,
   listAssistantSessions, patchAssistantSession, patchHiddenModels, setAdminSandbox, stopAssistantRun, uploadAssistantAttachment,
 } from './asst-api.js';
 
@@ -230,6 +231,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
 
   const barEl = root.querySelector('.asst-bar');
   const barGroups = Object.fromEntries([...barEl.querySelectorAll('.asst-bar-group')].map((g) => [g.dataset.group, g]));
+  // A group none of whose controls shows is hidden through data-empty (shown-children.js), never a :has().
+  const barEmpty = watchEmpty(barEl, '.asst-bar-group');
   const costEl = root.querySelector('.asst-cost');
   const bannersEl = root.querySelector('.asst-banners');
   const transcriptEl = root.querySelector('.asst-transcript');
@@ -1111,7 +1114,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     }
     if (st.features.computer == null && !st.desktopProbe) {
       st.desktopProbe = true;
-      getDesktopStatus()
+      requestDesktopStatus()
         .then((status) => {
           st.desktopSupported = status?.supported === true;
           st.features.computer = status?.supported === true;
@@ -2322,6 +2325,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       dock.destroy();
       composer.destroy();
       renderer.destroy();
+      barEmpty.disconnect();
       barEl.remove(); // it may live in the host's header
       root.remove();
       if (closeServer) {

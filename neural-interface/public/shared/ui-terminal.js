@@ -14,6 +14,7 @@ import { registerAction } from './ui-keybinds.js';
 import { isGuest, hasPermission } from './ui-sync.js';
 import { getWhiteboardElementById } from './ui-whiteboard.js';
 import { createFrameRenderer } from './utils.js';
+import { refreshPageSession } from './page-session.js';
 import { frameRect, onFrameChange, clampBox, clampBoxLoose } from './app-frame.js';
 import { notify, NOTIF_TYPE } from './ui-notifications.js';
 import { getProviderMeta } from './provider-icons.js';
@@ -22,6 +23,7 @@ import { initRendererManager, acquireRenderer, disposeRenderer, hasWebgl, noteFo
 import { mountAssistant } from './assistant/asst-panel.js';
 import { getAssistantSession } from './assistant/asst-api.js';
 import { mascotCameoSvg } from './synabun-mascot.js';
+import { refusalOfError } from './owner-access.js';
 import { brainLabel, normalizeBrain, readStoredBrain, restoredSessionName, sessionNameGivenUp } from './assistant/asst-state.js';
 import { initAssistant, registerAssistantHost, openAssistant, assistantOwnerOf, readLiveAssistantSessions, assistantBlocked, isAssistantSessionLive } from './ui-assistant.js';
 
@@ -3051,7 +3053,9 @@ async function openBrowserSession(url, fresh, _unused, force) {
       if (!_wsReconnectAttempted) {
         _wsReconnectAttempted = true;
         console.log('[browser] WS closed unexpectedly, attempting reconnect for', sessionId);
-        setTimeout(() => {
+        setTimeout(async () => {
+          // A socket refused for an earlier boot's page secret never says why: ask for this boot's first.
+          await refreshPageSession(window);
           const sess2 = _sessions.find(s => s.id === sessionId);
           if (!sess2 || sess2.dead) return;
           const proto2 = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -3300,7 +3304,9 @@ async function reconnectBrowserSession(sessionId, liveData, saved) {
       if (!_wsReconnAttempted) {
         _wsReconnAttempted = true;
         console.log('[browser] Reconnect WS closed, retrying once for', sessionId);
-        setTimeout(() => {
+        setTimeout(async () => {
+          // A socket refused for an earlier boot's page secret never says why: ask for this boot's first.
+          await refreshPageSession(window);
           const sess2 = _sessions.find(s => s.id === sessionId);
           if (!sess2 || sess2.dead) return;
           const proto2 = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -6219,12 +6225,14 @@ export async function initTerminal() {
   // ── Auto-reconnect to surviving sessions on page load ──
   const registry = loadSessionRegistry();
   if (registry.length > 0) {
-    // Fetch live terminal sessions
+    // Fetch live terminal sessions. A read the server refused this page (no owner access: SynaBun's automation
+    // browser opened it) says nothing about which sessions live: the saved list is then left as it is (below).
+    let refusedRead = false;
     let liveSessions = [];
     try {
       const data = await fetchTerminalSessions();
       liveSessions = data.sessions || [];
-    } catch {}
+    } catch (err) { if (refusalOfError(err)) refusedRead = true; }
     const liveMap = new Map(liveSessions.map(s => [s.id, s]));
 
     // Fetch live browser sessions + check stream config
@@ -6233,7 +6241,7 @@ export async function initTerminal() {
     try {
       const data = await fetchBrowserSessions();
       liveBrowserSessions = data.sessions || [];
-    } catch {}
+    } catch (err) { if (refusalOfError(err)) refusedRead = true; }
     try {
       const cfgRes = await fetch('/api/browser/config');
       const cfgData = await cfgRes.json();
@@ -6319,8 +6327,8 @@ export async function initTerminal() {
 
     _markLatePaneSwitches();
 
-    // Clean up dead sessions from registry
-    if (toReconnect.length !== registry.length) {
+    // Clean up dead sessions from registry (never after a refused read: those sessions may well be alive)
+    if (toReconnect.length !== registry.length && !refusedRead) {
       saveSessionRegistry();
     }
   }

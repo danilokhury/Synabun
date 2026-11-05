@@ -13,6 +13,9 @@ import { cpCtx } from './cp-ctx.js';
 const AGENT_ICON = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="7" r="3"/><path d="M5 21v-1a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v1"/><path d="M19 3l1.5 1.5M22 2l-1.5 1.5"/></svg>';
 const MAX_FEED_CHILDREN = 80;
 
+// CSS.escape where the page has it; a quote-safe fallback for an id elsewhere (tests).
+const cssEscape = (s) => (typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(String(s)) : String(s).replace(/["\\]/g, '\\$&'));
+
 function fmtElapsed(ms) {
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
@@ -86,6 +89,11 @@ export function ensureAgentScope(tab, parentToolUseId) {
   if (!tab.agents) tab.agents = new Map();
   let entry = tab.agents.get(parentToolUseId);
   if (!entry) {
+    // A parent that is an ordinary call in this transcript (an MCP tool, Bash) is
+    // not a subagent: nothing it sends gets a subagent card (a heartbeat of a long
+    // call used to draw one, a purple bar between the tool rows: tool-heartbeat.js).
+    const named = tab.messagesEl?.querySelector?.(`.tool-card[data-tool-id="${cssEscape(parentToolUseId)}"]`);
+    if (named && !named.classList.contains('cp-agent-card')) return tab;
     // Fallback: synthesize a card at the end of the root feed
     const card = buildAgentCard({ id: parentToolUseId, name: 'Task', input: { description: 'agent' } }, tab);
     const { scrollEnd, activeTab } = cpCtx;

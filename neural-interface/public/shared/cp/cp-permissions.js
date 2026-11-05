@@ -8,6 +8,7 @@
 import { cpCtx } from './cp-ctx.js';
 import { keepsNothing } from './cp-temporary.js';
 import { buildDiffPreviewEl } from './cp-diff.js';
+import { synabunToolKey, synabunToolLabel } from '../synabun-tools.js';
 import {
   ALL_PERMISSION_MODES, MODE_LABELS, DESTINATIONS, describeSuggestion, alwaysUpdates, permissionContext,
   elicitationFields, collectElicitation, elicitationUrl,
@@ -125,8 +126,11 @@ export function renderPermissionCard(tab, requestId, req, hooks) {
   icon.innerHTML = toolIconSvg(toolName);
   const name = document.createElement('span');
   name.className = 'perm-tool-name';
-  name.textContent = ctx.displayName || toolName;
-  if (ctx.displayName) name.title = toolName;
+  // A SynaBun tool asks in SynaBun's colours, by its friendly name (the full name in the tooltip).
+  const sbKey = synabunToolKey(toolName);
+  if (sbKey != null) card.classList.add('synabun-perm');
+  name.textContent = ctx.displayName || (sbKey != null ? synabunToolLabel(sbKey) : toolName);
+  if (ctx.displayName || sbKey != null) name.title = toolName;
   toolLine.append(icon, name);
   card.appendChild(toolLine);
 

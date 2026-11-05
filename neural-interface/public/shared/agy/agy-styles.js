@@ -39,6 +39,7 @@ export function injectAntigravityStyles() {
       --agy-link: #9dc3ff;
       --agy-focus: rgba(255,255,255,0.7);
       --agy-brand: #669DF6;
+      --agy-synabun: #ffd700; /* the style guide accent: SynaBun tools */
       --agy-radius-sm: 4px;
       --agy-radius-md: 8px;
       --agy-radius-lg: 12px;
@@ -272,6 +273,10 @@ export function injectAntigravityStyles() {
     .agy-request { box-shadow: inset 2px 0 0 var(--agy-warning); }
     .agy-request .agy-card-title { white-space: normal; overflow-wrap: anywhere; }
     .agy-request.agy-request-done { box-shadow: none; opacity: 0.7; }
+    /* SynaBun tools: the logo and a thin accent at the edge, as in the Codex panel (not a filled box). */
+    .agy-tool-synabun { box-shadow: inset 2px 0 0 var(--agy-synabun); }
+    .agy-tool-synabun > .agy-card-head > .agy-card-titles > .agy-card-title { color: var(--agy-synabun); }
+    .agy-synabun-logo { width: 14px; height: 14px; object-fit: contain; display: block; }
     .agy-tool-image { max-width: 100%; max-height: 220px; border-radius: var(--agy-radius-sm); object-fit: contain; align-self: flex-start; }
 
     /* Buttons inside cards and the setup card: solid for the one primary action, hairline for the rest, red text for denial. */

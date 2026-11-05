@@ -44,7 +44,7 @@ function fail(res, err) {
  * @param {object} o.evals lib/skills/evals.js
  * @param {(req) => boolean} [o.isGuestRequest]
  * @param {Function} [o.ownerGuard] lib/http-guards.js ownerRouteGuard(…) of this server
- * @param {(req) => ({ kind: 'assistant', assistantSessionId } | { kind: 'worker' } | null)} [o.assistantCaller]
+ * @param {(req) => ({ kind: 'assistant', assistantSessionId } | { kind: 'worker' } | { kind: 'refused', code, error, status } | null)} [o.assistantCaller]
  * @param {{ verify(req), require(req, res, next), attach(res) }} [o.pageSession] lib/page-session.js
  */
 export function registerSkillEvalRoutes(app, { evals, isGuestRequest = null, ownerGuard = null, assistantCaller = null, pageSession = null } = {}) {
@@ -74,12 +74,16 @@ export function registerSkillEvalRoutes(app, { evals, isGuestRequest = null, own
       // owner-authority lookup refuses, it is refused): what a local process that merely left the agent headers out lacks.
       if (pageSession && !pageSession.verify(req)) {
         if (write) return pageSession.require(req, res, next);
+        // (a caller that could not be identified on macOS: 503 PEER_UNAVAILABLE, as require() answers a write)
+        if (typeof pageSession.peerUnavailable === 'function' && pageSession.peerUnavailable(req)) return pageSession.sendUnavailable(res, req);
         return sendGuardError(res, 403, 'PAGE_SECRET_REQUIRED', 'Evaluations are read from SynaBun\'s own page. Reload the page and try again.');
       }
       return ownerGuard ? ownerGuard(req, res, next) : next();
     }
     let who = null;
     try { who = typeof assistantCaller === 'function' ? assistantCaller(req) : null; } catch { who = null; }
+    // A request that names a run or a brain it cannot prove it is (server.js browserCaller: no terminal token, another's).
+    if (who?.kind === 'refused') return sendGuardError(res, Number(who.status) || 403, typeof who.code === 'string' ? who.code : 'TERMINAL_TOKEN_INVALID', typeof who.error === 'string' ? who.error : 'This request names a run it cannot prove it is.');
     if (who?.kind === 'worker') return sendGuardError(res, 403, 'WORKERS_NOT_PERMITTED', 'Dispatched workers cannot run skill evaluations: the Assistant or the owner does.');
     if (who?.kind !== 'assistant' || typeof who.assistantSessionId !== 'string' || !who.assistantSessionId) {
       return sendGuardError(res, 403, 'ASSISTANT_CREDENTIAL_REQUIRED', 'Skill evaluations are the owner\'s (Skills Studio) and the SynaBun Assistant\'s own brain\'s (its launch credential): a role header is not enough.');

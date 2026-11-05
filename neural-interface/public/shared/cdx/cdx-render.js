@@ -20,6 +20,7 @@ import { renderReadableOutput, renderReadableBlock, cleanOutputBlocks, hydrateOu
 import { fileLinkTitle, fillFileLinkCopy, isInsideRoots, parseFileLinkTarget, readFileLink } from '../file-links.js';
 import { sanitizeHtmlString } from '../assistant/asst-sanitize.js';
 import { createTextCache } from '../text-cache.js';
+import { isSynabunServer, synabunToolKey, synabunToolLabel, synabunToolSummary } from '../synabun-tools.js';
 export { setCardExpanded } from './cdx-cards.js';
 
 // ── Shared context (set by cdx-tabs via setRenderContext) ──
@@ -1967,8 +1968,71 @@ export function createFoldSection(label, {
   return { sectionEl: details, bodyEl, labelEl };
 }
 
+/** A SynaBun call: its server is SynaBun's, or (no server given) its tool name says so. */
 export function isSynaBunMcpTool(item) {
-  return String(item?.server || '').trim().toLowerCase() === 'synabun';
+  if (String(item?.server || '').trim()) return isSynabunServer(item.server);
+  return synabunToolKey(item?.tool) != null;
+}
+
+/** The bare SynaBun tool name of a call (server and tool as the card state keeps them), else null. */
+function synabunCallKey(server, tool) {
+  return String(server || '').trim() ? synabunToolKey(tool, server) : synabunToolKey(tool);
+}
+
+/** An MCP card's title: a SynaBun call by its friendly name ('Bluesky · Post'), any other as server • tool. */
+export function mcpCardTitle(server, tool) {
+  const key = synabunCallKey(server, tool);
+  if (key != null) return synabunToolLabel(key);
+  return `${server || 'MCP'} • ${tool || 'tool'}`;
+}
+
+/**
+ * A SynaBun call's one-line summary from its arguments ('' for any other call). Codex may hand
+ * the arguments over as JSON text; a text that does not parse says nothing.
+ */
+export function mcpCallSummary(server, tool, args) {
+  const key = synabunCallKey(server, tool);
+  if (key == null) return '';
+  let input = args;
+  if (typeof input === 'string') {
+    try { input = JSON.parse(input); } catch { input = null; }
+  }
+  return synabunToolSummary(key, input);
+}
+
+/**
+ * What an MCP card's head says, from its state alone (no DOM): the title (a SynaBun call by its
+ * friendly name), the subtitle (a SynaBun call's summary before the timing, else the timing or
+ * 'Tool call') and whether it is a SynaBun call.
+ */
+export function mcpHeadText(state) {
+  const server = state?.toolServer || '';
+  const tool = state?.toolName || '';
+  const synabun = synabunCallKey(server, tool) != null;
+  const meta = state?.toolSubtitle && state.toolSubtitle !== 'Tool call' ? state.toolSubtitle : '';
+  const summary = synabun ? String(state?.synabunSummary || '') : '';
+  return {
+    title: mcpCardTitle(server, tool),
+    subtitle: summary ? [summary, meta].filter(Boolean).join(' · ') : (meta || 'Tool call'),
+    synabun,
+  };
+}
+
+/**
+ * Paints an MCP card's head (title, subtitle, the SynaBun look) from its state. The head shows
+ * while the card is collapsed, so every item update paints it, not only a body flush; a card
+ * made before its item named the server gets the SynaBun look once it does.
+ */
+function paintMcpHead(state) {
+  if (!state) return;
+  const head = mcpHeadText(state);
+  if (state.titleEl) state.titleEl.textContent = head.title;
+  if (head.synabun && state.el && !state.el.classList.contains('cxp-card-synabun-tool')) {
+    state.el.classList.add('cxp-card-synabun-tool');
+    const iconEl = state.el.querySelector(':scope > .cxp-card-head > .cxp-card-icon');
+    if (iconEl) iconEl.innerHTML = SYNABUN_LOGO_ICON;
+  }
+  if (state.subtitleEl) state.subtitleEl.textContent = head.subtitle;
 }
 
 export function getMcpToolIcon(item) {
@@ -2091,6 +2155,8 @@ function cacheCollapsedCardState(state, item, itemType) {
       if (metadata) state.toolSubtitle = metadata;
       else if (!state.toolSubtitle) state.toolSubtitle = 'Tool call';
       if (hasOwnField(item, 'arguments')) state.argsText = formatStructuredValue(item.arguments);
+      // A SynaBun call says what it is about under its name (the query, the post, the URL).
+      if (hasOwnField(item, 'arguments')) state.synabunSummary = mcpCallSummary(state.toolServer, state.toolName, item.arguments);
       if (hasOwnField(item, 'error')) {
         state.progressText = item.error
           ? `Error: ${extractStructuredText(item.error) || formatStructuredValue(item.error)}`
@@ -2158,8 +2224,7 @@ export function flushCardBody(state) {
       setOptionalSection(state.outputSectionEl, state.outputEl, state.outputBuf || '');
       break;
     case 'mcpToolCall':
-      if (state.titleEl) state.titleEl.textContent = `${state.toolServer || 'MCP'} • ${state.toolName || 'tool'}`;
-      if (state.subtitleEl) state.subtitleEl.textContent = state.toolSubtitle || 'Tool call';
+      paintMcpHead(state);
       setOptionalSection(state.argsSectionEl, state.argsEl, state.argsText || '');
       setOptionalText(state.progressEl, state.progressText || '');
       setOptionalSection(state.resultSectionEl, state.resultEl, state.resultText || '');
@@ -2510,7 +2575,7 @@ export function ensureCommandState(item) {
 export function ensureToolState(item) {
   let state = _ctx.items.get(item.id);
   if (state) return state;
-  const card = createCard(item, getMcpToolIcon(item), `${item.server || 'MCP'} • ${item.tool || 'tool'}`, 'Tool call');
+  const card = createCard(item, getMcpToolIcon(item), mcpCardTitle(item.server, item.tool), 'Tool call');
 
   const argsSection = createFoldSection('Arguments', {
     className: 'cxp-fold-args',
@@ -2898,7 +2963,9 @@ export function updateItemFromData(item) {
     if (itemType === 'mcpToolCall') mountMcpAppCard({ card: state.el, item: state._lastItem,
       tab: _ctx.boundTab, request: _ctx.requestForTab, draft: _ctx.setMcpAppDraft });
     // Always update head elements (visible even when collapsed)
-    if (state.titleEl) {
+    // An MCP card's head is its own (friendly title, the call's summary), collapsed or not.
+    if (itemType === 'mcpToolCall') paintMcpHead(state);
+    else if (state.titleEl) {
       const h = _ctx.itemHeadline(state._lastItem);
       const head = state.preEl ? codexGenericCardHead(state._lastItem, h) : null;
       state.titleEl.textContent = head?.title || h.detail || item.type || 'Item';
@@ -2976,8 +3043,7 @@ export function updateItemFromData(item) {
       break;
     }
     case 'mcpToolCall': {
-      state.titleEl.textContent = `${state.toolServer || 'MCP'} • ${state.toolName || 'tool'}`;
-      state.subtitleEl.textContent = state.toolSubtitle || 'Tool call';
+      paintMcpHead(state);
       state.pillEl.textContent = _ctx.formatStatus(item.status);
       setOptionalSection(state.argsSectionEl, state.argsEl, state.argsText || '');
       setOptionalText(state.progressEl, state.progressText || '');

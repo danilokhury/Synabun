@@ -62,6 +62,19 @@ export function eventSessionId(ev) {
 
 export const permissionRequestId = (ev) => String(ev?.requestID || ev?.id || ev?.permissionID || '');
 
+/**
+ * Whether a new ask is announced to the person (sound, toast, OS banner). A permission ask
+ * of a session whose live automation run answers it by itself (`runAnswers(sessionId)`) is
+ * not: that run's adapter replies at once, and a protected worker's OpenCode rules ask for
+ * every shell call, so announcing it pinged the user after every step of the worker. A
+ * question, a sub-agent's ask and everything outside a live run still wait on a person.
+ */
+export function askNotifies(kind, ev, { runAnswers = () => false } = {}) {
+  if (kind !== 'permission') return true;
+  const owner = eventSessionId(ev);
+  return !(owner && runAnswers(owner));
+}
+
 // Requests a sub-agent raises have no panel of their own unless its child
 // panel is open; they still have to reach the user.
 const ASKED_EVENTS = new Set(['permission.asked', 'question.asked']);

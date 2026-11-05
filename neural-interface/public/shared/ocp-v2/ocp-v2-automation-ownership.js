@@ -5,6 +5,28 @@
 
 const _runBySession = new Map();
 const _registeredListeners = new Set();
+// The automation sessions whose run is live (starting, running, or suspended by a server restart and
+// resumed on the next start): the panel's own book of them (ocp-v2-panel.js `_automationRunning`), kept
+// here so the socket layer can read it without importing the panel.
+const _liveRuns = new Set();
+
+/** The set of automation sessions whose run is live. The panel adds and deletes; everyone else reads. */
+export function liveAutomationSessions() {
+  return _liveRuns;
+}
+
+/**
+ * True when the run that drives `sessionId` answers that session's own permission asks by itself: an
+ * automation's root session while its run is live. Its native adapter replies to every ask (by the
+ * worker's confinement, or "once" when it has none; lib/native-loop-providers.js policyReply), and the
+ * asks it hands to a person go to the Assistant's own card. A protected worker's OpenCode rules ask for
+ * every shell call, so such an ask is a step of the run, not news. A sub-agent's ask is not answered by
+ * the run (the adapter keeps to its own session), and an ended run answers nothing.
+ */
+export function automationRunAnswersAsks(sessionId) {
+  const sid = clean(sessionId);
+  return !!sid && _runBySession.has(sid) && _liveRuns.has(sid);
+}
 
 function clean(value) {
   return String(value || '').trim();
@@ -29,6 +51,7 @@ export function unregisterAutomationSession(sessionId, runId = null) {
   if (!sid || !_runBySession.has(sid)) return false;
   const expectedRunId = runId == null ? null : clean(runId);
   if (expectedRunId != null && _runBySession.get(sid) !== expectedRunId) return false;
+  _liveRuns.delete(sid);
   return _runBySession.delete(sid);
 }
 

@@ -9,7 +9,9 @@
  * own identity object, derived per-request from:
  *
  *   1. X-Synabun-Terminal / X-Synabun-Browser-Session / X-Synabun-Browser-Tab
- *      headers (loops, scheduled loops, sidepanel — injected at launch), or
+ *      headers (loops, scheduled loops, sidepanel — injected at launch; a run's
+ *      pin counts only with its X-Synabun-Terminal-Token where the host checks
+ *      it, http.ts terminalAuth), or
  *   2. the stateful Mcp-Session-Id (plain CLI windows — unique per Claude
  *      Code process with zero client configuration), or
  *   3. a per-process stdio singleton whose pins read live process.env —
@@ -40,6 +42,18 @@ export interface IdentityState {
   ancestorPinnedTab: string | null;
   ancestorPinnedTerminal: string | null;
   ancestorAttempts: number;
+  /** A route of this caller's that went away (its own close, a session that died, a step that found it gone) and
+   *  that no replacement was announced for yet: the next replacement's notice names it (neural-interface.ts). */
+  lostRoute: { sessionId: string; tabId: string | null } | null;
+  /** Lost tab id → the route that replaced it: a later call that still names the old tab goes to its replacement. */
+  replacedTabs: Map<string, { sessionId: string; tabId: string | null }>;
+  /** The last route this process served a browser call on: a server-recorded route that differs from it is a move
+   *  this caller is told about (neural-interface.ts resolveSessionUncached), one it never served is not. */
+  servedRoute: { sessionId: string; tabId: string | null } | null;
+  /** The run's route moved in this process from a tab it knew (a recovery, its own create, a session of its own named
+   *  by hand, the server-recorded route of another process): browser_session status says Replaced while it is current.
+   *  Never set by adopting the route the run was launched with or the first route it learns. */
+  routeMoved: { from: { sessionId: string; tabId: string | null }; to: { sessionId: string; tabId: string | null } } | null;
 }
 
 /** Caller roles that unlock role-gated tool groups (see profiles.ts
@@ -75,6 +89,10 @@ const emptyState = (): IdentityState => ({
   ancestorPinnedTab: null,
   ancestorPinnedTerminal: null,
   ancestorAttempts: 0,
+  lostRoute: null,
+  replacedTabs: new Map(),
+  servedRoute: null,
+  routeMoved: null,
 });
 
 const als = new AsyncLocalStorage<CallerIdentity>();
@@ -143,11 +161,13 @@ export function getIdentity(): CallerIdentity {
   return stdioIdentity();
 }
 
-/** Pins must look like the ids we mint (hex/uuid-ish). Rejects empty strings
- *  and unexpanded template junk like "${SYNABUN_TERMINAL_SESSION}". */
+/** Pins must look like the ids we mint (hex/uuid-ish, and `agent:<uuid>` for an
+ *  automation-window agent). Rejects empty strings and unexpanded template junk
+ *  like "${SYNABUN_TERMINAL_SESSION}". The Neural Interface accepts the same
+ *  characters (neural-interface/lib/browser-owner.js browserOwnerId). */
 export function sanitizePin(v: string | undefined | null): string | null {
   if (!v) return null;
-  return /^[A-Za-z0-9_-]{1,128}$/.test(v) ? v : null;
+  return /^[A-Za-z0-9_:-]{1,128}$/.test(v) ? v : null;
 }
 
 /** Only known roles are accepted; anything else (empty, template junk,
@@ -198,6 +218,62 @@ export function runWithBrainCredential<T>(credential: string | null, fn: () => T
 export function callerBrainCredential(): string | null {
   if (httpMode) return credentialAls.getStore() ?? null;
   return sanitizeBrainCredential(process.env.SYNABUN_BRAIN_TOKEN);
+}
+
+/** Terminal tokens look exactly like the ones the Neural Interface mints (neural-interface/lib/terminal-tokens.js). */
+export function sanitizeTerminalToken(v: string | undefined | null): string | null {
+  return typeof v === 'string' && /^sbt_[A-Za-z0-9_-]{43}$/.test(v.trim()) ? v.trim() : null;
+}
+
+/**
+ * What proves a pin to the Neural Interface: a terminal token, or an Assistant brain's launch credential, which the
+ * Neural Interface binds to the brain's pin (neural-interface/lib/terminal-tokens.js bind: no second secret).
+ */
+export function sanitizeTerminalProof(v: string | undefined | null): string | null {
+  return sanitizeTerminalToken(v) ?? sanitizeBrainCredential(v);
+}
+
+/** The token a request arrived with, and the X-Synabun-Terminal pin it arrived with. */
+export interface TerminalTokenGrant { terminal: string; token: string }
+
+// The terminal token of the request being handled (X-Synabun-Terminal-Token): its own context per HTTP request,
+// never a field of the CallerIdentity, for the reason the brain credential's is not (an identity is shared by every
+// request that names its pin, which is no secret).
+const terminalTokenAls = new AsyncLocalStorage<TerminalTokenGrant | null>();
+
+/** Run `fn` with this request's terminal token (http.ts, around every transport.handleRequest). */
+export function runWithTerminalToken<T>(grant: TerminalTokenGrant | null, fn: () => T): T {
+  return terminalTokenAls.run(grant, fn);
+}
+
+/**
+ * The token that proves `terminalId` is the caller's own run, sent with X-Synabun-Terminal on its requests to the
+ * Neural Interface (whose browser routes take a run's pin only with it): over HTTP the one this request arrived with,
+ * and only for the pin it arrived with; for a stdio child the SYNABUN_TERMINAL_TOKEN of its launch environment, and
+ * only for its SYNABUN_TERMINAL_SESSION. An Assistant brain's MCP has no terminal token: its launch credential is the
+ * proof of its pin (SYNABUN_BRAIN_TOKEN for a stdio child, X-Synabun-Brain-Token over HTTP: http.ts
+ * requestTerminalToken). Never the host's own environment for an HTTP caller, and never for another id (an ancestor's
+ * terminal, the process's own client id).
+ */
+export function callerTerminalToken(terminalId: string | null | undefined): string | null {
+  if (!terminalId) return null;
+  if (httpMode) {
+    const grant = terminalTokenAls.getStore();
+    return grant && grant.terminal === terminalId ? grant.token : null;
+  }
+  const pin = sanitizePin(process.env.SYNABUN_TERMINAL_SESSION);
+  if (!pin || pin !== terminalId) return null;
+  return sanitizeTerminalToken(process.env.SYNABUN_TERMINAL_TOKEN) ?? sanitizeBrainCredential(process.env.SYNABUN_BRAIN_TOKEN);
+}
+
+/**
+ * The identity headers of one request to the Neural Interface: X-Synabun-Terminal (terminalIdFor) and, when the caller
+ * holds it, that run's X-Synabun-Terminal-Token.
+ */
+export function terminalHeaders(id: CallerIdentity = getIdentity()): Record<string, string> {
+  const terminal = terminalIdFor(id);
+  const token = callerTerminalToken(terminal);
+  return token ? { 'X-Synabun-Terminal': terminal, 'X-Synabun-Terminal-Token': token } : { 'X-Synabun-Terminal': terminal };
 }
 
 /**

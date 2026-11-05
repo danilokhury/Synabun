@@ -69,9 +69,9 @@ export async function pollFor<T = unknown>(
 export async function safeNavigate(
   r: Resolved,
   url: string,
-): Promise<{ error?: string; sessionInvalidated?: boolean }> {
+): Promise<{ error?: string; sessionInvalidated?: boolean; wedgedTabRetired?: boolean }> {
   let res = await ni.navigate(r.sessionId, url, r.tabId);
-  if (res.error && !res.sessionInvalidated && /Timeout/i.test(res.error)) {
+  if (res.error && !res.sessionInvalidated && /Timeout/i.test(res.error) && !res.wedgedTabRetired) {
     await wait(600);
     res = await ni.navigate(r.sessionId, url, r.tabId);
   }

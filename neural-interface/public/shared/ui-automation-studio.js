@@ -76,6 +76,7 @@ import {
   triggerQuickTimerNow,
 } from './api.js';
 import { centeredInFrame, placementArea } from './app-frame.js';
+import { noAccessHTML, refusalOfError } from './ui-owner-access.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -99,6 +100,9 @@ let _prevLoopActive = false;
 
 // Cleanup: stored references for document-level listeners so closePanel() can remove them
 let _docListeners = [];
+// The server refused this page the studio's lists (no owner access: SynaBun's automation browser opened it): the
+// sidebar says "No access" above the presets, and the poll asks nothing until the studio is opened again.
+let _refusal = null;
 // What the last read found (templates, folders, the active loop, agents): a later open paints from it at once
 // and reads it again behind it.
 let _keptData = null;
@@ -2349,6 +2353,8 @@ async function loadData() {
   _templates = templates.status === 'fulfilled' ? migrateLaunchRecords(templates.value) : [];
   _folders = folders.status === 'fulfilled' ? folders.value : [];
   _activeLoop = active.status === 'fulfilled' ? active.value : null;
+  _refusal = [templates, folders, active].map((r) => (r.status === 'rejected' ? refusalOfError(r.reason) : null)).find(Boolean) || null;
+  if (_refusal) { if (_panel) renderSidebar(); return; }
   await refreshAgents();
   if (_panel) updateSidebarFooter();
   // Kept only when the templates answered (a failed read must not paint an empty studio next time).
@@ -2359,7 +2365,7 @@ function startPolling() {
   stopPolling();
   _pollTimer = setInterval(async () => {
     if (!_panel) { stopPolling(); return; }
-    if (document.hidden) return;
+    if (document.hidden || _refusal) return;
     try {
       const prev = _activeLoop?.active;
       _activeLoop = await fetchActiveLoop();
@@ -2525,6 +2531,7 @@ function renderSidebar() {
   }
 
   if (!html) html = '<div class="as-empty">No templates match your filter.</div>';
+  if (_refusal) html = noAccessHTML({ compact: true }) + html;
   const scrollTop = list.scrollTop;
   list.innerHTML = html;
   list.scrollTop = scrollTop;

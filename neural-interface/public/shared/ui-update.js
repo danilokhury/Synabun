@@ -71,6 +71,9 @@ function applyTopRightButton(data) {
   if (!btn) return;
   const has = !!data?.updateAvailable;
   btn.style.display = has ? '' : 'none';
+  // The same state on <html> for styles.css (the row's width, the dot on the tools toggle): a selector reading the
+  // button's inline style from the root re-styled the whole page on every style change (css-has-performance test).
+  document.documentElement.classList.toggle('topright-update-shown', has);
   if (badge) {
     badge.classList.add('update-click-target');
     badge.textContent = has ? '!' : '';

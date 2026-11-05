@@ -20,11 +20,31 @@ const STALE_PROMPTS = '.cp-plan-approval-card.active-perm, .perm-card.active-per
 const SELF_WIRED_CARDS = '.tool-card.cp-bash-card, .tool-card.cp-diff-card, .tool-card.cp-agent-card';
 
 /**
+ * The subagent cards of a transcript that name a call another card already shows
+ * as an ordinary tool (same `data-tool-id`): the fallback card a heartbeat of that
+ * call made, never a subagent. Removed; returns how many.
+ */
+export function dropHeartbeatAgentCards($msgs) {
+  if (!$msgs?.querySelectorAll) return 0;
+  const plain = new Set();
+  for (const card of $msgs.querySelectorAll('.tool-card[data-tool-id]')) {
+    if (!card.classList.contains('cp-agent-card')) plain.add(card.dataset.toolId);
+  }
+  let dropped = 0;
+  for (const card of $msgs.querySelectorAll('.tool-card.cp-agent-card[data-tool-id]')) {
+    if (!plain.has(card.dataset.toolId)) continue;
+    card.remove();
+    dropped++;
+  }
+  return dropped;
+}
+
+/**
  * @param hooks.attachRewind   (row, uuid) => void
  * @param hooks.wireSubagent   (card, agentId) => void
  * @param hooks.loadFullResult (toolUseId) => Promise<string|null>
  * @param hooks.restorePager   (note, { start, total }) => void: put a live "Load earlier" in place of the stored note
- * @returns {{ rewinds: number, cards: number, results: number, subagents: number, pagers?: number }}
+ * @returns {{ rewinds: number, cards: number, results: number, subagents: number, pagers?: number, heartbeatCards?: number }}
  */
 export function rehydrateStoredTranscript($msgs, hooks = {}) {
   const report = { rewinds: 0, cards: 0, results: 0, subagents: 0 };
@@ -36,6 +56,10 @@ export function rehydrateStoredTranscript($msgs, hooks = {}) {
     const row = n.closest('.msg');
     (n.classList.contains('cp-rewind-confirm') ? n : (row || n)).remove();
   });
+  // 1b. A subagent card stored for an ordinary call: a long call's heartbeat drew one
+  // (tool-heartbeat.js), a purple bar between the tool rows. Its id is the call's own.
+  const heartbeatCards = dropHeartbeatAgentCards($msgs);
+  if (heartbeatCards) report.heartbeatCards = heartbeatCards;
   // 2. Every control is inert until something below gives it a listener again:
   // an answered card, a settled question, an old form must not look clickable.
   $msgs.querySelectorAll('button, input, select, textarea').forEach((node) => { node.disabled = true; });

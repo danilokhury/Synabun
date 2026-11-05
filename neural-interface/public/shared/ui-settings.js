@@ -1,5 +1,5 @@
 import { fetchToolCatalog } from './agent-runtime-options.js';
-import { configureToolPickerTranslation, toolPickerHTML, readToolPicker, toolWord } from './tool-list-picker.js';
+import { configureToolPickerTranslation, toolPickerHTML, readToolPicker, toolWord, toolServersNote } from './tool-list-picker.js';
 import { mountMemoryMaintenance } from './ui-memory-maintenance.js';
 import { buildJudgmentsTab, wireJudgmentsTab } from './ui-judgments.js';
 import { buildWhatsAppTab, wireWhatsAppTab } from './ui-whatsapp.js';
@@ -21,6 +21,7 @@ import { remoteMcpAddress } from './tunnel-view.js';
 import { recheckCliStatus, getCliStatus, addCliToPath } from './cli-status.js';
 import { cliInstallText, setCliInstallTranslator } from './cli-install-view.js';
 import { dropdownHTML, wireDropdowns, setDropdownItems, setDropdownValue } from './cc-dropdown.js';
+import { setStaticBgVisible } from './static-bg-state.js';
 setCliInstallTranslator((key, params) => kit.tx(`cliInstall.${key}`, params));
 import { setGitBashTranslator } from './git-bash-view.js';
 import { gitBashRowHtml, wireGitBashRow } from './ui-git-bash.js';
@@ -56,6 +57,8 @@ import {
   fetchRulesStatus, fetchRulesTextWithFallback, installRules, removeRules, installAllRules, setRulesAutoUpdate, removeLegacyRules,
 } from './api.js';
 import { centeredInFrame } from './app-frame.js';
+import { markNoAccess, noteOwnerAccessRefusal, ownerAccessSay, refusalOfError, refusalOfResponse } from './ui-owner-access.js';
+import { readOwnerAccessRefusal } from './owner-access.js';
 
 // ── SVG icon constants ──
 
@@ -253,12 +256,12 @@ export function applyIfaceConfig(cfg, { instant = false } = {}) {
     if (instant) {
       // Page load — apply immediately without animation
       if (graphContainer) graphContainer.classList.add('focus-active');
-      if (staticBg) staticBg.classList.add('visible');
+      setStaticBgVisible(staticBg, true);
     } else {
       // User toggle — stagger: controls fade first, then iris closes
       setTimeout(() => {
         if (graphContainer) graphContainer.classList.add('focus-active');
-        if (staticBg) staticBg.classList.add('visible');
+        setStaticBgVisible(staticBg, true);
       }, 100);
     }
     // Notify variant-specific cleanup (lasso, context menu, etc.)
@@ -267,7 +270,7 @@ export function applyIfaceConfig(cfg, { instant = false } = {}) {
     // EXITING FOCUS MODE
     // Iris open the graph + close focus bg
     if (graphContainer) graphContainer.classList.remove('focus-active');
-    if (staticBg) staticBg.classList.remove('visible');
+    setStaticBgVisible(staticBg, false);
     // 2D canvases
     for (const id of ['bg-canvas', 'hull-canvas', 'lasso-canvas']) {
       const el = document.getElementById(id);
@@ -2569,7 +2572,8 @@ function wireMoreLoginTab(overlay) {
   let _defaultEnvId = null;
   const okBg = 'rgba(76,175,80,0.12)', errBg = 'rgba(244,67,54,0.12)';
 
-  const jget = (u) => fetch(u).then(r => r.json()).catch(() => ({ ok: false, error: kit.tx('settings.redesign.morelogin.networkError') }));
+  // The answer's HTTP status rides along (`_status`): a refusal of the owner's access is told apart from a MoreLogin error.
+  const jget = (u) => fetch(u).then(async (r) => { const body = await r.json(); if (body && typeof body === 'object') body._status = r.status; return body; }).catch(() => ({ ok: false, error: kit.tx('settings.redesign.morelogin.networkError') }));
   const jpost = (u, body) => fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }).then(r => r.json()).catch(() => ({ ok: false, error: kit.tx('settings.redesign.morelogin.networkError') }));
 
   function setStatus(s) {
@@ -2618,6 +2622,13 @@ function wireMoreLoginTab(overlay) {
 
   async function reload() {
     const s = await jget('/api/morelogin/status');
+    // No owner access (SynaBun's automation browser opened this page): "No access", never "not installed" or defaults.
+    if (markPaneRefused(overlay, 'morelogin', refusalOfError({ status: s._status, code: s.code }))) {
+      const dot = $('ml-status-dot'), line = $('ml-status-line');
+      if (dot) dot.className = 'settings-status-dot disconnected';
+      if (line) line.textContent = ownerAccessSay('panelTitle');
+      return;
+    }
     if (s.ok) setStatus(s);
     const cfg = await jget('/api/morelogin/config');
     if (cfg.ok) {
@@ -3376,11 +3387,18 @@ async function openSettingsModalNow(options = {}) {
   let workerGuardReading = readWorkerGuardResponse({ status: 0 });
   // SynaBun's Claude Code hooks (lib/claude-hooks-status.js): the `claudeHooks` of the integrations read, as a reading.
   let claudeHooksReading = readClaudeHooksResponse({ status: 0 });
+  // The reads the server refused this page (it has no owner access: SynaBun's automation browser opened it). The panes
+  // they feed say "No access" with their Save and actions off, and their nav item "(No access)", never "(Off)".
+  const refusedReads = new Set();
 
   try {
     // Read through the page's data cache (settings/settings-data.js): kept answers at once (each open its own
     // copy; read again in the background when old), so Settings waits only the first time.
     const reads = await readSettingsData();
+    for (const [name, entry] of Object.entries(reads)) {
+      const refusal = settingsReadRefusal(entry);
+      if (refusal) { refusedReads.add(name); noteOwnerAccessRefusal(refusal); }
+    }
     // The greeting and the user context are readings of what their endpoints answered (no answer is a reading too).
     const readingOf = (entry, make) => ({ status: 'fulfilled', value: entry?.status === 'fulfilled' ? make(entry.value) : make({ status: 0, error: entry?.reason?.message }) });
     const greetRes = readingOf(reads.greeting, readGreetingStatus);
@@ -3510,10 +3528,10 @@ async function openSettingsModalNow(options = {}) {
   overlay.setAttribute('aria-labelledby', 'stg-title');
 
   // ── Nav status dots (Judgments and WhatsApp update theirs as they wire) ──
-  kit.setNavStatus(overlay, 'server', settings.storage === 'sqlite' ? 'connected' : 'disconnected');
-  kit.setNavStatus(overlay, 'setup', (setupStatus.claude?.connected || setupStatus.antigravity?.connected || setupStatus.codex?.connected || setupStatus.opencode?.connected) ? 'connected' : 'disconnected');
-  kit.setNavStatus(overlay, 'discord', discordConfig.botToken ? 'connected' : 'disconnected');
-  kit.setNavStatus(overlay, 'judgments', (typesafeConfig && typesafeConfig.enabled) ? 'connected' : 'disconnected');
+  kit.setNavStatus(overlay, 'server', refusedReads.has('settings') ? 'refused' : settings.storage === 'sqlite' ? 'connected' : 'disconnected');
+  kit.setNavStatus(overlay, 'setup', refusedReads.has('setup') ? 'refused' : (setupStatus.claude?.connected || setupStatus.antigravity?.connected || setupStatus.codex?.connected || setupStatus.opencode?.connected) ? 'connected' : 'disconnected');
+  kit.setNavStatus(overlay, 'discord', refusedReads.has('discord') ? 'refused' : discordConfig.botToken ? 'connected' : 'disconnected');
+  kit.setNavStatus(overlay, 'judgments', refusedReads.has('typesafe') ? 'refused' : (typesafeConfig && typesafeConfig.enabled) ? 'connected' : 'disconnected');
 
   // ── Open animation (matches Skills/Automation Studio) ──
   requestAnimationFrame(() => { backdrop.classList.add('open'); overlay.classList.add('open'); });
@@ -4383,12 +4401,16 @@ async function openSettingsModalNow(options = {}) {
   }
 
   // Load impact data + current settings
-  fetch('/api/recall-impact').then(r => r.json()).then(data => {
+  // A refused read (no owner access) is "No access" on the pane, never the defaults (ui-owner-access.js).
+  const readOrRefuse = async (r) => (markPaneRefused(overlay, 'memory', await refusalOfResponse(r)) ? null : r.json());
+  fetch('/api/recall-impact').then(readOrRefuse).then(data => {
+    if (!Array.isArray(data?.rows)) return;
     _recallImpactData = data;
     updateImpactIndicator();
   }).catch(() => {});
 
-  fetch('/api/display-settings').then(r => r.json()).then(data => {
+  fetch('/api/display-settings').then(readOrRefuse).then(data => {
+    if (!data) return;
     const profile = data.profile || 'balanced';
     const d = data.recallDefaults;
     if (d) {
@@ -6693,8 +6715,12 @@ async function openSettingsModalNow(options = {}) {
       }
     }
 
-    // Load config on open, then auto-detect profiles
-    fetch('/api/browser/config').then(r => r.json()).then(async (data) => {
+    // Load config on open, then auto-detect profiles. A refused read (no owner access) is "No access", never defaults.
+    fetch('/api/browser/config').then(async (r) => {
+      if (markPaneRefused(overlay, 'browser', await refusalOfResponse(r))) return null;
+      return r.json();
+    }).then(async (data) => {
+      if (!data) return;
       if (data.config) { applyBrowserConfig(data.config); syncBcDropdowns(); }
       // Show detected path
       const hint = overlay.querySelector('#bc-detected-path');
@@ -8639,11 +8665,14 @@ async function openSettingsModalNow(options = {}) {
       const servers = { ...(_mcpRegistry.servers || {}) };
       for (const row of _settingsToolCatalog?.servers || []) { const name = row.ref.slice(4); if (!servers[name]) servers[name] = { type: toolWord('configuredExternally'), discovered: true }; }
       const entries = Object.entries(servers).filter(([, info]) => !info.builtin);
+      // A provider whose MCP configuration could not be read is named, never shown as having no servers.
+      const unreadable = toolServersNote(_settingsToolCatalog);
+      const unreadableNote = unreadable ? `<div class="stg-mcp-empty-note" role="status" data-mcp-unreadable>${esc(unreadable)}</div>` : '';
       if (!entries.length) {
-        el.innerHTML = '<div class="stg-mcp-empty-note">' + kit.te('settings.redesign.mcp.noExternalServersConfigured') + '</div>';
+        el.innerHTML = unreadableNote + '<div class="stg-mcp-empty-note">' + kit.te('settings.redesign.mcp.noExternalServersConfigured') + '</div>';
         return;
       }
-      el.innerHTML = entries.map(([name, info]) =>
+      el.innerHTML = unreadableNote + entries.map(([name, info]) =>
         `<div class="stg-mx-ext-row">
           <div class="stg-mx-ext-main">
             <span class="stg-mx-ext-dot"></span>
@@ -9589,8 +9618,50 @@ async function openSettingsModalNow(options = {}) {
     sources: SEARCH_ROW_SOURCES,
     off: SEARCH_OFF,
   });
+  // ── No owner access: the panes whose reads were refused say so (after they wired, which may enable controls) ──
+  markRefusedPanes(overlay, refusedReads);
   // A deep link's `expand` wins over anything a pane collapsed while it wired itself.
   applySettingsOpenOptions(overlay, options, { quiet: true });
+}
+
+// ── No owner access (ui-owner-access.js) ──
+// Which panes each of Settings' reads (settings/settings-data.js SETTINGS_READS) fills. A pane whose read the server
+// refused this page shows "No access" on top and its Save and actions disabled, instead of defaults that look saved.
+const SETTINGS_READ_PANES = Object.freeze({
+  settings: ['server'],
+  connections: ['collections'],
+  integrations: ['projects'],
+  skills: ['skills'],
+  setup: ['setup'],
+  cli: ['terminal'],
+  toolPermissions: ['permissions', 'social'],
+  discord: ['discord'],
+  youtube: ['youtube'],
+  typesafe: ['judgments'],
+});
+
+/** The owner refusal one of Settings' reads stands for (a rejected read, or a raw read's 403 body), or null. */
+function settingsReadRefusal(entry) {
+  if (!entry) return null;
+  if (entry.status === 'rejected') return refusalOfError(entry.reason);
+  const value = entry.value;
+  if (value && typeof value === 'object' && 'status' in value && 'body' in value) return readOwnerAccessRefusal(value.status, value.body);
+  return null;
+}
+
+function markRefusedPanes(overlay, refusedReads) {
+  for (const name of refusedReads) {
+    for (const paneId of SETTINGS_READ_PANES[name] || []) markNoAccess(kit.paneOf(overlay, paneId));
+  }
+}
+
+/** A pane that loads itself (Browser, MoreLogin): its read refused → "No access" and the nav item says so. */
+function markPaneRefused(overlay, paneId, refusal) {
+  if (!refusal) return false;
+  noteOwnerAccessRefusal(refusal);
+  markNoAccess(kit.paneOf(overlay, paneId));
+  kit.setNavStatus(overlay, paneId, 'refused');
+  return true;
 }
 
 

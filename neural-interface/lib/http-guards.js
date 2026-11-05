@@ -25,7 +25,7 @@
 //   isAllowedWebSocketOrigin(req, {port, allowedOrigins})  a browser's Origin must be this server, under one of its own names
 //   isAllowedHost(host, {allowedHosts, machineName})       is this Host one of our names, one DNS rebinding cannot borrow?
 //   hostNameOf(host)                                       the name a Host header holds, as the rule compares it
-//   refuseUpgrade(socket, status)                          answer the upgrade with an HTTP error, close
+//   refuseUpgrade(socket, status, message?, headers?)      answer the upgrade with an HTTP error, close
 //
 //   isOwnerOrigin(origin, {port, ownNames, addresses})     a page of this server at its port, under loopback or one
 //                                                          of this computer's names and addresses (tunnel start / stop)
@@ -51,8 +51,9 @@ import { machineNames as thisMachine } from './machine-names.js';
 /** Headers that mean a proxy or tunnel forwarded the request (lower-case). */
 export const PROXY_HEADERS = Object.freeze(['cf-connecting-ip', 'cf-ray', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'forwarded', 'x-real-ip', 'via']);
 
-/** Headers that mark a request as an agent's rather than the user's (lower-case). */
-export const AGENT_HEADERS = Object.freeze(['x-synabun-desktop-grant', 'x-synabun-terminal', 'x-synabun-role', 'x-synabun-assistant']);
+/** Headers that mark a request as an agent's rather than the user's (lower-case). A run's terminal token
+ *  (lib/terminal-tokens.js) is one: only a run's own MCP server sends it, never the owner's page. */
+export const AGENT_HEADERS = Object.freeze(['x-synabun-desktop-grant', 'x-synabun-terminal', 'x-synabun-role', 'x-synabun-assistant', 'x-synabun-terminal-token']);
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 // RFC 3986 dec-octet: 0-255, no leading zeros (Node never reports them).
@@ -453,16 +454,20 @@ export function ownerRouteGuard({
   return ownerRoute;
 }
 
-/** Answer a WebSocket upgrade with a plain HTTP error (default 403) and close the socket. */
-export function refuseUpgrade(socket, status = 403, message = status === 403 ? 'Forbidden' : 'Bad Request') {
+/** Answer a WebSocket upgrade with a plain HTTP error (default 403) and close the socket. `headers`: a few more
+ *  (Retry-After for a 503); a name or value with a line break or a colon in the name is left out. */
+export function refuseUpgrade(socket, status = 403, message = status === 403 ? 'Forbidden' : 'Bad Request', headers = {}) {
   if (!socket) return;
   // Node drops its own 'error' listener from an upgrade socket: without one, a
   // peer reset while the answer is written would be an uncaught exception.
   socket.on?.('error', () => { try { socket.destroy(); } catch {} });
   if (!socket.writable) { try { socket.destroy(); } catch {} return; }
+  const extra = Object.entries(headers && typeof headers === 'object' ? headers : {})
+    .filter(([name, value]) => /^[A-Za-z0-9-]+$/.test(name) && !/[\r\n]/.test(String(value)))
+    .map(([name, value]) => `${name}: ${String(value)}\r\n`).join('');
   try {
     socket.once('finish', () => socket.destroy());
-    socket.end(`HTTP/1.1 ${status} ${message}\r\nConnection: close\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${Buffer.byteLength(message)}\r\n\r\n${message}`);
+    socket.end(`HTTP/1.1 ${status} ${message}\r\nConnection: close\r\n${extra}Content-Type: text/plain; charset=utf-8\r\nContent-Length: ${Buffer.byteLength(message)}\r\n\r\n${message}`);
   } catch {
     try { socket.destroy(); } catch {}
   }

@@ -19,6 +19,8 @@ import { getSessionPolicy, requiresHumanApproval } from './remote-policy.js';
 import { clampPlanDispatch, PLAN_DISPATCH_NOTE, runCanChangeCode } from './assistant-plan-permissions.js';
 import { noStore, requireJson, requireLocal, requireLocalHost, sendGuardError } from './http-guards.js';
 import { setUntrustedFileHeaders } from './untrusted-file-headers.js';
+import { PEER_VERDICT, peerAuthority } from './peer-identity.js';
+import { sendPeerUnavailable } from './owner-authority.js';
 
 /** The header whatsapp_send_file's caller proves it is the WhatsApp conversation's own brain with (assistant-runtime.js BRAIN_CREDENTIAL_RE). */
 export const BRAIN_CREDENTIAL_HEADER = 'x-synabun-brain-token';
@@ -160,6 +162,11 @@ export function createAssistantApi({
   // The page secret (lib/page-session.js): a request without an agent pin is the owner's page only when it carries
   // this boot's cookie; a local process that merely sends no headers is nobody (never 'ui').
   pageSession = null,
+  // Whether a pin counts (lib/terminal-tokens.js verdict, server.js): (pin, req) → { accepted, code, error, httpStatus }.
+  // A pin SynaBun gave a proof to (a run's terminal token, a brain's launch credential) counts only with it: a request
+  // that names a worker's run, or a brain's id, without it is refused (403 TERMINAL_TOKEN_REQUIRED / _INVALID) instead
+  // of reading that run as its own worker. Without it (a test, an older host) every pin is taken as it is said.
+  terminalVerdict = null,
 } = {}) {
   if (!dispatcher) throw new Error('createAssistantApi requires a dispatcher');
   const router = Router();
@@ -182,9 +189,17 @@ export function createAssistantApi({
     const bodySession = req.body?.assistantSessionId || req.body?.assistant_session_id || req.query?.assistantSessionId || null;
     if (!pin) {
       // The page: this boot's page secret cookie (the browser sends it by itself). Without a page session wired
-      // (a test, an older host) every pinless request is the page, as before.
+      // (a test, an older host) every pinless request is the page, as before. A request whose peer could not be
+      // identified (macOS, the lookup failed) never verifies: it is nobody here, and its refusals say 503
+      // PEER_UNAVAILABLE (uiOnly, refuseRunRead) rather than a 403 the page could not cure.
       if (pageSession && typeof pageSession.verify === 'function' && !pageSession.verify(req)) return { kind: 'unknown', assistantSessionId: bodySession ? String(bodySession) : null, pin: '', pageless: true };
       return { kind: 'ui', assistantSessionId: bodySession ? String(bodySession) : null };
+    }
+    // The pin counts only with its proof: a forged one names nobody here, not even for attribution.
+    let verdict = null;
+    try { verdict = typeof terminalVerdict === 'function' ? terminalVerdict(pin, req) : null; } catch { verdict = { accepted: false, code: 'TERMINAL_TOKEN_INVALID', error: 'The run this request names could not be checked.', httpStatus: 403 }; }
+    if (verdict && verdict.accepted === false) {
+      return { kind: 'refused', forbidden: true, pin, refusal: { status: Number(verdict.httpStatus) || 403, code: String(verdict.code || 'TERMINAL_TOKEN_INVALID'), error: String(verdict.error || 'This request names a run it cannot prove it is.') } };
     }
     if (dispatcher.get(pin)) return { kind: 'worker', forbidden: true, pin };
     // The session a request claims, for attribution once a credential has proven it a brain: a Claude brain's
@@ -229,6 +244,7 @@ export function createAssistantApi({
   }
   function orchestrationGuard(req, res, next) {
     const caller = callerContext(req);
+    if (caller.refusal) return refusePin(res, caller.refusal);
     if (caller.forbidden) return res.status(403).json({ ok: false, code: 'AGENTS_NOT_PERMITTED', error: 'Dispatched workers cannot orchestrate other agents.' });
     // The user's own page (this boot's page secret cookie): the only caller that orchestrates without being a brain.
     if (caller.kind === 'ui') { req.assistantCaller = caller; return next(); }
@@ -238,7 +254,7 @@ export function createAssistantApi({
     // `X-Synabun-Terminal: assistant-*` header, or a real live session id, used to pass here as the brain.
     const brain = brainCaller(req);
     if (brain) { req.assistantCaller = brain; return next(); }
-    return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Orchestration is the user\'s (from SynaBun\'s own page) and the Assistant\'s brain\'s: this request is neither (no page secret, no brain launch credential a live session knows).' });
+    return uiOnly(req, res, 'Orchestration is the user\'s (from SynaBun\'s own page) and the Assistant\'s brain\'s: this request is neither (no page secret, no brain launch credential a live session knows).');
   }
   /**
    * The caller when it is an assistant brain, else null. The one proof is the per-launch credential
@@ -255,6 +271,8 @@ export function createAssistantApi({
     try { session = runtime?.sessionForBrainCredential?.(req.get('x-synabun-brain-token')) || null; } catch { session = null; }
     if (!session) return null;
     const caller = req.assistantCaller || callerContext(req);
+    // A pin the request cannot prove (another brain's, a worker's, an ended one) is refused, credential or not.
+    if (caller.refusal) return null;
     return { ...caller, kind: 'assistant', assistantSessionId: String(session), credentialed: true };
   }
   /**
@@ -278,8 +296,33 @@ export function createAssistantApi({
     if (caller.kind === 'worker' && caller.pin && String(caller.pin) === String(runId)) return true;
     return false;
   }
-  function refuseRunRead(res) {
+  /**
+   * The request's peer could not be identified (lib/peer-identity.js, macOS: the lookup failed), so neither the page
+   * secret nor a brain credential could count: the peer verdict's own reading (peerAuthority), or the page session's
+   * (a request that carries the secret and was never identified). → { retryable, reason } or null.
+   */
+  function peerDown(req) {
+    const auth = peerAuthority(req?.[PEER_VERDICT]);
+    if (auth.decision === 'unavailable') return auth;
+    try { return typeof pageSession?.peerUnavailable === 'function' ? (pageSession.peerUnavailable(req) || null) : null; } catch { return null; }
+  }
+  /** "Only the owner's page": 403 UI_ONLY, or 503 PEER_UNAVAILABLE when the caller could not be identified (a reload,
+   *  or the brain's retry, may cure that; a refusal would not). */
+  function uiOnly(req, res, error) {
+    const down = peerDown(req);
+    if (down) return sendPeerUnavailable(res, req, down);
+    return res.status(403).json({ ok: false, code: 'UI_ONLY', error });
+  }
+  function refuseRunRead(req, res) {
+    const down = peerDown(req);
+    if (down) return sendPeerUnavailable(res, req, down);
+    const refused = callerContext(req).refusal;
+    if (refused) return refusePin(res, refused);
     return res.status(403).json({ ok: false, code: 'RUN_FORBIDDEN', error: 'This run is readable by the owner (from SynaBun\'s own page), its own worker and the Assistant brain of its session only.' });
+  }
+  /** A request that names a run or a brain it cannot prove it is: 403 TERMINAL_TOKEN_REQUIRED / _INVALID (never a token). */
+  function refusePin(res, refusal) {
+    return res.status(refusal.status || 403).json({ ok: false, code: refusal.code, error: refusal.error });
   }
   /** A remote session whose workers only a person may answer (strict worker approvals below autonomous). */
   function humanApprovalRequired(assistantSessionId) {
@@ -514,7 +557,7 @@ export function createAssistantApi({
   router.put('/routing', async (req, res) => {
     if (!requireRouter(res)) return;
     if (!configStore?.patchRouting) return res.status(503).json({ ok: false, code: 'CONFIG_UNAVAILABLE', error: 'Routing settings are read-only' });
-    if (callerContext(req).kind !== 'ui') return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Routing settings are changed from the assistant panel only.' });
+    if (callerContext(req).kind !== 'ui') return uiOnly(req, res, 'Routing settings are changed from the assistant panel only.');
     try {
       const body = req.body || {};
       const patch = body.routing && typeof body.routing === 'object' ? body.routing : body;
@@ -555,7 +598,7 @@ export function createAssistantApi({
   });
   router.delete('/routing/preferences/:key', (req, res) => {
     if (!requireRouter(res)) return;
-    if (callerContext(req).kind !== 'ui') return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Routing settings are changed from the assistant panel only.' });
+    if (callerContext(req).kind !== 'ui') return uiOnly(req, res, 'Routing settings are changed from the assistant panel only.');
     try {
       configStore.patchRouting({ preferences: { [req.params.key]: null } }, { taskClasses: [...Object.keys(taskClasses || {}), 'vision'] });
       broadcastSync({ type: 'assistant:routing-changed', version: configStore.version() });
@@ -600,7 +643,7 @@ export function createAssistantApi({
   router.put('/user-context', (req, res) => {
     if (!userContextReady(res)) return;
     if (!configStore.patchUserContext) return res.status(503).json({ ok: false, code: 'CONFIG_UNAVAILABLE', error: 'User context settings are read-only' });
-    if (callerContext(req).kind !== 'ui') return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'User context settings are changed from Settings only.' });
+    if (callerContext(req).kind !== 'ui') return uiOnly(req, res, 'User context settings are changed from Settings only.');
     try {
       const body = req.body || {};
       const { project: _project, ...patch } = body.settings && typeof body.settings === 'object' ? body.settings : body;
@@ -620,7 +663,7 @@ export function createAssistantApi({
   });
   router.put('/budget', (req, res) => {
     if (!configStore?.patchBudget) return res.status(503).json({ ok: false, code: 'CONFIG_UNAVAILABLE', error: 'Budget settings are read-only' });
-    if (callerContext(req).kind !== 'ui') return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Budget settings are changed from the assistant panel only.' });
+    if (callerContext(req).kind !== 'ui') return uiOnly(req, res, 'Budget settings are changed from the assistant panel only.');
     try {
       const body = req.body || {};
       const patch = body.budget && typeof body.budget === 'object' && !Array.isArray(body.budget) ? body.budget : null;
@@ -738,7 +781,7 @@ export function createAssistantApi({
   }
   router.post('/clarify/:requestId/answer', (req, res) => {
     if (!requireClarifier(res)) return;
-    if (callerContext(req).kind !== 'ui') return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Clarify cards are answered by the user.' });
+    if (callerContext(req).kind !== 'ui') return uiOnly(req, res, 'Clarify cards are answered by the user.');
     try { res.json(clarifier.answer(req.params.requestId, cardAnswer(req), { origin: 'rest' })); } catch (error) { sendError(res, error); }
   });
   router.get('/briefs/:briefId', (req, res) => {
@@ -760,7 +803,7 @@ export function createAssistantApi({
   });
   router.post('/routes/:routeId/answer', async (req, res) => {
     if (!requireRouter(res)) return;
-    if (callerContext(req).kind !== 'ui') return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Route cards are answered by the user.' });
+    if (callerContext(req).kind !== 'ui') return uiOnly(req, res, 'Route cards are answered by the user.');
     try { res.json(await assistantRouter.answer(req.params.routeId, cardAnswer(req), { origin: 'rest' })); } catch (error) { sendError(res, error); }
   });
   router.get('/sessions/:id/routes', (req, res) => {
@@ -780,7 +823,7 @@ export function createAssistantApi({
     // Listing is owner-or-brain only: a worker reads its own run by id, never the roster of every run.
     const caller = callerContext(req);
     const brain = brainCaller(req);
-    if (caller.kind !== 'ui' && !brain) return refuseRunRead(res);
+    if (caller.kind !== 'ui' && !brain) return refuseRunRead(req, res);
     try {
       const active = req.query.active === '1' || req.query.activeOnly === '1';
       // A brain sees only its OWN session's runs (its session id forced over whatever the query asks); the owner's
@@ -840,7 +883,7 @@ export function createAssistantApi({
   });
 
   router.get('/runs/:runId', (req, res) => {
-    if (!runReadAllowed(req, req.params.runId)) return refuseRunRead(res);
+    if (!runReadAllowed(req, req.params.runId)) return refuseRunRead(req, res);
     const run = dispatcher.get(req.params.runId);
     if (!run) return res.status(404).json({ ok: false, code: 'RUN_NOT_FOUND', error: `Unknown run ${req.params.runId}` });
     const brain = brainCaller(req);
@@ -848,7 +891,7 @@ export function createAssistantApi({
     res.json({ ok: true, run: brain ? slimRunView(run) : run });
   });
   router.get('/runs/:runId/result', (req, res) => {
-    if (!runReadAllowed(req, req.params.runId)) return refuseRunRead(res);
+    if (!runReadAllowed(req, req.params.runId)) return refuseRunRead(req, res);
     try {
       const out = dispatcher.transcript(req.params.runId, { format: 'result' });
       if (out?.result) {
@@ -859,7 +902,7 @@ export function createAssistantApi({
     } catch (error) { sendError(res, error); }
   });
   router.get('/runs/:runId/transcript', (req, res) => {
-    if (!runReadAllowed(req, req.params.runId)) return refuseRunRead(res);
+    if (!runReadAllowed(req, req.params.runId)) return refuseRunRead(req, res);
     try {
       const format = req.query.format || 'tail';
       const out = dispatcher.transcript(req.params.runId, {
@@ -880,7 +923,7 @@ export function createAssistantApi({
   // path from the request; owner-only like everything here. sendFile answers
   // Range requests, so a video seeks.
   router.get('/runs/:runId/media/:n', async (req, res) => {
-    if (!runReadAllowed(req, req.params.runId)) return refuseRunRead(res);
+    if (!runReadAllowed(req, req.params.runId)) return refuseRunRead(req, res);
     const notFound = () => res.status(404).json({ ok: false, code: 'MEDIA_NOT_FOUND', error: `No media ${req.params.n} for run ${req.params.runId}` });
     if (!/^\d{1,4}$/.test(String(req.params.n))) return notFound();
     let file = null;
@@ -975,7 +1018,7 @@ export function createAssistantApi({
   router.delete('/runs/:runId', async (req, res) => {
     const caller = callerContext(req);
     const brain = brainCaller(req);
-    if (caller.kind !== 'ui' && !brain) return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Finished runs are removed by the owner (from SynaBun\'s own page) or the Assistant brain of the run\'s session.' });
+    if (caller.kind !== 'ui' && !brain) return uiOnly(req, res, 'Finished runs are removed by the owner (from SynaBun\'s own page) or the Assistant brain of the run\'s session.');
     if (brain && caller.kind !== 'ui') {
       // A brain removes only the runs of its own session: another session's run is left untouched.
       const runSession = dispatcher.get(req.params.runId)?.assistantSessionId || null;
@@ -989,7 +1032,7 @@ export function createAssistantApi({
     try { res.json(await dispatcher.remove(req.params.runId, { assistantSessionId })); } catch (error) { sendError(res, error); }
   });
   router.post('/runs/clear-finished', async (req, res) => {
-    if (callerContext(req).kind !== 'ui') return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Finished runs are removed from the assistant panel only.' });
+    if (callerContext(req).kind !== 'ui') return uiOnly(req, res, 'Finished runs are removed from the assistant panel only.');
     const body = req.body || {};
     const assistantSessionId = body.assistantSessionId || body.assistant_session_id || null;
     const workflowId = body.workflowId || body.workflow_id || null;
@@ -1003,7 +1046,7 @@ export function createAssistantApi({
   // The user closed the sidepanel tab of a worker that finished its task: completed, never "stopped
   // by the user" (409 RUN_NOT_FINISHED for any other run, which the tab then stops as before).
   router.post('/runs/:runId/tab-closed', (req, res) => {
-    if (callerContext(req).kind !== 'ui') return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Only the sidepanel that closed the tab reports it.' });
+    if (callerContext(req).kind !== 'ui') return uiOnly(req, res, 'Only the sidepanel that closed the tab reports it.');
     try { res.json(dispatcher.completeClosedTab(req.params.runId)); } catch (error) { sendError(res, error); }
   });
   router.post('/runs/:runId/focus', (req, res) => {
@@ -1338,9 +1381,8 @@ export function createAssistantApi({
   });
   router.put('/admin-sandbox', requireJson, (req, res) => {
     if (!adminSandbox) return res.status(503).json({ ok: false, code: 'ADMIN_SANDBOX_UNAVAILABLE', error: 'The Admin sandbox setting is not available on this server' });
-    if (callerContext(req).kind !== 'ui' || req.get('x-synabun-desktop-grant')) {
-      return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Only the user can change the Admin sandbox.' });
-    }
+    if (req.get('x-synabun-desktop-grant')) return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Only the user can change the Admin sandbox.' });
+    if (callerContext(req).kind !== 'ui') return uiOnly(req, res, 'Only the user can change the Admin sandbox.');
     const value = req.body?.adminSandbox;
     if (typeof value !== 'boolean') return res.status(400).json({ ok: false, code: 'INVALID_VALUE', error: 'adminSandbox must be true or false.' });
     try { res.json({ ok: true, ...adminSandbox.set(value) }); } catch (error) { sendError(res, error); }
@@ -1355,9 +1397,8 @@ export function createAssistantApi({
   });
   router.put('/worker-guard', requireJson, (req, res) => {
     if (!workerGuard) return res.status(503).json({ ok: false, code: 'WORKER_GUARD_UNAVAILABLE', error: 'The Protect workers setting is not available on this server' });
-    if (callerContext(req).kind !== 'ui' || req.get('x-synabun-desktop-grant') || req.get('x-synabun-role')) {
-      return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Only the user can change Protect workers.' });
-    }
+    if (req.get('x-synabun-desktop-grant') || req.get('x-synabun-role')) return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Only the user can change Protect workers.' });
+    if (callerContext(req).kind !== 'ui') return uiOnly(req, res, 'Only the user can change Protect workers.');
     const value = req.body?.mode;
     if (typeof value !== 'string' || !workerGuard.view().modes.includes(value)) return res.status(400).json({ ok: false, code: 'INVALID_VALUE', error: `mode must be one of ${workerGuard.view().modes.join(', ')}.` });
     try { res.json({ ok: true, ...workerGuard.set(value) }); } catch (error) { sendError(res, error); }

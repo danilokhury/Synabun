@@ -85,6 +85,9 @@ export function buildExecInvocation({
   model,
   effort,
   mcpEnvOverrides = [],
+  // Codex: variables its SynaBun MCP server takes from the loop's environment by name (`env_vars`): a secret is never
+  // a `-c` value, because a command line is readable by every account of the computer (the run's terminal token).
+  mcpEnvVars = [],
   // Codex: launch overrides as `-c` words (the Windows sandbox of the Admin sandbox setting).
   codexConfigArgs = [],
   platform = process.platform,
@@ -103,6 +106,11 @@ export function buildExecInvocation({
       for (const [key, value] of mcpEnvOverrides) {
         args.push('-c', `mcp_servers.SynaBun.env.${key}=${codexConfigString(value)}`);
       }
+      const forwarded = [...new Set((Array.isArray(mcpEnvVars) ? mcpEnvVars : []).map(String))];
+      for (const name of forwarded) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`Invalid environment variable name: ${name}`);
+      }
+      if (forwarded.length) args.push('-c', `mcp_servers.SynaBun.env_vars=[${forwarded.map(codexConfigString).join(',')}]`);
       const normalizedEffort = codexReasoningEffort(effort);
       if (normalizedEffort) args.push('-c', `model_reasoning_effort=${codexConfigString(normalizedEffort)}`);
       if (model) args.push('--model', String(model));

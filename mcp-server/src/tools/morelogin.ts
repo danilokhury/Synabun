@@ -9,7 +9,7 @@ import { text } from './response.js';
 
 export const moreloginSchema = {
   action: z.enum(['status', 'list', 'create', 'start', 'stop', 'use_default']).describe(
-    'MoreLogin action. "status" = installed/running + current default. "list" = browser profiles (environments). "create" = new profile. "start"/"stop" = launch/close a profile. "use_default" = make a profile the default AI browser so every browser_* tool drives it.'
+    'MoreLogin action. "status" = installed/running + current default. "list" = browser profiles (environments). "create" = new profile. "start"/"stop" = launch/close a profile (stop closes every tab in that browser: you may stop only a profile you started or have a tab in, and never while other automations have a tab in it). "use_default" = make a profile the default AI browser so every browser_* tool drives it (refused while other automations work in the browser). "start" and "use_default" are for a run SynaBun started; the owner does the rest in Settings → Browser.'
   ),
   envId: z.string().optional().describe(
     'MoreLogin environment (profile) id — required for start, stop, and use_default. Get ids from the "list" action.'
@@ -53,7 +53,9 @@ export async function handleMoreLogin(args: { action: string; envId?: string; na
       if (!args.envId) return text('envId is required for the "start" action. Use "list" to get ids.');
       const r = await ni.moreloginStart(args.envId);
       if (r.error) return text(`Start failed: ${r.error}`);
-      return text(`Started MoreLogin env ${args.envId} (debug port ${r.debugPort}).`);
+      // The owner's page gets the profile's debugging port; an automation does not (a raw CDP connection would drive
+      // the profile past every check SynaBun makes), and needs none: the browser tools drive the default profile.
+      return text(`Started MoreLogin env ${args.envId}${r.debugPort ? ` (debug port ${r.debugPort})` : ''}.`);
     }
     case 'stop': {
       if (!args.envId) return text('envId is required for the "stop" action.');

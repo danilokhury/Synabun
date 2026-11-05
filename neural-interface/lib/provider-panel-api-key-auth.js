@@ -1,3 +1,5 @@
+import { scrubTokenText } from './terminal-token-redaction.js';
+
 const API_KEY_ERRORS = {
   invalid_key: { status: 400, message: "That doesn't look like an API key for this provider." },
   oauth_token: { status: 400, message: "That's a Claude sign-in token. Use Sign in with Claude." },
@@ -27,9 +29,12 @@ export function validateProviderApiKey(provider, key) {
   return key;
 }
 
-// Defense in depth for native diagnostics/events. Never forward credential fields.
+// Defense in depth for native diagnostics/events. Never forward credential fields. SynaBun's own run secrets go too
+// (a terminal token, a brain's launch credential: lib/terminal-token-redaction.js), first, so a provider-key pattern
+// inside one never leaves a piece of it: the Claude Code panel's and brain's events and the Codex panel's messages
+// (and its app-server's output) pass here.
 export function redactProviderSecrets(value) {
-  if (typeof value === 'string') return value.replace(/sk-[A-Za-z0-9_-]{16,}/g, '[redacted]');
+  if (typeof value === 'string') return scrubTokenText(value).replace(/sk-[A-Za-z0-9_-]{16,}/g, '[redacted]');
   if (Array.isArray(value)) return value.map(redactProviderSecrets);
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value)
     .filter(([key]) => !/^(api_?key|access_?token|refresh_?token|id_?token|authorization)$/i.test(key))

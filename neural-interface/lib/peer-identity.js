@@ -23,11 +23,25 @@
 //   • allowed: everything else — the owner's own browser (Safari's WebKit networking, Chrome's network service,
 //     Firefox, Arc…), the SynaBun app's window, the owner's own terminal.
 //
-// No allowlist: nothing the owner uses has to be known for it to keep working. When the lookup itself cannot run
-// (netstat or ps missing, slow or unreadable, another platform) the answer is "unknown" and the caller keeps its
-// rules from before this module (the sandbox stays the boundary for workers): the owner is never locked out by a
-// failed lookup. A client socket that is no longer in the table when it is looked up (the client closed it before
-// its request was read) is refused: a browser waiting for its answer still holds its socket.
+// No allowlist: nothing the owner uses has to be known for it to keep working. A client socket that is no longer in
+// the table when it is looked up (the client closed it before its request was read) is refused: a browser waiting for
+// its answer still holds its socket.
+//
+// When there is no answer, two cases are told apart (the verdict's `kind`, peerAuthority() reads it for every caller):
+//   • unsupported — the lookup does not run on this server: another platform than macOS, or SYNABUN_PEER_IDENTITY=off
+//     (the owner's explicit choice, logged at start). The callers keep their rules from before this module, so
+//     Windows and Linux work as they always did;
+//   • failed — the lookup should have run here (macOS) and could not: netstat or ps missing, denied (a server started
+//     inside a sandbox), slow past the cap, an output this parser does not read, a connection with no address, or an
+//     error in the lookup itself. That is no proof of who is asking, so the request gets no owner authority: no page
+//     secret, no brain credential, and the owner's writes, reads and sockets are answered 503 PEER_UNAVAILABLE (the
+//     app's pages and every other read still load). A failure that may pass (a timeout, a busy system) is tried once
+//     more at once and is kept on its connection for a moment only (NEGATIVE_TTL_MS), so an open tab recovers by
+//     itself; a client that left is never kept. The server probes netstat and ps once at start (probe()), keeps the
+//     state for GET /api/health (`ownerAuthority`: ok / degraded / unsupported / off), says the change in one loud log
+//     line, and the page shows a banner while it is degraded (public/shared/ui-owner-authority.js).
+// Only a machine elsewhere on the network ('remote', below) still keeps the rules from before without a lookup: what to
+// do about a LAN client is a separate decision (TODO(peer-identity-remote): decide the LAN policy).
 //
 // Cheap: one `netstat -anvl -p tcp` (~4 ms on macOS, one sysctl) per NEW connection, shared by every lookup that is
 // waiting when it starts; the process table (`ps`, ~20 ms) is read only for a process not seen in the last few
@@ -42,7 +56,9 @@
 // of a brain's environment (`ps -E` cannot be blocked between processes of one user) and sent through a relay is
 // dropped from the request, which then has no brain authority.
 //
-// macOS only (netstat's process:pid column, ps -E). Elsewhere every answer is "unknown" (the rules from before).
+// macOS only (netstat's process:pid column, ps -E). Elsewhere every answer is "unknown, unsupported" (the rules from
+// before). On macOS a credential whose check could not run (the lookup failed, or ps -E could not be read) is dropped
+// too: nothing proves the brain sent it.
 // Parsers and the classifier are pure and unit-tested (tests/peer-identity.test.mjs); the reader takes an injected
 // `run` so tests drive it with fixed tables.
 
@@ -66,7 +82,11 @@ const LSOF = '/usr/sbin/lsof';
 export const lsofCwdArgs = (pid) => ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'];
 const TABLE_TIMEOUT_MS = 1500;
 const PS_TIMEOUT_MS = 2000;
-const LOOKUP_CAP_MS = 2500;
+/** The longest one attempt at a lookup may keep a request waiting (a failure that may pass gets one more attempt). */
+export const LOOKUP_CAP_MS = 2500;
+/** How long a failed lookup is kept on its connection: a burst of requests is not looked up again each, an open tab
+ *  is soon. */
+export const NEGATIVE_TTL_MS = 2000;
 const PS_SNAPSHOT_TTL_MS = 2000;
 // A process's parents and command line do not change while it lives (a parent that exits leaves it to launchd, which
 // only ever takes an agent or a browser out of the chain, never puts one in): kept half an hour, checked against
@@ -534,6 +554,65 @@ export function envHoldsCredential(env, credential) {
   }
 }
 
+// ── Verdicts without an answer, and what a verdict means for the owner's authority ─
+
+/** The lookup does not run on this server (another platform, SYNABUN_PEER_IDENTITY=off): the callers' rules from before. */
+export function unsupportedPeerVerdict(reason = 'peer lookup is not available here') {
+  return { status: 'unknown', kind: 'unsupported', retryable: false, reason: String(reason) };
+}
+/** The lookup should have run here (macOS) and could not: no owner authority for the request (503 PEER_UNAVAILABLE). */
+export function failedPeerVerdict(reason = 'the lookup failed', { retryable = false } = {}) {
+  return { status: 'unknown', kind: 'failed', retryable: retryable === true, reason: String(reason) };
+}
+
+const TRANSIENT_CODES = new Set(['ETIMEDOUT', 'EAGAIN', 'EMFILE', 'ENFILE', 'ENOMEM', 'EBUSY', 'EINTR']);
+/**
+ * Whether a failure of netstat / ps may pass by itself: its own timeout ended it (execFile kills it and says
+ * `killed` / `signal`), or the system was short of something for a moment (no process slot, no file descriptor).
+ * A program that is missing (ENOENT), denied (EPERM, EACCES: a sandbox) or answers what cannot be read does not.
+ */
+export function isTransientLookupError(error) {
+  if (!error || typeof error !== 'object') return false;
+  if (error.killed === true || (typeof error.signal === 'string' && error.signal)) return true;
+  return TRANSIENT_CODES.has(String(error.code || ''));
+}
+/** A short reason for a failed program ("timed out", "EPERM", "netstat named no processes…"). */
+function failureText(error) {
+  if (error && typeof error === 'object' && (error.killed === true || (typeof error.signal === 'string' && error.signal))) return 'timed out';
+  return String(error?.code || error?.message || error || 'failed');
+}
+
+/**
+ * What a request's peer verdict means for the owner's authority: the one reading lib/page-session.js,
+ * lib/owner-authority.js and lib/assistant-api.js share. Pure, never throws.
+ *   { decision: 'before' }       never looked up, the lookup does not run here (unsupported: another platform or
+ *                                SYNABUN_PEER_IDENTITY=off), or a machine elsewhere on the network: the caller's rules
+ *                                from before decide
+ *   { decision: 'allowed', self } the owner's own process (or this server itself)
+ *   { decision: 'refused', code: 'PEER_REFUSED', kind, why, pid, name, gone }  never the owner's authority (the caller
+ *                                still applies its own exceptions, such as an agent's own call)
+ *   { decision: 'unavailable', code: 'PEER_UNAVAILABLE', retryable, reason }   macOS, the lookup failed: no owner
+ *                                authority, and the caller answers 503 (a verdict of a shape this does not know is
+ *                                taken as this one: never the rules from before by accident)
+ */
+export function peerAuthority(verdict) {
+  if (verdict === undefined || verdict === null) return { decision: 'before', reason: 'not looked up' };
+  if (typeof verdict !== 'object') return { decision: 'unavailable', code: 'PEER_UNAVAILABLE', retryable: false, reason: 'the lookup gave no answer' };
+  if (verdict.status === 'ok') {
+    if (!verdict.refuse) return { decision: 'allowed', self: verdict.self === true };
+    const r = verdict.refuse;
+    return { decision: 'refused', code: 'PEER_REFUSED', kind: String(r.kind || 'refused'), why: String(r.why || 'a process that may not act as the owner'), pid: r.pid ?? null, name: String(r.name || ''), gone: false };
+  }
+  if (verdict.status === 'gone') {
+    return { decision: 'refused', code: 'PEER_REFUSED', kind: 'gone', why: String(verdict.reason || 'the connection closed before its request was identified'), pid: verdict.pid ?? null, name: '', gone: true };
+  }
+  // TODO(peer-identity-remote): a client on another machine of the network keeps the rules from before; whether a LAN
+  // client may ever hold the page secret is a separate decision (isRemote() reads headers only).
+  if (verdict.status === 'remote') return { decision: 'before', reason: 'another machine' };
+  if (verdict.status === 'unknown' && verdict.kind === 'unsupported') return { decision: 'before', reason: String(verdict.reason || 'peer lookup is not available here') };
+  return { decision: 'unavailable', code: 'PEER_UNAVAILABLE', retryable: verdict.retryable === true, reason: String(verdict.reason || 'the lookup failed') };
+}
+
 // ── The reader ───────────────────────────────────────────────────────────────
 
 function defaultRun(file, args, { timeout }) {
@@ -556,7 +635,7 @@ function thisMachineAddresses() {
 
 /**
  * @param {object} [o]
- * @param {string} [o.platform] process.platform; only darwin is looked up (everything else is "unknown").
+ * @param {string} [o.platform] process.platform; only darwin is looked up (everything else is "unknown, unsupported").
  * @param {number} [o.selfPid] this server's pid (its own in-process calls are trusted).
  * @param {(file:string, args:string[], opts:{timeout:number}) => Promise<string>} [o.run] runs a program (execFile-shaped).
  * @param {() => Set<string>} [o.localAddresses] this computer's addresses (normalized).
@@ -566,12 +645,20 @@ function thisMachineAddresses() {
  * @param {string[]} [o.synabunRoots] this server's install (the folder holding mcp-server/): its MCP server over HTTP
  *   is told apart from other listening programs (isSynabunMcpServer). None: it is refused as a listener, as any relay.
  * @param {(path:string) => string} [o.realpath] fs.realpathSync (tests inject one).
+ * @param {number} [o.lookupCapMs] the cap of one attempt (LOOKUP_CAP_MS; tests shorten it).
+ * @param {number} [o.negativeTtlMs] how long a failed lookup is kept on its connection (NEGATIVE_TTL_MS).
  */
-export function createPeerIdentity({ platform = process.platform, selfPid = process.pid, run = defaultRun, localAddresses = null, log = () => {}, now = Date.now, disabled = false, synabunRoots = [], realpath = realpathSync, debugClient = null } = {}) {
+export function createPeerIdentity({ platform = process.platform, selfPid = process.pid, run = defaultRun, localAddresses = null, log = () => {}, now = Date.now, disabled = false, synabunRoots = [], realpath = realpathSync, debugClient = null, lookupCapMs = LOOKUP_CAP_MS, negativeTtlMs = NEGATIVE_TTL_MS } = {}) {
   const supported = platform === 'darwin' && !disabled;
+  const capMs = Number.isFinite(lookupCapMs) && lookupCapMs > 0 ? lookupCapMs : LOOKUP_CAP_MS;
+  const ttlMs = Number.isFinite(negativeTtlMs) && negativeTtlMs >= 0 ? negativeTtlMs : NEGATIVE_TTL_MS;
   const debugPolicy = debugClient?.enabled ? { enabled: true, port: Number.isInteger(debugClient.port) ? debugClient.port : null } : null;
   if (debugPolicy) { try { log(`[peer-identity] WARNING: SYNABUN_ALLOW_DEBUG_CLIENT is set: a loopback client started with --remote-debugging-port${debugPolicy.port ? `=${debugPolicy.port}` : ''} is taken as the owner (local profiling only; unset it when done)`); } catch { /* logger */ } }
-  if (disabled) { try { log('[peer-identity] off (SYNABUN_PEER_IDENTITY=off): the page secret\'s rules from before apply, with no peer lookup'); } catch { /* logger */ } }
+  if (disabled) { try { log('[peer-identity] off (SYNABUN_PEER_IDENTITY=off, the owner\'s explicit choice): no peer lookup; the page secret, the owner\'s routes and the brain credential keep their rules from before (a local process that fetches a page gets the secret)'); } catch { /* logger */ } }
+  /** "Not looked up here" for this server: off, or another platform. */
+  const unsupportedReason = disabled ? 'SYNABUN_PEER_IDENTITY=off' : `peer lookup is not available on ${platform}`;
+  /** No answer: a failure where the lookup runs (macOS), the rules from before anywhere else. */
+  const noAnswer = (reason, { retryable = false } = {}) => (supported ? failedPeerVerdict(reason, { retryable }) : unsupportedPeerVerdict(unsupportedReason));
   const bySocket = new WeakMap();
   const chains = new Map(); // pid → { at, ucomm, chain }
   const envs = new Map();   // `${pid}\0${credential}` → { at, holds }
@@ -584,7 +671,7 @@ export function createPeerIdentity({ platform = process.platform, selfPid = proc
     return typeof real === 'string' && real !== written ? [written, real] : [written];
   }))];
   const logged = new Map(); // key → last time
-  const stats = { lookups: 0, tableReads: 0, psReads: 0, envReads: 0, refused: 0, unknown: 0, gone: 0, totalMs: 0, maxMs: 0 };
+  const stats = { lookups: 0, tableReads: 0, psReads: 0, envReads: 0, refused: 0, unknown: 0, failed: 0, retries: 0, gone: 0, totalMs: 0, maxMs: 0 };
   let addrCache = null;
   let addrAt = 0;
 
@@ -595,6 +682,81 @@ export function createPeerIdentity({ platform = process.platform, selfPid = proc
     if (logged.size > 500) logged.delete(logged.keys().next().value);
     try { log(line); } catch { /* a logger's own failure */ }
   };
+  const say = (line) => { try { log(line); } catch { /* a logger's own failure */ } };
+
+  // ── The state of the owner's authority (GET /api/health `ownerAuthority`, the page's banner) ──
+  // off / unsupported never change. On macOS it is ok until the start probe or a lookup fails (degraded, with the
+  // reason), and ok again after a whole lookup works (one that read the process table, not just this server's own
+  // call, which needs netstat only). Each change is said once, loudly; a lookup that keeps failing is not said again.
+  const iso = (ms) => { try { return new Date(ms).toISOString(); } catch { return null; } };
+  let authority = disabled
+    ? { state: 'off', reason: 'SYNABUN_PEER_IDENTITY=off', retryable: false, since: iso(now()) }
+    : !supported
+      ? { state: 'unsupported', reason: unsupportedReason, retryable: false, since: iso(now()) }
+      : { state: 'ok', reason: null, retryable: false, since: iso(now()) };
+  let probed = null; // the start probe's promise
+  function degrade(reason, { retryable = false, source = 'lookup' } = {}) {
+    if (!supported) return;
+    const text = String(reason || 'the lookup failed');
+    if (authority.state === 'degraded') {
+      // The same outage, said once. Its reason stays what it was (the page's banner is dismissed by it), unless a cause
+      // that does not pass by itself follows one that might (a denial after a timeout): that one is the news.
+      if (authority.reason !== text) {
+        if (authority.retryable && !retryable) authority = { ...authority, reason: text, retryable: false };
+        note(`degraded:${text}`, `[peer-identity] still degraded: ${text}`);
+      }
+      return;
+    }
+    authority = { state: 'degraded', reason: text, retryable, since: iso(now()) };
+    say(`[peer-identity] DEGRADED (${source}): SynaBun cannot tell which local program is calling it (${text}). Until a lookup works again it hands out no page secret, takes no brain credential and answers the owner's writes, reads and sockets 503 PEER_UNAVAILABLE; pages and other reads still load. If this persists, start SynaBun outside any sandbox, or set SYNABUN_PEER_IDENTITY=off in ~/.synabun/.env and restart (the rules from before, without this protection).`);
+  }
+  function restore(source = 'lookup') {
+    if (!supported || authority.state === 'ok') return;
+    const was = authority.reason;
+    authority = { state: 'ok', reason: null, retryable: false, since: iso(now()) };
+    say(`[peer-identity] owner authority restored (${source}): local programs are identified again${was ? ` (it was: ${was})` : ''}`);
+  }
+  /** What a lookup said about the lookup itself: a whole answer restores, a failure degrades (one about a single
+   *  connection — it has no address any more — says nothing about the tools). */
+  function noteOutcome(verdict) {
+    if (!supported || !verdict || typeof verdict !== 'object') return;
+    if (verdict.status === 'unknown' && verdict.kind === 'failed') { if (!verdict.connection) degrade(verdict.reason, { retryable: verdict.retryable === true }); }
+    else if (verdict.status === 'ok' && !verdict.self) restore();
+  }
+  /** The state for GET /api/health: { state: 'ok'|'degraded'|'unsupported'|'off', reason, retryable, since }. */
+  function authorityState() {
+    return { state: authority.state, reason: authority.reason, retryable: authority.retryable === true, since: authority.since };
+  }
+  /**
+   * The start probe (server.js runs it once, at start): netstat and ps, as a lookup runs them. A failure is the
+   * degraded state at once, with its reason in the log and in GET /api/health, before any owner's request meets it.
+   * Off macOS (or off) there is nothing to probe. Never rejects; asked twice, it runs once.
+   */
+  function probe() {
+    if (!supported) return Promise.resolve(authorityState());
+    if (probed) return probed;
+    probed = (async () => {
+      const failures = [];
+      let retryable = false;
+      try {
+        const table = parseNetstatTcp(await run(NETSTAT, NETSTAT_ARGS, { timeout: TABLE_TIMEOUT_MS }));
+        if (!table.rows.length) failures.push('netstat listed no TCP sockets');
+        else if (!table.rows.some((r) => r.pid > 0)) failures.push('netstat named no processes (an unknown output layout)');
+      } catch (error) { failures.push(`netstat: ${failureText(error)}`); retryable = retryable || isTransientLookupError(error); }
+      try {
+        const parents = parsePsParents(await run(PS, ['-Ao', 'pid=,ppid=,ucomm='], { timeout: PS_TIMEOUT_MS }));
+        if (!parents.size) failures.push('ps listed no processes');
+        else if (!parents.has(selfPid)) failures.push('ps did not list this server');
+      } catch (error) { failures.push(`ps: ${failureText(error)}`); retryable = retryable || isTransientLookupError(error); }
+      if (failures.length) degrade(failures.join('; '), { retryable, source: 'start probe' });
+      else {
+        say('[peer-identity] start probe: netstat and ps answer; the owner\'s authority is checked against the calling process');
+        restore('start probe');
+      }
+      return authorityState();
+    })().catch((error) => { degrade(`the probe failed (${error?.message || error})`, { source: 'start probe' }); return authorityState(); });
+    return probed;
+  }
   const isThisMachine = (addr) => {
     if (typeof localAddresses === 'function') { try { return localAddresses().has(addr); } catch { return false; } }
     if (!addrCache || now() - addrAt > LOCAL_ADDR_TTL_MS) { addrCache = thisMachineAddresses(); addrAt = now(); }
@@ -707,16 +869,18 @@ export function createPeerIdentity({ platform = process.platform, selfPid = proc
     const remotePort = Number(socket?.remotePort);
     const local = normalizeAddress(socket?.localAddress);
     const localPort = Number(socket?.localPort);
-    if (!remote || !remotePort || !localPort) return { status: 'unknown', reason: 'the connection has no address' };
+    // (on macOS: no proof of who is asking, about this one connection — it says nothing about the tools)
+    if (!remote || !remotePort || !localPort) return { ...noAnswer('the connection has no address'), connection: true };
+    // TODO(peer-identity-remote): another machine of the network is not looked up and keeps the rules from before.
     if (!isThisMachine(remote)) return { status: 'remote' };
-    if (!supported) return { status: 'unknown', reason: `peer lookup is not available on ${platform}` };
+    if (!supported) return unsupportedPeerVerdict(unsupportedReason);
     let table;
-    try { table = await tcpTable(); } catch (error) { return { status: 'unknown', reason: `netstat: ${error?.code || error?.message || error}` }; }
+    try { table = await tcpTable(); } catch (error) { return failedPeerVerdict(`netstat: ${failureText(error)}`, { retryable: isTransientLookupError(error) }); }
     const row = table.rows.find((r) => r.local.port === remotePort && r.local.addr === remote && r.foreign.port === localPort && (r.foreign.addr === local || !local));
     if (!row || !row.pid) return { status: 'gone', reason: 'the connection closed before its request was identified', ms: now() - started };
     if (row.pid === selfPid) return { status: 'ok', self: true, pid: row.pid, name: row.name, chain: [], refuse: null, ms: now() - started };
     let chain;
-    try { chain = await chainOf(row.pid, row.name, table.startedAt); } catch (error) { return { status: 'unknown', reason: `ps: ${error?.code || error?.message || error}`, pid: row.pid }; }
+    try { chain = await chainOf(row.pid, row.name, table.startedAt); } catch (error) { return { ...failedPeerVerdict(`ps: ${failureText(error)}`, { retryable: isTransientLookupError(error) }), pid: row.pid }; }
     // The process table was read and the client is not in it: it sent its request and exited without waiting for the
     // answer (a one-shot relay). A browser or a brain waits for its answer; this is treated like a closed socket.
     if (!chain || !chain.length) return { status: 'gone', reason: 'the client process exited before it was identified', pid: row.pid, ms: now() - started };
@@ -727,18 +891,43 @@ export function createPeerIdentity({ platform = process.platform, selfPid = proc
     return { status: 'ok', self: verdict.self, pid: row.pid, name: row.name || chain[0].ucomm, chain, refuse: verdict.refuse, ms: now() - started };
   }
 
-  /** The peer of a request's connection, looked up once per connection (keep-alive requests share it). Never rejects. */
+  /** One attempt, capped: the request never waits past `capMs` for it (the programs it started end by their own timeouts). */
+  function attempt(socket) {
+    let timer = null;
+    const cap = new Promise((resolve) => { timer = setTimeout(() => resolve(noAnswer(`the lookup took over ${capMs} ms`, { retryable: true })), capMs); timer.unref?.(); });
+    const work = Promise.resolve().then(() => identify(socket)).catch((error) => noAnswer(`the lookup failed (${error?.message || error})`));
+    return Promise.race([work, cap]).finally(() => clearTimeout(timer));
+  }
+  /** A lookup, and once more at once when its failure may pass (a timeout, a busy system). */
+  async function settle(socket) {
+    const first = await attempt(socket);
+    if (!(first.status === 'unknown' && first.kind === 'failed' && first.retryable && !first.connection)) return first;
+    stats.retries++;
+    const second = await attempt(socket);
+    return second.status === 'unknown' && second.kind === 'failed' ? { ...second, retried: true } : second;
+  }
+  /**
+   * The peer of a request's connection, looked up once per connection (keep-alive requests share it). Never rejects.
+   * Kept on the connection: an answer (ok, another machine, not looked up here) for its lifetime; a failed lookup for
+   * `ttlMs` only (a burst of requests shares it, the next one after that looks again, so an open tab recovers once the
+   * lookup works); a client that left never (gone: the next request on it is looked up afresh).
+   */
   function lookup(req) {
     const socket = req?.socket || req?.connection || null;
-    if (!socket || typeof socket !== 'object') return Promise.resolve({ status: 'unknown', reason: 'no connection' });
-    let p = bySocket.get(socket);
-    if (!p) {
-      let timer = null;
-      const cap = new Promise((resolve) => { timer = setTimeout(() => resolve({ status: 'unknown', reason: `the lookup took over ${LOOKUP_CAP_MS} ms` }), LOOKUP_CAP_MS); timer.unref?.(); });
-      p = Promise.race([identify(socket).catch((error) => ({ status: 'unknown', reason: error?.message || String(error) })), cap]).finally(() => clearTimeout(timer));
-      bySocket.set(socket, p);
-    }
-    return p;
+    if (!socket || typeof socket !== 'object') return Promise.resolve({ ...noAnswer('no connection'), connection: true });
+    const kept = bySocket.get(socket);
+    if (kept && (kept.pending || kept.until > now())) return kept.promise;
+    const entry = { pending: true, until: 0, promise: null };
+    entry.promise = settle(socket).then((verdict) => {
+      entry.pending = false;
+      noteOutcome(verdict);
+      const failed = verdict.status === 'unknown' && verdict.kind === 'failed';
+      entry.until = verdict.status === 'gone' ? 0 : failed ? now() + ttlMs : Infinity;
+      if (!(entry.until > now()) && bySocket.get(socket) === entry) bySocket.delete(socket);
+      return verdict;
+    });
+    bySocket.set(socket, entry);
+    return entry.promise;
   }
 
   /** Whether some process in `chain` (the peer up to this server) holds the credential in its own environment. */
@@ -770,21 +959,36 @@ export function createPeerIdentity({ platform = process.platform, selfPid = proc
 
   /**
    * Express middleware: looks the peer up when `needs(req)` says the request asks for, or carries, the owner's
-   * authority, and keeps the verdict on the request (refusal() reads it). A brain credential from a peer outside the
-   * brain's own process tree is removed from the request. Never fails a request: a lookup that cannot run leaves the
-   * rules from before in force.
+   * authority, and keeps the verdict on the request (peerAuthority() reads it). A brain credential from a peer outside
+   * the brain's own process tree is removed from the request. It never answers a request itself: on another platform
+   * (or off) a lookup that cannot run leaves the rules from before in force; on macOS it leaves a failed verdict, which
+   * the owner gate and the page secret answer with 503 PEER_UNAVAILABLE.
    */
   function middleware({ needs = () => false } = {}) {
     // Express 4 does not catch a rejected promise: the decision is made apart from next(), which is called exactly
-    // once whatever happens in it (an unexpected error leaves the rules from before, and is said once).
+    // once whatever happens in it.
     return function peerIdentity(req, res, next) {
       if (disabled) return next();
       let wanted = false;
-      try { wanted = needs(req) === true; } catch { wanted = false; }
+      // A needs() that throws cannot say the request asks for nothing: where the lookup runs, it is looked up.
+      try { wanted = needs(req) === true; } catch { wanted = supported; }
       const credential = typeof req.headers?.[BRAIN_HEADER] === 'string' ? req.headers[BRAIN_HEADER].trim() : null;
       if (!wanted && !credential) return next();
       decide(req, wanted, credential).then(() => next(), (error) => {
-        note(`error:${error?.message}`, `[peer-identity] the lookup failed (${error?.message || error}); the page secret's rules from before apply`);
+        try {
+          if (supported) {
+            // Never the rules from before by accident: on macOS a decision that broke is a lookup that failed, with no
+            // owner authority and no brain credential for this request. (A request that cannot even hold the verdict
+            // is left without one, which the callers of a server whose lookup runs take as a failed lookup too.)
+            const verdict = failedPeerVerdict(`the lookup failed (${error?.message || error})`);
+            if (req.headers && credential) delete req.headers[BRAIN_HEADER];
+            noteOutcome(verdict);
+            note(`error:${error?.message}`, `[peer-identity] the lookup failed (${error?.message || error}): no owner authority for this request (503 PEER_UNAVAILABLE)`);
+            req[PEER_VERDICT] = verdict;
+          } else {
+            note(`error:${error?.message}`, `[peer-identity] the lookup failed (${error?.message || error}); the page secret's rules from before apply`);
+          }
+        } catch { /* a request that cannot be written to: see above */ }
         next();
       });
     };
@@ -793,44 +997,60 @@ export function createPeerIdentity({ platform = process.platform, selfPid = proc
   async function decide(req, wanted, credential) {
     const t0 = now();
     let peer;
-    try { peer = await lookup(req); } catch (error) { peer = { status: 'unknown', reason: error?.message || String(error) }; }
+    try { peer = await lookup(req); } catch (error) { peer = noAnswer(`the lookup failed (${error?.message || error})`); }
+    if (!peer || typeof peer !== 'object') peer = noAnswer('the lookup gave no answer');
     const ms = now() - t0;
     stats.lookups++; stats.totalMs += ms; if (ms > stats.maxMs) stats.maxMs = ms;
     req[PEER_VERDICT] = peer;
-    if (peer.status === 'unknown') { stats.unknown++; note(`unknown:${peer.reason}`, `[peer-identity] could not tell who is asking (${peer.reason}); the page secret's rules from before apply`); }
+    if (peer.status === 'unknown') {
+      stats.unknown++;
+      if (peer.kind === 'failed') {
+        stats.failed++;
+        note(`failed:${peer.reason}`, `[peer-identity] could not tell who is asking (${peer.reason}${peer.retried ? ', tried twice' : ''}): no page secret, owner authority or brain credential for it (503 PEER_UNAVAILABLE)`);
+      } else note(`unknown:${peer.reason}`, `[peer-identity] could not tell who is asking (${peer.reason}); the page secret's rules from before apply`);
+    }
     if (peer.status === 'gone') { stats.gone++; note(`gone`, `[peer-identity] ${peer.reason || 'a connection closed before its request was identified'}: no owner authority for it`); }
     if (peer.status === 'ok' && peer.refuse && wanted) {
       stats.refused++;
       note(`refuse:${peer.refuse.pid}:${peer.refuse.kind}`, `[peer-identity] no page secret / owner authority for pid ${peer.refuse.pid} (${peer.refuse.name}): ${peer.refuse.why}`);
     }
     if (!credential) return;
+    // Kept: from this server itself, from the brain's own tree (it holds the credential in its environment), or where
+    // no lookup runs (another platform: the credential alone, as before). Dropped: from anywhere else, from a client
+    // that left, and on macOS whenever its check could not run (the lookup failed, or ps -E could not be read).
     let keep = true;
     if (peer.status === 'gone') keep = false;
+    else if (peer.status === 'unknown' && peer.kind === 'failed') keep = false;
     else if (peer.status === 'ok' && !peer.self) {
       try { keep = await chainHoldsCredential(peer.chain || [], credential); } catch (error) {
-        keep = true; // the environment could not be read: the rules from before (the credential alone)
-        note(`env:${error?.code || error?.message}`, `[peer-identity] could not read a brain's environment (${error?.code || error?.message || error}); the brain credential is taken as before`);
+        keep = false;
+        // The whole request then has no proven caller: answered 503 (retryable when ps -E only timed out).
+        const failed = { ...failedPeerVerdict(`ps -E: ${failureText(error)}`, { retryable: isTransientLookupError(error) }), pid: peer.pid };
+        req[PEER_VERDICT] = failed;
+        noteOutcome(failed);
+        note(`env:${error?.code || error?.message}`, `[peer-identity] could not read a brain's environment (${failureText(error)}): the brain credential was dropped and the request has no owner authority (503 PEER_UNAVAILABLE)`);
       }
     }
     if (!keep) {
       delete req.headers[BRAIN_HEADER];
-      note(`brain:${peer.pid || 'gone'}`, `[peer-identity] a brain credential came from pid ${peer.pid || '?'} (${peer.name || 'closed connection'}), outside the brain's own process tree: it was dropped from the request`);
+      const why = peer.status === 'unknown' ? `its check could not run (${peer.reason})` : 'outside the brain\'s own process tree';
+      note(`brain:${peer.pid || peer.status}`, `[peer-identity] a brain credential came from pid ${peer.pid || '?'} (${peer.name || (peer.status === 'gone' ? 'closed connection' : 'not identified')}), ${why}: it was dropped from the request`);
     }
   }
 
   /**
-   * Why this request may not hold or use the owner's page secret (a short sentence), or null. Null as well when the
-   * peer could not be identified or was never looked up: the caller's rules from before decide.
+   * Why this request may not hold or use the owner's page secret (a short sentence), or null: a refused peer, a client
+   * that left, and on macOS a lookup that failed (no proof of who is asking). Null when the peer is allowed, was never
+   * looked up, or is not looked up here (another platform, off, another machine): the caller's rules from before.
    */
   function refusal(req) {
-    const peer = req?.[PEER_VERDICT];
-    if (!peer) return null;
-    if (peer.status === 'gone') return peer.reason || 'the connection closed before its request was identified';
-    if (peer.status === 'ok' && peer.refuse) return `${peer.refuse.why}: pid ${peer.refuse.pid} (${peer.refuse.name})`;
+    const auth = peerAuthority(req?.[PEER_VERDICT]);
+    if (auth.decision === 'refused') return auth.gone ? auth.why : `${auth.why}: pid ${auth.pid} (${auth.name})`;
+    if (auth.decision === 'unavailable') return `a request SynaBun could not identify (${auth.reason})`;
     return null;
   }
 
-  return { supported, lookup, middleware, refusal, chainHoldsCredential, stats: () => ({ ...stats, avgMs: stats.lookups ? Math.round((stats.totalMs / stats.lookups) * 10) / 10 : 0 }) };
+  return { supported, lookup, middleware, refusal, chainHoldsCredential, probe, authorityState, stats: () => ({ ...stats, avgMs: stats.lookups ? Math.round((stats.totalMs / stats.lookups) * 10) / 10 : 0 }) };
 }
 
 /** Exposed for tests: whether an address is a literal IP (4 or 6). */

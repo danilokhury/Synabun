@@ -35,6 +35,7 @@ import {
 import {
   revertToMessage, restoreReverted, retryFromMessage, forkSession,
 } from './ocp-v2-session-actions.js';
+import { synabunToolKey, synabunToolLabel, synabunToolSummary } from '../synabun-tools.js';
 
 const _expandedReasoningIds = new Set();
 const _activeRenderers = new Set();
@@ -748,62 +749,14 @@ function extractQuestionsFromToolInput(input) {
 // ── SynaBun MCP tool branding ────────────────────────────────────────────────
 const SYNABUN_LOGO_HTML = '<img src="logoHD.png" alt="" style="width:14px;height:14px;object-fit:contain;">';
 
-const SYNABUN_LABELS = {
-  recall: 'Recall', remember: 'Remember', reflect: 'Reflect',
-  forget: 'Forget', restore: 'Restore', memories: 'Memories', sync: 'Sync',
-  category: 'Category', loop: 'Loop', git: 'Git', tictactoe: 'TicTacToe',
-  image_staged: 'Images', profile: 'Profile',
-  browser_navigate: 'Browser · Navigate', browser_screenshot: 'Browser · Screenshot', browser_console: 'Browser · Console',
-  browser_snapshot: 'Browser · Snapshot', browser_content: 'Browser · Content',
-  browser_click: 'Browser · Click', browser_type: 'Browser · Type',
-  browser_fill: 'Browser · Fill', browser_hover: 'Browser · Hover',
-  browser_select: 'Browser · Select', browser_press: 'Browser · Press',
-  browser_scroll: 'Browser · Scroll', browser_wait: 'Browser · Wait',
-  browser_go_back: 'Browser · Back', browser_go_forward: 'Browser · Forward',
-  browser_reload: 'Browser · Reload', browser_evaluate: 'Browser · Evaluate',
-  browser_upload: 'Browser · Upload', browser_session: 'Browser · Session',
-  browser_cheatsheet: 'Browser · Cheatsheet',
-  browser_extract_tweets: 'Extract · Tweets', browser_extract_fb_posts: 'Extract · Facebook',
-  browser_fb_composer_state: 'Facebook · Composer', browser_extract_fb_groups: 'Extract · FB Groups',
-  browser_extract_ig_feed: 'Extract · Instagram', browser_extract_ig_post: 'Extract · IG Post',
-  browser_extract_ig_reels: 'Extract · IG Reels', browser_extract_ig_profile: 'Extract · IG Profile',
-  browser_extract_ig_search: 'Extract · IG Search',
-  browser_extract_tiktok_videos: 'Extract · TikTok', browser_extract_tiktok_search: 'Extract · TikTok Search',
-  browser_extract_tiktok_studio: 'Extract · TikTok Studio', browser_extract_tiktok_profile: 'Extract · TikTok Profile',
-  browser_extract_li_feed: 'Extract · LinkedIn', browser_extract_li_profile: 'Extract · LI Profile',
-  browser_extract_li_post: 'Extract · LI Post', browser_extract_li_notifications: 'Extract · LI Notifications',
-  browser_extract_li_messages: 'Extract · LI Messages', browser_extract_li_search_people: 'Extract · LI People',
-  browser_extract_li_network: 'Extract · LI Network', browser_extract_li_jobs: 'Extract · LI Jobs',
-  browser_extract_wa_chats: 'Extract · WhatsApp', browser_extract_wa_messages: 'Extract · WA Messages',
-  bluesky_session: 'BlueSky · Session', bluesky_timeline: 'BlueSky · Timeline',
-  bluesky_author_feed: 'BlueSky · Author Feed', bluesky_thread: 'BlueSky · Thread',
-  bluesky_profile: 'BlueSky · Profile', bluesky_search_posts: 'BlueSky · Search Posts',
-  bluesky_search_actors: 'BlueSky · Search Users', bluesky_notifications: 'BlueSky · Notifications',
-  bluesky_graph: 'BlueSky · Graph', bluesky_likes: 'BlueSky · Likes', bluesky_feed: 'BlueSky · Feed',
-  bluesky_post: 'BlueSky · Post', bluesky_action: 'BlueSky · Action',
-  bluesky_resolve: 'BlueSky · Resolve', bluesky_dm: 'BlueSky · DM',
-  whiteboard_read: 'Whiteboard · Read', whiteboard_add: 'Whiteboard · Add',
-  whiteboard_update: 'Whiteboard · Update', whiteboard_remove: 'Whiteboard · Remove',
-  whiteboard_screenshot: 'Whiteboard · Screenshot',
-  card_list: 'Cards · List', card_open: 'Cards · Open', card_close: 'Cards · Close',
-  card_update: 'Cards · Update', card_screenshot: 'Cards · Screenshot',
-  discord_guild: 'Discord · Guild', discord_channel: 'Discord · Channel',
-  discord_role: 'Discord · Role', discord_message: 'Discord · Message',
-  discord_member: 'Discord · Member', discord_onboarding: 'Discord · Onboarding',
-  discord_webhook: 'Discord · Webhook', discord_thread: 'Discord · Thread',
-};
-
+// Which call is SynaBun's, its name and its one-line summary: synabun-tools.js, the same
+// for every panel (`SynaBun_x` here, `mcp__SynaBun__x` from the others, any letter case).
 function isSynaBunTool(name) {
-  return typeof name === 'string' && (name.startsWith('mcp__SynaBun__') || name.startsWith('SynaBun_'));
-}
-
-function synabunToolKey(name) {
-  return (name || '').replace(/^mcp__SynaBun__/, '').replace(/^SynaBun_/, '');
+  return typeof name === 'string' && synabunToolKey(name) != null;
 }
 
 function synabunDisplayName(name) {
-  const key = synabunToolKey(name);
-  return SYNABUN_LABELS[key] || (key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' '));
+  return synabunToolLabel(synabunToolKey(name) || '');
 }
 
 function _truncate(s, n = 90) {
@@ -813,40 +766,7 @@ function _truncate(s, n = 90) {
 
 function synabunSummaryText(name, input) {
   if (!input || typeof input !== 'object') return '';
-  const key = synabunToolKey(name);
-  const t = (s) => _truncate(s, 90);
-  switch (key) {
-    case 'recall':    return t(input.query);
-    case 'remember':  return t(input.content);
-    case 'reflect':   return t(input.content || input.memory_id);
-    case 'forget':
-    case 'restore':   return t(input.memory_id);
-    case 'memories':  return t(input.action);
-    case 'category':  return t(`${input.action || ''}${input.name ? ' · ' + input.name : ''}`);
-    case 'sync':      return '';
-    case 'git':       return t(input.action);
-    case 'loop':      return t(`${input.action || ''}${input.prompt ? ' · ' + input.prompt : ''}`);
-    case 'browser_navigate': return t(input.url);
-    case 'browser_click':
-    case 'browser_hover':   return t(input.selector || input.label);
-    case 'browser_type':
-    case 'browser_fill':    return t(input.text || input.value || input.selector);
-    case 'browser_select':  return t(input.value || input.selector);
-    case 'browser_press':   return t(input.key);
-    case 'browser_scroll':  return t(input.direction || input.selector);
-    case 'browser_evaluate': return t(input.script);
-    case 'browser_session': return t(input.action);
-    case 'image_staged':    return t(input.action);
-    case 'discord_message': return t(input.content || input.action);
-    case 'discord_channel':
-    case 'discord_member':
-    case 'discord_role':    return t(input.action || input.name);
-    case 'whiteboard_add':
-    case 'whiteboard_update': return t(input.content || input.title);
-    case 'card_open':
-    case 'card_update':     return t(input.title || input.id);
-    default:                return '';
-  }
+  return synabunToolSummary(synabunToolKey(name) || '', input);
 }
 
 // Persist expand/collapse state across re-renders (render() rebuilds DOM).

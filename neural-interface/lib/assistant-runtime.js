@@ -40,6 +40,7 @@ import { browserToolDenial } from './browser-tool-policy.js';
 import { browserPolicyRoots } from './browser-policy-roots.js';
 import { stripFollowups } from '../public/shared/assistant/asst-followups.js';
 import { readJsonStrict } from './rulesets/fs-safe.js';
+import { redactTerminalSecrets } from './terminal-token-redaction.js';
 
 export const BRAIN_PROVIDERS = new Set(['claude-code', 'codex', 'opencode', 'antigravity']);
 // Every tab is called SynaBun; the session title (the history list) comes from
@@ -93,6 +94,8 @@ export const REMOTE_ASK_EXEMPT = new Set([
  */
 export const BRAIN_CREDENTIAL_RE = /^sbb_[A-Za-z0-9_-]{43}$/;
 export function mintBrainCredential() { return `sbb_${randomBytes(32).toString('base64url')}`; }
+/** The brains whose SynaBun MCP names the session id as its pin (the Claude CLI's header, agy's environment). */
+const BRAIN_PIN_PROVIDERS = new Set(['claude-code', 'antigravity']);
 // An OpenCode brain of a remote session reaches the web through these on its own
 // (no SynaBun browser, no approval): the gate plugin refuses them.
 const REMOTE_OPENCODE_WEB_TOOLS = new Set(['webfetch', 'websearch', 'codesearch']);
@@ -277,6 +280,10 @@ export function createAssistantRuntime({
   phoneAuthority = null,
   // The Admin sandbox setting (lib/agent-sandbox-setting.js): global, shown in every session view.
   adminSandbox = null,
+  // The server's terminal tokens (lib/terminal-tokens.js): a Claude Code or Antigravity brain names its session id in
+  // X-Synabun-Terminal, and that id is proven by the brain's launch credential (bind), never by a second secret;
+  // revoked when the brain goes. (Codex and OpenCode brains name a pin server.js binds where it starts their process.)
+  terminalTokens = null,
 } = {}) {
   if (!dataDir) throw new Error('createAssistantRuntime requires dataDir');
   const normalizeSessionBrain = (input, defaults, options) => normalizeBrain(input, defaults, { ...options, ...toolListOptions() });
@@ -1338,6 +1345,9 @@ export function createAssistantRuntime({
   }
   function onBrainPacket(live, packet) {
     if (!packet || typeof packet !== 'object') return;
+    // What a brain says reaches sockets, the transcript and observers only scrubbed of SynaBun's run secrets: its own
+    // launch credential or a worker's terminal token an agent printed (lib/terminal-token-redaction.js).
+    packet = redactTerminalSecrets(packet);
     const id = live.record.id;
     if (packet.type === 'event') {
       const event = packet.event || {};
@@ -2100,6 +2110,9 @@ export function createAssistantRuntime({
     // (lib/skills/api-v2.js principalOf) take it; whatsapp_send_file takes it and then only the active WhatsApp
     // conversation's session (lib/whatsapp/service.js sendFile).
     live.brainCredential = mintBrainCredential();
+    // The brain's own pin (its session id, for the brains that name it) is proven by this same credential: its MCP
+    // presents it with X-Synabun-Terminal, and a process that only names the session gets nothing (lib/terminal-tokens.js).
+    if (BRAIN_PIN_PROVIDERS.has(brain.provider)) { try { terminalTokens?.bind?.(live.record.id, live.brainCredential); } catch { /* the brain starts; its pin stays as it was */ } }
     const cliCap = brain.provider === 'claude-code' ? brainCliCap(live) : null;
     const deps = {
       ClaudeSession, sdkVersion, PACKAGE_ROOT, handleCodexSkinWebSocket, ensureIsolatedServe, stopIsolatedServe, setupOpencodeSidepanelConfig,
@@ -2196,8 +2209,9 @@ export function createAssistantRuntime({
       if (identity.providerThreadId) live.record.providerThreadId = identity.providerThreadId;
     } catch {}
     live.brain = null;
-    // Its credential dies with it: a file send presenting it is refused from here on.
+    // Its credential dies with it: a file send presenting it is refused from here on, and so is its pin.
     live.brainCredential = null;
+    if (BRAIN_PIN_PROVIDERS.has(live.brainProvider)) { try { terminalTokens?.revoke?.(live.record.id); } catch { /* the disposal goes on */ } }
     if (live.brainProvider === 'codex') pollCodex(live, { force: true });
     // No further turn will book them: a Claude brain's provisional tokens are booked as an estimate,
     // any other brain's go (Codex was just polled, OpenCode settled at its turn's end).

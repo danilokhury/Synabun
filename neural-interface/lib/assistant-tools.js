@@ -46,6 +46,15 @@ export function dispatchInput(body) {
   return { ...body };
 }
 
+// A row only an unchecked provider might hold is not offered as available.
+function serverRefText(row, unchecked) {
+  if (!unchecked.size) return row.ref;
+  const elsewhere = Object.entries(row.providers || {}).some(([provider, value]) => !unchecked.has(provider) && value === 'deliverable');
+  return elsewhere ? row.ref : `${row.ref} (not checked)`;
+}
+
 export function workerToolsLine(catalog = toolCatalogView()) {
-  return `SynaBun tools for workers: pass tools: [group ids] on agent_dispatch. Always there: ${catalog.alwaysOnTools.join(', ')}. With no tools a worker gets ${catalog.default.join(', ')}. Groups: ${catalog.groups.map(group => `${group.id} (${group.count})`).join(' · ')}. Host effect: ${Object.entries(catalog.effect).map(([host, effect]) => `${host}: ${effect}`).join(', ')}. Strict hosts load exactly those groups; Claude Code and Codex always reach every SynaBun tool on demand and the list only sets their focus. Never assume a Claude Code or Codex worker lacks a group you left out. Your MCP servers: name them as mcp:<name> in tools (or mcp:* for all allowed servers). Every unnamed external server is off for that worker on Claude Code, Codex, OpenCode and Antigravity. Available server refs: ${(catalog.servers || []).filter(row => row.selectable !== false).map(row => row.ref).join(', ') || 'none listed'}.`;
+  const unchecked = new Set((catalog.externalServerErrors || []).map(error => error.provider || 'unknown provider'));
+  const notChecked = unchecked.size ? ` MCP servers not checked for ${[...unchecked].join(', ')}: that provider's MCP configuration could not be read, so its servers are not listed as available and a dispatch to it naming an mcp: ref is refused until the configuration is fixed (its models are unaffected).` : '';
+  return `SynaBun tools for workers: pass tools: [group ids] on agent_dispatch. Always there: ${catalog.alwaysOnTools.join(', ')}. With no tools a worker gets ${catalog.default.join(', ')}. Groups: ${catalog.groups.map(group => `${group.id} (${group.count})`).join(' · ')}. Host effect: ${Object.entries(catalog.effect).map(([host, effect]) => `${host}: ${effect}`).join(', ')}. Strict hosts load exactly those groups; Claude Code and Codex always reach every SynaBun tool on demand and the list only sets their focus. Never assume a Claude Code or Codex worker lacks a group you left out. Your MCP servers: name them as mcp:<name> in tools (or mcp:* for all allowed servers). Every unnamed external server is off for that worker on Claude Code, Codex, OpenCode and Antigravity. Available server refs: ${(catalog.servers || []).filter(row => row.selectable !== false).map(row => serverRefText(row, unchecked)).join(', ') || 'none listed'}.${notChecked}`;
 }

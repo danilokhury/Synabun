@@ -28,12 +28,16 @@
 import express from 'express';
 import net from 'node:net';
 import { randomUUID } from 'node:crypto';
+import { isAutomationBrowserRoute } from './browser-automation-routes.js';
 
 // The only Neural-Interface API a sandboxed worker's stdio MCP child (OpenCode) may reach through the channel: the
-// browser tools, which it drives over HTTP to NEURAL_INTERFACE_URL. Everything else it does (memory) is direct DB
-// I/O in its own process and never touches the channel. The owner's API (/api/assistant, /api/page-session, …) is
-// NEVER proxied — the channel is not a way back to the control surface.
-const PROXY_PREFIXES = Object.freeze(['/browser/', '/browser']);
+// browser routes its browser tools call over HTTP to NEURAL_INTERFACE_URL, exactly (lib/browser-automation-routes.js:
+// the session list, create and close, acquire and release, the page actions on a session). Everything else it does
+// (memory) is direct DB I/O in its own process and never touches the channel. The owner's API (/api/assistant,
+// /api/page-session, …) and the owner's browser routes (the browser settings, the money guard's lift, the CDP
+// endpoints, tab management) are NEVER proxied: the channel is not a way back to the control surface. Until
+// 2026-11-05 it forwarded every /browser/* path with the run's token (review 972afb74, finding 1).
+const BROWSER_PREFIX = '/api/browser';
 
 const freePort = () => new Promise((done, fail) => {
   const s = net.createServer();
@@ -42,18 +46,42 @@ const freePort = () => new Promise((done, fail) => {
 });
 
 // Headers a worker's request to the channel must never carry into the MCP server: owner / brain authority and the
-// from-outside markers. The run's routing pins and its own desktop grant are kept.
+// from-outside markers. The run's routing pins and its own desktop grant are kept. A terminal token the worker sends
+// is dropped too: the channel adds its run's own (below), from the run the path token names.
 const STRIPPED_HEADERS = Object.freeze([
   'x-synabun-tools', 'x-synabun-brain-token', 'x-synabun-assistant', 'x-synabun-role',
   'cookie', 'cf-connecting-ip', 'x-forwarded-host', 'x-forwarded-for', 'forwarded',
+  'x-synabun-terminal-token',
 ]);
 
 /**
+ * The upstream URL for a proxied request (`url`: what follows /w/<token>/api, query included), or null when it is not
+ * one of the browser routes an automation may call (lib/browser-automation-routes.js). The path is read as the
+ * upstream request will be: a URL parser folds `..`, `%2e%2e` and backslashes, so a path it would change is refused
+ * outright, never matched in one spelling and sent in another.
+ */
+export function proxiedBrowserRoute(method, url, mainPort) {
+  const raw = String(url || '');
+  const rawPath = raw.split('?')[0];
+  let target;
+  try { target = new URL(`/api${raw}`, `http://127.0.0.1:${mainPort}`); } catch { return null; }
+  if (target.pathname !== `/api${rawPath}` || target.host !== `127.0.0.1:${mainPort}`) return null;
+  if (!target.pathname.startsWith(`${BROWSER_PREFIX}/`)) return null;
+  if (!isAutomationBrowserRoute(method, target.pathname.slice(BROWSER_PREFIX.length))) return null;
+  return target;
+}
+
+/**
  * Build the channel. `createMcpRoutes` is the same factory server.js mounts at /mcp (mcp-server/dist/http.js).
+ * `terminalToken(runId)` is the run's terminal token (lib/terminal-tokens.js tokenFor), which the channel sends with
+ * the run's pin on its MCP path and its browser proxy: the path token already proves the run, and the browser routes
+ * take a run's pin only with its token. `terminalAuth` is handed to the channel's MCP routes (as server.js's /mcp).
  * @returns an object with start/stop/register/unregister/url/port.
  */
-export function createWorkerMcpChannel({ createMcpRoutes, mainPort = null, fetchImpl = globalThis.fetch, log = () => {} } = {}) {
+export function createWorkerMcpChannel({ createMcpRoutes, mainPort = null, fetchImpl = globalThis.fetch, log = () => {}, terminalToken = () => null, terminalAuth = undefined } = {}) {
   if (typeof createMcpRoutes !== 'function') throw new Error('createWorkerMcpChannel needs createMcpRoutes');
+  /** The run's terminal token, or null (none issued; a lookup that failed). */
+  const tokenOf = (runId) => { try { const t = terminalToken(runId); return typeof t === 'string' && t ? t : null; } catch { return null; } };
   const tokenToRun = new Map(); // token → runId
   const runToToken = new Map(); // runId → token
   const selections = new Map(); // runId → immutable snapshot, never a request header
@@ -71,18 +99,21 @@ export function createWorkerMcpChannel({ createMcpRoutes, mainPort = null, fetch
   app.use('/w/:token/api', express.raw({ type: '*/*', limit: '32mb' }), async (req, res) => {
     const runId = tokenToRun.get(String(req.params.token || ''));
     if (!runId) return res.status(404).json({ error: 'Unknown worker channel' });
-    const sub = req.url.split('?')[0]; // after /w/:token/api
-    if (!PROXY_PREFIXES.some((p) => sub === p || sub.startsWith(p))) {
-      return res.status(403).json({ error: 'The worker channel proxies the browser API only.' });
+    const route = proxiedBrowserRoute(req.method, req.url, mainPort || 1);
+    if (!route) {
+      return res.status(403).json({ error: 'The worker channel forwards the browser routes of SynaBun\'s browser tools only.', code: 'WORKER_CHANNEL_ROUTE' });
     }
     if (!mainPort || typeof fetchImpl !== 'function') return res.status(502).json({ error: 'Worker channel proxy unavailable.' });
-    const target = `http://127.0.0.1:${mainPort}/api${req.url}`;
+    const target = route.href;
     const headers = { 'content-type': req.get('content-type') || 'application/json' };
     // The run's own routing travels; authority never does.
     for (const h of ['x-synabun-browser-session', 'x-synabun-browser-tab', 'x-synabun-project', 'x-synabun-memory-session', 'x-synabun-deadline', 'x-synabun-request-id', 'x-synabun-desktop-grant']) {
       const v = req.get(h); if (v) headers[h] = v;
     }
     headers['x-synabun-terminal'] = runId; // pinned: the worker's own run, never what it claims
+    // …with that run's terminal token, which the worker never sends (the path token is its proof here).
+    const runToken = tokenOf(runId);
+    if (runToken) headers['x-synabun-terminal-token'] = runToken;
     try {
       const body = (req.method === 'GET' || req.method === 'HEAD') ? undefined : (Buffer.isBuffer(req.body) && req.body.length ? req.body : undefined);
       const upstream = await fetchImpl(target, { method: req.method, headers, body });
@@ -99,6 +130,7 @@ export function createWorkerMcpChannel({ createMcpRoutes, mainPort = null, fetch
 
   const mcpRouter = createMcpRoutes({
     selectionFor: (req) => selections.get(req.headers['x-synabun-terminal']) || { groups: [], mode: 'strict' },
+    ...(typeof terminalAuth === 'function' ? { terminalAuth } : {}),
   });
   // Everything the channel serves is under /w/:token/mcp; the run is pinned from the token and authority is stripped.
   app.use('/w/:token/mcp', (req, res, next) => {
@@ -106,6 +138,9 @@ export function createWorkerMcpChannel({ createMcpRoutes, mainPort = null, fetch
     if (!runId) return res.status(404).json({ jsonrpc: '2.0', error: { code: -32001, message: 'Unknown worker channel' }, id: null });
     req.headers['x-synabun-terminal'] = runId; // the worker's identity is its own run, never what it claims
     for (const h of STRIPPED_HEADERS) delete req.headers[h];
+    // The run's own terminal token, so its tools' browser calls are the run's (the in-process MCP forwards it).
+    const runToken = tokenOf(runId);
+    if (runToken) req.headers['x-synabun-terminal-token'] = runToken;
     next();
   }, mcpRouter);
   // Nothing else exists on this listener.

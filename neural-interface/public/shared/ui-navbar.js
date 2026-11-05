@@ -24,6 +24,8 @@ import { toggleScheduleQueue } from './ui-schedule-queue.js';
 import { initUpdate } from './ui-update.js';
 import { initToolUpdates } from './ui-tool-updates.js';
 import { initCrashNotice } from './ui-crash-notice.js';
+import { initOwnerAuthorityNotice } from './ui-owner-authority.js';
+import { initOwnerAccessNotice } from './ui-owner-access.js';
 import { initSidepanelTrayPlaceholders } from './ui-sidepanel-tray.js';
 import { initDesktopTitleBar } from './desktop-titlebar.js';
 import { initToprightOverflow } from './ui-topright-overflow.js';
@@ -405,4 +407,8 @@ export function initNavbar() {
   initToolUpdates();
   // ── The notice after an automatic restart (the server crashed and its supervisor started it again) ──
   initCrashNotice();
+  // ── The banner while the server cannot identify its callers (macOS: the owner's actions are paused, 503) ──
+  initOwnerAuthorityNotice();
+  // ── The banner on a page the server refuses the owner's access (SynaBun's automation browser opened it) ──
+  initOwnerAccessNotice();
 }

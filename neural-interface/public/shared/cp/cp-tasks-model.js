@@ -90,6 +90,39 @@ export function reduceTaskEvent(tasks, ev, now = Date.now()) {
 export const isTaskRunning = (task) => !!task && !DONE.has(task.status);
 
 /**
+ * The CLI process that ran these tasks is gone (an automation run ended, its query closed): nothing of it runs
+ * any more, whatever the last event said. A task it never reported the end of would show running forever.
+ * @returns how many tasks were ended
+ */
+export function endRunningTasks(tasks, now = Date.now()) {
+  if (!(tasks instanceof Map)) return 0;
+  let ended = 0;
+  for (const task of tasks.values()) {
+    if (!isTaskRunning(task)) continue;
+    task.status = 'ended';
+    task.endedAt = now;
+    ended++;
+  }
+  return ended;
+}
+
+/** The status line a run's tab shows while its turn waits for its own background work (synabun.background_wait). */
+export function backgroundWaitLine(ev) {
+  const tasks = Array.isArray(ev?.tasks) ? ev.tasks : [];
+  const names = tasks.map(t => clip(t?.description || t?.type || 'task', 80)).filter(Boolean);
+  const list = names.length ? `: ${names.slice(0, 3).join(', ')}${names.length > 3 ? ` and ${names.length - 3} more` : ''}` : '';
+  switch (ev?.state) {
+    case 'holding': return `Waiting for ${tasks.length || 'its'} background task${tasks.length === 1 ? '' : 's'} before this turn ends${list}.`;
+    case 'nudged': return 'The background work ended and the session did not continue by itself: it was asked to continue.';
+    case 'released':
+      if (ev.reason === 'idle_timeout') return `Stopped waiting: nothing happened for a long time${list ? ` while${list.slice(1)} still ran` : ''}.`;
+      if (ev.reason === 'deadline') return `Stopped waiting: the run reached its time limit${list ? ` with${list.slice(1)} still running` : ''}.`;
+      return '';
+    default: return '';
+  }
+}
+
+/**
  * background_tasks_changed lists every live background task. A background task
  * the list once carried and no longer does has ended (its own notification may
  * never come: the CLI process can be gone).

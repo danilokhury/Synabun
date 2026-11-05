@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:f
 import { appendFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { getDataHome } from '../../lib/paths.js';
+import { redactTerminalSecrets, scrubTokenText } from './terminal-token-redaction.js';
 
 const DATA_HOME = getDataHome();
 const LOG_DIR = resolve(DATA_HOME, 'data', 'logs');
@@ -86,7 +87,11 @@ function _appendOrdered(path, line, terminalSessionId) {
 
 export function loopLog(terminalSessionId, tag, msg, meta = undefined) {
   const ts = new Date().toISOString();
-  const safeMeta = (meta && Object.keys(meta).length > 0) ? safeJson(meta) : '';
+  // A run's secrets never reach a log line, the file under data/logs or the console (lib/terminal-token-redaction.js):
+  // a message or its data may quote what an agent printed or a provider threw, a token included (review 972afb74,
+  // finding 5). The JSON is scrubbed again as text, for a value it holds in a form the object walk does not open.
+  const safeMeta = (meta && Object.keys(meta).length > 0) ? scrubTokenText(safeJson(redactTerminalSecrets(meta))) : '';
+  msg = scrubTokenText(typeof msg === 'string' ? msg : String(msg ?? ''));
   const line = `${ts} | ${tag} | ${msg}${safeMeta ? ' | ' + safeMeta : ''}\n`;
 
   // Console mirror

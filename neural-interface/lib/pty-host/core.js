@@ -20,6 +20,7 @@ import { EV, OP, HOST_DEFAULTS } from './protocol.js';
 import { createEventLoopMonitor } from '../event-loop-monitor.js';
 import { withPathEnv } from '../augmented-path.js';
 import { killOwnedPty } from './lifetime.js';
+import { createTokenStreamRedactor } from '../terminal-token-redaction.js';
 
 const IS_WIN = process.platform === 'win32';
 const IS_LINUX = process.platform === 'linux';
@@ -129,6 +130,12 @@ export function createPtyHostCore({ send, config = {}, pty: injectedPty = null }
       profile: spec.profile || null,
       loopOwned: !!spec.loopOwned,
       tap: !!spec.tap,
+      // A session whose environment holds a run's terminal token (a loop's PTY): what it prints is scrubbed of
+      // token-shaped values before anything gets it (clients, the snapshot model, the tap to the main process), so an
+      // agent that runs `env` writes no live token to a loop's log, a link's capture or a reconnect snapshot.
+      // The exact tokens in its environment are handed to it too, so their base64 and hex are masked as well.
+      redactor: spec.redactTokens ? createTokenStreamRedactor({ secrets: [spec.env?.SYNABUN_TERMINAL_TOKEN, spec.env?.SYNABUN_BRAIN_TOKEN].filter((v) => typeof v === 'string') }) : null,
+      redactTimer: null,
       clients: new Set(),
       outputBytes: 0,
       coalesce: '',
@@ -157,12 +164,34 @@ export function createPtyHostCore({ send, config = {}, pty: injectedPty = null }
   // ── Output path ──
   function onPtyData(s, data) {
     if (s.exited) return;
+    if (s.redactor) {
+      data = s.redactor.push(data);
+      holdRedactedTail(s);
+      if (!data) return;
+    }
     s.coalesce += data;
     if (s.coalesce.length >= cfg.coalesceBurstBytes) { flush(s); return; }
     if (!s.flushScheduled) {
       s.flushScheduled = true;
       setImmediate(() => flush(s));
     }
+  }
+
+  // The end of a chunk that could be a token's beginning waits for the next chunk; when none comes within
+  // redactHoldMs it goes out (a held token beginning masked), and what continues it later is masked when it comes:
+  // the redactor remembers the characters it passed on, so no wait between pieces lets a whole token through.
+  function holdRedactedTail(s) {
+    if (s.redactTimer) { clearTimeout(s.redactTimer); s.redactTimer = null; }
+    if (!s.redactor?.pending()) return;
+    s.redactTimer = setTimeout(() => {
+      s.redactTimer = null;
+      if (s.exited || !s.redactor?.pending()) return;
+      const rest = s.redactor.flush();
+      if (!rest) return;
+      s.coalesce += rest;
+      flush(s);
+    }, cfg.redactHoldMs);
+    s.redactTimer.unref?.();
   }
 
   function flush(s) {
@@ -479,6 +508,12 @@ export function createPtyHostCore({ send, config = {}, pty: injectedPty = null }
     counters.exits++;
     if (s.pausedWatch) { clearInterval(s.pausedWatch); s.pausedWatch = null; }
     s.ptyPaused = false;
+    // What the scrubber still holds is the end of the output.
+    if (s.redactor) {
+      if (s.redactTimer) { clearTimeout(s.redactTimer); s.redactTimer = null; }
+      const rest = s.redactor.flush();
+      if (rest) s.coalesce += rest;
+    }
     // Final bytes first — to clients, the model and the tap — then the exit.
     flush(s);
     s.exited = true;
@@ -498,6 +533,7 @@ export function createPtyHostCore({ send, config = {}, pty: injectedPty = null }
     if (s.graceTimer) { clearTimeout(s.graceTimer); s.graceTimer = null; }
     if (s.resize.timer) { clearTimeout(s.resize.timer); s.resize.timer = null; }
     if (s.tapTimer) { clearTimeout(s.tapTimer); s.tapTimer = null; }
+    if (s.redactTimer) { clearTimeout(s.redactTimer); s.redactTimer = null; }
     for (const c of s.clients) clearLagState(c);
     for (const f of s.tempFiles.splice(0)) unlink(f).catch(() => {});
     try { s.model.dispose(); } catch {}

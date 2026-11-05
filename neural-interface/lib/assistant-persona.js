@@ -84,6 +84,7 @@ export function toolNames(toolPrefix = 'mcp__SynaBun__') {
     remember: `${p}remember`, recall: `${p}recall`, reflect: `${p}reflect`, choice: `${p}choice`, loop: `${p}loop`,
     computer: `${p}computer`, computerApps: `${p}computer_apps`, computerAx: `${p}computer_ax`, computerStatus: `${p}computer_status`,
     browserNavigate: `${p}browser_navigate`, browserSnapshot: `${p}browser_snapshot`, browserScreenshot: `${p}browser_screenshot`, browserConsole: `${p}browser_console`,
+    browserSession: `${p}browser_session`,
     whatsappSendFile: `${p}whatsapp_send_file`,
     skill: `${p}skill`,
   };

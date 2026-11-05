@@ -59,7 +59,7 @@ import { mountCliBanner } from '../ui-cli-banner.js';
 import { backToAssistant, buildWorkerEndCard, endWorkerRunOnClose, forgetWorkerEnd, trackWorkerEnd } from '../ui-worker-end.js';
 import { isDispatchedRun } from '../worker-end.js';
 import {
-  registerAutomationSession, unregisterAutomationSession, stopAutomationRun, isAutomationSession,
+  registerAutomationSession, unregisterAutomationSession, stopAutomationRun, isAutomationSession, liveAutomationSessions,
 } from './ocp-v2-automation-ownership.js';
 import {
   registerPrimaryPanel, bindPrimarySession, isChildPanelOpen, getVisibleChildPanel, openChildSession,
@@ -101,7 +101,9 @@ let _tabSessionIds = [];        // ordered session IDs that own a tray pill
 let _tabPills = new Map();      // sessionId -> pill element
 let _tabInfoCache = new Map();  // sessionId -> last-known session info (title, etc.)
 const _automationRunIds = new Map(); // sessionId -> native loop runId
-const _automationRunning = new Set();
+// The sessions whose automation run is live. The ownership module keeps the set, so that the socket layer
+// knows which asks a run answers by itself (automationRunAnswersAsks) and announces none of them.
+const _automationRunning = liveAutomationSessions();
 // sessionId → what a live automation run's turn does ('working', 'waiting' on the user, 'idle' between turns:
 // automationTurnPhase of the run's descriptor): its pill follows the turn, not the run.
 const _automationTurn = new Map();

@@ -168,6 +168,10 @@ function extractFormattingRules(task) {
   return rules.map(r => `- ${r}`).join('\n');
 }
 
+// What a loop does when its browser session or tab goes away: browserSessionLossRule() of
+// neural-interface/lib/browser-tool-policy.js word for word, then the no-substitute line.
+const BROWSER_SESSION_LOSS_RULE = 'If your browser session or tab is lost (closed, disconnected, "Session not found", "Tab … not found", or a browser tool says it is gone), call browser_session with action "create" and continue in the session and tab it returns (pass those ids from then on, if you pass ids). When the answer of a browser tool starts with a notice that a replacement tab is open ("Your tab … was lost; a replacement tab … is open"), or says a new tab already replaced the lost one, continue in that tab (its tabId from then on): do not create another. Create one only when nothing announced a replacement and your browser calls keep failing because the session or tab is gone. Only if creating one fails too, stop and report it. Never substitute another browser or tool.';
+
 function buildBrowserNote(state) {
   if (!state.usesBrowser) return '';
   const lines = [
@@ -195,6 +199,9 @@ function buildBrowserNote(state) {
     '2. Use ONLY SynaBun browser_* MCP tools. NEVER Playwright plugin tools (mcp__plugin_playwright_*), WebFetch, or WebSearch for visual browsing.',
     '3. browser_type truncates ~100 chars: type in <=90-char chunks. Reply inline, never the modal.',
     '4. Login / CAPTCHA / wall: STOP, screenshot, report to the user, and WAIT. Do NOT fall back to web search.',
+    // A copy of browserSessionLossRule() (neural-interface/lib/browser-tool-policy.js; a hook cannot import it):
+    // neural-interface/tests/browser-session-loss-server.test.mjs checks the two are the same.
+    `5. ${BROWSER_SESSION_LOSS_RULE}`,
     '=== END BROWSER ENFORCEMENT ===',
   );
   // Facebook posting playbook (analytics-derived). Kept in sync with FACEBOOK_PLAYBOOK in

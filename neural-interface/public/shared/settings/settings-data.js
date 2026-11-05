@@ -47,7 +47,12 @@ const caches = Object.fromEntries(Object.entries(SETTINGS_READS).map(([name, spe
   load: async () => {
     const res = await fetch(spec.url);
     if (spec.raw) return { status: res.status, body: await res.json().catch(() => null) };
-    if (!res.ok) throw new Error(`${spec.url}: HTTP ${res.status}`);
+    if (!res.ok) {
+      // The status and the server's code stay with the error: a refusal of the owner's access (403 WORKER_BROWSER…)
+      // is "No access" in the modal, never an empty or default setting (owner-access.js refusalOfError).
+      const body = await res.json().catch(() => null);
+      throw Object.assign(new Error(`${spec.url}: HTTP ${res.status}`), { status: res.status, code: typeof body?.code === 'string' ? body.code : null });
+    }
     return res.json();
   },
   accept: spec.raw ? (value) => value?.status >= 200 && value.status < 300 && !!value.body : spec.accept,

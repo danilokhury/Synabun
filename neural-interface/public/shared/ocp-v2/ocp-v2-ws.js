@@ -12,8 +12,8 @@ import { createOutcomeNotifications } from './ocp-v2-outcome-notifications.js';
 import { getDefaultStore } from './ocp-v2-state.js';
 import { notify as uiNotify, NOTIF_TYPE } from '../ui-notifications.js';
 import { nativeLoopWindowId } from '../ui-native-window-id.js';
-import { registerAutomationSession } from './ocp-v2-automation-ownership.js';
-import { applyEvent, resolveEventTargets } from './ocp-v2-events.js';
+import { registerAutomationSession, automationRunAnswersAsks } from './ocp-v2-automation-ownership.js';
+import { applyEvent, resolveEventTargets, askNotifies } from './ocp-v2-events.js';
 import { createCapabilities, gatedRequest } from './ocp-v2-caps.js';
 import { shouldAutoAccept, autoAcceptRequest, autoAcceptInherited } from './ocp-v2-approvals.js';
 import { verifyDescendant, descendantState, knownDescendant, createReconnectNotifier, requestOwner } from './ocp-v2-rehydrate.js';
@@ -535,6 +535,9 @@ const EVENT_HOOKS = {
   onAsk(store, id, kind, ev) {
     if (!id || _notifiedPermissionIds.has(id)) return;
     _notifiedPermissionIds.add(id);
+    // A live automation answers its own session's permission asks by itself (a protected worker's
+    // OpenCode asks for every shell call): the card shows while the reply is out, nothing is announced.
+    if (!askNotifies(kind, ev, { runAnswers: automationRunAnswersAsks })) return;
     // Auto-accept is the user's standing answer for this session: reply and
     // stay quiet. A refused reply leaves the card up for them.
     if (kind === 'permission' && shouldAutoAccept(autoAcceptEnabledFor(store), ev)) {

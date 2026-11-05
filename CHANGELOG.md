@@ -1,3 +1,30 @@
+# SynaBun v.2.2.2
+
+2.2.2 makes browser automations hold on to their tabs: a lost tab is announced and replaced instead of failing quietly, and one run can no longer close a browser session other runs are using. It also fixes a slow interface on Windows, tightens SynaBun's security on macOS, and tidies how SynaBun tool calls appear in the side panels.
+
+## 🛠 Fixed
+
+- **A lost browser tab is announced** — When an agent's tab was closed under it, the next browser call quietly ran on a blank page, so agents read empty results or opened extra tabs. Now the answer starts by naming the replacement tab and telling the agent to keep using it. `browser_session` lists your own tabs, says which one you are working in, and has a new `status` action. Settings that only you may change, such as the browser profile, are refused with a clear message instead of being silently ignored.
+- **Codex browser calls no longer end with a stray note** — Codex sends a tab id with every browser call, and `browser_session` used to answer with a "has no parameter" note each time. It now accepts the tab id, and the replacement-tab notice no longer runs into the rest of the answer.
+- **One slow tab no longer ends every run's tab** — When one tab in a shared browser session got stuck and could not be replaced quickly, SynaBun closed the whole session, and every other run working there lost its tab. Now only the stuck tab is closed while the others still respond. A browser tool whose tab closes midway says so instead of reporting an empty page. An agent can no longer stop a MoreLogin profile that another automation is still using.
+- **Closing a shared browser session no longer breaks other runs** — When an automation closed a session other automations were still using, it now releases only its own tab and the session stays open. Bluesky runs whose tab disappears find their way back on their own instead of failing with "Session not found".
+- **Scheduled social automations no longer stop at their pacing gap** — Bluesky schedules that wait between posts could end the run during the wait, after the first post. SynaBun now handles the gap itself, waiting 60 to 120 seconds between writes on the same account, and a run waits for its own background work before finishing. Interactive use is never delayed.
+- **Safer owner checks on macOS** — When SynaBun could not identify the process behind a connection, it fell back to trusting the caller. On macOS it now refuses owner actions until it can identify the caller, and an open tab recovers on its own once it can. Windows and Linux are unchanged.
+- **Slow whiteboard and frozen interface on Windows** — A few style rules made every small change restyle the whole page, so dragging on the whiteboard stuttered and opening a console froze the window for over a second. The interface is now smooth again. The "Agents may use it" label in Settings → Connected tools now sits next to its switch.
+- **A page without access says so** — When a page is refused owner access, it now shows a banner with a Reload button and marks the affected sections as "No access" instead of looking empty, and it stops polling the server. Escape closes Notifications and Automation Studio again, and Settings → Memory no longer fails to open.
+- **No notification after every step of an OpenCode worker** — A dispatched OpenCode worker with limited permissions sent a system notification for every tool step. You now get one notification when the task completes.
+- **SynaBun tool calls look like SynaBun cards in every panel** — Calls to Bluesky, YouTube, Search Console, agents, the Style Guide and other SynaBun tools showed as generic MCP rows with raw tool names. They now get a readable name such as "Bluesky · Post" and a short summary. Consecutive tool calls are grouped, and the ×N badge expands to show the folded calls.
+- **No more purple lines splitting long tool calls** — In the Claude Code panel, a SynaBun tool call that ran longer than 30 seconds was split by an empty agent card. Long calls now show their elapsed time on the call's own card.
+- **Collapsed Codex cards show their summary** — A collapsed SynaBun card in the Codex panel said "Tool call" while it ran. It now shows the same summary as an expanded one.
+- **One broken MCP config no longer breaks the Assistant** — An unreadable or malformed MCP configuration from one provider stopped the Assistant from listing its models and tools. The other providers now keep working, and the Assistant says which provider's servers it could not check.
+- **The AI decisions log filter stays current** — The origin filter in Settings → AI decisions no longer keeps offering origins that are gone.
+
+## ⚙️ Changed
+
+- **Agents recover from a lost browser session** — An agent whose browser session is gone now opens a new one and carries on, and stops only if that fails too.
+
+---
+
 # SynaBun v.2.2.1
 
 2.2.1 is a fix release: shared browser runs work again with MoreLogin, screenshots reach OpenAI models in the Assistant, and the Assistant no longer keeps the CPU busy while a worker runs.

@@ -2,6 +2,7 @@ import { retainExternalRefs } from './mcp-external-servers.js';
 import { storedToolList, toolListRecord, readStoredToolListRecord } from './tool-lists.js';
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { redactTerminalSecrets, scrubTokenText } from './terminal-token-redaction.js';
 
 export const NATIVE_LOOP_PROFILES = new Set(['claude-code', 'codex', 'opencode', 'antigravity']);
 
@@ -13,7 +14,21 @@ function iso(now = Date.now()) {
   return new Date(now).toISOString();
 }
 
+/**
+ * What SynaBun keeps and shows of a run: its descriptor (the ledger, every broadcast, onFinish, getRun). Scrubbed of
+ * run secrets (lib/terminal-token-redaction.js): its task, title, error and tool-list error may quote what an agent
+ * printed or a provider threw, its token included (review 972afb74, finding 5).
+ */
 function cleanDescriptor(record) {
+  return redactTerminalSecrets(rawDescriptor(record));
+}
+
+/** The text of a failure, scrubbed: what a record's `error` and a state file's `lastIterationError` keep. */
+function errorText(error) {
+  return scrubTokenText(error?.message || String(error));
+}
+
+function rawDescriptor(record) {
   return {
     runId: record.runId,
     terminalSessionId: record.runId,
@@ -87,6 +102,20 @@ function writeJsonAtomic(path, value) {
  * Drives unattended native provider conversations while keeping the provider
  * transcript durable and attachable by a sidepanel at any point in the run.
  */
+/**
+ * Wrap an adapter's runTurn so what it resolves with passes through redactTerminalSecrets (lib/terminal-token-redaction.js):
+ * the run's result text, a structured answer, anything an agent echoed of its environment. The adapter keeps every
+ * other method as it is (it is the factory's own object).
+ */
+function scrubTurnResults(adapter) {
+  if (!adapter || typeof adapter.runTurn !== 'function' || adapter.runTurn.__synabunScrubbed) return adapter;
+  const runTurn = adapter.runTurn;
+  const scrubbed = async function scrubbedRunTurn(...args) { return redactTerminalSecrets(await runTurn.apply(this, args)); };
+  Object.defineProperty(scrubbed, '__synabunScrubbed', { value: true });
+  try { adapter.runTurn = scrubbed; } catch { /* a frozen adapter keeps its own */ }
+  return adapter;
+}
+
 export class NativeLoopRuntime {
   constructor({
     stateDir,
@@ -114,6 +143,10 @@ export class NativeLoopRuntime {
     // How long a dispatched worker the restart cut off waits, from this start, for its dispatcher to resume it
     // (or end it) before it ends as interrupted by itself.
     resumeHoldMs = 60_000,
+    // The server's terminal tokens (lib/terminal-tokens.js: issue / revoke): a run's token is issued at its launch and
+    // its resume, handed to its provider as `terminalTokenProvider` (a function: never in the state file), and revoked
+    // when the run finishes. null: runs get none (tests, a runtime without the browser routes).
+    terminalTokens = null,
   } = {}) {
     if (!stateDir) throw new Error('NativeLoopRuntime requires stateDir');
     if (typeof buildPrompt !== 'function') throw new Error('NativeLoopRuntime requires buildPrompt');
@@ -124,8 +157,14 @@ export class NativeLoopRuntime {
     this.providerFactories = { ...providerFactories };
     this.buildPrompt = buildPrompt;
     this.onEvent = onEvent;
-    this.onFinish = onFinish;
-    this.log = log;
+    this.terminalTokens = terminalTokens && typeof terminalTokens.issue === 'function' ? terminalTokens : null;
+    // Every end of a run goes through onFinish: its terminal token goes first, so nothing acts as the run once it ended.
+    this.onFinish = async (descriptor) => {
+      try { if (descriptor?.runId) this.terminalTokens?.revoke?.(descriptor.runId); } catch { /* the end goes on */ }
+      return onFinish(descriptor);
+    };
+    // Every line is scrubbed before the logger gets it (a loop log under data/ is in every backup).
+    this.log = (runId, tag, message, meta) => log(runId, tag, scrubTokenText(typeof message === 'string' ? message : String(message ?? '')), meta === undefined ? meta : redactTerminalSecrets(meta));
     this.now = now;
     this.sleep = sleep;
     this.iterationDelayMs = iterationDelayMs;
@@ -141,6 +180,23 @@ export class NativeLoopRuntime {
     this._alwaysPersist = false;
     this._listeners = new Set();
     this._loadLedger();
+  }
+
+  /**
+   * `{ terminalTokenProvider }` for a run's provider (its terminal token, issued now when the run has none yet), or
+   * nothing without a registry. A function, so the state file (JSON) never holds the token. `fresh` (a resume): a new
+   * token whatever the run held, so a token of the process that ended proves nothing (review c0eab425, finding L5:
+   * a resume without a restart used to hand the new process the old token).
+   */
+  _terminalTokenFor(runId, { fresh = false } = {}) {
+    if (!this.terminalTokens) return {};
+    let token = null;
+    try {
+      token = (fresh && typeof this.terminalTokens.rotate === 'function' ? this.terminalTokens.rotate(runId) : this.terminalTokens.issue(runId)) || null;
+    } catch { token = null; }
+    // Read when the provider starts a process (an OpenCode serve may restart): the live token, none once revoked.
+    const live = typeof this.terminalTokens.tokenFor === 'function' ? () => this.terminalTokens.tokenFor(runId) || null : () => token;
+    return token ? { terminalTokenProvider: live } : {};
   }
 
   registerProvider(profile, factory) {
@@ -167,7 +223,10 @@ export class NativeLoopRuntime {
   }
 
   _emitProviderEvent(record, event) {
-    const message = { type: 'sidepanel:provider-event', run: cleanDescriptor(record), event };
+    // Every provider's events (Claude Code, Codex, OpenCode, Antigravity) pass here before anything keeps or shows
+    // them: a run's terminal token or a brain credential an agent printed (its `env`, `ps -E`) never reaches the run's
+    // records, its transcript or a panel (lib/terminal-token-redaction.js).
+    const message = { type: 'sidepanel:provider-event', run: cleanDescriptor(record), event: redactTerminalSecrets(event) };
     try { this.onEvent(message); } catch {}
     this._notifyListeners(message);
   }
@@ -237,6 +296,9 @@ export class NativeLoopRuntime {
         record.pendingRequests = [];
         record.stopping = false;
         this.records.set(record.runId, record);
+        // No process holds a token of this server for it yet: its id is refused until its resume issues one (never
+        // taken as said in the meantime).
+        try { this.terminalTokens?.retire?.(record.runId); } catch { /* the hold goes on */ }
         this._hold(record);
         continue;
       }
@@ -326,7 +388,8 @@ export class NativeLoopRuntime {
 
   _writeState(runId, state) {
     const { permissionBroker: _broker, ...stored } = state;
-    writeJsonAtomic(this._statePath(runId), toolListRecord(stored, this.toolListOptions()));
+    // Scrubbed before it is written: a state file under data/ is in every backup (its task, its last error).
+    writeJsonAtomic(this._statePath(runId), redactTerminalSecrets(toolListRecord(stored, this.toolListOptions())));
   }
 
   _writeTerminalState(record, patch) {
@@ -405,8 +468,10 @@ export class NativeLoopRuntime {
       runtimeType: 'native',
       surface: 'sidepanel',
       startedAt,
+      ...this._terminalTokenFor(runId),
     };
-    this._writeState(runId, nativeState);
+    // A run that cannot even be written down never starts: nothing may act as it.
+    try { this._writeState(runId, nativeState); } catch (error) { try { this.terminalTokens?.revoke?.(runId); } catch {} throw error; }
     const initialClaim = String(claimedBy || '').trim().slice(0, 128);
 
     const record = {
@@ -557,6 +622,8 @@ export class NativeLoopRuntime {
           throw cancelled;
         }
         candidateAccepted = true;
+        // What a turn returns (its text, its structured answer) is kept as the run's result: scrubbed like its events.
+        scrubTurnResults(adapter);
         record.adapter = record.wrapAdapter
           ? record.wrapAdapter(adapter, {
               runId,
@@ -639,8 +706,11 @@ export class NativeLoopRuntime {
       startedAt: record.startedAt || state.startedAt || iso(this.now()),
       currentIteration: 0,
       totalIterations,
+      // A resume is a new process: a new token (after a restart the registry starts empty anyway; without one, the
+      // token the suspended process held is revoked first), handed to the resumed provider through the same function.
+      ...this._terminalTokenFor(runId, { fresh: true }),
     };
-    this._writeState(runId, nativeState);
+    try { this._writeState(runId, nativeState); } catch (error) { try { this.terminalTokens?.revoke?.(runId); } catch {} throw error; }
     Object.assign(record, {
       status: 'starting',
       stoppedReason: null,
@@ -714,7 +784,7 @@ export class NativeLoopRuntime {
     record.status = 'interrupted';
     record.stoppedReason = reason || record.suspendReason || 'server_restart';
     record.completedAt = iso(this.now());
-    if (error) record.error = String(error);
+    if (error) record.error = scrubTokenText(String(error));
     this._writeTerminalState(record, { active: false, pending: false, completedAt: record.completedAt, stoppedReason: record.stoppedReason, ...(error ? { error: record.error } : {}) });
     this._releaseRuntimeRefs(record);
     this._emit('sidepanel:run-stopped', record);
@@ -739,6 +809,8 @@ export class NativeLoopRuntime {
     try { record.startupAbortController?.abort(reason); } catch {}
     if (record._cancelStartup) { record._cancelStartup(reason); record._cancelStartup = null; }
     try { await record.adapter?.dispose?.({ preserveSession: true, terminate: true }); } catch {}
+    // A suspended run has no process: nothing may act as it until its resume gives the new process a new token.
+    try { this.terminalTokens?.revoke?.(runId); } catch { /* the suspension goes on */ }
     this._releaseRuntimeRefs(record, { turnState: 'suspended' });
     record.stopping = false;
     this._emit('sidepanel:run-updated', record, { reason: 'suspended' });
@@ -780,7 +852,12 @@ export class NativeLoopRuntime {
 
       try {
         const prompt = (record.buildPrompt || this.buildPrompt)(nextState, iteration);
-        const result = await record.adapter.runTurn(prompt, { iteration, total });
+        // A loop's time cap bounds its iteration too: a turn that waits for its background work (a pacing gap)
+        // ends with its last result at this moment, and the next pass stops the run with time_cap.
+        const deadlineAt = record.runMode !== 'task'
+          ? new Date(state.startedAt || record.startedAt).getTime() + Math.max(1, Number(state.maxMinutes) || 30) * 60_000
+          : null;
+        const result = await record.adapter.runTurn(prompt, { iteration, total, ...(deadlineAt ? { deadlineAt } : {}) });
         failures = 0;
         this._setIdentity(record, result || record.adapter.identity?.() || {});
         const fresh = this._readState(record.runId);
@@ -815,13 +892,13 @@ export class NativeLoopRuntime {
         if (failedState) {
           failedState.currentIteration = current;
           delete failedState.runningIteration;
-          failedState.lastIterationError = error?.message || String(error);
+          failedState.lastIterationError = errorText(error);
           failedState.lastIterationAt = iso(this.now());
           this._writeState(record.runId, failedState);
         }
         record.currentIteration = current;
         this._emit('sidepanel:run-updated', record, { reason: 'iteration-failed', failures });
-        this.log(record.runId, 'native:iteration-error', error?.message || String(error), { iteration, failures });
+        this.log(record.runId, 'native:iteration-error', errorText(error), { iteration, failures });
         if (failures >= 3) {
           await this._fail(record, error, 'provider_failures');
           return;
@@ -873,7 +950,7 @@ export class NativeLoopRuntime {
     if (!record || ['completed', 'failed', 'stopped', 'interrupted', 'suspended'].includes(record.status)) return;
     clearTimeout(record.timer);
     record.status = status === 'interrupted' ? 'interrupted' : 'failed';
-    record.error = error?.message || String(error);
+    record.error = errorText(error);
     record.stoppedReason = reason;
     record.completedAt = iso(this.now());
     if (record._resolveIdentity) { record._resolveIdentity(null); record._resolveIdentity = null; }
@@ -971,6 +1048,30 @@ export class NativeLoopRuntime {
       released++;
     }
     return released;
+  }
+
+  /**
+   * The run's browser route moved (server.js noteAutomationBrowserRoute: a recovery, or the run's own
+   * browser_session create): its record and its state file name the new session and tab, so GET
+   * /api/browser/sessions (yourRoute), /api/loop/stop and the panel follow it. No-op for an unknown run, a run that
+   * ended (its end already released its browser and wrote its final state: a late recovery must not rewrite either),
+   * or the same route.
+   */
+  setBrowserRoute(runId, { browserSessionId = null, browserTabId = null } = {}) {
+    const record = this.records.get(runId);
+    if (!record || !browserSessionId || !LIVE_STATUSES.has(record.status)) return null;
+    const sessionId = String(browserSessionId);
+    const tabId = browserTabId ? String(browserTabId) : null;
+    if (record.browserSessionId === sessionId && (record.browserTabId || null) === tabId) return cleanDescriptor(record);
+    record.browserSessionId = sessionId;
+    record.browserTabId = tabId;
+    try {
+      const state = this._readState(record.runId);
+      if (state) this._writeState(record.runId, { ...state, browserSessionId: sessionId, browserTabId: tabId });
+    } catch (error) {
+      this.log(record.runId, 'native:state-write-error', error?.message || String(error));
+    }
+    return this._emit('sidepanel:run-updated', record, { reason: 'browser-route' });
   }
 
   setTools(runId, tools) {

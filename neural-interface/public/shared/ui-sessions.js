@@ -20,6 +20,7 @@ import { openAntigravityWithPrompt } from './ui-antigravity-panel.js';
 import { dropdownHTML, wireDropdowns } from './cc-dropdown.js';
 import { fetchRulesStatus, installAllRules, ackRulesNotice } from './api.js';
 import { centeredInFrame } from './app-frame.js';
+import { noAccessHTML, refusalOfResponse } from './ui-owner-access.js';
 
 // ── State ──
 let ws = null;
@@ -29,6 +30,9 @@ let leaks = [];
 let agents = [];
 let loops = [];
 let staleLoopCount = 0;
+// A list whose read the server refused this page (it has no owner access: SynaBun's automation browser opened it):
+// its tab says "No access", never "No loops" (ui-owner-access.js). null while the last read answered.
+const _refused = { sessions: null, leaks: null, agents: null, loops: null };
 let _panel = null;
 let _backdrop = null;
 let _activeTab = 'updates'; // 'updates' | 'sessions' | 'agents' | 'loops' | 'leaks'
@@ -468,6 +472,7 @@ function renderUpdateCard(item, idx) {
 // ── Tab renderers ──
 
 function renderSessionsTab() {
+  if (_refused.sessions) return noAccessHTML({ compact: true });
   if (sessions.length === 0) {
     return `<div class="sm-empty-state">
       <div class="sm-empty-icon">${ICON_SESSIONS}</div>
@@ -513,6 +518,7 @@ function renderAgentsTab() {
   const runningAgents = agents.filter(a => a.status === 'running');
   const finishedAgents = agents.filter(a => a.status !== 'running');
 
+  if (_refused.agents) return noAccessHTML({ compact: true });
   if (agents.length === 0) {
     return `<div class="sm-empty-state">
       <div class="sm-empty-icon">${ICON_AGENT}</div>
@@ -573,6 +579,7 @@ function renderAgentCard(a) {
 }
 
 function renderLeaksTab() {
+  if (_refused.leaks) return noAccessHTML({ compact: true });
   const criticalLeaks = leaks.filter(l => l.severity === 'critical');
   const warningLeaks = leaks.filter(l => l.severity === 'warning');
   const infoLeaks = leaks.filter(l => l.severity === 'info');
@@ -659,6 +666,7 @@ function renderLeakCard(l) {
 }
 
 function renderLoopsTab() {
+  if (_refused.loops) return noAccessHTML({ compact: true });
   if (loops.length === 0) {
     return `<div class="sm-empty-state">
       <div class="sm-empty-icon">${ICON_LOOP}</div>
@@ -887,20 +895,41 @@ function stopStalledTicker() {
 
 // ── Actions ──
 
+/**
+ * One list's read: { body } when it answered, { refusal } when the server refused this page the owner's access
+ * (the list then says "No access" and keeps what it had), {} when it failed otherwise.
+ */
+async function readList(url) {
+  try {
+    const res = await fetch(url);
+    const refusal = await refusalOfResponse(res);
+    if (refusal) return { refusal };
+    if (!res.ok) return {};
+    return { body: await res.json() };
+  } catch { return {}; }
+}
+
 async function refreshSessions() {
   try {
     const [sessRes, leakRes, agentRes, loopRes] = await Promise.all([
-      fetch('/api/sessions/active').then(r => r.json()),
-      fetch('/api/sessions/leaks').then(r => r.json()),
-      fetch('/api/agents').then(r => r.json()).catch(() => ({ agents: [] })),
-      fetch('/api/loop/list').then(r => r.json()).catch(() => ({ loops: [], staleCount: 0 })),
+      readList('/api/sessions/active'),
+      readList('/api/sessions/leaks'),
+      readList('/api/agents'),
+      readList('/api/loop/list'),
     ]);
-    sessions = sessRes.sessions || [];
-    leaks = leakRes.leaks || [];
-    agents = agentRes.agents || [];
-    const fetchedAt = Date.now();
-    loops = (loopRes.loops || []).map(l => ({ ...l, _fetchedAt: fetchedAt }));
-    staleLoopCount = loopRes.staleCount || 0;
+    _refused.sessions = sessRes.refusal || null;
+    _refused.leaks = leakRes.refusal || null;
+    _refused.agents = agentRes.refusal || null;
+    _refused.loops = loopRes.refusal || null;
+    // A list that failed keeps what it had (Sessions, Health) or is empty (Agents, Loops), as before.
+    if (sessRes.body) sessions = sessRes.body.sessions || [];
+    if (leakRes.body) leaks = leakRes.body.leaks || [];
+    if (agentRes.body || !agentRes.refusal) agents = agentRes.body?.agents || [];
+    if (loopRes.body || !loopRes.refusal) {
+      const fetchedAt = Date.now();
+      loops = (loopRes.body?.loops || []).map(l => ({ ...l, _fetchedAt: fetchedAt }));
+      staleLoopCount = loopRes.body?.staleCount || 0;
+    }
     _sessionsLoaded = true;
     emitLoopsUpdate();
     // Refresh notification feed alongside session/loop data
@@ -1277,12 +1306,12 @@ export function openLoopsTab() {
 // drawer. Called from ui-navbar.js on init so the alert dot can show on app
 // load.
 export async function fetchLoopsForBadge() {
-  try {
-    const res = await fetch('/api/loop/list').then(r => r.json());
-    loops = res.loops || [];
-    staleLoopCount = res.staleCount || 0;
-    emitLoopsUpdate();
-  } catch {}
+  const read = await readList('/api/loop/list');
+  _refused.loops = read.refusal || null;
+  if (!read.body) return; // refused or failed: the badge keeps what the sync socket said
+  loops = read.body.loops || [];
+  staleLoopCount = read.body.staleCount || 0;
+  emitLoopsUpdate();
 }
 
 // Bootstrap fetch for Updates badge — reads the rules status and emits the

@@ -37,8 +37,10 @@ import {
   sanitizeDesktopGrant,
   sanitizePin,
   sanitizeRole,
+  sanitizeTerminalToken,
   runWithBrainCredential,
   runWithIdentity,
+  runWithTerminalToken,
   releaseIdentity,
   startIdentitySweeper,
 } from './services/identity.js';
@@ -78,6 +80,14 @@ export interface McpRoutesOptions {
    * answers, the session has exactly that selection and X-Synabun-Tools is ignored.
    */
   selectionFor?: (req: Request) => McpSessionSelection | null | undefined;
+  /**
+   * The host's check of a run's pin (the Neural Interface's terminal tokens, neural-interface/lib/terminal-tokens.js):
+   * true when this request may route as `pin` with the X-Synabun-Terminal-Token it carries (`token`, or null). A pin
+   * it refuses (a run SynaBun gave a token to, named without that token) is not this caller's: the request routes as
+   * its own MCP session, so it never shares that run's identity (its browser pins, its recovered tab) and never sends
+   * the run's id to the Neural Interface. Without it, every pin is taken as it is said (the standalone server).
+   */
+  terminalAuth?: (pin: string, token: string | null) => boolean;
 }
 
 /**
@@ -146,11 +156,42 @@ onSchemaRefresh(() => {
 });
 
 /**
+ * What proves this request's X-Synabun-Terminal pin: its X-Synabun-Terminal-Token, else (an Assistant brain, whose pin
+ * the Neural Interface binds to its launch credential) its X-Synabun-Brain-Token. None for a tunnel caller (a remote
+ * MCP-key holder) or a malformed one.
+ */
+export function requestTerminalToken(req: Pick<Request, 'get'>): string | null {
+  if (req.get('cf-connecting-ip')) return null;
+  return sanitizeTerminalToken(req.get('x-synabun-terminal-token')) ?? sanitizeBrainCredential(req.get('x-synabun-brain-token'));
+}
+
+const refusedPinsLogged = new Set<string>();
+/**
+ * The X-Synabun-Terminal pin this request may route as: the header's, unless the host's terminalAuth refuses it (a
+ * run's pin without that run's token, or a check that threw: fail closed), then none.
+ */
+export function acceptedTerminalPin(req: Pick<Request, 'get'>, options: McpRoutesOptions = {}): string | null {
+  const pin = sanitizePin(req.get('x-synabun-terminal'));
+  if (!pin || typeof options.terminalAuth !== 'function') return pin;
+  let accepted = false;
+  try { accepted = options.terminalAuth(pin, requestTerminalToken(req)) === true; } catch { accepted = false; }
+  if (accepted) return pin;
+  if (!refusedPinsLogged.has(pin)) {
+    refusedPinsLogged.add(pin);
+    if (refusedPinsLogged.size > 1000) refusedPinsLogged.delete(refusedPinsLogged.values().next().value as string);
+    console.error(`[mcp-http] X-Synabun-Terminal ${pin} came without that run's terminal token: routed as its own MCP session`);
+  }
+  return null;
+}
+
+/**
  * Per-request caller identity. Explicit X-Synabun-* headers (injected into the
  * launch config of loops, scheduled loops, and sidepanel sessions) win; plain
- * CLI windows fall back to their unique Mcp-Session-Id.
+ * CLI windows fall back to their unique Mcp-Session-Id. A pin the host's
+ * terminalAuth refused (`pin` null) counts as no pin, and so do the browser
+ * pins that came with it.
  */
-function deriveIdentity(req: Request, sid: string | undefined): CallerIdentity {
+function deriveIdentity(req: Request, sid: string | undefined, pin: string | null = sanitizePin(req.get('x-synabun-terminal'))): CallerIdentity {
   const memoryContext = {
     project: req.get('x-synabun-project')?.slice(0,200),
     session: req.get('x-synabun-memory-session')?.slice(0,200),
@@ -163,7 +204,7 @@ function deriveIdentity(req: Request, sid: string | undefined): CallerIdentity {
   const remote = !!req.get('cf-connecting-ip');
   const role = remote ? null : sanitizeRole(req.get('x-synabun-role'));
   const desktopGrant = remote ? null : sanitizeDesktopGrant(req.get('x-synabun-desktop-grant'));
-  const headerTerminal = sanitizePin(req.get('x-synabun-terminal'));
+  const headerTerminal = pin;
   if (headerTerminal) {
     const identity = obtainIdentity(headerTerminal, {
       source: 'header',
@@ -192,11 +233,15 @@ export function requestBrainCredential(req: Pick<Request, 'get'>): string | null
 }
 
 /**
- * Handle one request inside its caller identity and its own brain-credential context: the
- * X-Synabun-Brain-Token of THIS request, never one another request left on a shared identity.
+ * Handle one request inside its caller identity and its own credential contexts: the X-Synabun-Brain-Token and the
+ * X-Synabun-Terminal-Token of THIS request (the latter only with the pin it came with, which the host accepted),
+ * never one another request left on a shared identity.
  */
-function runRequest<T>(req: Request, sid: string | undefined, fn: () => T): T {
-  return runWithBrainCredential(requestBrainCredential(req), () => runWithIdentity(deriveIdentity(req, sid), fn));
+function runRequest<T>(req: Request, sid: string | undefined, options: McpRoutesOptions, fn: () => T): T {
+  const pin = acceptedTerminalPin(req, options);
+  const token = pin ? requestTerminalToken(req) : null;
+  return runWithTerminalToken(pin && token ? { terminal: pin, token } : null, () =>
+    runWithBrainCredential(requestBrainCredential(req), () => runWithIdentity(deriveIdentity(req, sid, pin), fn)));
 }
 
 function jsonRpcError(res: express.Response, status: number, code: number, message: string): void {
@@ -251,7 +296,7 @@ export function createMcpRoutes(options: McpRoutesOptions = {}): Router {
           // finish means the fresh schemas have left this session's HTTP response.
           res.once('finish', () => { if (res.statusCode === 200) toolListBarriers.get(entry.server)?.listed(); });
         }
-        await runRequest(req, sid, () =>
+        await runRequest(req, sid, options, () =>
           entry.transport.handleRequest(req, res, req.body)
         );
         return;
@@ -272,8 +317,9 @@ export function createMcpRoutes(options: McpRoutesOptions = {}): Router {
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (newSid) => {
           mcpSessions.set(newSid, { transport, server, lastSeen: Date.now() });
-          deriveIdentity(req, newSid);
-          const terminal = sanitizePin(req.get('x-synabun-terminal'));
+          // The pin the host accepted (terminalAuth): a refused one is no pin, here as on every later request.
+          const terminal = acceptedTerminalPin(req, options);
+          deriveIdentity(req, newSid, terminal);
           // The warm server was built role-less, on focus. The SDK awaits this
           // hook BEFORE dispatching the initialize request, so binding the
           // selection and the role here makes the handshake instructions and
@@ -309,7 +355,7 @@ export function createMcpRoutes(options: McpRoutesOptions = {}): Router {
       };
 
       await server.connect(transport);
-      await runRequest(req, undefined, () =>
+      await runRequest(req, undefined, options, () =>
         transport.handleRequest(req, res, req.body)
       );
     } catch (error) {
@@ -330,7 +376,7 @@ export function createMcpRoutes(options: McpRoutesOptions = {}): Router {
     }
     entry.lastSeen = Date.now();
     try {
-      await runRequest(req, sid, () =>
+      await runRequest(req, sid, options, () =>
         entry.transport.handleRequest(req, res)
       );
     } catch (error) {

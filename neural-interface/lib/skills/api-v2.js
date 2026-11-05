@@ -93,7 +93,17 @@ function fail(res, err) {
  * @param {Function} [o.ownerGuard] lib/http-guards.js ownerRouteGuard(…) of this server (Host, Origin, guests)
  * @param {(req) => string|null} [o.assistantOf] the Assistant session a request's brain credential belongs to (principalOf)
  */
-export function registerSkillsV2Routes(app, { service, isGuestRequest = null, ownerGuard = null, assistantOf = null, pageSession = null } = {}) {
+export function registerSkillsV2Routes(app, { service, isGuestRequest = null, ownerGuard = null, assistantOf = null, pageSession = null, terminalRefusal = null } = {}) {
+  // An agent's X-Synabun-Terminal names its author: it counts only with the run's (or the brain's) proof, else the
+  // request is refused (server.js browserCaller: 403 TERMINAL_TOKEN_REQUIRED / _INVALID), so one agent never passes
+  // for another (a review's withdrawal). `terminalRefusal(req)` → { status, code, error } or null.
+  const refusedPin = (req, res) => {
+    let refused = null;
+    try { refused = typeof terminalRefusal === 'function' ? terminalRefusal(req) : null; } catch { refused = { status: 403, code: 'TERMINAL_TOKEN_INVALID', error: 'The run this request names could not be checked.' }; }
+    if (!refused) return false;
+    sendGuardError(res, Number(refused.status) || 403, String(refused.code || 'TERMINAL_TOKEN_INVALID'), String(refused.error || 'This request names a run it cannot prove it is.'));
+    return true;
+  };
   const idem = new Map();
 
   const json = (req, res, next) => {
@@ -106,8 +116,9 @@ export function registerSkillsV2Routes(app, { service, isGuestRequest = null, ow
     next();
   };
   // A read of the owner's page hands it the page secret (lib/page-session.js), which its writes then carry.
-  const reader = (req, res, next) => { req.principal = principalOf(req, isGuestRequest, assistantOf); if (req.principal.kind === 'owner') pageSession?.attach?.(res); next(); };
+  const reader = (req, res, next) => { if (refusedPin(req, res)) return; req.principal = principalOf(req, isGuestRequest, assistantOf); if (req.principal.kind === 'owner') pageSession?.attach?.(res); next(); };
   const writer = (req, res, next) => {
+    if (refusedPin(req, res)) return;
     req.principal = principalOf(req, isGuestRequest, assistantOf);
     if (req.principal.kind === 'guest') return sendGuardError(res, 403, 'GUEST_FORBIDDEN', 'Available to the owner only.');
     next();

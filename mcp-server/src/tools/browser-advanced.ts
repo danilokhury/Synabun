@@ -87,46 +87,150 @@ export async function handleBrowserWait(args: {
 // ── browser_session ──
 
 export const browserSessionSchema = {
-  action: z.enum(['list', 'create', 'close']).describe('"list" = list open sessions, "create" = open a new browser, "close" = close a session.'),
+  action: z.enum(['list', 'status', 'create', 'close']).describe('"list" = the open sessions with your own tabs (id, address, title; your current tab marked), "status" = the session and tab your browser calls use now, with its address and whether SynaBun replaced a lost tab, "create" = open a new browser tab of your own (starting the browser if needed) and continue there, "close" = close a session.'),
   url: z.string().optional().describe('Starting URL for "create" action (default: about:blank).'),
-  sessionId: z.string().optional().describe('Session ID for "close" action. Required for close when multiple sessions exist.'),
+  sessionId: z.string().optional().describe('Session ID for "close" action. Required for close when multiple sessions exist (or pass your tabId).'),
+  tabId: z.string().optional().describe('Your tab id, as the other browser tools take it. "status" / "list": says whether it is still your current tab (a lost tab names the tab that replaced it). "close": closes only this tab of yours; a tab that is not yours is refused and nothing is closed. Ignored by "create", which always opens a new tab of your own.'),
 };
 
 export const browserSessionDescription =
-  'Manage browser sessions — list open sessions, create a new browser, or close an existing one.';
+  'Manage browser sessions — list open sessions and your tabs in them, see which tab you work in ("status"), create a new one, or close one (pass your tabId to close only that tab of yours). Use "status" to find your current tab id. When a browser tool\'s answer starts with "Your tab … was lost; a replacement tab … is open", continue in that tab (no create). Use "create" when your browser session or tab was lost (closed, disconnected, "Session not found", "Tab … not found"): it opens a new tab of your own in the SynaBun browser, starting the browser when it is not running, and in a loop or a dispatched run your next browser calls go to it. Only if create fails too, stop and report it; never switch to another browser. Closing a session other automations still use closes only your own tab in it; the session stays open for them.';
 
 export async function handleBrowserSession(args: {
   action: string;
   url?: string;
   sessionId?: string;
+  tabId?: string;
 }) {
-  if (args.action === 'list') {
-    const result = await ni.listSessions();
-    if (result.error) return text(`List failed: ${result.error}`);
-    const sessions = (result.sessions || []) as Array<{ id: string; url: string; title: string; createdAt: number }>;
-    if (sessions.length === 0) {
-      return text('No browser sessions open.');
-    }
-    const lines = sessions.map(s => `  ${s.id} — ${s.title || s.url} (opened ${new Date(s.createdAt).toLocaleTimeString()})`);
-    return text(`${sessions.length} session(s):\n${lines.join('\n')}`);
+  if (args.action === 'list' || args.action === 'status') {
+    const status = await ni.browserRouteStatus();
+    if (status.error) return text(`${args.action === 'list' ? 'List' : 'Status'} failed: ${status.error}`);
+    const body = args.action === 'list' ? formatSessionList(status) : formatRouteStatus(status);
+    const note = args.tabId ? namedTabLine(status, args.tabId) : null;
+    return text(note ? `${body}\n${note}` : body);
   }
 
   if (args.action === 'create') {
     const result = await ni.createSession(args.url);
-    if (result.error) return text(`Create failed: ${result.error}`);
+    // A cold browser start still running: nothing failed, and the next create returns that same start.
+    if (ni.isBrowserStarting(result)) return text(String(result.error || 'The browser is still starting. Call browser_session with action "create" again in a moment.'));
+    if (result.error) return text(`Create failed: ${result.error}\nThe SynaBun browser could not open a new session: stop and report this. Never switch to another browser or tool.`);
+    const sessionId = String(result.sessionId);
+    const tabId = typeof result.tabId === 'string' ? result.tabId : null;
+    const ids = `sessionId "${sessionId}"${tabId ? ` and tabId "${tabId}"` : ''}`;
+    const lines = [`Created session ${sessionId}${tabId ? `, tab ${tabId}` : ''} at ${typeof result.url === 'string' ? result.url : args.url || 'about:blank'}.`];
+    lines.push(result.repinned === true
+      ? `This run's browser now works there: your next browser calls go to it with or without ids (pass ${ids} if you pass ids; never the old ones).`
+      : `Continue there: pass ${ids} to your next browser calls.`);
     // Created, but MoreLogin refused the start URL (e.g. a localhost port missing from Port scan protection).
-    const blocked = result.moreLoginBlocked === true && typeof result.notice === 'string' ? `\n${result.notice}` : '';
-    return text(`Created session ${result.sessionId} at ${args.url || 'about:blank'}${blocked}`);
+    if (result.moreLoginBlocked === true && typeof result.notice === 'string') lines.push(result.notice);
+    if (typeof result.navigateError === 'string') lines.push(`Opening ${args.url} in it failed: ${result.navigateError}. Open it with browser_navigate.`);
+    return text(lines.join('\n'));
   }
 
   if (args.action === 'close') {
-    const resolved = await ni.resolveSession(args.sessionId);
+    let named = args.sessionId;
+    if (args.tabId) {
+      // A tab named: only one of the caller's own (browserRouteStatus lists nobody else's), and it picks the session.
+      const status = await ni.browserRouteStatus();
+      if (status.error) return text(`Close failed: ${status.error}`);
+      const owner = status.sessions.find(s => s.tabs.some(t => t.id === args.tabId));
+      if (!owner) {
+        if (isGoneTab(status, args.tabId)) return text(`Tab ${args.tabId} is already gone; nothing was closed.${status.current?.open && status.current.tabId ? ` Your current tab is ${status.current.tabId}.` : ''}`);
+        return text(`Close refused: tab ${args.tabId} is not one of your tabs. You can close only your own tab; nothing was closed. Call browser_session with action "status" to see your tab id.`);
+      }
+      if (named && named !== owner.id) return text(`Close refused: your tab ${args.tabId} is in session ${owner.id}, not ${named}; nothing was closed.`);
+      named = owner.id;
+    }
+    const resolved = await ni.resolveSession(named);
     if ('error' in resolved) return text(resolved.error);
 
     const result = await ni.closeSession(resolved.sessionId);
     if (result.error) return text(`Close failed: ${result.error}`);
+    if (result.sessionKept === true) {
+      // Other automations (scheduled runs) work in tabs of this browser: the server closed only this caller's tab.
+      const others = Number(result.otherOwners) || 0;
+      const released = typeof result.releasedTabId === 'string' ? `Only your tab ${result.releasedTabId} was closed` : 'You had no tab of your own in it, so nothing was closed';
+      return text(`Session ${resolved.sessionId} stays open: ${others} other automation${others === 1 ? '' : 's'} still use${others === 1 ? 's' : ''} tabs in it. ${released}. Do not close it again. Your next browser call opens a new tab of your own, and its answer starts with that tab's id ("a replacement tab … is open"): continue there, without browser_session create.`);
+    }
     return text(`Closed session ${resolved.sessionId}`);
   }
 
-  return text(`Unknown action "${args.action}". Use "list", "create", or "close".`);
+  return text(`Unknown action "${args.action}". Use "list", "status", "create", or "close".`);
+}
+
+/** Lost tabs of the caller's that the route status knows about. */
+function isGoneTab(status: ni.BrowserRouteStatus, tabId: string): boolean {
+  return status.replacedTabs.includes(tabId)
+    || status.lost?.tabId === tabId
+    || status.movedFrom?.tabId === tabId
+    || (!!status.current && !status.current.open && status.current.tabId === tabId);
+}
+
+/** What a tabId passed to list / status means for the caller: only its own tabs are ever described. */
+export function namedTabLine(status: ni.BrowserRouteStatus, tabId: string): string | null {
+  const current = status.current;
+  if (current?.open && current.tabId === tabId) return null;
+  if (isGoneTab(status, tabId)) {
+    return current?.open && current.tabId
+      ? `Tab ${tabId} you passed is gone; tab ${current.tabId} (session ${current.sessionId}) replaced it. Use tabId ${current.tabId}.`
+      : `Tab ${tabId} you passed is gone. Your next browser call opens a new tab of your own and names it.`;
+  }
+  if (status.sessions.some(s => s.tabs.some(t => t.id === tabId))) {
+    return `Tab ${tabId} you passed is one of your tabs, but not the current one${current?.open && current.tabId ? ` (${current.tabId})` : ''}.`;
+  }
+  return `Tab ${tabId} you passed is not one of your tabs; it was ignored.`;
+}
+
+const quoteTitle = (title: string | undefined) => (title ? ` "${title}"` : '');
+const otherTabsText = (n: number) => `${n} tab${n === 1 ? '' : 's'} of other automations or the owner`;
+
+/** browser_session list: every session the caller can see, with its own tabs only. */
+export function formatSessionList(status: ni.BrowserRouteStatus): string {
+  if (status.sessions.length === 0) return 'No browser sessions open. browser_navigate opens one by itself.';
+  const lines = [`${status.sessions.length} session(s); only your own tabs are listed:`];
+  for (const session of status.sessions) {
+    lines.push(`  ${session.id}${session.servesDefault ? '' : ` — not the default browser (${session.profile}); SynaBun's browser tools do not use it`}`);
+    for (const tab of session.tabs) {
+      const isCurrent = status.current?.open && status.current.sessionId === session.id && status.current.tabId === tab.id;
+      lines.push(`    tab ${tab.id} — ${tab.url || 'about:blank'}${quoteTitle(tab.title)}${isCurrent ? '  ← your current tab' : ''}`);
+    }
+    if (!session.tabs.length) lines.push(`    no tab of yours${session.otherTabs ? ` (+${otherTabsText(session.otherTabs)})` : ''}`);
+    else if (session.otherTabs) lines.push(`    +${otherTabsText(session.otherTabs)}`);
+  }
+  if (status.current && !status.current.open) lines.push(lostTabLine(status.current));
+  else if (!status.current) lines.push('You have no tab of your own yet: browser_navigate opens one.');
+  return lines.join('\n');
+}
+
+function lostTabLine(current: NonNullable<ni.BrowserRouteStatus['current']>): string {
+  return `Your tab ${current.tabId || '(none)'} of session ${current.sessionId} is gone. Your next browser call opens a new tab of your own, and its answer starts with that tab's id: continue there. Call browser_session create only if a browser call fails because the tab is gone and announces no replacement.`;
+}
+
+/** browser_session status: the route the caller's next browser call uses, its page, and what replaced what. */
+export function formatRouteStatus(status: ni.BrowserRouteStatus): string {
+  const current = status.current;
+  if (!current) {
+    if (status.lost) return `Your tab ${status.lost.tabId || '(none)'} of session ${status.lost.sessionId} is gone and no tab replaced it yet. Your next browser call opens a new tab of your own, and its answer starts with that tab's id.`;
+    return 'You have no browser tab yet: browser_navigate opens one (no browser_session create needed).';
+  }
+  if (!current.open) return lostTabLine(current);
+  const lines = [
+    `Current session: ${current.sessionId}`,
+    `Current tab: ${current.tabId}`,
+    `Page: ${current.url || 'about:blank'}${quoteTitle(current.title)}`,
+  ];
+  if (status.replacedTabs.length) {
+    lines.push(`Replaced: yes. This tab replaced your lost tab${status.replacedTabs.length === 1 ? '' : 's'} ${status.replacedTabs.join(', ')}; keep using tabId ${current.tabId}.`);
+  } else if (status.movedFromPin) {
+    // Only a move from a tab the run knew: the route the server recorded for a fresh run is its launch route, not one.
+    const from = status.movedFrom?.tabId && status.movedFrom.tabId !== current.tabId ? ` from tab ${status.movedFrom.tabId}` : '';
+    lines.push(`Replaced: yes. SynaBun moved your run's browser to this tab${from} (a recovery or your own create); keep using tabId ${current.tabId}.`);
+  } else {
+    lines.push('Replaced: no.');
+  }
+  if (status.lost && !(status.lost.sessionId === current.sessionId && status.lost.tabId === current.tabId)) {
+    lines.push(`Your tab ${status.lost.tabId || '(none)'} of session ${status.lost.sessionId} went away; your next browser call may open a new tab and will say so.`);
+  }
+  return lines.join('\n');
 }

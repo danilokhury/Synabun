@@ -70,6 +70,8 @@ export const HOST_DEFAULTS = Object.freeze({
   pingMs: 30000,
   // Output tap to the main process (loop drivers, live links).
   tapBatchMs: 25,
+  // A token-scrubbed session (a loop's PTY): how long the end of a chunk that could begin a token waits for the next.
+  redactHoldMs: 30,
   tapBatchBytes: 64 * 1024,
 });
 

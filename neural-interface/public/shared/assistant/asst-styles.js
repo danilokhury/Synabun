@@ -288,7 +288,8 @@ export function injectAssistantStyles() {
       padding: 4px;
     }
     .asst-bar-group { display: flex; flex: 0 1 auto; align-items: center; gap: 4px; min-width: 0; }
-    .asst-bar-group:not(:has(> :not([hidden]))) { display: none; }
+    /* nothing to show: data-empty is kept by the panel (shown-children.js watchEmpty); never a :has(), see css-has-performance.test.mjs */
+    .asst-bar-group:is(:empty, [data-empty]) { display: none; }
     .asst-bar-group + .asst-bar-group::before {
       content: '';
       flex-shrink: 0;

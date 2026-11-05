@@ -40,12 +40,19 @@
 // used asks it too: a request from SynaBun's automation browser, a browser started for automation, an agent's
 // process tree or a relay is never handed the secret (the pages, GET /api/page-session, a Studio read's attach) and
 // never counts as the owner (verify), whatever host, port, cookie or marker it carries, and a service worker there
-// gets a worker that takes itself away (serviceWorker). A lookup that could not run leaves the rules above.
+// gets a worker that takes itself away (serviceWorker). The verdict is read through peerAuthority(), as the owner gate
+// reads it. A lookup that does not run on this server (another platform, SYNABUN_PEER_IDENTITY=off) leaves the rules
+// above. A lookup that failed on macOS (`peer.supported`) is no proof of who is asking: the page still loads, but
+// without the secret, verify is false, GET /api/page-session and require() answer 503 PEER_UNAVAILABLE (never a 403
+// the page would try to cure: public/shared/page-session.js does not retry it), and the service worker is the one
+// that takes itself away. There, a request that hands out or carries the secret without a verdict on it was never
+// identified, and counts as a failed lookup too.
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { isIP } from 'node:net';
 import { parseCookies } from './http-guards.js';
-import { ipv6Groups, mappedIPv4 } from './peer-identity.js';
+import { PEER_VERDICT, failedPeerVerdict, ipv6Groups, mappedIPv4, peerAuthority } from './peer-identity.js';
+import { sendPeerUnavailable } from './owner-authority.js';
 import { setBrowserNetworkRule, localMarkerPatterns } from './browser-network-guard.js';
 
 /** The cookie's name without a port (tests, hosts that pass none); with one it is pageSecretCookieName(port). */
@@ -153,18 +160,57 @@ self.addEventListener('activate', (event) => { event.waitUntil(self.registration
 
 /**
  * @param {object} [o]
- * @param {{ refusal(req): string|null }} [o.peer] lib/peer-identity.js: why a request's peer process may not hold or
- *   use the secret (null when it may, or when it could not be told)
+ * @param {{ supported?: boolean, refusal?(req): string|null }} [o.peer] lib/peer-identity.js. Its verdict on the
+ *   request (req[PEER_VERDICT], read through peerAuthority) decides; `supported` (macOS, not off) makes a missing
+ *   verdict on a request that hands out or carries the secret a failed lookup. A stand-in without verdicts may answer
+ *   `refusal(req)` (a sentence: refused).
  */
 export function createPageSession({ secret = null, cookieName = null, port = null, secure = false, isGuest = null, peer = null, networkRule = setBrowserNetworkRule } = {}) {
   const value = typeof secret === 'string' && secret.length >= 32 ? secret : randomBytes(32).toString('hex');
   const expected = Buffer.from(value);
   const name = typeof cookieName === 'string' && cookieName ? cookieName : pageSecretCookieName(port);
   const guest = (req) => { try { return typeof isGuest === 'function' && isGuest(req) === true; } catch { return true; } };
-  /** Why the peer lookup refuses this request the secret, or null (never asked, could not tell, or allowed). */
-  const peerRefusal = (req) => { try { return typeof peer?.refusal === 'function' ? (peer.refusal(req) || null) : null; } catch { return null; } };
+  /** The lookup runs on this server (macOS, not off): where the secret is at stake, no verdict is no proof. */
+  const peerRequired = () => { try { return peer?.supported === true; } catch { return true; } };
+  /**
+   * What the peer lookup says of this request (peerAuthority's decision: before / allowed / refused / unavailable).
+   * `secretAtStake`: the request is handed the secret or carries it, so on a server whose lookup runs a missing verdict
+   * is a failed lookup. Never throws: on a server whose lookup runs a failure here is a failed lookup too.
+   */
+  function peerDecision(req, { secretAtStake = false } = {}) {
+    if (!peer) return { decision: 'before' };
+    try {
+      const verdict = req?.[PEER_VERDICT];
+      if (verdict != null) return peerAuthority(verdict);
+      if (typeof peer.refusal === 'function') {
+        const why = peer.refusal(req);
+        if (why) return { decision: 'refused', code: 'PEER_REFUSED', why: String(why), pid: null };
+      }
+      return secretAtStake && peerRequired() ? peerAuthority(failedPeerVerdict('the request was not identified')) : { decision: 'before' };
+    } catch (error) {
+      return peerRequired() ? peerAuthority(failedPeerVerdict(`the lookup failed (${error?.message || error})`)) : { decision: 'before' };
+    }
+  }
+  const refusedText = (auth) => (auth.gone || auth.pid == null ? auth.why : `${auth.why}: pid ${auth.pid} (${auth.name})`);
+  /** Why the peer lookup refuses this request the secret (a sentence), or null (never asked, not looked up here, or
+   *  allowed). A failed lookup on macOS is a refusal too. */
+  const peerRefusal = (req) => {
+    const auth = peerDecision(req, { secretAtStake: true });
+    if (auth.decision === 'refused') return refusedText(auth);
+    if (auth.decision === 'unavailable') return `a request SynaBun could not identify (${auth.reason})`;
+    return null;
+  };
+  /** The request's peer could not be identified on macOS: { code: 'PEER_UNAVAILABLE', retryable, reason }, or null. */
+  const peerUnavailable = (req) => {
+    const auth = peerDecision(req, { secretAtStake: carriesSecret(req) });
+    return auth.decision === 'unavailable' ? auth : null;
+  };
   /** A request that may neither be handed the secret nor use it: a marker of the automation browser, or its peer. */
-  const heldBack = (req) => hasWorkerMarker(req) || !!peerRefusal(req);
+  const heldBack = (req) => {
+    if (hasWorkerMarker(req)) return true;
+    const decision = peerDecision(req, { secretAtStake: true }).decision;
+    return decision === 'refused' || decision === 'unavailable';
+  };
 
   /** The Set-Cookie header value (HttpOnly, SameSite=Strict, the whole site). */
   function cookie() {
@@ -172,12 +218,13 @@ export function createPageSession({ secret = null, cookieName = null, port = nul
   }
   /**
    * Add the cookie to a response (once; a header already there is kept and this one appended). Never to a guest, a
-   * request with the automation browser's marker or one whose peer is refused: `req` is the response's own request
-   * (Express's res.req) unless given, so every caller that hands the page the secret asks the same questions.
+   * request with the automation browser's marker or one whose peer is refused or could not be identified: `req` is the
+   * response's own request (Express's res.req) unless given, so every caller that hands the page the secret asks the
+   * same questions (and with no request to ask, a server whose lookup runs hands out nothing).
    */
   function attach(res, req = res?.req) {
     if (!res || typeof res.getHeader !== 'function' || typeof res.setHeader !== 'function') return;
-    if (req && (heldBack(req) || guest(req))) return;
+    if (req ? (heldBack(req) || guest(req)) : peerRequired()) return;
     const current = res.getHeader('Set-Cookie');
     const list = current === undefined ? [] : Array.isArray(current) ? [...current] : [String(current)];
     if (list.some((line) => String(line).startsWith(`${name}=`))) return;
@@ -191,10 +238,10 @@ export function createPageSession({ secret = null, cookieName = null, port = nul
     return !!got && got.length === expected.length && timingSafeEqual(got, expected);
   }
   /** Whether a request carries this boot's secret, and neither the automation browser's marker (cookie or header)
-   *  nor a peer the lookup refuses. */
+   *  nor a peer the lookup refuses or (on macOS) could not identify. */
   function verify(req) {
-    if (heldBack(req)) return false;
-    return carriesSecret(req);
+    if (!carriesSecret(req)) return false;
+    return !heldBack(req);
   }
   /** Whether a request comes from a tab of SynaBun's automation browser (the marker cookie or the host-proof header). */
   function fromWorkerBrowser(req) {
@@ -230,14 +277,23 @@ export function createPageSession({ secret = null, cookieName = null, port = nul
       return false;
     }
   }
-  /** Express middleware for an owner write: 403 PAGE_SECRET_REQUIRED without the secret. */
+  /** Answer 503 PEER_UNAVAILABLE for a request whose peer could not be identified (peerUnavailable(req)). */
+  function sendUnavailable(res, req, down = peerUnavailable(req)) {
+    return sendPeerUnavailable(res, req, down || { retryable: false, reason: 'the request was not identified' });
+  }
+  /** Express middleware for an owner write: 403 PAGE_SECRET_REQUIRED without the secret; 503 PEER_UNAVAILABLE when the
+   *  request's peer could not be identified on macOS (the secret could not be handed out or taken: a reload, not a
+   *  refresh, is what may cure it). */
   function require(req, res, next) {
     if (verify(req)) return next();
+    const down = peerUnavailable(req);
+    if (down) return sendUnavailable(res, req, down);
     res.status(403).json({ ok: false, code: 'PAGE_SECRET_REQUIRED', error: 'This change is made from SynaBun\'s own page. Reload the page and try again.' });
   }
   /** Express middleware that sets the cookie on the pages it belongs to (GET only, the app's shells; never a guest's
-   *  and never a request that carries the automation-browser marker or whose peer is refused — a marked tab, an
-   *  automation browser, an agent or a relay must never be handed the secret). */
+   *  and never a request that carries the automation-browser marker or whose peer is refused or could not be
+   *  identified — a marked tab, an automation browser, an agent, a relay or an unknown caller must never be handed the
+   *  secret). The page itself still loads. */
   function pages(req, res, next) {
     if ((req.method === 'GET' || req.method === 'HEAD') && PAGE_SECRET_PATHS.includes(req.path) && !guest(req) && !heldBack(req)) attach(res, req);
     next();
@@ -247,21 +303,23 @@ export function createPageSession({ secret = null, cookieName = null, port = nul
    * after a restart). Answers { ok: true } with the cookie; a guest gets 403 and no cookie. A tab of SynaBun's
    * automation browser (the marker cookie or the host-proof header) is refused the secret too (403 WORKER_BROWSER),
    * as is a request whose peer process the lookup refuses (403 PEER_REFUSED: an automation browser, an agent's
-   * process tree, a relay). Never cached.
+   * process tree, a relay). A request whose peer could not be identified on macOS gets 503 PEER_UNAVAILABLE and no
+   * cookie. Never cached.
    */
   function refresh(req, res) {
     res.setHeader('Cache-Control', 'no-store');
     if (guest(req)) return res.status(403).json({ ok: false, code: 'GUEST_FORBIDDEN', error: 'Available to the owner only.' });
     if (hasWorkerMarker(req)) return res.status(403).json({ ok: false, code: 'WORKER_BROWSER', error: 'SynaBun\'s automation browser does not hold the owner\'s page secret.' });
-    const why = peerRefusal(req);
-    if (why) return res.status(403).json({ ok: false, code: 'PEER_REFUSED', error: `SynaBun hands its page secret to the owner's own browser only; this request comes from ${why}.` });
+    const auth = peerDecision(req, { secretAtStake: true });
+    if (auth.decision === 'unavailable') return sendUnavailable(res, req, auth);
+    if (auth.decision === 'refused') return res.status(403).json({ ok: false, code: 'PEER_REFUSED', error: `SynaBun hands its page secret to the owner's own browser only; this request comes from ${refusedText(auth)}.` });
     attach(res, req);
     res.json({ ok: true });
   }
   /**
-   * Express middleware for GET /sw.js: a browser that may not hold the secret (the automation browser's marker, or a
-   * refused peer) gets SERVICE_WORKER_NOOP, so no service worker answers its requests out of the server's sight;
-   * everyone else falls through to the real public/sw.js.
+   * Express middleware for GET /sw.js: a browser that may not hold the secret (the automation browser's marker, a
+   * refused peer, or on macOS one that could not be identified) gets SERVICE_WORKER_NOOP, so no service worker answers
+   * its requests out of the server's sight; everyone else falls through to the real public/sw.js.
    */
   function serviceWorker(req, res, next) {
     if ((req.method === 'GET' || req.method === 'HEAD') && req.path === SERVICE_WORKER_PATH && heldBack(req)) {
@@ -271,5 +329,5 @@ export function createPageSession({ secret = null, cookieName = null, port = nul
     }
     next();
   }
-  return { cookieName: name, cookie, attach, carriesSecret, verify, require, pages, refresh, serviceWorker, fromWorkerBrowser, peerRefusal, markWorkerBrowserContext };
+  return { cookieName: name, cookie, attach, carriesSecret, verify, require, pages, refresh, serviceWorker, fromWorkerBrowser, peerRefusal, peerUnavailable, sendUnavailable, markWorkerBrowserContext };
 }

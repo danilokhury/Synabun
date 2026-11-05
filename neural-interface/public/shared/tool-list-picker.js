@@ -1,11 +1,13 @@
 // Shared cc-dropdown rendering; the pure view owns labels and catalog-derived choices.
 import { dropdownHTML, setDropdownItems, dropdownOf } from './cc-dropdown.js';
-import { toolListView, toolListWord, toolsFromInput, strictToolHost, taskToolHost } from './tool-list-view.js';
+import { toolListView, toolListWord, toolsFromInput, strictToolHost, taskToolHost, unreadableServersNote } from './tool-list-view.js';
 import { getCachedToolCatalog, fetchToolCatalog } from './agent-runtime-options.js';
 let translate;
 export function configureToolPickerTranslation(fn) { if (typeof fn === 'function') translate = fn; }
 export { toolsFromInput, strictToolHost, taskToolHost };
 export const toolWord = (key, params) => toolListWord(key, params, translate);
+/** The sentence naming the providers whose MCP configuration the server could not read, or null. */
+export const toolServersNote = (catalog, provider = 'all') => unreadableServersNote(catalog, provider, translate);
 export function toolPickerHTML(id, tools, options = {}) {
   const catalog = options.catalog || getCachedToolCatalog(options.cwd);
   if (!catalog) return '';

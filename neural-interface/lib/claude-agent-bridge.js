@@ -266,6 +266,16 @@ function _removeOwedTemporaryPlans({ all = false } = {}) {
   if (failed) log(`temporary chat: ${failed} plan file${failed === 1 ? '' : 's'} could not be removed and will be tried again`);
 }
 
+// lib/terminal-tokens.js's names (kept here as text: this module is loaded by the panel's tests without the registry).
+const TERMINAL_TOKEN_HEADER_NAME = 'X-Synabun-Terminal-Token';
+const TERMINAL_TOKEN_ENV_NAME = 'SYNABUN_TERMINAL_TOKEN';
+/** The host's MCP entries with the SynaBun entry's token reference replaced by its value (for a live setMcpServers). */
+function withTerminalTokenValue(servers, token) {
+  const synabun = servers?.SynaBun;
+  if (!token || !synabun?.headers || synabun.headers[TERMINAL_TOKEN_HEADER_NAME] !== `\${${TERMINAL_TOKEN_ENV_NAME}}`) return servers;
+  return { ...servers, SynaBun: { ...synabun, headers: { ...synabun.headers, [TERMINAL_TOKEN_HEADER_NAME]: token } } };
+}
+
 function cleanEnv() {
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([k]) =>
@@ -742,6 +752,26 @@ export class ClaudeSession {
           },
         },
       };
+    }
+    // A panel tab proves its X-Synabun-Terminal with a token of its own (lib/terminal-tokens.js), new with every CLI
+    // process it starts (a warm one included; an adopted warm process keeps the one it was started with). The MCP
+    // header names the variable and the CLI expands it from its own environment, never its command line (the MCP
+    // config is an argument every account of the computer can read). A process of the same user can still read that
+    // environment. Revoked when the tab's session ends (destroy). Brains and other callers have their own proof or none.
+    this._terminalToken = null;
+    if (this.panel && options.mcpServers?.SynaBun && typeof deps.terminalTokens?.rotate === 'function') {
+      let token = null;
+      try { token = deps.terminalTokens.rotate(this.synabunOwnerKey) || null; } catch { token = null; }
+      if (token) {
+        this._terminalToken = token;
+        options.mcpServers.SynaBun.headers[TERMINAL_TOKEN_HEADER_NAME] = `\${${TERMINAL_TOKEN_ENV_NAME}}`;
+        options.env = { ...options.env, [TERMINAL_TOKEN_ENV_NAME]: token };
+      }
+    }
+    // Never one this server inherited: only the tab's own reaches its CLI.
+    if (!this._terminalToken && options.env && TERMINAL_TOKEN_ENV_NAME in options.env) {
+      options.env = { ...options.env };
+      delete options.env[TERMINAL_TOKEN_ENV_NAME];
     }
     if (sessionOpts.extraMcpServers && typeof sessionOpts.extraMcpServers === 'object') {
       options.mcpServers = { ...(options.mcpServers || {}), ...sessionOpts.extraMcpServers };
@@ -2746,7 +2776,10 @@ export class ClaudeSession {
             if (typeof q.setMcpServers !== 'function') throw new Error('Not supported by this Claude Code version');
             const current = this.panelSession || normalizePanelSession(null);
             const start = { ...current.start, mcpServers: normalizeMcpServers(args.servers) };
-            const merged = mergeTabMcpServers(this._hostMcpServers, start);
+            // The host's SynaBun entry carries the tab's token as a reference the CLI expands from its environment at
+            // start; a set made on the live session is sent with the value itself (over the CLI's stdin, never its
+            // command line or a file), so the reconnected SynaBun server still proves the tab's id.
+            const merged = mergeTabMcpServers(withTerminalTokenValue(this._hostMcpServers, this._terminalToken), start);
             const r = await q.setMcpServers(merged.servers);
             if (this.q === q) this.panelSession = { ...current, start };
             const errors = r?.errors && typeof r.errors === 'object' ? Object.fromEntries(Object.entries(r.errors).slice(0, 20).map(([k, v]) => [String(k).slice(0, 80), String(v).slice(0, 300)])) : {};
@@ -3190,6 +3223,8 @@ export class ClaudeSession {
     // Release this chat session's owned browser tab so the shared browser can
     // grace-reap once no owners remain. Best-effort, in-process on the NI side.
     try { deps.releaseBrowserOwner?.(this.synabunOwnerKey); } catch {}
+    // The tab's terminal token ends with its session (nothing may act as it from now on).
+    if (this.panel && this._terminalToken) { try { deps.terminalTokens?.revoke?.(this.synabunOwnerKey); } catch {} this._terminalToken = null; }
     _allSessions.delete(this);
   }
 }

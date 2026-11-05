@@ -13,6 +13,9 @@
 // /api/desktop/frames/<id>/thumb.jpg; `assistant:desktop` activity events.
 
 import { desktopSetup, getDesktopStatus, resumeDesktop, stopDesktop } from './asst-api.js';
+import { createPollGate } from '../poll-backoff.js';
+import { refusalOfError } from '../owner-access.js';
+import { OWNER_ACCESS_RESTORED_EVENT } from '../page-session.js';
 
 // ── Pure helpers ────────────────────────────────────────────────────────────
 
@@ -290,6 +293,47 @@ export function requestDesktopStop(body = { scope: 'all' }) {
 const ICON_COMPUTER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>';
 const ICON_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
 const POLL_MS = 3000;
+
+// ── The status poll, shared by every tray of the page ──
+// Each Assistant tab has its own tray and timer; through one gate (poll-backoff.js) they send at most one GET
+// /api/desktop/status at a time and one per POLL_MS, wait longer after every failure (exponential, capped at five
+// minutes), and stop altogether on a refusal of the owner's access (403 WORKER_BROWSER and the like: SynaBun's
+// automation browser opened the page) until the page gets the owner's page secret again or becomes visible again.
+// Before 2026-11-05 every tray asked every 3 s whatever the answer: five per 3 s on a refused page.
+export const desktopStatusGate = createPollGate({ baseMs: POLL_MS });
+let _statusInFlight = null;
+let _gateWired = false;
+
+function wireStatusGate() {
+  if (_gateWired) return;
+  _gateWired = true;
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener(OWNER_ACCESS_RESTORED_EVENT, () => desktopStatusGate.resume());
+  }
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && desktopStatusGate.snapshot().halted) desktopStatusGate.resume(); });
+  }
+}
+
+/**
+ * GET /api/desktop/status once for every tray and probe that asks at the same time; the answer counts on the shared
+ * gate (an answer resets it, a failure backs it off, a refusal of the owner's access halts the timers' polling).
+ */
+export function requestDesktopStatus(request = getDesktopStatus) {
+  if (_statusInFlight) return _statusInFlight;
+  wireStatusGate();
+  desktopStatusGate.begin();
+  let sent;
+  try { sent = Promise.resolve(request()); } catch (err) { sent = Promise.reject(err); }
+  const run = sent.then(
+    (status) => { desktopStatusGate.succeed(); return status; },
+    (err) => { desktopStatusGate.fail(refusalOfError(err)); throw err; },
+  );
+  _statusInFlight = run;
+  const clear = () => { if (_statusInFlight === run) _statusInFlight = null; };
+  run.then(clear, clear);
+  return run;
+}
 
 /** What a failed status check was: { kind: 'forbidden' | 'timeout' | 'error', message }. */
 export function computerCheckFailure(err) {
@@ -704,7 +748,7 @@ export function createComputerPanel(hostEl, hooks = {}) {
 
   async function refresh() {
     try {
-      const status = await getDesktopStatus();
+      const status = await requestDesktopStatus();
       if (!state.destroyed) applyStatus(status);
       return status;
     } catch (err) {
@@ -719,7 +763,8 @@ export function createComputerPanel(hostEl, hooks = {}) {
     const need = state.view === 'tray' && !state.destroyed;
     if (need && !state.pollTimer) {
       state.pollTimer = setInterval(() => {
-        if (document.hidden) return;
+        // The shared gate decides: one request at a time for every tray, a wait after a failure, none on a refusal.
+        if (document.hidden || !desktopStatusGate.due()) return;
         refresh().catch(() => {});
       }, POLL_MS);
     } else if (!need && state.pollTimer) {

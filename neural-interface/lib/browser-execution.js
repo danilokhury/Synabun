@@ -86,15 +86,28 @@ export function cancellableBrowserDelay(ms, req) {
   });
 }
 
+/**
+ * The longest a browser request is answered after (/api/browser/*, and the run recovery POST /api/loop/recover-browser):
+ * a caller's X-Synabun-Deadline is honoured up to this. A browser start that is still running then is answered
+ * BROWSER_STARTING and kept for its caller (lib/browser-start-handoff.js). The MCP's create / recovery timeout
+ * (mcp-server/src/services/neural-interface.ts SESSION_CREATE_TIMEOUT) is longer, so it reads that answer, never a
+ * timeout of its own.
+ */
+export const BROWSER_REQUEST_MAX_MS = 120_000;
+
+/** A request's deadline: its X-Synabun-Deadline, at most BROWSER_REQUEST_MAX_MS from now. */
+export function browserRequestDeadline(req, now = Date.now()) {
+  const requested = Number(req?.get?.('X-Synabun-Deadline'));
+  return Number.isFinite(requested) && requested > 0 ? Math.min(requested, now + BROWSER_REQUEST_MAX_MS) : now + BROWSER_REQUEST_MAX_MS;
+}
+
 /** Metadata only: never logs URLs, selectors, form values, scripts or response bodies. */
 export function browserRequestMiddleware(req, res, next) {
   const controller = new AbortController();
   const start = performance.now();
   const supplied = req.get('X-Synabun-Request-Id');
   const requestId = /^[\w-]{1,80}$/.test(supplied || '') ? supplied : randomUUID();
-  const requestedDeadline = Number(req.get('X-Synabun-Deadline'));
-  const deadline = Number.isFinite(requestedDeadline) && requestedDeadline > 0
-    ? Math.min(requestedDeadline, Date.now() + 120_000) : Date.now() + 120_000;
+  const deadline = browserRequestDeadline(req);
   const state = { requestId, deadline, signal: controller.signal, actionStarted: false, phases: {}, counts: {} };
   state.cancelForProtection = reason => { state.protectionError = String(reason); controller.abort(); };
   req.browserRequest = state;

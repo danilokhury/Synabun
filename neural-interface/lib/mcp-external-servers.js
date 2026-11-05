@@ -14,22 +14,24 @@ export const EXTERNAL_SERVER_LIMITATIONS = Object.freeze({ codex: 'Plugin-provid
 /** Where Antigravity keeps its MCP servers: { mcpServers: { name: { command, args, env, disabled } | { serverUrl, headers, disabled } } }. */
 export function antigravityMcpConfigPath(home = homedir()) { return join(home, '.gemini', 'config', 'mcp_config.json'); }
 export const externalServerName = name => typeof name === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(name) && external(name);
+// `reason` and `errno` say what went wrong without the path or a byte of the file; they reach the page.
+const discoveryFailure = (message, reason, errno = null) => Object.assign(new Error(message), { code: 'MCP_DISCOVERY_FAILED', reason, ...(errno ? { errno } : {}) });
 function read(path, fallback = null) {
   try { return readFileSync(path, 'utf8'); }
-  catch (error) { if (error.code === 'ENOENT') return fallback; throw Object.assign(new Error('Could not read an MCP configuration source'), { code: 'MCP_DISCOVERY_FAILED' }); }
+  catch (error) { if (error.code === 'ENOENT') return fallback; throw discoveryFailure('Could not read an MCP configuration source', 'unreadable', typeof error.code === 'string' && /^E[A-Z]+$/.test(error.code) ? error.code : null); }
 }
 function document(path) {
   const text = read(path);
   if (text === null) return {};
   try { return object(parseJsonc(text)); }
-  catch { throw Object.assign(new Error('Could not parse an MCP configuration source'), { code: 'MCP_DISCOVERY_FAILED' }); }
+  catch { throw discoveryFailure('Could not parse an MCP configuration source', 'unparseable'); }
 }
 /** Names/kinds/enabled only: Codex keeps definitions and secrets in its own TOML. Quoted dotted names stay whole. */
 export function parseCodexMcpServers(text = '') {
   // Structural TOML reader: supports tables, dotted/quoted keys and inline maps without copying definitions.
   const tokens = []; let at = 0;
   const input = String(text);
-  const fail = () => Object.assign(new Error('Could not parse Codex MCP configuration'), { code: 'MCP_DISCOVERY_FAILED' });
+  const fail = () => discoveryFailure('Could not parse Codex MCP configuration', 'unparseable');
   while (at < input.length) {
     const ch = input[at];
     if (ch === '#') { while (at < input.length && input[at] !== '\n') at++; continue; }
@@ -168,7 +170,7 @@ export function externalServerInventory({ provider, cwd = process.cwd(), codexHo
     let base = opencodeConfig;
     if (base == null) {
       const docs = readOpencodeConfigDocuments(configDir);
-      if (docs.some(row => row.error)) throw Object.assign(new Error('Could not parse an MCP configuration source'), { code: 'MCP_DISCOVERY_FAILED' });
+      if (docs.some(row => row.error)) throw discoveryFailure('Could not parse an MCP configuration source', 'unparseable');
       base = mergedOpencodeConfig(docs);
     }
     for (const [name, entry] of Object.entries(mcpServersOf(base))) add(name, entry, 'user');
@@ -254,13 +256,38 @@ export function selectExternalServers(tools, inventory) {
   if (problems.length) throw Object.assign(new Error(problems.map(problem => problem.hint).join(' ')), { code: 'TOOLS_INVALID', status: 400, problems });
   return { names: [...selected].sort(), disabled: inventory.servers.filter(row => !selected.has(row.name)).map(row => row.name) };
 }
-export function externalCatalog(options = {}) {
-  const rows = new Map();
-  for (const provider of ['codex', 'opencode', 'claude-code', 'antigravity']) for (const row of discoverExternalServers({ ...options, provider })) {
-    if (!rows.has(row.name)) rows.set(row.name, { ref: `mcp:${row.name}`, label: row.name, selectable: row.selectable, providers: { codex: 'absent', opencode: 'absent', 'claude-code': 'absent', antigravity: 'absent' }, blocked: row.blocked });
-    rows.get(row.name).providers[provider] = row.blocked ? 'blocked' : row.deliverable ? 'deliverable' : 'unavailable';
+export const EXTERNAL_CATALOG_PROVIDERS = Object.freeze(['codex', 'opencode', 'claude-code', 'antigravity']);
+/** The public form of a provider whose configuration could not be read: no path, no file content. */
+export function externalDiscoveryError(provider, error) {
+  return { provider, code: 'MCP_DISCOVERY_FAILED', reason: error?.reason === 'unparseable' ? 'unparseable' : 'unreadable', ...(error?.errno ? { errno: error.errno } : {}) };
+}
+/**
+ * Names-only catalog over every provider, with the providers that could not be read beside it.
+ * A provider in `errors` is `unknown` on every row, never `absent` or `deliverable`: nothing may read it
+ * as "no servers there". `strict` rethrows the first discovery failure (what every validation and grant
+ * path needs); any other error always propagates.
+ */
+export function externalCatalogReport(options = {}, { strict = false } = {}) {
+  const rows = new Map(), errors = [];
+  for (const provider of EXTERNAL_CATALOG_PROVIDERS) {
+    let servers;
+    try { servers = discoverExternalServers({ ...options, provider }); }
+    catch (error) { if (strict || error?.code !== 'MCP_DISCOVERY_FAILED') throw error; errors.push(externalDiscoveryError(provider, error)); continue; }
+    for (const row of servers) {
+      if (!rows.has(row.name)) rows.set(row.name, { ref: `mcp:${row.name}`, label: row.name, selectable: row.selectable, providers: { codex: 'absent', opencode: 'absent', 'claude-code': 'absent', antigravity: 'absent' }, blocked: row.blocked });
+      rows.get(row.name).providers[provider] = row.blocked ? 'blocked' : row.deliverable ? 'deliverable' : 'unavailable';
+    }
   }
-  return [...rows.values()].sort((a, b) => a.ref.localeCompare(b.ref));
+  for (const { provider } of errors) for (const row of rows.values()) row.providers[provider] = 'unknown';
+  return { servers: [...rows.values()].sort((a, b) => a.ref.localeCompare(b.ref)), errors };
+}
+/** Strict: one unreadable provider fails the whole catalog (validation and worker paths). */
+export function externalCatalog(options = {}) { return externalCatalogReport(options, { strict: true }).servers; }
+/** One row's availability for a provider when the catalogs of several folders are merged. */
+export function mergeExternalAvailability(previous, next) {
+  if (next === 'deliverable' || previous === 'absent') return next;
+  if (previous === 'unknown' && next !== 'absent') return next;
+  return previous;
 }
 /** Complete validated disabled entries, proved on 2.1.4. No owner env/header/URL payload in the disabled copy. */
 export function scopeOpenCodeServers(config, tools, inventory, { node = process.execPath } = {}) {

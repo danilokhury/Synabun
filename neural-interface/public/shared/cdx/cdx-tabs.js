@@ -82,7 +82,7 @@ import {
   renderHistory, countRenderableTranscriptNodes, flattenThreadHistoryItems,
   flushCardBody, extractUserText, openChangelogEditorFlow, summarizeCommandExecution,
   normalizeChoiceLabel, isSynaBunChoicePrompt, isChangelogChoiceSet, restoreChangelogButtons,
-  renderUserMessageContent, syncMessagePlanActions,
+  renderUserMessageContent, syncMessagePlanActions, mcpCardTitle, isSynaBunMcpTool,
 } from './cdx-render.js';
 import {
   setRequestsContext, handleServerRequest, resolveRequestCard, sendServerRequestReply,
@@ -1948,8 +1948,8 @@ function itemHeadline(item) {
       }
     case 'mcpToolCall':
       return {
-        title: `${item.server || 'MCP'} tool call`,
-        detail: cleanPreview(`${item.server || 'MCP'} • ${item.tool || 'tool'}`),
+        title: isSynaBunMcpTool(item) ? 'SynaBun tool call' : `${item.server || 'MCP'} tool call`,
+        detail: cleanPreview(mcpCardTitle(item.server, item.tool)),
       };
     case 'fileChange':
       return {

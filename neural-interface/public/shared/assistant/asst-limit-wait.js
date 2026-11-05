@@ -18,6 +18,7 @@
 
 import * as mascotLib from '../synabun-mascot.js';
 import { isReducedMotion, subscribe } from '../synabun-ticker.js';
+import { syncEmpty } from '../shown-children.js';
 import { limitCountdown, resetMs } from './asst-limit.js';
 
 const RING_R = 24;
@@ -179,6 +180,7 @@ export function createLimitWait(opts = {}) {
       retryBtn.textContent = label;
     }
     if (switchBtn) switchBtn.hidden = !(next === 'waiting' || next === 'unknown');
+    syncEmpty(actions); // the row goes when none of its buttons shows (data-empty, not a :has())
     if (next === 'waiting') { setPose('sleep'); setRing(limitCountdown({ resetsAt, since }, now).progress || 0); }
     else if (next === 'unknown') { setPose('wait'); setRing(0.18, true); }
     else if (next === 'restored') { setPose(was === 'waiting' ? 'success' : 'idle'); setRing(1); }
@@ -301,7 +303,7 @@ const CSS = `
   .asst-limit-wait-clock.is-text { font-family: inherit; font-size: 13px; color: var(--asst-text-2); letter-spacing: 0; }
   .asst-limit-wait-meta { color: var(--asst-text-3); font-size: 11.5px; overflow-wrap: anywhere; }
   .asst-limit-wait-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-  .asst-limit-wait-actions:not(:has(> :not([hidden]))) { display: none; }
+  .asst-limit-wait-actions[data-empty] { display: none; }
   .asst-limit-wait-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .asst-limit-row .asst-msg-content { width: 100%; }
   .asst-run .asst-limit-wait { grid-column: 2 / span 2; margin-top: 8px; padding: 10px 12px; }

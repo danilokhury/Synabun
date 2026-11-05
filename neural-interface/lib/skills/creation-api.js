@@ -40,7 +40,7 @@ function fail(res, err) {
  * @param {object} o.service lib/skills/service.js (the bundled skill-forge for GET /guide)
  * @param {(req) => boolean} [o.isGuestRequest]
  * @param {Function} [o.ownerGuard] lib/http-guards.js ownerRouteGuard(…) of this server
- * @param {(req) => ({ kind: 'assistant', assistantSessionId: string } | { kind: 'worker' } | null)} [o.assistantCaller]
+ * @param {(req) => ({ kind: 'assistant', assistantSessionId: string } | { kind: 'worker' } | { kind: 'refused', code, error, status } | null)} [o.assistantCaller]
  *   who an agent request is: an Assistant brain (the session its credential belongs to), a dispatched worker, or nobody
  * @param {() => object} [o.options] what can run now: { conversation: string[] (providers), url: boolean, urlReason,
  *   repo: { path, label }[], memory: boolean, import: boolean, defaultTarget, drafting: { available, reason, providers } }
@@ -80,6 +80,8 @@ export function registerSkillCreationRoutes(app, { creations, service, isGuestRe
     // a dispatched worker.
     let who = null;
     try { who = typeof assistantCaller === 'function' ? assistantCaller(req) : null; } catch { who = null; }
+    // A request that names a run or a brain it cannot prove it is (server.js browserCaller: no terminal token, another's).
+    if (who?.kind === 'refused') return sendGuardError(res, Number(who.status) || 403, typeof who.code === 'string' ? who.code : 'TERMINAL_TOKEN_INVALID', typeof who.error === 'string' ? who.error : 'This request names a run it cannot prove it is.');
     if (who?.kind === 'worker') return sendGuardError(res, 403, 'WORKERS_NOT_PERMITTED', 'Dispatched workers cannot create skills: the Assistant or the owner does.');
     if (who?.kind !== 'assistant' || typeof who.assistantSessionId !== 'string' || !who.assistantSessionId) {
       return sendGuardError(res, 403, 'ASSISTANT_CREDENTIAL_REQUIRED', 'Drafting skills with AI is the owner\'s (Skills Studio) and the SynaBun Assistant\'s own brain\'s (its launch credential): a role header is not enough.');

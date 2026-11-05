@@ -218,8 +218,14 @@ export function paneActive(overlay, paneId) {
  * The status dot on a nav item. Several panes can share a page (WhatsApp and
  * Discord on Messages), so each reports its own status and the page shows
  * "connected" when any of them is. The word is also set for screen readers.
- * @param {'connected'|'disconnected'|''} status
+ * @param {'connected'|'disconnected'|'refused'|''} status
  */
+/** "No access" in the page's language (ownerAccess.navStatus; English when the key is missing). */
+function noAccessWord() {
+  const text = t('ownerAccess.navStatus');
+  return typeof text === 'string' && text && text !== 'ownerAccess.navStatus' ? text : 'No access';
+}
+
 export function setNavStatus(overlay, paneId, status) {
   const page = pageOfPane(paneId);
   const nav = page && overlay.querySelector(`.settings-nav-item[data-tab="${page.id}"]`);
@@ -227,8 +233,10 @@ export function setNavStatus(overlay, paneId, status) {
   const sources = nav._stgStatus || (nav._stgStatus = {});
   if (status) sources[paneId] = status; else delete sources[paneId];
   const values = Object.values(sources);
-  const next = values.includes('connected') ? 'connected' : values.includes('disconnected') ? 'disconnected' : '';
+  // 'refused': the page has no owner access, so the state is unknown (ui-owner-access.js): "No access", never "Off".
+  const next = values.includes('refused') ? 'refused' : values.includes('connected') ? 'connected' : values.includes('disconnected') ? 'disconnected' : '';
   if (next) nav.dataset.status = next; else delete nav.dataset.status;
   const word = nav.querySelector('.stg-nav-status-text');
-  if (word) word.textContent = next ? ` (${t(next === 'connected' ? 'settings.redesign.common.connected' : 'settings.redesign.common.off')})` : '';
+  const label = next === 'refused' ? noAccessWord() : next ? t(next === 'connected' ? 'settings.redesign.common.connected' : 'settings.redesign.common.off') : '';
+  if (word) word.textContent = label ? ` (${label})` : '';
 }

@@ -17,6 +17,7 @@ import { diffView, DIFF_LIMITS } from './agy-diff.js';
 import { durationLabel, toolSummary, usageParts, compactNumber } from './agy-events.js';
 import { relativeToProject } from './agy-commands.js';
 import { elicitationFields, elicitationUrl } from './agy-options.js';
+import { synabunToolKey, synabunToolLabel, synabunToolSummary } from '../synabun-tools.js';
 
 const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '`': '&#96;' };
 export const esc = (value) => String(value ?? '').replace(/[&<>"'`]/g, (c) => HTML_ESCAPES[c]);
@@ -45,6 +46,29 @@ export const ICONS = Object.freeze({
   check: svg('<path d="m5 12 5 5L20 7"/>', { size: 12, width: 2.5 }),
   cross: svg('<path d="M6 6l12 12M18 6 6 18"/>', { size: 12, width: 2.5 }),
 });
+
+// SynaBun's own tools wear its logo, as in every other panel.
+export const SYNABUN_LOGO = '<img class="agy-synabun-logo" src="logoHD.png" alt="" aria-hidden="true">';
+
+/**
+ * A SynaBun MCP call of a tool row: { key, args } ('bluesky_post' and the call's own arguments), else null.
+ * Antigravity calls an MCP tool through call_mcp_tool { ServerName, ToolName, Arguments }; a name in
+ * the prefixed spelling (mcp__SynaBun__x, SynaBun_x) counts too.
+ */
+export function synabunCallOf(row) {
+  const input = row?.rawInput && typeof row.rawInput === 'object' && !Array.isArray(row.rawInput) ? row.rawInput : {};
+  const server = typeof (input.ServerName ?? input.serverName ?? input.server) === 'string' ? (input.ServerName ?? input.serverName ?? input.server) : '';
+  const tool = typeof (input.ToolName ?? input.toolName ?? input.tool) === 'string' ? (input.ToolName ?? input.toolName ?? input.tool) : '';
+  if (server.trim() && tool.trim()) {
+    const key = synabunToolKey(tool, server);
+    if (key == null) return null;
+    let args = input.Arguments ?? input.arguments ?? {};
+    if (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = {}; } }
+    return { key, args: args && typeof args === 'object' && !Array.isArray(args) ? args : {} };
+  }
+  const named = synabunToolKey(row?.name) ?? (/^mcp__/i.test(String(row?.title || '')) ? synabunToolKey(row.title) : null);
+  return named != null ? { key: named, args: input } : null;
+}
 
 const KIND_ICON = { read: 'read', edit: 'edit', delete: 'delete', move: 'move', search: 'search', execute: 'execute', think: 'think', fetch: 'fetch', switch_mode: 'switch_mode' };
 
@@ -152,9 +176,25 @@ export function toolHtml(row, { T, cwd = '', detail = 'standard', opened, closed
     if (row.rawOutput !== null && row.rawOutput !== undefined) parts.push(`<div class="agy-raw"><div class="agy-raw-label">${esc(T('rawOutput'))}</div>${jsonBlock(row.rawOutput, T)}</div>`);
   }
   const body = parts.filter(Boolean).join('');
+  const duration = durationLabel(row.startedAt, row.endedAt);
+  const statusWordOf = () => (row.status === 'completed' ? T('toolDone') : row.status === 'failed' ? T('toolFailed') : row.status === 'in_progress' ? T('toolRunning') : T('toolPending'));
+  // A SynaBun tool: the logo, its friendly name ('Bluesky · Post') and what the call is about.
+  const sb = synabunCallOf(row);
+  if (sb) {
+    return cardHtml({
+      cls: `agy-tool agy-tool-synabun status-${esc(row.status)}`,
+      icon: SYNABUN_LOGO,
+      title: esc(synabunToolLabel(sb.key)),
+      titleAttr: `SynaBun · ${sb.key}`,
+      subtitle: esc([synabunToolSummary(sb.key, sb.args), duration].filter(Boolean).join(' · ')),
+      status: statusPill(statusWordOf(), STATUS_TONE[row.status] === 'success' ? '' : STATUS_TONE[row.status] || ''),
+      body,
+      open: toolOpen(row, { detail, opened, closed }),
+      attrs: ` data-tool="${esc(row.toolCallId)}"`,
+    });
+  }
   const summary = toolSummary(row);
   const shown = row.toolKind === 'execute' ? summary : relativeToProject(cwd, summary);
-  const duration = durationLabel(row.startedAt, row.endedAt);
   const kindWord = T(`kind_${KIND_ICON[row.toolKind] ? row.toolKind : 'other'}`);
   const subtitle = esc([kindWord, row.name && row.name !== kindWord ? row.name : '', duration].filter(Boolean).join(' · '));
   const statusWord = row.status === 'completed' ? T('toolDone') : row.status === 'failed' ? T('toolFailed') : row.status === 'in_progress' ? T('toolRunning') : T('toolPending');

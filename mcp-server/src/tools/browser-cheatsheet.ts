@@ -124,6 +124,9 @@ PRECONDITION: a logged-in bsky.app tab must be the target (the session token is 
 export const browserCheatsheetSchema = {
   platform: z.enum(PLATFORMS).describe('Target platform to fetch selectors for.'),
   action: z.enum(ACTIONS).optional().describe('Optional: filter to a single action (click/type/fill/scroll/snapshot/extract/evaluate). If omitted, returns every action known for the platform.'),
+  // Clients that pass their route to every browser tool (Codex) send these too; a lookup opens no page, so they are accepted and ignored.
+  sessionId: z.string().optional().describe('Ignored: the cheatsheet opens no page. Accepted so a call that names your browser route is not flagged.'),
+  tabId: z.string().optional().describe('Ignored: the cheatsheet opens no page. Accepted so a call that names your browser route is not flagged.'),
 };
 
 export const browserCheatsheetDescription =

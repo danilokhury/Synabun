@@ -15,6 +15,7 @@ import { createBrainPicker } from './assistant/asst-brain-picker.js';
 import { createComposer } from './assistant/asst-composer.js';
 import { createComputerToggle } from './assistant/asst-computer.js';
 import { createRouteModeControl } from './assistant/asst-route.js';
+import { watchEmpty } from './shown-children.js';
 
 const macLike = () => /Mac/i.test(navigator.platform || navigator.userAgent || '');
 
@@ -28,6 +29,8 @@ export function createTutorialPreview(panel, { onSend = () => {} } = {}) {
   bar.innerHTML = '<div class="asst-bar"><div class="asst-bar-left"><div class="asst-bar-group" data-group="route"></div><div class="asst-bar-group" data-group="context"></div><div class="asst-bar-group" data-group="computer"></div></div><div class="asst-bar-right"></div></div>';
   panel.querySelector('.asp-body').append(viewport);
   panel.querySelector('.asp-bar-slot').append(bar);
+  // A group with nothing to show is hidden through data-empty, as in the panel (asst-panel.js).
+  const barEmpty = watchEmpty(bar, '.asst-bar-group');
   const root = viewport.querySelector('.asst-root');
   const transcript = root.querySelector('.asst-transcript');
   transcript.setAttribute('aria-label', t('assistant.transcript'));
@@ -96,6 +99,7 @@ export function createTutorialPreview(panel, { onSend = () => {} } = {}) {
       route.destroy();
       computer.destroy();
       renderer.destroy?.();
+      barEmpty.disconnect();
       viewport.remove();
       bar.remove();
     },

@@ -15,6 +15,7 @@ import { openSettingsModal } from './ui-settings.js';
 import { fetchRulesStatus } from './api.js';
 import { registerContextMenuArea } from './context-menu-areas.js';
 import { frameRect } from './app-frame.js';
+import { windowTakesKey } from './window-keys.js';
 import { readListItems, writeListItems, fitListLevels, indentListItem, outdentListItem, listMarkers } from './whiteboard-list.js';
 
 // ── Helpers ──
@@ -3090,6 +3091,9 @@ function onKeyDown(e) {
   // Nor while it is in the File Explorer, or in what it opens over the page (its menu, preview and questions):
   // Delete there deletes a file, and a letter is the name of a row being typed.
   if (ae?.closest?.('#file-explorer-panel, .fe-ctx-flyout, .fe-modal-overlay, .fe-git-popover')) return;
+  // Nor a key of an open Notifications or Automation Studio window, and their Escape wherever the focus is (they
+  // close on it; window-keys.js): taken here first, it never reached them.
+  if (windowTakesKey(e, ae)) return;
 
   const isEditingText = !!document.activeElement?.closest('.wb-text.editing');
   const editingListLi = document.activeElement?.closest('.wb-list.editing li') || null;

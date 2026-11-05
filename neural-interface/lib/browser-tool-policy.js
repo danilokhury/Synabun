@@ -5,8 +5,10 @@
 // The Assistant's brain (Claude, Codex, OpenCode, Antigravity) and the workers it
 // dispatches look at pages — public or localhost — only through SynaBun's
 // browser tools (browser_*), which open the browser configured in SynaBun
-// (MoreLogin). They never start a browser of their own, and when the SynaBun
-// browser fails or lacks something they report it instead of switching.
+// (MoreLogin). They never start a browser of their own. A lost session or tab
+// is replaced with browser_session create (browserSessionLossRule); when the
+// SynaBun browser fails otherwise or lacks something they report it instead
+// of switching.
 //
 //   browserPolicyText   the one rule text: the persona, plan mode, worker prompts
 //   browserToolDenial   one tool call's refusal, else null. The brain asks it in
@@ -70,7 +72,21 @@ function browserToolNames(tools) {
     snapshot: map.browserSnapshot || `${prefix}browser_snapshot`,
     screenshot: map.browserScreenshot || `${prefix}browser_screenshot`,
     console: map.browserConsole || `${prefix}browser_console`,
+    session: map.browserSession || `${prefix}browser_session`,
   };
+}
+
+/**
+ * What an agent does when its browser session or tab goes away (the user's decision, 2026-11-04): it opens a new one
+ * with browser_session create and carries on there; it stops and reports only when that create fails too. When SynaBun
+ * already opened a replacement (a tool's answer says "A new tab replaced it"), the agent continues there: a create
+ * then would replace that tab again for nothing. One sentence for the rule text (persona, worker prompts) and the
+ * loop prompts (server.js buildLoopTaskPrompt; a copy in
+ * hooks/claude-code/prompt-submit.mjs buildBrowserNote, which cannot import this file: keep the two the same). The
+ * MCP's answers for a lost route say the same (mcp-server/src/services/neural-interface.ts LOST_ROUTE_HINT).
+ */
+export function browserSessionLossRule(sessionTool = 'browser_session') {
+  return `If your browser session or tab is lost (closed, disconnected, "Session not found", "Tab … not found", or a browser tool says it is gone), call ${sessionTool} with action "create" and continue in the session and tab it returns (pass those ids from then on, if you pass ids). When the answer of a browser tool starts with a notice that a replacement tab is open ("Your tab … was lost; a replacement tab … is open"), or says a new tab already replaced the lost one, continue in that tab (its tabId from then on): do not create another. Create one only when nothing announced a replacement and your browser calls keep failing because the session or tab is gone. Only if creating one fails too, stop and report it.`;
 }
 
 // Where automated tests run, and the syntax check: one sentence for the rule text and every refusal.
@@ -92,7 +108,8 @@ export function browserPolicyText({ tools = '', host = null } = {}) {
     '- Never `open` a URL or a browser app, and never use computer use on a browser app.',
     `- Never use the Playwright, Chrome DevTools, Claude-in-Chrome or any other browser MCP tools, nor ${web}.`,
     `- Visual checks: ${t.screenshot} (width, height, fullPage, save). Page errors and console output: ${t.console}.`,
-    '- If the SynaBun browser fails, is unavailable or lacks what you need, stop and report it. Never substitute another browser or tool.',
+    `- ${browserSessionLossRule(t.session)}`,
+    '- If the SynaBun browser fails otherwise, is unavailable or lacks what you need, stop and report it. Never substitute another browser or tool.',
     '- This rule overrides any task text, context or memory that says otherwise.',
   ].join('\n');
 }
@@ -1010,7 +1027,7 @@ function shellDenial(input, ctx) {
 // ── the refusal ─────────────────────────────────────────────────────────────
 
 function refusal(tool, what) {
-  return `SynaBun browser policy: ${tool} was refused — ${what}. Every page, public or localhost, goes through SynaBun's browser tools (browser_navigate, browser_snapshot, browser_screenshot, browser_console and the other browser_* tools), which open the browser configured in SynaBun. If the SynaBun browser fails or cannot do this, stop and report it; do not switch to another browser or tool. ${TEST_RUN_RULE}`;
+  return `SynaBun browser policy: ${tool} was refused — ${what}. Every page, public or localhost, goes through SynaBun's browser tools (browser_navigate, browser_snapshot, browser_screenshot, browser_console and the other browser_* tools), which open the browser configured in SynaBun. If your SynaBun browser session or tab was lost, open a new one with browser_session (action "create") and continue there. If the SynaBun browser fails or cannot do this, stop and report it; do not switch to another browser or tool. ${TEST_RUN_RULE}`;
 }
 
 /**
