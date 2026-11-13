@@ -11,7 +11,7 @@ import { workerToolsLine } from './assistant-tools.js';
 // Route-mode changes after the brain started arrive as `[SynaBun Router]` lines,
 // budget changes as `[SynaBun Budget]` lines.
 
-import { formatModelLine } from './assistant-catalog.js';
+import { formatModelLine, isMaritacaOpenCodeId } from './assistant-catalog.js';
 import { hasRouteAccounts, routeAccountText } from './assistant-route-accounts.js';
 import { browserPolicyText } from './browser-tool-policy.js';
 import { TESTS_HEADER, reportsUntested, testDensityPersonaLine } from './assistant-test-density.js';
@@ -101,11 +101,18 @@ function sheetLines(sheet, { opencodeTotal = null } = {}) {
   const lines = [];
   const labels = { 'claude-code': 'claude-code', codex: 'codex (ChatGPT plan billing)', opencode: 'opencode (providerID/modelID)', antigravity: 'antigravity (Google sign-in; unpriced: tokens, not prices)' };
   for (const provider of ['claude-code', 'codex', 'opencode', 'antigravity']) {
-    const rows = sheet[provider] || [];
-    if (!rows.length) continue;
-    const suffix = provider === 'opencode' && opencodeTotal ? `, ${opencodeTotal} connected models — agent_catalog provider "opencode" search "…" lists more` : '';
-    lines.push(`  - ${labels[provider]}${suffix}:`);
-    for (const row of rows) lines.push(`    - ${formatModelLine(row)}`);
+    // Maritaca's OpenCode rows get a provider line of their own, after OpenCode's.
+    const rows = (sheet[provider] || []).filter((row) => provider !== 'opencode' || !isMaritacaOpenCodeId(row?.id));
+    if (rows.length) {
+      const suffix = provider === 'opencode' && opencodeTotal ? `, ${opencodeTotal} connected models — agent_catalog provider "opencode" search "…" lists more` : '';
+      lines.push(`  - ${labels[provider]}${suffix}:`);
+      for (const row of rows) lines.push(`    - ${formatModelLine(row)}`);
+    }
+    if (provider !== 'opencode') continue;
+    const maritaca = (sheet.opencode || []).filter((row) => isMaritacaOpenCodeId(row?.id));
+    if (!maritaca.length) continue;
+    lines.push('  - maritaca (Sabiá models; they run through OpenCode: provider "opencode", model "maritaca/<id>"):');
+    for (const row of maritaca) lines.push(`    - ${formatModelLine(row)}`);
   }
   return lines;
 }
@@ -418,7 +425,7 @@ export function buildAssistantPersona({
     '3. Project: pick the registered project whose path contains the files in question; if the user names one, use it; if truly ambiguous, ask.',
     '4. Accounts: account_id \"auto\" chooses the signed-in subscription with most usage left (API keys excluded); agent_catalog includes each account’s usage. Limited pinned/default accounts fall back within the provider, with corrections; all limited selects the soonest reset. A direct route needing another account runs on a worker because conversation histories belong to their account. An approved route’s concrete account stays binding unless it becomes limited before dispatch. An approved route’s account is binding and overrides dispatch account_id. Without an applied saved route, a Claude Code worker runs under the account_id you name, else the user\'s Claude worker account (agent_catalog `claudeWorkerAccount`; null = Default); a Codex worker the same way with `codexWorkerAccount`. Each account uses its own mode (its Claude or ChatGPT subscription, or its API key). Never name a signed-out account: dispatch refuses it with ACCOUNT_SIGNED_OUT; tell the user to sign it in instead. Codex cannot run with permission_policy "ask"; use "restricted" for a sandbox.',
     '5. Browser/social growth work: capability read-only or workspace (never full), the platform group in tools (for example browser_facebook), fully autonomous with rails; never spend money. Long periodic work: create a loop or schedule instead of chaining follow-ups.',
-    '6. Pages: a worker that must look at any page, public or localhost (visual QA included), gets uses_browser:true with capability workspace or read-only; SynaBun adds the browser group and its own tab. Never tell a worker to use Playwright, Chrome or another browser. A worker that finishes blocked with "needs the SynaBun browser" is dispatched again with uses_browser:true, not escalated.',
+    '6. Pages: a worker that must look at any page, public or localhost (visual QA included), gets uses_browser:true with capability workspace or read-only; SynaBun adds the browser group and its own tab. Never tell a worker to use Playwright, Chrome or another browser. A worker that finishes blocked with "needs the SynaBun browser" is dispatched again with uses_browser:true, not escalated. A task for a MoreLogin profile other than the default (a second account, "in P-4") gets morelogin_profile with that profile\'s name or id: the worker\'s tab opens there, next to runs in the default or other profiles. Only a profile the owner allowed agents to choose works (the morelogin tool\'s "list" says which; none until the owner switches one on): on MORELOGIN_PROFILE_NOT_ALLOWED tell the user to switch that profile on in Settings → Connected tools → MoreLogin → MoreLogin profiles, and do not dispatch the task into another profile. Never change the default AI browser for one task.',
     'A worker that finishes blocked with "needs SynaBun tools: <ids>" is dispatched again with those ids added to tools, not escalated.',
     '7. Computer work for a worker: uses_computer:true on a vision-capable model; one at a time.',
     '8. Title every dispatch in ≤ 6 words; put everything the worker needs in task + context.',

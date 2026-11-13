@@ -1,6 +1,7 @@
 import { z } from 'zod/v3';
 import * as ni from '../services/neural-interface.js';
 import { text } from './response.js';
+import { useAnswer } from './morelogin.js';
 
 const tabIdField = z.string().optional().describe('Target a specific tab within the session. Auto-resolved from environment if omitted.');
 
@@ -91,17 +92,22 @@ export const browserSessionSchema = {
   url: z.string().optional().describe('Starting URL for "create" action (default: about:blank).'),
   sessionId: z.string().optional().describe('Session ID for "close" action. Required for close when multiple sessions exist (or pass your tabId).'),
   tabId: z.string().optional().describe('Your tab id, as the other browser tools take it. "status" / "list": says whether it is still your current tab (a lost tab names the tab that replaced it). "close": closes only this tab of yours; a tab that is not yours is refused and nothing is closed. Ignored by "create", which always opens a new tab of your own.'),
+  moreloginProfile: z.string().optional().describe('"create" only: the MoreLogin profile (its id or its name, as the morelogin tool\'s "list" shows it) to work in from now on. The new tab opens in that profile and your later browser calls stay there; the default browser and other sessions are not touched. "default" goes back to the default profile. The same as calling morelogin with action "use" first, with the same rule: only a profile the owner allowed agents to choose (morelogin "list" says which); a refusal for a profile not on that list means tell the user to switch it on in SynaBun\'s Settings, never another profile. Omit it to stay in the profile you work in.'),
 };
 
 export const browserSessionDescription =
-  'Manage browser sessions — list open sessions and your tabs in them, see which tab you work in ("status"), create a new one, or close one (pass your tabId to close only that tab of yours). Use "status" to find your current tab id. When a browser tool\'s answer starts with "Your tab … was lost; a replacement tab … is open", continue in that tab (no create). Use "create" when your browser session or tab was lost (closed, disconnected, "Session not found", "Tab … not found"): it opens a new tab of your own in the SynaBun browser, starting the browser when it is not running, and in a loop or a dispatched run your next browser calls go to it. Only if create fails too, stop and report it; never switch to another browser. Closing a session other automations still use closes only your own tab in it; the session stays open for them.';
+  'Manage browser sessions — list open sessions and your tabs in them, see which tab you work in ("status"), create a new one, or close one (pass your tabId to close only that tab of yours). Use "status" to find your current tab id. When a browser tool\'s answer starts with "Your tab … was lost; a replacement tab … is open", continue in that tab (no create). Use "create" when your browser session or tab was lost (closed, disconnected, "Session not found", "Tab … not found"): it opens a new tab of your own in the SynaBun browser, starting the browser when it is not running, and in a loop or a dispatched run your next browser calls go to it. Only if create fails too, stop and report it; never switch to another browser. To work in a MoreLogin profile other than the default (a second account, while other automations use the default one), pass moreloginProfile to "create" or call morelogin with action "use": your browser tools then drive that profile in a tab of your own and nobody else is moved (only a profile the owner allowed agents to choose; when it is refused as not on the owner\'s list, tell the user to switch it on in SynaBun\'s Settings and stop). Closing a session other automations still use closes only your own tab in it; the session stays open for them.';
 
 export async function handleBrowserSession(args: {
   action: string;
   url?: string;
   sessionId?: string;
   tabId?: string;
+  moreloginProfile?: string;
 }) {
+  if (args.moreloginProfile && args.action !== 'create') {
+    return text('moreloginProfile goes with action "create" (or call morelogin with action "use"). Nothing ran.');
+  }
   if (args.action === 'list' || args.action === 'status') {
     const status = await ni.browserRouteStatus();
     if (status.error) return text(`${args.action === 'list' ? 'List' : 'Status'} failed: ${status.error}`);
@@ -111,14 +117,21 @@ export async function handleBrowserSession(args: {
   }
 
   if (args.action === 'create') {
+    let profileLine: string | null = null;
+    if (args.moreloginProfile) {
+      const wanted = args.moreloginProfile.trim();
+      const chosen = await ni.useSessionProfile(wanted.toLowerCase() === 'default' ? { default: true } : { profile: wanted });
+      if (chosen.error) return text(`Create failed: the MoreLogin profile "${wanted}" could not be chosen: ${chosen.error}\nNothing changed: you still work where you did. Never fall back to another profile or browser by yourself.`);
+      profileLine = useAnswer(chosen).split('\n')[0];
+    }
     const result = await ni.createSession(args.url);
     // A cold browser start still running: nothing failed, and the next create returns that same start.
-    if (ni.isBrowserStarting(result)) return text(String(result.error || 'The browser is still starting. Call browser_session with action "create" again in a moment.'));
-    if (result.error) return text(`Create failed: ${result.error}\nThe SynaBun browser could not open a new session: stop and report this. Never switch to another browser or tool.`);
+    if (ni.isBrowserStarting(result)) return text([profileLine, String(result.error || 'The browser is still starting. Call browser_session with action "create" again in a moment.')].filter(Boolean).join('\n'));
+    if (result.error) return text(`${profileLine ? `${profileLine}\n` : ''}Create failed: ${result.error}\nThe SynaBun browser could not open a new session: stop and report this. Never switch to another browser or tool.`);
     const sessionId = String(result.sessionId);
     const tabId = typeof result.tabId === 'string' ? result.tabId : null;
     const ids = `sessionId "${sessionId}"${tabId ? ` and tabId "${tabId}"` : ''}`;
-    const lines = [`Created session ${sessionId}${tabId ? `, tab ${tabId}` : ''} at ${typeof result.url === 'string' ? result.url : args.url || 'about:blank'}.`];
+    const lines = [...(profileLine ? [profileLine] : []), `Created session ${sessionId}${tabId ? `, tab ${tabId}` : ''} at ${typeof result.url === 'string' ? result.url : args.url || 'about:blank'}.`];
     lines.push(result.repinned === true
       ? `This run's browser now works there: your next browser calls go to it with or without ids (pass ${ids} if you pass ids; never the old ones).`
       : `Continue there: pass ${ids} to your next browser calls.`);
@@ -190,7 +203,7 @@ export function formatSessionList(status: ni.BrowserRouteStatus): string {
   if (status.sessions.length === 0) return 'No browser sessions open. browser_navigate opens one by itself.';
   const lines = [`${status.sessions.length} session(s); only your own tabs are listed:`];
   for (const session of status.sessions) {
-    lines.push(`  ${session.id}${session.servesDefault ? '' : ` — not the default browser (${session.profile}); SynaBun's browser tools do not use it`}`);
+    lines.push(`  ${session.id}${session.servesDefault ? '' : ` — not ${status.profile ? 'the profile you work in' : 'the default browser'} (${session.profile}); SynaBun's browser tools do not use it`}`);
     for (const tab of session.tabs) {
       const isCurrent = status.current?.open && status.current.sessionId === session.id && status.current.tabId === tab.id;
       lines.push(`    tab ${tab.id} — ${tab.url || 'about:blank'}${quoteTitle(tab.title)}${isCurrent ? '  ← your current tab' : ''}`);
@@ -200,7 +213,13 @@ export function formatSessionList(status: ni.BrowserRouteStatus): string {
   }
   if (status.current && !status.current.open) lines.push(lostTabLine(status.current));
   else if (!status.current) lines.push('You have no tab of your own yet: browser_navigate opens one.');
+  if (status.profile) lines.push(profileLineOf(status.profile));
   return lines.join('\n');
+}
+
+/** The profile a caller works in when it is not the default. */
+function profileLineOf(profile: NonNullable<ni.BrowserRouteStatus['profile']>): string {
+  return `Profile: you work in MoreLogin profile ${profile.name ? `"${profile.name}" (env ${profile.envId})` : `env ${profile.envId}`}, not the default one (morelogin "use" changes it; envId "default" goes back).`;
 }
 
 function lostTabLine(current: NonNullable<ni.BrowserRouteStatus['current']>): string {
@@ -210,11 +229,12 @@ function lostTabLine(current: NonNullable<ni.BrowserRouteStatus['current']>): st
 /** browser_session status: the route the caller's next browser call uses, its page, and what replaced what. */
 export function formatRouteStatus(status: ni.BrowserRouteStatus): string {
   const current = status.current;
+  const withProfile = (line: string) => (status.profile ? `${line}\n${profileLineOf(status.profile)}` : line);
   if (!current) {
-    if (status.lost) return `Your tab ${status.lost.tabId || '(none)'} of session ${status.lost.sessionId} is gone and no tab replaced it yet. Your next browser call opens a new tab of your own, and its answer starts with that tab's id.`;
-    return 'You have no browser tab yet: browser_navigate opens one (no browser_session create needed).';
+    if (status.lost) return withProfile(`Your tab ${status.lost.tabId || '(none)'} of session ${status.lost.sessionId} is gone and no tab replaced it yet. Your next browser call opens a new tab of your own, and its answer starts with that tab's id.`);
+    return withProfile('You have no browser tab yet: browser_navigate opens one (no browser_session create needed).');
   }
-  if (!current.open) return lostTabLine(current);
+  if (!current.open) return withProfile(lostTabLine(current));
   const lines = [
     `Current session: ${current.sessionId}`,
     `Current tab: ${current.tabId}`,
@@ -232,5 +252,6 @@ export function formatRouteStatus(status: ni.BrowserRouteStatus): string {
   if (status.lost && !(status.lost.sessionId === current.sessionId && status.lost.tabId === current.tabId)) {
     lines.push(`Your tab ${status.lost.tabId || '(none)'} of session ${status.lost.sessionId} went away; your next browser call may open a new tab and will say so.`);
   }
+  if (status.profile) lines.push(profileLineOf(status.profile));
   return lines.join('\n');
 }

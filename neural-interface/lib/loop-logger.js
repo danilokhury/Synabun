@@ -10,6 +10,7 @@
 
 import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { appendFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { resolve, join } from 'node:path';
 import { getDataHome } from '../../lib/paths.js';
 import { redactTerminalSecrets, scrubTokenText } from './terminal-token-redaction.js';
@@ -54,9 +55,28 @@ function rotateOnce() {
   }
 }
 
-export function loopLogPath(terminalSessionId) {
+/** The shape of an id the MCP transport mints for a session (a random UUID): a bearer for that MCP session. */
+const MCP_SESSION_ID_SHAPE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The part of the log file's name that stands for `id` (finding 5 of the re-review of 2026-11-11). A run's id names
+ * its file as it is (it is nothing without its token, and the log is searched by it). An MCP session's id
+ * (`mcpSession`, or an id of its shape) is a bearer, so its file is `mcp-<first 8 characters>-<24 hex of a SHA-256 of
+ * the whole id>`: the 8 characters are what the log lines show (sessionLogId / logOwnerId), the digest keeps two
+ * sessions whose ids share those 8 characters in two files with two append queues, and cannot be turned back into
+ * the id. Before, the file was `loop-mcp-<8 characters>.log`, so two such sessions wrote one file.
+ */
+export function loopLogFileKey(id, { mcpSession = false } = {}) {
+  const text = String(id ?? '');
+  if (!text) return '';
+  if (!(mcpSession === true || MCP_SESSION_ID_SHAPE_RE.test(text))) return text;
+  const digest = createHash('sha256').update(`synabun-loop-log\0${text}`).digest('hex').slice(0, 24);
+  return `mcp-${text.slice(0, 8)}-${digest}`;
+}
+
+export function loopLogPath(terminalSessionId, options = {}) {
   if (!terminalSessionId) return null;
-  return resolve(LOG_DIR, `loop-${terminalSessionId}.log`);
+  return resolve(LOG_DIR, `loop-${loopLogFileKey(terminalSessionId, options)}.log`);
 }
 
 /**
@@ -85,7 +105,7 @@ function _appendOrdered(path, line, terminalSessionId) {
   });
 }
 
-export function loopLog(terminalSessionId, tag, msg, meta = undefined) {
+export function loopLog(terminalSessionId, tag, msg, meta = undefined, { mcpSession = false } = {}) {
   const ts = new Date().toISOString();
   // A run's secrets never reach a log line, the file under data/logs or the console (lib/terminal-token-redaction.js):
   // a message or its data may quote what an agent printed or a provider threw, a token included (review 972afb74,
@@ -101,7 +121,8 @@ export function loopLog(terminalSessionId, tag, msg, meta = undefined) {
 
   ensureDir();
   rotateOnce();
-  _appendOrdered(loopLogPath(terminalSessionId), line, terminalSessionId);
+  const fileKey = loopLogFileKey(terminalSessionId, { mcpSession });
+  _appendOrdered(loopLogPath(fileKey), line, fileKey);
 }
 
 /**

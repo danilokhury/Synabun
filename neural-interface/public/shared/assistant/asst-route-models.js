@@ -11,12 +11,72 @@
 // list of models: a label, a tier, a price or an effort level is read from the
 // catalog row each time it is drawn.
 
-import { catalogModelRow, loadModelCatalog, modelCatalogStatus, onModelCatalogChange } from './asst-brain-picker.js';
+import { fetchClaudeAccounts, fetchCodexAccounts } from '../agent-runtime-options.js';
+import { on } from '../state.js';
+import { getRouting } from './asst-api.js';
+import { cachedModelCatalog, catalogModelRow, loadModelCatalog, modelCatalogStatus, onModelCatalogChange } from './asst-brain-picker.js';
 import { routeTargetLabel } from './asst-state.js';
 
-/** The catalog as the editor opens: a new build, never the copy another menu loaded a minute ago. */
-export function loadRouteModels() {
-  return loadModelCatalog({ force: true });
+/**
+ * A new build of the catalog, never the copy another menu loaded a minute ago.
+ * The editor paints from cachedRouteModels() first and asks for this in the
+ * background; Reload models asks for it too.
+ */
+export function loadRouteModels({ force = true } = {}) {
+  return loadModelCatalog({ force });
+}
+
+/** The last catalog this page loaded, synchronously (null before the first load): what the editor paints from at once. */
+export function cachedRouteModels() { return cachedModelCatalog(); }
+
+// ── Routing settings kept for the next open ──────────────────────────────────
+// GET /api/assistant/routing is small and fast, but it is still a round trip the
+// first paint would wait for. The last answer is kept for the page's lifetime;
+// the editor paints from it and reads the live one right after. A version the
+// server moved past is caught by the PUT (409) and by the refresh on open.
+let _routing = null;
+let _routingLoading = null;
+
+/** The last routing answer (null before the first load or after a change elsewhere). */
+export function cachedRouting() { return _routing; }
+
+/** Keep a routing answer (the editor's own load, or a save's reply merged over the last one). */
+export function rememberRouting(data) {
+  if (!data || typeof data !== 'object' || !data.routing) return _routing;
+  _routing = { ..._routing, ...data, taskClasses: Array.isArray(data.taskClasses) ? data.taskClasses : _routing?.taskClasses || [] };
+  return _routing;
+}
+
+/** Drop the kept answer (a change in another window): the next open reads the server before it paints. */
+export function forgetRouting() { _routing = null; }
+
+/** GET the routing settings, once at a time, and keep the answer. */
+export function loadRouting({ get = getRouting } = {}) {
+  if (_routingLoading) return _routingLoading;
+  _routingLoading = Promise.resolve().then(get).then(data => { rememberRouting(data); return data; }).finally(() => { _routingLoading = null; });
+  return _routingLoading;
+}
+
+if (typeof document !== 'undefined') on('sync:assistant:routing-changed', forgetRouting);
+
+/**
+ * Warm what the editor's first paint reads, in idle time, once the Assistant
+ * panel learns that routing is available: the routing settings, the catalog
+ * (the page's cached build is enough: an open asks for a new one in the
+ * background) and the account lists. Every failure is silent; an open loads
+ * again whatever is missing. Once per page; returns the promise for tests.
+ */
+let _prewarmed = null;
+export function prewarmRoutesEditor({ routing = loadRouting, catalog = () => loadModelCatalog(), accounts = () => Promise.allSettled([fetchClaudeAccounts(), fetchCodexAccounts()]), idle = defaultIdle, force = false } = {}) {
+  if (_prewarmed && !force) return _prewarmed;
+  _prewarmed = new Promise(resolve => idle(() => {
+    Promise.allSettled([Promise.resolve().then(routing), Promise.resolve().then(catalog), Promise.resolve().then(accounts)]).then(() => resolve(true), () => resolve(false));
+  }));
+  return _prewarmed;
+}
+function defaultIdle(fn) {
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(() => fn(), { timeout: 2000 });
+  else setTimeout(fn, 250);
 }
 
 /** Loading/partial state belongs to the same model source, without changing the catalog shape. */

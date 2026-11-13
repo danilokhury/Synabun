@@ -265,8 +265,9 @@ function prependNotices(result: unknown, notices: RouteNotice[]): unknown {
 // ── Fields a browser tool does not take ─────────────────────────
 
 /**
- * Which browser or profile SynaBun drives is the owner's choice (Settings → Browser), never an automation's. A tool
- * argument naming one is refused, not silently dropped: before 2026-11-05 zod stripped unknown keys, so
+ * Which browser SynaBun drives is the owner's choice (Settings → Browser), and a session picks a MoreLogin profile for
+ * itself only through the `morelogin` tool's "use" action (or browser_session create's own moreloginProfile), never
+ * through an argument of a page tool. A tool argument naming one is refused, not silently dropped: before 2026-11-05 zod stripped unknown keys, so
  * `browser_navigate({ profile: "other" })` ran in the default browser and the model believed it had switched profile.
  * Mirrors OWNER_ONLY_BROWSER_FIELDS in neural-interface/lib/browser-automation-routes.js (the server refuses the same
  * names on a session create; neural-interface/tests/browser-automation-routes.test.mjs keeps the two lists equal).
@@ -286,7 +287,7 @@ export class OwnerOnlyFieldsError extends Error {
   readonly fields: string[];
   constructor(tool: string, fields: string[]) {
     const names = fields.map(f => `"${f}"`).join(', ');
-    super(`OWNER_ONLY_FIELDS: ${tool} does not take ${names}. Which browser, MoreLogin profile or browser settings SynaBun uses is the owner's choice (Settings → Browser); browser tools always use the default browser. Leave ${fields.length === 1 ? 'it' : 'them'} out and call ${tool} again. Nothing ran.`);
+    super(`OWNER_ONLY_FIELDS: ${tool} does not take ${names}. A browser tool works in the browser of the session that calls it and takes no such argument; the browser settings are the owner's (Settings → Browser). To work in another MoreLogin profile, call morelogin with action "use" (envId or name) first: your browser tools then drive that profile (only a profile the owner allowed agents to choose). Leave ${fields.length === 1 ? 'it' : 'them'} out and call ${tool} again. Nothing ran.`);
     this.name = 'OwnerOnlyFieldsError';
     this.fields = fields;
   }

@@ -5,10 +5,10 @@
 // permission or a question waiting), Codex (a turn or a thread being made; an
 // approval or a question card waiting), OpenCode (tabPillState: a turn, an
 // automation's turn, a sub-agent's, one waiting on you) and the SynaBun
-// Assistant (sessionStatus). The same source as the tray pills, never a second
+// Assistant (sessionStatus); Maritaca (a reply streaming: mtc-pill-running, it never waits on you). The same source as the tray pills, never a second
 // guess. DOM-free.
 
-const WORKING = /^(cp|cxp|ocpv2|agy|asp)-pill-running$/;
+const WORKING = /^(cp|cxp|ocpv2|agy|mtc|asp)-pill-running$/;
 const NEEDS_YOU = /^((cp|cxp|agy|asp)-pill-attention|ocpv2-pill-waiting)$/;
 
 /** The states a detached window's pill shows: a session in it needs you > one works > none. */
@@ -42,6 +42,20 @@ export function normalizeSessionWindowStatus(status) {
  * of their own (a permission, a question) says it already. A run that ended
  * waits on nobody.
  */
+/**
+ * A turn of a dispatched worker's run is in progress, so its tab works: the
+ * run is alive (starting or running) and its turn state says neither idle (a
+ * warm worker between turns: alive, not working) nor terminal. A classic loop
+ * reports no turn state and works for as long as it runs. A run a restart
+ * suspended, or one that ended, works no more: a tab that still shows a turn
+ * ends it on this answer, whether or not the turn's own result event reached
+ * the window (every provider panel's attach reads it).
+ */
+export function runTurnLive(run) {
+  if (run?.status !== 'starting' && run?.status !== 'running') return false;
+  return run.turnState !== 'idle' && run.turnState !== 'terminal';
+}
+
 export function runAwaitsAnswer(run) {
   if (run?.status !== 'starting' && run?.status !== 'running') return false;
   if (run.turnState === 'needs_input' || run.turnState === 'awaiting_permission' || run.pending?.some((p) => p.kind === 'question')) return true;

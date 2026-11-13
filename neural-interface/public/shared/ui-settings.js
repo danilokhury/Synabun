@@ -1,4 +1,5 @@
 import { fetchToolCatalog } from './agent-runtime-options.js';
+import { reloadAfterRestore } from './server-back.js';
 import { configureToolPickerTranslation, toolPickerHTML, readToolPicker, toolWord, toolServersNote } from './tool-list-picker.js';
 import { mountMemoryMaintenance } from './ui-memory-maintenance.js';
 import { buildJudgmentsTab, wireJudgmentsTab } from './ui-judgments.js';
@@ -12,15 +13,18 @@ import { skillFoldersHTML, wireSkillFolders, refreshSkillChips, chipState, insta
 import { RULES_HOST_LABELS, describeRulesHost, describeRulesInstall, describeRulesInstallAll } from './settings/settings-rules.js';
 import { readUserContextResponse, describeUserContext, describeUserContextSaveFailure } from './settings/settings-user-context.js';
 import { readWorkerGuardResponse, describeWorkerGuard, describeWorkerGuardSaveFailure } from './settings/settings-worker-guard.js';
+import { readOwnerAccessResponse, describeOwnerAccess, describeOwnerAccessSaveFailure } from './settings/settings-browser-owner-access.js';
 import { CLAUDE_HOOK_ROWS, readClaudeHooksResponse, describeClaudeHooks, describeClaudeHooksSaveFailure } from './settings/settings-claude-hooks.js';
 import { readGreetingStatus, describeGreeting, describeGreetingSaveFailure } from './settings/settings-greeting.js';
 import { describeOpencodeInstall } from './settings/settings-opencode.js';
+import { maritacaOpencodeCardView, maritacaOpencodeModelRows, MARITACA_OPENCODE_KEYS, MARITACA_OPENCODE_PROVIDER } from './settings/settings-maritaca-opencode.js';
 import { renderGreeting, clearGreeting } from './greeting/greeting-card.js';
 import { createTunnelCard, drawInto, mcpKeyNeededText, readTunnel } from './ui-tunnel.js';
 import { remoteMcpAddress } from './tunnel-view.js';
 import { recheckCliStatus, getCliStatus, addCliToPath } from './cli-status.js';
 import { cliInstallText, setCliInstallTranslator } from './cli-install-view.js';
 import { dropdownHTML, wireDropdowns, setDropdownItems, setDropdownValue } from './cc-dropdown.js';
+import { PROXY_TYPES, isLocalProfile, proxySummary, defaultCreateWhere, isPlanLimit, formOfProfile, readLocalProfileForm, proxyOfForm, createAction, whereOptions, passwordNeededAgain } from './settings/settings-local-profiles.js';
 import { setStaticBgVisible } from './static-bg-state.js';
 setCliInstallTranslator((key, params) => kit.tx(`cliInstall.${key}`, params));
 import { setGitBashTranslator } from './git-bash-view.js';
@@ -755,7 +759,7 @@ function buildServerTab(settings, connections = []) {
       </div>`;
 }
 
-function buildBrowserTab() {
+function buildBrowserTab(ownerAccess = null) {
   const b = (key) => kit.te(`settings.redesign.browser.${key}`);
   const SEARCH = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
   const REFRESH = '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>';
@@ -783,6 +787,24 @@ function buildBrowserTab() {
           </div>`;
   const X = '<span class="bc-x" aria-hidden="true">&times;</span>';
   const unit = (invId) => `<span class="bc-unit">${kit.L(invId)}</span>`;
+  // Let the automation browser act as owner (lib/automation-browser-owner-access.js): one switch, off by default.
+  // `ownerAccess` is the view of what the server answered (describeOwnerAccess): a server started before the
+  // setting shows it off, disabled, under a line that says a restart is missing; while on, a warning line says so.
+  const oa = ownerAccess || describeOwnerAccess(null, { tx: kit.tx });
+  const oaNotes = [...(oa.note ? [oa.note] : []), ...(oa.warning ? [{ text: oa.warning, tone: 'warn' }] : [])];
+  const ownerAccessBlock = `
+          <div class="cc-hook-toggles" id="boa-row" data-boa-ready="${oa.ready ? '1' : '0'}">
+            <div class="cc-integration-item${oa.on ? ' enabled' : ''}${oa.disabled ? ' uc-disabled' : ''}" data-boa-row>
+              <div class="cc-integration-info">
+                <div class="cc-integration-label" id="boa-label">${kit.L('BRW087')}</div>
+                <div class="cc-integration-path" id="boa-help">${kit.H('BRW087')}</div>
+                <div class="uc-layer-notes" id="boa-notes" data-stg-data>${userContextNotesHTML(oaNotes)}</div>
+              </div>
+              <button type="button" class="cc-toggle${oa.on ? ' on' : ''}" id="boa-toggle" data-boa-toggle ${kit.inv('BRW087')} aria-pressed="${oa.on ? 'true' : 'false'}" aria-labelledby="boa-label" aria-describedby="boa-help boa-notes"${oa.disabled ? ' disabled' : ''}></button>
+            </div>
+          </div>
+          <div class="stg-help uc-save-status" id="boa-save-status" role="alert" data-stg-data hidden></div>
+          <div class="stg-help" id="boa-applies">${kit.esc(oa.applies)}</div>`;
   const PERMISSIONS = [
     ['BRW050', 'geolocation'], ['BRW051', 'midi'], ['BRW052', 'midi-sysex'], ['BRW053', 'notifications'], ['BRW054', 'camera'],
     ['BRW055', 'microphone'], ['BRW056', 'background-sync'], ['BRW057', 'ambient-light-sensor'], ['BRW058', 'accelerometer'],
@@ -874,6 +896,12 @@ function buildBrowserTab() {
 
           ${kit.subhead(b('sub.privacy'))}
           ${tog('BRW020', 'bc-stealthFingerprint', true)}`,
+        })}
+
+        ${kit.card({
+          id: 'bcg-owner-access', section: 'browser.automation_browser_owner_access',
+          body: `
+          ${ownerAccessBlock}`,
         })}
 
         ${kit.card({
@@ -2528,10 +2556,17 @@ function buildMoreLoginTab() {
         ${kit.field('ML004', `
           <div class="settings-key-row">
             ${text('ml-new-name', { ph: m('ph.newName') })}
+            <span id="ml-create-where-slot" ${kit.inv('ML020')} title="${kit.H('ML020')}"></span>
             ${btn('ML005', 'ml-create-btn')}
             ${btn('ML006', 'ml-refresh-btn')}
           </div>`, { forId: 'ml-new-name' })}
-        <div id="ml-profile-list" ${kit.inv('ML016')} role="group" aria-label="${kit.L('ML016')}" style="display:flex;flex-direction:column;gap:6px"></div>`,
+        <div class="stg-help" id="ml-local-intro" style="margin:0 0 10px">${m('local.intro')}</div>
+        <div class="stg-help" id="ml-create-note" role="status" hidden style="margin:0 0 10px;color:var(--stg-warn)"></div>
+        <div class="stg-help" id="ml-local-restart" role="status" hidden style="margin:0 0 10px;color:var(--stg-warn)">${m('local.restartServer')}</div>
+        <div class="stg-help" id="ml-agents-help" style="margin:0 0 10px">${m('agentsMayChooseHelp')}</div>
+        <div class="stg-help" id="ml-agents-warning" role="note" style="margin:0 0 10px;color:var(--stg-warn)">${m('agentsMayChooseWarning')}</div>
+        <div class="stg-help" id="ml-agents-restart" role="status" hidden style="margin:0 0 10px;color:var(--stg-warn)">${m('agentsMayChooseRestart')}</div>
+        <div id="ml-profile-list" ${kit.inv('ML016')} role="group" aria-label="${kit.L('ML016')}" aria-describedby="ml-agents-help ml-agents-warning" style="display:flex;flex-direction:column;gap:6px"></div>`,
       })}
 
       ${kit.card({
@@ -2566,10 +2601,46 @@ function buildMoreLoginTab() {
     </div>`;
 }
 
-function wireMoreLoginTab(overlay) {
+function wireMoreLoginTab(overlay, signal) {
   const $ = (id) => overlay.querySelector('#' + id);
   if (!$('ml-status-dot')) return;
   let _defaultEnvId = null;
+  // Local profiles (SynaBun's own Chrome on this computer, lib/local-profiles.js): listed with MoreLogin's
+  // (`kind: 'local'`), created by the "Where" popup's Local choice, and edited in a panel under their row.
+  const lp = (key, params) => kit.tx(`settings.redesign.morelogin.local.${key}`, params);
+  let _status = null;            // the last GET /api/morelogin/status
+  let _localKnown = false;       // the running server knows local profiles
+  let _localDetails = new Map(); // id → the editor's row (GET /api/morelogin/local-profiles)
+  let _editing = null;           // the id whose editor is open
+  let _whereTouched = false;     // the owner chose "Where" by hand
+  let _limitHit = false;         // MoreLogin refused a create for its plan's limit
+  let _moreloginError = '';      // why MoreLogin's own profiles are missing from the list
+  const jsend = (method, u, body) => fetch(u, { method, headers: { 'Content-Type': 'application/json' }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) })
+    .then(r => r.json()).catch(() => ({ ok: false, error: kit.tx('settings.redesign.morelogin.networkError') }));
+  // "Where" is drawn here, after the panel's older per-element dropdown wiring ran (wireStgDropdowns): the pane's
+  // dropdowns are driven by cc-dropdown.js alone, as the ones drawn later (the editor's proxy type) are.
+  { const slot = $('ml-create-where-slot'); if (slot) slot.innerHTML = dropdownHTML('ml-create-where', [
+    { value: 'local', label: kit.tx('settings.redesign.morelogin.local.whereLocal') },
+    { value: 'morelogin', label: kit.tx('settings.redesign.morelogin.local.whereMoreLogin'), selected: true },
+  ], { classes: 'stg-dropdown', label: kit.tx('settings.redesign.control.ml020.label') }); }
+  { const card = $('stg-sec-ml-profiles'); if (card) wireDropdowns(card, { signal }); }
+  $('ml-create-where')?.addEventListener('change', () => { _whereTouched = true; });
+  // "Where" follows what MoreLogin can do until the owner picks: Local while MoreLogin is closed, refusing or full.
+  function syncCreateWhere() {
+    const where = $('ml-create-where');
+    if (!where) return;
+    // A server from before local profiles cannot make one: Local cannot be chosen there (settings-local-profiles.js
+    // whereOptions), and Create never turns a Local choice into a MoreLogin profile (createAction).
+    const dd = where.nextElementSibling;
+    for (const option of whereOptions({ localKnown: _localKnown })) {
+      const item = dd?.querySelector(`.cc-dropdown-item[data-value="${option.value}"]`);
+      if (!item) continue;
+      if (option.disabled) item.setAttribute('aria-disabled', 'true'); else item.removeAttribute('aria-disabled');
+    }
+    if (!_localKnown) { setDropdownValue(where, 'morelogin'); return; }
+    if (_whereTouched && !_limitHit) return;
+    setDropdownValue(where, defaultCreateWhere(_status, { limitHit: _limitHit }));
+  }
   const okBg = 'rgba(76,175,80,0.12)', errBg = 'rgba(244,67,54,0.12)';
 
   // The answer's HTTP status rides along (`_status`): a refusal of the owner's access is told apart from a MoreLogin error.
@@ -2585,24 +2656,66 @@ function wireMoreLoginTab(overlay) {
     const hint = $('ml-path-hint');
     if (hint) hint.hidden = !!(s.installed && s.running);
     _defaultEnvId = s.defaultEnvId || null;
+    _status = s;
     const ds = $('ml-default-status');
     if (ds) ds.textContent = (s.isDefault && s.defaultEnvId) ? kit.tx('settings.redesign.morelogin.defaultAiBrowserSet') : kit.tx('settings.redesign.morelogin.noDefaultSet');
   }
 
-  function renderProfiles(envs) {
+  // `agentProfiles`: the owner's list of profiles agents may choose (GET /api/morelogin/profiles). A server from
+  // before that list sends none: the switches are then left out and the pane says a restart is missing.
+  function renderProfiles(envs, agentProfiles) {
     const list = $('ml-profile-list');
     if (!list) return;
-    if (!envs || !envs.length) { list.innerHTML = '<div class="settings-hint">' + kit.te('settings.redesign.morelogin.noProfilesCreateOneAboveOr') + '</div>'; return; }
-    list.innerHTML = envs.map(e => {
+    // The open editor's typed values outlive a redraw of the list (a Start, a switch, the quiet ask again).
+    const keep = _editing && list.querySelector('#ml-local-editor') ? collectEditor() : null;
+    // MoreLogin closed or refusing while local profiles exist: its own profiles are missing from the list, and why.
+    const missing = _moreloginError ? `<div class="settings-hint" id="ml-morelogin-missing" role="status">${escapeHtml(lp('moreloginMissing', { error: String(_moreloginError) }))}</div>` : '';
+    const listKnown = Array.isArray(agentProfiles);
+    const allowed = new Set((listKnown ? agentProfiles : []).map(row => String(row && row.envId)));
+    const restart = $('ml-agents-restart');
+    if (restart) restart.hidden = listKnown;
+    if (!envs || !envs.length) { _editing = null; list.innerHTML = missing + '<div class="settings-hint">' + kit.te('settings.redesign.morelogin.noProfilesCreateOneAboveOr') + '</div>'; return; }
+    list.innerHTML = missing + envs.map(e => {
       const id = escapeHtml(String(e.id));
       const isDefault = String(e.id) === String(_defaultEnvId);
-      return `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid ${isDefault ? 'var(--accent)' : 'var(--s-medium)'};border-radius:8px;background:var(--s-darker)">
-        <span style="flex:1;font-size:12.5px">${escapeHtml(e.name)}${e.status ? ` <span style="color:var(--t-muted);font-size:11px">(${escapeHtml(String(e.status))})</span>` : ''}</span>
-        ${isDefault ? '<span style="font-size:11px;color:var(--accent)">' + kit.te('settings.redesign.morelogin.default') + '</span>' : `<button type="button" class="conn-add-btn ml-use" data-env-id="${id}" ${kit.inv('ML019')} title="${kit.H('ML019')}" style="margin:0;width:auto;padding:3px 8px">${kit.L('ML019')}</button>`}
+      // SynaBun drives a profile over CDP: a Firefox-type one (`browser` from the server; absent = not known) cannot
+      // be the AI browser, so "Use as default" is not offered for it. Start and Stop stay for either kind.
+      const firefox = e.browser === 'firefox';
+      const firefoxNote = `<span class="ml-firefox-note" data-ml-firefox="${id}" title="${kit.te('settings.redesign.morelogin.firefoxNotUsableHelp')}" style="font-size:11px;color:var(${isDefault ? '--stg-warn' : '--t-muted'})">${kit.te(isDefault ? 'settings.redesign.morelogin.firefoxDefault' : 'settings.redesign.morelogin.firefoxNotUsable')}</span>`;
+      // A local profile says so, with its state and its proxy, and has Edit and Delete of its own.
+      const local = isLocalProfile(e);
+      const detail = local ? (_localDetails.get(String(e.id)) || e) : null;
+      const proxyText = local ? proxySummary(detail, lp('proxyLogin')) : '';
+      const localInfo = local
+        ? ` <span class="ml-local-tag" style="font-size:11px;color:var(--t-muted);border:1px solid var(--s-medium);padding:1px 5px">${escapeHtml(lp('tag'))}</span>`
+          + ` <span style="color:var(--t-muted);font-size:11px">(${escapeHtml(lp(e.status === 'running' ? 'running' : 'stopped'))}) · ${escapeHtml(proxyText || lp('noProxy'))}</span>`
+          + (e.restartNeeded ? ` <span class="ml-local-restart" role="status" style="font-size:11px;color:var(--stg-warn)">${escapeHtml(lp('restartNeeded'))}</span>` : '')
+        : '';
+      const localButtons = local ? `
+        <button type="button" class="conn-add-btn ml-edit" data-env-id="${id}" ${kit.inv('ML021')} title="${kit.H('ML021')}" style="margin:0;width:auto;padding:3px 8px">${kit.L('ML021')}</button>
+        <button type="button" class="conn-add-btn ml-delete" data-env-id="${id}" data-env-name="${escapeHtml(String(e.name ?? e.id))}" ${kit.inv('ML022')} title="${kit.H('ML022')}" style="margin:0;width:auto;padding:3px 8px">${kit.L('ML022')}</button>` : '';
+      return `<div data-ml-row="${id}"${local ? ' data-ml-kind="local"' : ''} style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 10px;border:1px solid ${isDefault ? 'var(--accent)' : 'var(--s-medium)'};border-radius:8px;background:var(--s-darker)">
+        <span style="flex:1;min-width:140px;font-size:12.5px">${escapeHtml(e.name)}${local ? localInfo : (e.status ? ` <span style="color:var(--t-muted);font-size:11px">(${escapeHtml(String(e.status))})</span>` : '')}</span>
+        ${listKnown && !firefox ? `<span class="ml-agents" style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--t-muted)"><span aria-hidden="true">${kit.te('settings.redesign.morelogin.agentsMayChoose')}</span>${kit.switchInput(`ml-agents-${id}`, { checked: allowed.has(String(e.id)), className: 'ml-agents-toggle', described: false, attrs: `data-env-id="${id}" data-env-name="${escapeHtml(String(e.name ?? e.id))}" aria-label="${escapeHtml(kit.tx('settings.redesign.morelogin.agentsMayChooseAria', { name: String(e.name ?? e.id) }))}" aria-describedby="ml-agents-help"` })}</span>` : ''}
+        ${firefox ? firefoxNote : (isDefault ? '<span style="font-size:11px;color:var(--accent)">' + kit.te('settings.redesign.morelogin.default') + '</span>' : `<button type="button" class="conn-add-btn ml-use" data-env-id="${id}" ${kit.inv('ML019')} title="${kit.H('ML019')}" style="margin:0;width:auto;padding:3px 8px">${kit.L('ML019')}</button>`)}
         <button type="button" class="conn-add-btn ml-start" data-env-id="${id}" ${kit.inv('ML017')} title="${kit.H('ML017')}" style="margin:0;width:auto;padding:3px 8px">${kit.L('ML017')}</button>
-        <button type="button" class="conn-add-btn ml-stop" data-env-id="${id}" ${kit.inv('ML018')} title="${kit.H('ML018')}" style="margin:0;width:auto;padding:3px 8px">${kit.L('ML018')}</button>
+        <button type="button" class="conn-add-btn ml-stop" data-env-id="${id}" ${kit.inv('ML018')} title="${kit.H('ML018')}" style="margin:0;width:auto;padding:3px 8px">${kit.L('ML018')}</button>${localButtons}
       </div>`;
     }).join('');
+    if (_editing && !envs.some(e => String(e.id) === _editing && isLocalProfile(e))) _editing = null;
+    if (_editing) openEditor(_editing, keep);
+    // One profile per request (PUT /api/morelogin/agent-profiles, the owner's page only). A refused or failed change
+    // puts the switch back, so it never shows what the server does not hold.
+    list.querySelectorAll('.ml-agents-toggle').forEach(box => box.addEventListener('change', async () => {
+      const want = box.checked;
+      const name = box.dataset.envName || box.dataset.envId;
+      box.disabled = true;
+      const r = await fetch('/api/morelogin/agent-profiles', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ envId: box.dataset.envId, name, allowed: want }) })
+        .then(x => x.json()).catch(() => ({ ok: false, error: kit.tx('settings.redesign.morelogin.networkError') }));
+      box.disabled = false;
+      if (r && r.ok) showCCToast(kit.tx(want ? 'settings.redesign.morelogin.agentsMayChooseOn' : 'settings.redesign.morelogin.agentsMayChooseOff', { name }));
+      else { box.checked = !want; showCCToast(kit.tx('settings.redesign.morelogin.agentsMayChooseFailed', { error: (r && r.error) || kit.tx('settings.redesign.morelogin.failed') })); }
+    }));
     list.querySelectorAll('.ml-use').forEach(b => b.addEventListener('click', async () => {
       const r = await jpost('/api/morelogin/use-default', { envId: b.dataset.envId });
       showCCToast(r.ok ? kit.tx('settings.redesign.morelogin.moreloginSetAsDefaultAiBrowser') : (r.error || kit.tx('settings.redesign.morelogin.failed')));
@@ -2618,6 +2731,153 @@ function wireMoreLoginTab(overlay) {
       await jpost('/api/morelogin/stop', { envId: b.dataset.envId });
       reload();
     }));
+    list.querySelectorAll('.ml-edit').forEach(b => b.addEventListener('click', () => {
+      if (_editing === b.dataset.envId) { closeEditor(); return; }
+      openEditor(b.dataset.envId);
+    }));
+    list.querySelectorAll('.ml-delete').forEach(b => b.addEventListener('click', async () => {
+      const name = b.dataset.envName || b.dataset.envId;
+      if (!confirm(lp('deleteConfirm', { name }))) return;
+      b.disabled = true;
+      const r = await jsend('DELETE', `/api/morelogin/local-profiles/${encodeURIComponent(b.dataset.envId)}`);
+      b.disabled = false;
+      if (r && r.ok) { if (_editing === b.dataset.envId) _editing = null; showCCToast(lp('deleted', { name })); }
+      else showCCToast(lp('deleteFailed', { error: (r && r.error) || kit.tx('settings.redesign.morelogin.failed') }));
+      reload();
+    }));
+  }
+
+  // ── The editor of a local profile: a panel under its row ──
+  const editorField = (name) => overlay.querySelector(`#ml-local-editor [data-lp-field="${name}"]`);
+  /** The editor's fields as typed (settings-local-profiles.js readLocalProfileForm takes them). */
+  function collectEditor() {
+    const value = (name) => editorField(name)?.value ?? '';
+    return {
+      name: value('name'), proxyType: $('ml-lp-proxy-type')?.value || 'none', host: value('host'), port: value('port'), username: value('username'),
+      password: value('password'), passwordTouched: editorField('password')?.dataset.touched === '1', hasPassword: editorField('password')?.dataset.saved === '1',
+      language: value('language'), timezone: value('timezone'), width: value('width'), height: value('height'), notes: value('notes'),
+    };
+  }
+  function closeEditor() {
+    _editing = null;
+    overlay.querySelector('#ml-local-editor')?.remove();
+  }
+  function editorStatus(message, warn = false) {
+    const line = overlay.querySelector('#ml-lp-status');
+    if (!line) return;
+    line.hidden = !message;
+    line.textContent = message || '';
+    line.style.color = warn ? 'var(--stg-warn)' : '';
+  }
+  /** Draws the editor under the profile's row. `values`: what was typed before a redraw, else the saved settings. */
+  function openEditor(id, values = null) {
+    const row = [...overlay.querySelectorAll('#ml-profile-list [data-ml-row]')].find(el => el.dataset.mlRow === id);
+    const detail = _localDetails.get(id);
+    if (!row || !detail) return;
+    overlay.querySelector('#ml-local-editor')?.remove();
+    _editing = id;
+    const v = values || formOfProfile(detail);
+    const input = (name, invId, { ph = '', type = 'text', width = '' } = {}) =>
+      `<input type="${type}" id="ml-lp-${name}" data-lp-field="${name}" ${kit.inv(invId)} value="${escapeHtml(String(v[name] ?? ''))}"${ph ? ` placeholder="${escapeHtml(ph)}"` : ''}${width ? ` style="max-width:${width}"` : ''} autocomplete="off" spellcheck="false" aria-describedby="ml-lp-${name}-help">`;
+    const fieldRow = (invId, name, control) => kit.field(invId, `<div class="settings-key-row">${control}</div>`, { forId: `ml-lp-${name}` });
+    const proxyTypes = PROXY_TYPES.map(type => ({ value: type, label: lp(`proxyType.${type}`), selected: type === v.proxyType }));
+    const panel = document.createElement('div');
+    panel.id = 'ml-local-editor';
+    panel.dataset.envId = id;
+    panel.setAttribute('role', 'group');
+    panel.setAttribute('aria-label', lp('editorTitle', { name: detail.name }));
+    panel.style.cssText = 'padding:12px;border:1px solid var(--s-medium);border-radius:8px;background:var(--s-darker)';
+    panel.innerHTML = `
+      ${fieldRow('ML023', 'name', input('name', 'ML023'))}
+      ${kit.field('ML024', dropdownHTML('ml-lp-proxy-type', proxyTypes, { classes: 'stg-dropdown', label: kit.tx('settings.redesign.control.ml024.label') }))}
+      <div id="ml-lp-proxy-fields"${v.proxyType === 'none' ? ' hidden' : ''}>
+        ${fieldRow('ML025', 'host', input('host', 'ML025', { ph: lp('ph.host') }))}
+        ${fieldRow('ML026', 'port', input('port', 'ML026', { ph: lp('ph.port'), width: '120px' }))}
+        ${fieldRow('ML027', 'username', input('username', 'ML027'))}
+        ${fieldRow('ML028', 'password', `${input('password', 'ML028', { type: 'password', ph: v.hasPassword ? lp('passwordKept') : '' })}
+          <button type="button" class="stg-action-btn compact" id="ml-lp-password-eye" ${kit.inv('ML029')} aria-label="${kit.L('ML029')}" title="${kit.L('ML029')}">${eyeClosed}</button>`)}
+        <div class="stg-field" ${kit.inv('ML030')}>
+          <div class="stg-action-row">
+            <button type="button" class="stg-action-btn compact" id="ml-lp-check" aria-describedby="ml-lp-check-help">${kit.L('ML030')}</button>
+            <span class="stg-help" id="ml-lp-check-result" role="status" aria-live="polite"></span>
+          </div>
+          ${kit.help('ML030', { forId: 'ml-lp-check' })}
+        </div>
+      </div>
+      ${fieldRow('ML031', 'language', input('language', 'ML031', { ph: lp('ph.language'), width: '160px' }))}
+      ${fieldRow('ML032', 'timezone', input('timezone', 'ML032', { ph: lp('ph.timezone'), width: '260px' }))}
+      ${kit.field('ML033', `<div class="settings-key-row">
+          ${input('width', 'ML033', { ph: '1280', width: '90px' })}
+          <span aria-hidden="true" style="color:var(--t-muted)">×</span>
+          <input type="text" id="ml-lp-height" data-lp-field="height" value="${escapeHtml(String(v.height ?? ''))}" placeholder="800" style="max-width:90px" autocomplete="off" spellcheck="false" aria-label="${escapeHtml(lp('windowHeight'))}">
+        </div>`, { forId: 'ml-lp-width' })}
+      ${fieldRow('ML034', 'notes', input('notes', 'ML034'))}
+      <div class="stg-help" id="ml-lp-restart" role="status"${detail.status === 'running' ? '' : ' hidden'} style="margin:0 0 10px;color:var(--stg-warn)">${escapeHtml(lp('restartNeeded'))}</div>
+      <div class="stg-action-row">
+        <button type="button" class="stg-action-btn compact" id="ml-lp-save" ${kit.inv('ML035')} title="${kit.H('ML035')}">${kit.L('ML035')}</button>
+        <button type="button" class="stg-action-btn compact" id="ml-lp-cancel" ${kit.inv('ML036')} title="${kit.H('ML036')}">${kit.L('ML036')}</button>
+        <span class="stg-help" id="ml-lp-status" role="status" aria-live="polite" hidden></span>
+      </div>`;
+    row.after(panel);
+    const password = editorField('password');
+    if (password) {
+      password.dataset.saved = v.hasPassword ? '1' : '0';
+      if (v.passwordTouched) password.dataset.touched = '1';
+      password.addEventListener('input', () => { password.dataset.touched = '1'; syncPasswordAsk(); });
+    }
+    // The saved password belongs to the saved proxy and login: once one of them is changed here, the field asks for
+    // the password again (the server drops the saved one then, lib/local-profiles.js normalizeProxy).
+    function syncPasswordAsk() {
+      if (!password) return false;
+      const again = passwordNeededAgain(collectEditor(), detail);
+      password.placeholder = again ? lp('passwordAgain') : (v.hasPassword ? lp('passwordKept') : '');
+      if (again) password.setAttribute('aria-invalid', 'true'); else password.removeAttribute('aria-invalid');
+      return again;
+    }
+    for (const name of ['host', 'port', 'username']) editorField(name)?.addEventListener('input', syncPasswordAsk);
+    panel.querySelector('#ml-lp-proxy-type')?.addEventListener('change', syncPasswordAsk);
+    syncPasswordAsk();
+    panel.querySelector('#ml-lp-proxy-type')?.addEventListener('change', (event) => {
+      const fields = panel.querySelector('#ml-lp-proxy-fields');
+      if (fields) fields.hidden = event.target.value === 'none';
+    });
+    panel.querySelector('#ml-lp-password-eye')?.addEventListener('click', () => { if (password) password.type = password.type === 'password' ? 'text' : 'password'; });
+    panel.querySelector('#ml-lp-cancel')?.addEventListener('click', closeEditor);
+    panel.querySelector('#ml-lp-check')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      const result = panel.querySelector('#ml-lp-check-result');
+      const typed = collectEditor();
+      const proxy = proxyOfForm(typed);
+      if (!proxy) { if (result) { result.textContent = lp('invalid.host'); result.style.color = 'var(--stg-warn)'; } return; }
+      if (syncPasswordAsk()) { if (result) { result.textContent = lp('passwordAgain'); result.style.color = 'var(--stg-warn)'; } password?.focus(); return; }
+      button.disabled = true;
+      if (result) { result.textContent = lp('checking'); result.style.color = ''; }
+      const r = await jsend('POST', `/api/morelogin/local-profiles/${encodeURIComponent(id)}/check-proxy`, { proxy });
+      button.disabled = false;
+      if (!result || !result.isConnected) return;
+      result.style.color = r && r.ok ? '' : 'var(--stg-warn)';
+      result.textContent = r && r.ok
+        ? (r.via === 'direct' ? lp('checkDirect', { ip: r.ip }) : lp('checkOk', { ip: r.ip, via: String(r.via).toUpperCase(), ms: r.ms }))
+        : lp('checkFailed', { error: (r && r.error) || kit.tx('settings.redesign.morelogin.failed') });
+    });
+    panel.querySelector('#ml-lp-save')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      const read = readLocalProfileForm(collectEditor());
+      if (!read.ok) {
+        const first = Object.keys(read.errors)[0];
+        editorStatus(lp(`invalid.${read.errors[first]}`), true);
+        (editorField(first === 'window' ? 'width' : first) || panel).focus?.();
+        return;
+      }
+      if (syncPasswordAsk()) { editorStatus(lp('passwordAgain'), true); password?.focus(); return; }
+      button.disabled = true;
+      const r = await jsend('PUT', `/api/morelogin/local-profiles/${encodeURIComponent(id)}`, read.body);
+      button.disabled = false;
+      if (!r || !r.ok) { editorStatus(lp('saveFailed', { error: (r && r.error) || kit.tx('settings.redesign.morelogin.failed') }), true); return; }
+      showCCToast(lp(r.restartNeeded ? 'savedRestart' : 'saved'));
+      closeEditor();
+      reload();
+    });
   }
 
   async function reload() {
@@ -2636,13 +2896,32 @@ function wireMoreLoginTab(overlay) {
       if ($('ml-api-id') && !$('ml-api-id').value) $('ml-api-id').value = cfg.config.apiId || '';
     }
     const p = await jget('/api/morelogin/profiles');
+    // `local`: the running server knows local profiles. One from before them cannot create one: said, not hidden.
+    _localKnown = !!p && typeof p.local === 'object' && p.local !== null;
+    { const note = $('ml-local-restart'); if (note) note.hidden = _localKnown || p._status === 403; }
+    syncCreateWhere();
     if (p.ok === false && p.error) {
       const list = $('ml-profile-list');
+      _editing = null;
       if (list) list.innerHTML = '<div class="settings-hint" role="status">' + escapeHtml(String(p.error)) + '</div>';
       return;
     }
-    renderProfiles(p.envs || []);
+    // What the editor and the rows show of each local profile (never its proxy password).
+    if ((p.envs || []).some(isLocalProfile)) {
+      const d = await jget('/api/morelogin/local-profiles');
+      if (d && d.ok && Array.isArray(d.profiles)) _localDetails = new Map(d.profiles.map(row => [String(row.id), row]));
+    } else _localDetails = new Map();
+    _moreloginError = p.moreloginError || '';
+    renderProfiles(p.envs || [], p.agentProfiles);
+    // The server is still asking MoreLogin which browser some profiles run: ask again quietly, a few times.
+    clearTimeout(_browsersTimer);
+    if (Number(p.browsersPending) > 0 && _browsersTries < 8 && $('ml-profile-list')?.isConnected) {
+      _browsersTries += 1;
+      _browsersTimer = setTimeout(reload, 2500);
+    } else _browsersTries = 0;
   }
+  let _browsersTimer = null;
+  let _browsersTries = 0;
 
   const saveCfg = (key, value) => fetch('/api/morelogin/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key, value }) });
 
@@ -2651,9 +2930,49 @@ function wireMoreLoginTab(overlay) {
   $('ml-secret-save')?.addEventListener('click', async () => { await saveCfg('secret', $('ml-secret').value || ''); showCCToast(kit.tx('settings.redesign.morelogin.secretSaved')); });
   $('ml-secret-eye')?.addEventListener('click', () => { const i = $('ml-secret'); if (i) i.type = i.type === 'password' ? 'text' : 'password'; });
   $('ml-refresh-btn')?.addEventListener('click', reload);
+  /** A new local profile under `name`; its editor opens, since a name is all it has yet. */
+  async function createLocal(name) {
+    const r = await jsend('POST', '/api/morelogin/local-profiles', { name: name || lp('defaultName', { n: _localDetails.size + 1 }) });
+    if (!r || !r.ok) { showCCToast(lp('createFailed', { error: (r && r.error) || kit.tx('settings.redesign.morelogin.createFailed') })); return false; }
+    showCCToast(lp('created'));
+    _editing = String(r.profile.id);
+    if ($('ml-new-name')) $('ml-new-name').value = '';
+    const note = $('ml-create-note'); if (note) { note.hidden = true; note.textContent = ''; }
+    await reload();
+    overlay.querySelector('#ml-local-editor [data-lp-field="name"]')?.focus();
+    return true;
+  }
   $('ml-create-btn')?.addEventListener('click', async () => {
-    const name = ($('ml-new-name')?.value || '').trim() || 'SynaBun';
+    const typed = ($('ml-new-name')?.value || '').trim();
+    const action = createAction({ where: $('ml-create-where')?.value || 'morelogin', localKnown: _localKnown });
+    if (action === 'local') { await createLocal(typed); return; }
+    if (action === 'restart') {
+      // Local was asked of a server older than local profiles: nothing is created (never a MoreLogin profile, which
+      // would take one of the plan's slots), and the restart note says why.
+      const restart = $('ml-local-restart'); if (restart) restart.hidden = false;
+      showCCToast(lp('restartServer'));
+      return;
+    }
+    const name = typed || 'SynaBun';
     const r = await jpost('/api/morelogin/profiles', { name });
+    // MoreLogin's plan holds no more profiles: said, with the way on. A local profile needs no MoreLogin slot.
+    if (isPlanLimit(r) && _localKnown) {
+      _limitHit = true;
+      syncCreateWhere();
+      const note = $('ml-create-note');
+      if (note) {
+        note.hidden = false;
+        note.textContent = `${String(r.error || lp('planLimit'))} `;
+        const offer = document.createElement('button');
+        offer.type = 'button';
+        offer.className = 'stg-action-btn compact';
+        offer.id = 'ml-create-local-offer';
+        offer.textContent = lp('planLimitCreateLocal');
+        offer.addEventListener('click', () => createLocal(typed));
+        note.appendChild(offer);
+      }
+      return;
+    }
     showCCToast(r.ok ? kit.tx('settings.redesign.morelogin.profileCreated') : (r.error || kit.tx('settings.redesign.morelogin.createFailed')));
     if ($('ml-new-name')) $('ml-new-name').value = '';
     reload();
@@ -3385,6 +3704,8 @@ async function openSettingsModalNow(options = {}) {
   let userContextReading = readUserContextResponse({ status: 0 });
   // Protect workers (lib/worker-guard-setting.js): what its endpoint answered, as a reading.
   let workerGuardReading = readWorkerGuardResponse({ status: 0 });
+  // Let the automation browser act as owner (lib/automation-browser-owner-access.js): what its endpoint answered.
+  let ownerAccessReading = readOwnerAccessResponse({ status: 0 });
   // SynaBun's Claude Code hooks (lib/claude-hooks-status.js): the `claudeHooks` of the integrations read, as a reading.
   let claudeHooksReading = readClaudeHooksResponse({ status: 0 });
   // The reads the server refused this page (it has no owner access: SynaBun's automation browser opened it). The panes
@@ -3404,6 +3725,7 @@ async function openSettingsModalNow(options = {}) {
     const greetRes = readingOf(reads.greeting, readGreetingStatus);
     const userContextRes = readingOf(reads.userContext, readUserContextResponse);
     const workerGuardRes = readingOf(reads.workerGuard, readWorkerGuardResponse);
+    const ownerAccessRes = readingOf(reads.browserOwnerAccess, readOwnerAccessResponse);
     const settingsRes = reads.settings, connRes = reads.connections, ccRes = reads.integrations, skillsRes = reads.skills;
     const tunnelRes = reads.tunnel, keyRes = reads.mcpKey, bridgeRes = reads.openclaw, setupRes = reads.setup, cliRes = reads.cli;
     const toolPermsRes = reads.toolPermissions, toolCatsRes = reads.toolCategories, discordRes = reads.discord, skinsRes = reads.skins;
@@ -3411,6 +3733,7 @@ async function openSettingsModalNow(options = {}) {
     if (typesafeRes.status === 'fulfilled' && typesafeRes.value.ok) typesafeConfig = typesafeRes.value;
     if (userContextRes.status === 'fulfilled') userContextReading = userContextRes.value;
     if (workerGuardRes.status === 'fulfilled') workerGuardReading = workerGuardRes.value;
+    if (ownerAccessRes.status === 'fulfilled') ownerAccessReading = ownerAccessRes.value;
     if (settingsRes.status === 'fulfilled') settings = settingsRes.value;
     if (connRes.status === 'fulfilled' && connRes.value.connections) connections = connRes.value.connections;
     // Read as it came (status and body): a refusal or an old server is said as what it is, never as hooks that are off.
@@ -3488,7 +3811,7 @@ async function openSettingsModalNow(options = {}) {
             terminal: buildTerminalTab(cliConfig),
             opencode: buildOpencodeTab(),
             notifications: buildNotificationsTab(),
-            browser: buildBrowserTab(),
+            browser: buildBrowserTab(describeOwnerAccess(ownerAccessReading, { tx: kit.tx })),
             mcp: buildMcpTab(),
             setup: buildSetupTab(setupStatus),
             collections: buildCollectionsTab(connections, settings),
@@ -4051,7 +4374,18 @@ async function openSettingsModalNow(options = {}) {
             progressText.textContent = kit.tx('settings.redesign.server.doneFilesRestored', { restoredFileCount: restoredFileCount });
             confirmBtn.textContent = kit.tx('settings.redesign.server.done');
 
-            setTimeout(() => { confirmOverlay.remove(); location.reload(); }, 2500);
+            // A restore that built a new MCP server restarts the server: reload only once a new one answers.
+            await reloadAfterRestore(result, {
+              reload: () => { confirmOverlay.remove(); location.reload(); },
+              onRestarting: () => {
+                progressDot.className = 'wiz-status-dot spin';
+                progressText.textContent = kit.tx('settings.redesign.server.restartingAfterRestore');
+              },
+              onNotBack: () => {
+                progressDot.className = 'wiz-status-dot red';
+                progressText.textContent = kit.tx('settings.redesign.server.serverNotBackAfterRestore');
+              },
+            });
           } catch (err) {
             progressDot.className = 'wiz-status-dot red';
             progressText.textContent = err.message;
@@ -4595,7 +4929,7 @@ async function openSettingsModalNow(options = {}) {
   });
 
   // ── MoreLogin tab handlers (self-loads status/profiles async) ──
-  wireMoreLoginTab(overlay);
+  wireMoreLoginTab(overlay, panelLife.signal);
 
   // ── Judgments tab (TypeSafe / Jev) — self-loads and polls while active ──
   wireJudgmentsTab(overlay, { toast: showCCToast, initial: typesafeConfig });
@@ -5143,6 +5477,47 @@ async function openSettingsModalNow(options = {}) {
     if (!link) return;
     try { applySettingsOpenOptions(overlay, JSON.parse(link.dataset.ucGoto)); } catch { /* a malformed target goes nowhere */ }
   });
+  // Let the automation browser act as owner: the switch moves at once and follows the server's answer; a save
+  // that failed puts it back where it was, with the reason under it (a page open in the automation browser itself
+  // is told it may never change this: 403 WORKER_BROWSER). Saves go one after the other, in the order of the clicks.
+  {
+    const btn = overlay.querySelector('#boa-toggle');
+    const row = overlay.querySelector('[data-boa-row]');
+    const status = overlay.querySelector('#boa-save-status');
+    const notes = overlay.querySelector('#boa-notes');
+    const setStatus = (text) => { if (status) { status.textContent = text; status.hidden = !text; } };
+    const paint = (on) => { if (btn) { btn.classList.toggle('on', on); btn.setAttribute('aria-pressed', on ? 'true' : 'false'); } row?.classList.toggle('enabled', on); };
+    const show = () => {
+      const view = describeOwnerAccess(ownerAccessReading, { tx: kit.tx });
+      paint(view.on);
+      if (btn) btn.disabled = view.disabled;
+      row?.classList.toggle('uc-disabled', view.disabled);
+      if (notes) notes.innerHTML = userContextNotesHTML([...(view.note ? [view.note] : []), ...(view.warning ? [{ text: view.warning, tone: 'warn' }] : [])]);
+    };
+    let saves = Promise.resolve();
+    btn?.addEventListener('click', () => {
+      if (ownerAccessReading.state !== 'ready') return;
+      const enabled = !ownerAccessReading.enabled;
+      setStatus('');
+      paint(enabled);
+      btn.style.opacity = '0.4';
+      saves = saves.then(async () => {
+        let failure = null;
+        try {
+          const res = await fetch('/api/assistant/automation-browser-owner-access', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
+          const body = await res.json().catch(() => null);
+          const reading = readOwnerAccessResponse({ status: res.status, body });
+          if (res.ok && reading.state === 'ready') ownerAccessReading = reading;
+          else failure = { status: res.status, body };
+        } catch (err) {
+          failure = { status: 0, error: err?.message };
+        }
+        btn.style.opacity = '';
+        show();
+        if (failure) setStatus(describeOwnerAccessSaveFailure({ ...failure, enabled }, { tx: kit.tx }));
+      });
+    });
+  }
   // Protect workers: the choice is saved at once and follows the server's answer; a save that failed puts the
   // dropdown back where it was, with the reason under it. Saves go one after the other, in the order of the picks.
   {
@@ -6082,7 +6457,11 @@ async function openSettingsModalNow(options = {}) {
 
     // ── Connection mode (mirror / attach / MoreLogin) ──
     let _moreloginDesiredEnvId = '';
-    async function loadMoreLoginEnvs() {
+    let _moreloginBrowsersTimer = null;
+    let _moreloginBrowsersTries = 0;
+    // keepShown: a redraw of the list (the quiet ask again, a change of the choice) keeps what the picker shows;
+    // without it the saved default is put back, as on open and on Refresh.
+    async function loadMoreLoginEnvs(keepShown = false) {
       const sel = overlay.querySelector('#bc-morelogin-env-id');
       // A placeholder choice (loading / error / not running) keeps its reason visible in the closed dropdown.
       const only = (key) => setDropdownItems(sel, [{ value: '', label: kit.tx(key), selected: true }]);
@@ -6091,12 +6470,24 @@ async function openSettingsModalNow(options = {}) {
       try {
         const r = await fetch('/api/browser/morelogin-envs');
         const d = await r.json();
-        if (!d || d.ok === false) { only('settings.redesign.browser.error'); if (statusEl) statusEl.textContent = (d && d.error) || kit.tx('settings.redesign.browser.failedToLoadMoreloginProfiles'); return; }
-        if (!d.installed) { only('settings.redesign.browser.moreloginNotInstalled'); if (statusEl) statusEl.textContent = kit.tx('settings.redesign.browser.moreloginDesktopAppIsNotInstalled') + ' ' + kit.tx('settings.redesign.browser.moreloginCustomPathHint'); return; }
-        if (!d.running) { only('settings.redesign.browser.startMorelogin'); if (statusEl) statusEl.textContent = kit.tx('settings.redesign.browser.moreloginNotRunningOpenTheApp', { port: d.port }) + (d.error ? ' ' + String(d.error) : ''); return; }
-        const envs = d.envs || [];
+        // SynaBun's own local profiles (`kind: 'local'`) are in every answer, whatever MoreLogin does: with one or
+        // more, the picker lists them and the line under it says why MoreLogin's are missing.
+        const localEnvs = (d && Array.isArray(d.envs) ? d.envs : []).filter(e => e && e.kind === 'local');
+        let moreloginNote = '';
+        // With a local profile to list, MoreLogin's state is a note under the picker; without one it is the picker's
+        // only choice, as before. → true when the picker was filled with the reason (nothing more to draw).
+        const without = (message, placeholder) => {
+          if (localEnvs.length) { moreloginNote = message; return false; }
+          placeholder();
+          if (statusEl) statusEl.textContent = message;
+          return true;
+        };
+        if (!d || d.ok === false) { if (without((d && d.error) || kit.tx('settings.redesign.browser.failedToLoadMoreloginProfiles'), () => only('settings.redesign.browser.error'))) return; }
+        else if (!d.installed) { if (without(kit.tx('settings.redesign.browser.moreloginDesktopAppIsNotInstalled') + ' ' + kit.tx('settings.redesign.browser.moreloginCustomPathHint'), () => only('settings.redesign.browser.moreloginNotInstalled'))) return; }
+        else if (!d.running) { if (without(kit.tx('settings.redesign.browser.moreloginNotRunningOpenTheApp', { port: d.port }) + (d.error ? ' ' + String(d.error) : ''), () => only('settings.redesign.browser.startMorelogin'))) return; }
+        const envs = moreloginNote ? localEnvs : (d.envs || []);
         if (!envs.length) { only('settings.redesign.browser.noProfiles'); if (statusEl) statusEl.textContent = kit.tx('settings.redesign.browser.noMoreloginProfilesYetOneIs'); return; }
-        const want = _moreloginDesiredEnvId || sel.value || '';
+        const want = (keepShown === true && sel.value) || _moreloginDesiredEnvId || sel.value || '';
         // Show each env's proxy — without it there is no way to tell from SynaBun
         // whether a profile's traffic leaves the machine.
         const proxyLabel = (p) => {
@@ -6104,11 +6495,27 @@ async function openSettingsModalNow(options = {}) {
           const where = [p.host, p.port].filter(Boolean).join(':');
           return ` · ${[p.type, where, p.country].filter(Boolean).join(' ')}`;
         };
+        // SynaBun drives the profile over CDP, so a Firefox-type one (`browser` from the server; absent = not known)
+        // is listed, said as such and cannot be picked. One already saved as the default stays shown, with a warning.
         // dropdownHTML escapes the labels itself.
-        setDropdownItems(sel, envs.map(e => ({ value: String(e.id), label: `${e.name ?? ''}${e.status ? ` (${String(e.status)})` : ''}${proxyLabel(e.proxy)}` })));
+        setDropdownItems(sel, envs.map(e => (e.browser === 'firefox'
+          ? { value: String(e.id), label: kit.tx('settings.redesign.browser.moreloginFirefoxOption', { name: String(e.name ?? e.id) }), disabled: true }
+          : { value: String(e.id), label: `${e.kind === 'local' ? kit.tx('settings.redesign.browser.moreloginLocalOption', { name: String(e.name ?? e.id) }) : (e.name ?? '')}${e.status ? ` (${String(e.status)})` : ''}${proxyLabel(e.proxy)}` })));
         if (want && envs.some(e => String(e.id) === String(want))) setDropdownValue(sel, String(want));
+        const chosenFirefox = envs.some(e => String(e.id) === String(sel.value) && e.browser === 'firefox');
+        if (statusEl) statusEl.style.color = chosenFirefox ? 'var(--stg-warn)' : '';
+        // The server is still asking MoreLogin which browser some profiles run: ask again quietly, a few times.
+        clearTimeout(_moreloginBrowsersTimer);
+        if (Number(d.browsersPending) > 0 && _moreloginBrowsersTries < 8 && sel.isConnected) {
+          _moreloginBrowsersTries += 1;
+          _moreloginBrowsersTimer = setTimeout(() => loadMoreLoginEnvs(true), 2500);
+        } else _moreloginBrowsersTries = 0;
         if (statusEl) {
-          let msg = kit.tx('settings.redesign.browser.profileSApiPort', { count: envs.length, port: d.port });
+          let msg = chosenFirefox
+            ? kit.tx('settings.redesign.browser.moreloginFirefoxDefault')
+            : (moreloginNote
+              ? kit.tx('settings.redesign.browser.localProfilesOnly', { count: envs.length }) + ' ' + moreloginNote
+              : kit.tx('settings.redesign.browser.profileSApiPort', { count: envs.length, port: d.port }));
           // MoreLogin silently redirects a navigation it refuses to its stop page: a
           // localhost port missing from the profile's Port scan protection list, or a
           // host its website blacklist/whitelist refuses. Surface it; nothing else in
@@ -6170,6 +6577,8 @@ async function openSettingsModalNow(options = {}) {
       });
     }
     { const mlRow = overlay.querySelector('#bc-morelogin-row'); if (mlRow) wireDropdowns(mlRow, { signal: panelLife.signal }); }
+    // Another profile chosen: the line under the picker says what holds for that one (the Firefox warning goes).
+    overlay.querySelector('#bc-morelogin-env-id')?.addEventListener('change', () => loadMoreLoginEnvs(true), { signal: panelLife.signal });
     overlay.querySelector('#bc-morelogin-refresh')?.addEventListener('click', (e) => { e.preventDefault(); loadMoreLoginEnvs(); });
     const attachSeedDd = overlay.querySelector('.bc-dropdown[data-for="bc-attachSeed"]');
     if (attachSeedDd) {
@@ -7623,6 +8032,10 @@ async function openSettingsModalNow(options = {}) {
     let _ollamaPollTimer = null;
     let _ollamaLastModelNames = '';
     let _ollamaConfigureError = '';
+    // ── Maritaca as an OpenCode provider (settings/settings-maritaca-opencode.js decides; this draws) ──
+    let _mtcOcpStatus = null;       // the last answer of GET /api/maritaca/opencode/status (null: not asked or failed)
+    let _mtcOcpConfiguring = false; // a configure request in flight
+    let _mtcOcpError = '';          // the message of the last failed configure
     let _ocpHistoryStats = null;
 
     function formatBytes(bytes) {
@@ -7851,6 +8264,153 @@ async function openSettingsModalNow(options = {}) {
       });
     }
 
+    function renderMaritacaOcpCard() {
+      if (!ocpProvidersEl) return;
+      let card = ocpProvidersEl.querySelector('.stg-maritaca-card');
+      if (!card) {
+        card = document.createElement('div');
+        card.className = 'stg-maritaca-card';
+        const ollama = ocpProvidersEl.querySelector('.stg-ollama-card');
+        if (ollama) ollama.after(card); else ocpProvidersEl.prepend(card);
+      }
+      const K = MARITACA_OPENCODE_KEYS;
+      const tr = (key, vars) => kit.tx(`settings.redesign.opencode.${key}`, vars);
+      const view = maritacaOpencodeCardView(_mtcOcpStatus, tr, { configuring: _mtcOcpConfiguring, error: _mtcOcpError });
+      const count = view.modelCount;
+      // Per-model visibility: the same denylist and markup as the other provider cards (ocp-hidden-models.js).
+      const wasOpen = card.querySelector('.stg-model-list')?.style.display === '';
+      const ocMaritaca = (Array.isArray(_ocpProviders) ? _ocpProviders : []).find((p) => p?.id === MARITACA_OPENCODE_PROVIDER);
+      const modelRows = maritacaOpencodeModelRows(_mtcOcpStatus, getOcpHiddenModels(), ocMaritaca ? extractModels(ocMaritaca) : []);
+      const expandHtml = modelRows.total ? `<button type="button" class="stg-model-expand-btn" data-provider="${MARITACA_OPENCODE_PROVIDER}" aria-expanded="${wasOpen ? 'true' : 'false'}">
+                <svg class="stg-model-expand-icon" viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+                <span class="stg-model-count-badge">${esc(modelsShownLabel(modelRows.enabled, modelRows.total))}</span>
+              </button>` : '';
+      const toolsLabel = kit.tx('settings.redesign.opencode.tools');
+      const modelListHtml = modelRows.total ? `<div class="stg-model-list" data-provider="${MARITACA_OPENCODE_PROVIDER}" style="${wasOpen ? '' : 'display:none'}">
+            <div class="stg-model-list-actions">
+              <span class="stg-model-list-count">${esc(kit.tx(modelRows.total === 1 ? 'settings.redesign.opencode.modelCount.one' : 'settings.redesign.opencode.modelCount.other', { count: modelRows.total }))}</span>
+              <button type="button" class="stg-action-btn compact stg-text-btn stg-model-all-btn" data-provider="${MARITACA_OPENCODE_PROVIDER}">${kit.te('settings.redesign.opencode.enableAll')}</button>
+              <button type="button" class="stg-action-btn compact stg-text-btn stg-model-none-btn" data-provider="${MARITACA_OPENCODE_PROVIDER}">${kit.te('settings.redesign.opencode.disableAll')}</button>
+            </div>
+            ${modelRows.rows.map((r) => `<label class="stg-model-toggle${r.hidden ? ' disabled' : ''}" data-full-id="${esc(r.fullId)}" title="${esc(r.name)}">
+              <input type="checkbox" ${r.hidden ? '' : 'checked'} data-model-full-id="${esc(r.fullId)}">
+              <span class="stg-model-toggle-name">${esc(r.id)}</span>
+              ${r.tools ? `<span class="stg-model-toggle-caps"><span class="stg-cap">${esc(toolsLabel)}</span></span>` : ''}
+            </label>`).join('')}
+          </div>` : '';
+      const bodyHtml = view.state === 'registered'
+        ? `${expandHtml}<div class="stg-provider-toolbar"><span class="stg-provider-tag">${esc(view.tag)}</span><span class="stg-provider-sep">·</span><span class="stg-provider-submeta">${count} ${kit.te('settings.redesign.opencode.model')}${count !== 1 ? 's' : ''}</span></div>`
+        : `${expandHtml}<div class="stg-provider-note">${esc(view.note)}</div>`;
+      const actionHtml = view.actions.map((action) => {
+        if (action === 'open-panel') return `<button type="button" class="stg-action-btn compact stg-text-btn stg-maritaca-open-panel" data-action="open-panel">${esc(tr(K.openPanel))}</button>`;
+        if (action === 'configure') return `<button type="button" class="stg-action-btn compact stg-maritaca-configure" data-action="configure">${esc(tr(K.configure))}</button>`;
+        if (action === 'resync') return `<button type="button" class="stg-action-btn compact stg-maritaca-configure" data-action="resync">${esc(tr(K.resync))}</button>`;
+        return `<button type="button" class="stg-action-btn compact stg-text-btn stg-text-btn-danger stg-maritaca-remove stg-ocp-remove-btn" data-action="remove">${esc(tr(K.remove))}</button>`;
+      }).join('');
+      card.dataset.state = view.state;
+      card.innerHTML = `<div class="stg-provider-card" style="--prov-accent:${view.dot}">
+          <div class="stg-provider-head">
+            <div class="stg-provider-ident">
+              <span class="stg-provider-name">Maritaca <span class="stg-provider-subname">${esc(tr(K.subname))}</span></span>
+              ${bodyHtml}
+            </div>
+            <div class="stg-provider-side">
+              <span class="stg-provider-status ${view.statusCls}">${esc(view.statusText)}</span>
+              ${actionHtml}
+            </div>
+          </div>
+          ${modelListHtml}
+      </div>`;
+      card.querySelector('.stg-maritaca-open-panel')?.addEventListener('click', () => {
+        // The key is saved in the Maritaca panel (its cog): the toolbar button opens it.
+        document.getElementById('topright-maritaca-panel-btn')?.click();
+      });
+      card.querySelector('.stg-maritaca-configure')?.addEventListener('click', () => configureMaritacaOcp());
+      // Model toggles: the same save and event as the other cards; hidden ids are "maritaca/<id>".
+      const updateMaritacaBadge = () => {
+        const boxes = [...card.querySelectorAll('.stg-model-toggle input[type="checkbox"]')];
+        const badge = card.querySelector('.stg-model-count-badge');
+        if (badge) badge.textContent = modelsShownLabel(boxes.filter((c) => c.checked).length, boxes.length);
+      };
+      card.querySelectorAll('.stg-model-toggle input[type="checkbox"]').forEach((cb) => {
+        cb.addEventListener('change', () => {
+          const fullId = cb.dataset.modelFullId;
+          if (!fullId) return;
+          const hidden = getOcpHiddenModels();
+          if (cb.checked) hidden.delete(fullId); else hidden.add(fullId);
+          saveOcpHiddenModels(hidden);
+          cb.closest('.stg-model-toggle')?.classList.toggle('disabled', !cb.checked);
+          updateMaritacaBadge();
+          document.dispatchEvent(new CustomEvent('ocp-hidden-models-changed'));
+        });
+      });
+      for (const [sel, show] of [['.stg-model-all-btn', true], ['.stg-model-none-btn', false]]) {
+        card.querySelector(sel)?.addEventListener('click', () => {
+          const hidden = getOcpHiddenModels();
+          card.querySelectorAll('.stg-model-toggle input[type="checkbox"]').forEach((cb) => {
+            const fullId = cb.dataset.modelFullId;
+            if (fullId) { if (show) hidden.delete(fullId); else hidden.add(fullId); }
+            cb.checked = show;
+            cb.closest('.stg-model-toggle')?.classList.toggle('disabled', !show);
+          });
+          saveOcpHiddenModels(hidden);
+          updateMaritacaBadge();
+          document.dispatchEvent(new CustomEvent('ocp-hidden-models-changed'));
+        });
+      }
+      if (modelRows.total) card.querySelector('.stg-provider-card').style.cursor = 'pointer';
+      card.querySelector('.stg-maritaca-remove')?.addEventListener('click', async () => {
+        const btn = card.querySelector('.stg-maritaca-remove');
+        if (btn) { btn.disabled = true; btn.textContent = tr(K.removing); }
+        try {
+          const resp = await fetch('/api/maritaca/opencode/configure', { method: 'DELETE' });
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
+          _mtcOcpStatus = data; _mtcOcpError = '';
+          renderMaritacaOcpCard();
+          showCCToast(tr(K.removedToast));
+          await refreshOcpProviders();
+          document.dispatchEvent(new CustomEvent('ocp-providers-changed'));
+        } catch (e) {
+          showCCToast(tr(K.error, { message: e.message }));
+          if (btn) { btn.disabled = false; btn.textContent = tr(K.remove); }
+        }
+      });
+    }
+
+    async function configureMaritacaOcp() {
+      if (_mtcOcpConfiguring) return;
+      _mtcOcpConfiguring = true; _mtcOcpError = '';
+      renderMaritacaOcpCard();
+      try {
+        const resp = await fetch('/api/maritaca/opencode/configure', { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        _mtcOcpConfiguring = false;
+        if (!resp.ok || data.ok === false) throw new Error(data.error || `HTTP ${resp.status}`);
+        _mtcOcpStatus = data;
+        renderMaritacaOcpCard();
+        showCCToast(kit.tx(`settings.redesign.opencode.${MARITACA_OPENCODE_KEYS.registeredToast}`, { count: data.modelsConfigured ?? data.modelCount ?? 0 }));
+        // OpenCode reads the provider at once: its models are listed now.
+        await refreshOcpProviders();
+        document.dispatchEvent(new CustomEvent('ocp-providers-changed'));
+      } catch (e) {
+        _mtcOcpConfiguring = false;
+        _mtcOcpError = e.message || 'error';
+        renderMaritacaOcpCard();
+      }
+    }
+
+    async function refreshMaritacaOcp() {
+      try {
+        const resp = await fetch('/api/maritaca/opencode/status');
+        const data = await resp.json().catch(() => null);
+        _mtcOcpStatus = resp.ok && data && data.ok !== false ? data : null;
+      } catch {
+        _mtcOcpStatus = null;
+      }
+      if (!_mtcOcpConfiguring) renderMaritacaOcpCard();
+    }
+
     async function ollamaDetectAndConfigure() {
       try {
         // Fetch status, models, and config state in parallel
@@ -7912,7 +8472,8 @@ async function openSettingsModalNow(options = {}) {
     function startOllamaPoll() {
       stopOllamaPoll();
       ollamaDetectAndConfigure();
-      _ollamaPollTimer = setInterval(ollamaDetectAndConfigure, 10000);
+      refreshMaritacaOcp();
+      _ollamaPollTimer = setInterval(() => { ollamaDetectAndConfigure(); refreshMaritacaOcp(); }, 10000);
     }
 
     function stopOllamaPoll() {
@@ -8056,8 +8617,8 @@ async function openSettingsModalNow(options = {}) {
         return;
       }
 
-      // Exclude Ollama — it has its own dedicated card via renderOllamaCard()
-      const filtered = providerCatalog.filter(p => p.id !== 'ollama');
+      // Exclude Ollama and Maritaca — each has its own dedicated card (renderOllamaCard, renderMaritacaOcpCard)
+      const filtered = providerCatalog.filter(p => p.id !== 'ollama' && p.id !== 'maritaca');
 
       // Sort: connected first, then stored-key, then alphabetical
       const sorted = [...filtered].sort((a, b) => {
@@ -8249,6 +8810,8 @@ async function openSettingsModalNow(options = {}) {
       } else {
         ocpProvidersEl.innerHTML = cardsHtml || emptyHtml;
       }
+      // The list was rebuilt: the Maritaca card is drawn again at once (the Ollama card returns with its poll).
+      if (_mtcOcpStatus || _mtcOcpConfiguring || _mtcOcpError) renderMaritacaOcpCard();
 
       // Wire model capability tooltips
       ocpProvidersEl.querySelectorAll('.stg-model-hover[data-model-id]').forEach(span => {
@@ -8549,7 +9112,7 @@ async function openSettingsModalNow(options = {}) {
     if (ocpProvidersEl) {
       ocpProvidersEl.addEventListener('click', (e) => {
         // Skip clicks on action buttons, inputs, expanded content
-        if (e.target.closest('.stg-ocp-remove-btn, .stg-ocp-apikey-btn, .stg-ocp-oauth-btn, .stg-model-all-btn, .stg-model-none-btn, input, label, .stg-model-list, .stg-ocp-key-form, .stg-ocp-oauth-wait, .stg-ocp-toggle-all')) return;
+        if (e.target.closest('.stg-ocp-remove-btn, .stg-ocp-apikey-btn, .stg-ocp-oauth-btn, .stg-model-all-btn, .stg-model-none-btn, input, label, .stg-model-list, .stg-ocp-key-form, .stg-ocp-oauth-wait, .stg-ocp-toggle-all, .stg-maritaca-configure, .stg-maritaca-open-panel')) return;
         const card = e.target.closest('.stg-provider-card');
         if (!card) return;
         const list = card.querySelector('.stg-model-list');

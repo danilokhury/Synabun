@@ -7,6 +7,8 @@ const SVG_OPENAI = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9.205
 // A line drawing: its paths carry fill="none" themselves, because some places fill every icon they hold
 // (`.resume-provider-icon svg { fill: currentColor }`), which would turn the strokes into a solid triangle.
 const SVG_ANTIGRAVITY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 20 12 4l7.5 16" fill="none"/><path d="M8.2 20a3.8 3.8 0 0 1 7.6 0" fill="none"/></svg>';
+// Maritaca AI's mark (maritaca.ai favicon.svg, the bird), in currentColor.
+const SVG_MARITACA = '<svg viewBox="0 0 12.48 13.73" fill="currentColor"><path d="M10.11 11.01h1.9S7.21 5.97 5.72 4.4a.62.62 0 0 0-.93.04c-.48.59-.76 1.33-.81 2.1-.06 1.04.32 2.06 1.04 2.8l4.35 4.4h3.1l-2.37-2.72Z"/><path d="M5.69 11 4.52 9.82c-.86-.89-1.31-2.1-1.24-3.33s.67-2.38 1.62-3.16c.35.06.71-.02 1.01-.24-.07-.24-.16-.55-.22-.75-.02-.07.06-.13.12-.09l1.16.77c.3-.61.22-1.37-.26-1.9.1-.18.06-.44-.15-.57C6.07.26 5.36 0 4.41 0 2.76 0 0 1.5 0 5.18c0 2.12 1.36 4.57 3.86 5.47l-1.43 3.08h1.05L4.8 10.9c.29.05.58.09.89.1l-1.27 2.73h1.05l.94-2.01L5.7 11ZM4.84.67c.23 0 .42.19.42.42s-.19.42-.42.42-.42-.19-.42-.42.19-.42.42-.42"/></svg>';
 const SVG_OPENCODE = '<svg viewBox="0 0 240 300" fill="currentColor"><path fill-rule="evenodd" d="M0 0h240v300H0V0zm60 60v180h120V60H60z"/><rect x="60" y="120" width="120" height="120" opacity=".45"/></svg>';
 const SVG_SHELL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>';
 const SVG_BROWSER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>';
@@ -18,6 +20,7 @@ const PROVIDER_META = {
   codex:         { id: 'codex',       label: 'Codex',       shortLabel: 'Codex',  icon: SVG_OPENAI, color: '#74C7A5' },
   opencode:      { id: 'opencode',    label: 'OpenCode',    shortLabel: 'OpenCode', icon: SVG_OPENCODE, color: '#E8E0DC' },
   antigravity:   { id: 'antigravity', label: 'Antigravity', shortLabel: 'Antigravity', icon: SVG_ANTIGRAVITY, color: '#669DF6' },
+  maritaca:      { id: 'maritaca',    label: 'Maritaca',    shortLabel: 'Maritaca', icon: SVG_MARITACA, color: '#70d44b' },
   synabun:      { id: 'synabun',    label: 'SynaBun',     shortLabel: 'SynaBun', icon: SVG_SYNABUN, color: '#FFD23C' },
   shell:         { id: 'shell',       label: 'Shell',       shortLabel: 'Shell', icon: SVG_SHELL, color: '#AAAAAA' },
   browser:       { id: 'browser',     label: 'Browser',     shortLabel: 'Browser', icon: SVG_BROWSER, color: '#4FC3F7' },

@@ -159,6 +159,8 @@ export function createAssistantApi({
   adminSandbox = null,
   // Protect workers (lib/worker-guard-setting.js): what capability read-only / workspace means for every worker.
   workerGuard = null,
+  // Let the automation browser act as owner (lib/automation-browser-owner-access.js): the owner's page only.
+  automationBrowserOwnerAccess = null,
   // The page secret (lib/page-session.js): a request without an agent pin is the owner's page only when it carries
   // this boot's cookie; a local process that merely sends no headers is nobody (never 'ui').
   pageSession = null,
@@ -466,6 +468,8 @@ export function createAssistantApi({
         maxMinutes: body.maxMinutes ?? body.max_minutes,
         budgetUsd: body.budgetUsd ?? body.budget_usd,
         usesBrowser: body.usesBrowser ?? body.uses_browser,
+        // The MoreLogin profile of the worker's browser tab (an id or a name); none = the default browser.
+        moreloginProfile: body.moreloginProfile ?? body.morelogin_profile ?? null,
         workflowId: body.workflowId || body.workflow_id,
         parentRunId: body.parentRunId || body.parent_run_id,
         outputSchema: body.outputSchema || body.output_schema,
@@ -1421,6 +1425,28 @@ export function createAssistantApi({
     uiTabs.set(windowId, { panels, at: now() });
     if (uiTabs.size > 50) uiTabs.delete(uiTabs.keys().next().value);
     res.json({ ok: true, windows: uiTabs.size });
+  });
+
+  // ── Let the automation browser act as owner (lib/automation-browser-owner-access.js) ──────────────────
+  // The read is any local caller's (the page draws it; an agent may know it). The write is the owner's page alone:
+  // this boot's page secret, no agent header of any kind, and never SynaBun's automation browser (its marker or its
+  // peer process), whatever the setting says: a browser worker must not be able to grant itself the owner's powers.
+  router.get('/automation-browser-owner-access', (req, res) => {
+    if (!automationBrowserOwnerAccess) return res.status(503).json({ ok: false, code: 'OWNER_ACCESS_UNAVAILABLE', error: 'The automation-browser owner access setting is not available on this server' });
+    res.json({ ok: true, ...automationBrowserOwnerAccess.view() });
+  });
+  router.put('/automation-browser-owner-access', requireJson, (req, res) => {
+    if (!automationBrowserOwnerAccess) return res.status(503).json({ ok: false, code: 'OWNER_ACCESS_UNAVAILABLE', error: 'The automation-browser owner access setting is not available on this server' });
+    if (['x-synabun-desktop-grant', 'x-synabun-role', 'x-synabun-terminal', 'x-synabun-assistant', 'x-synabun-brain-token'].some((name) => req.get(name))) {
+      return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Only the user can let the automation browser act as owner.' });
+    }
+    let fromAutomationBrowser = false;
+    try { fromAutomationBrowser = typeof pageSession?.isAutomationBrowser === 'function' && pageSession.isAutomationBrowser(req) === true; } catch { fromAutomationBrowser = true; }
+    if (fromAutomationBrowser) return res.status(403).json({ ok: false, code: 'WORKER_BROWSER', error: 'This setting is changed from the owner\'s own browser or the app, never from SynaBun\'s automation browser.' });
+    if (callerContext(req).kind !== 'ui') return uiOnly(req, res, 'Only the user can let the automation browser act as owner.');
+    const value = req.body?.enabled;
+    if (typeof value !== 'boolean') return res.status(400).json({ ok: false, code: 'INVALID_VALUE', error: 'enabled must be true or false.' });
+    try { res.json({ ok: true, ...automationBrowserOwnerAccess.set(value) }); } catch (error) { sendError(res, error); }
   });
   router.get('/ui/tabs', (req, res) => res.json({ ok: true, windows: listTabs() }));
   router.post('/ui/focus', (req, res) => {

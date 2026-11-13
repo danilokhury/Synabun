@@ -6,19 +6,18 @@
  * Runs after `npm i -g synabun` (and after `npm install` in a checkout). npm
  * has already installed every runtime dependency at the package root, at the
  * versions npm-shrinkwrap.json pins, so nothing is installed here: this only
- * finishes what npm cannot (node-pty's binary, the MCP build of a fresh
- * checkout, the synabun:// handler, the updater shim's executable bit).
+ * finishes what npm cannot (node-pty's binary, the MCP build of the installed
+ * source, the synabun:// handler, the updater shim's executable bit).
  * Does NOT start the server — that's setup.js / `synabun` command.
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, chmodSync, lstatSync, readlinkSync, unlinkSync } from 'node:fs';
+import { existsSync, chmodSync, lstatSync, readFileSync, readlinkSync, unlinkSync } from 'node:fs';
 import { resolve, dirname, basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { platform } from 'node:os';
 import { registerStartLauncher } from './lib/start-launcher.js';
-import { mcpCompiler } from './lib/runtime-dependencies.js';
-import { mcpDistMissing } from './lib/mcp-dist.js';
+import { buildMcpServerSafely, mcpDistWhole } from './lib/mcp-build.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -72,41 +71,33 @@ function rebuildPty() {
 
 // ── MCP server build ──
 //
-// A published package carries mcp-server/dist; a fresh checkout compiles it,
-// with the TypeScript of the root's devDependencies. Built means dist/index.js
-// and every module it imports (lib/mcp-dist.js): a checkout can hold a tracked
-// dist/index.js whose newer imports git ignores, and then it is built again.
+// Every install and update builds the MCP server from the source it brought
+// (lib/mcp-build.js), even when a dist is there: the shipped or previous dist
+// may be from another version or source. The build goes into a temp folder and
+// replaces dist only when it succeeded; a failure keeps the previous (or the
+// shipped, prebuilt) dist and never fails `npm i -g`: exiting non-zero here
+// would make npm roll the whole install back, which is worse than a working
+// prebuilt server. TypeScript is a root dependency, so npm -g installs it.
 
 function buildMcpServer() {
-  const { complete, missing } = mcpDistMissing(__dirname);
-  if (complete) {
-    ok('MCP server already built');
-    return;
+  const result = buildMcpServerSafely(__dirname, {
+    force: true,
+    waitMs: 180_000,
+    log: { ok, info, warn, fail, error: (text) => console.error(text) },
+  });
+  // Failed and nothing whole to start from (a first install whose compile failed): said clearly, with the way out.
+  // Still exit 0: a non-zero exit makes npm remove the whole install, and a copy that setup.js refuses to start with a
+  // clear message is better than none; `synabun` says the same when it is run.
+  if (result.status === 'failed' && result.reason !== 'busy' && !mcpDistWhole(__dirname).complete) {
+    fail('The MCP server is not built: SynaBun cannot start until it is. See the compiler output above.');
+    info(`To repair: npm i -g synabun@${version()} (the same install again), or report this at https://github.com/danilokhury/Synabun/issues`);
+    return false;
   }
+  return true;
+}
 
-  const distIndex = resolve(__dirname, 'mcp-server', 'dist', 'index.js');
-  if (existsSync(distIndex)) info(`MCP server build is incomplete (missing ${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ` and ${missing.length - 3} more` : ''}): building it again...`);
-  else info('Building MCP server from source...');
-  const tsc = mcpCompiler(__dirname);
-  if (!tsc) {
-    fail('MCP server build failed: TypeScript is not installed (run npm install in the package root)');
-    return;
-  }
-  try {
-    execFileSync(process.execPath, [tsc, '-p', resolve(__dirname, 'mcp-server')], {
-      cwd: resolve(__dirname, 'mcp-server'),
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 120_000,
-    });
-    ok('MCP server built');
-  } catch (err) {
-    fail('MCP server build failed:');
-    const stdout = err.stdout?.toString().trim();
-    const stderr = err.stderr?.toString().trim();
-    if (stdout) console.error(stdout);
-    if (stderr) console.error(stderr);
-    if (!stdout && !stderr) console.error(err.message);
-  }
+function version() {
+  try { return JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8')).version || 'latest'; } catch { return 'latest'; }
 }
 
 // ── Links an older postinstall left ──
@@ -173,11 +164,19 @@ function main() {
 
   removeStalePartLinks();
   rebuildPty();
-  buildMcpServer();
+  const built = buildMcpServer();
   registerProtocolHandler();
   ensureUpdaterShExecutable();
 
-  console.log(`\n  ${c.green}✓${c.reset} Setup complete. Run ${c.cyan}synabun${c.reset} to start.\n`);
+  if (built) console.log(`\n  ${c.green}✓${c.reset} Setup complete. Run ${c.cyan}synabun${c.reset} to start.\n`);
+  else console.log(`\n  ${c.red}✗${c.reset} Setup did not complete: the MCP server is not built (see above).\n`);
 }
 
-main();
+// Never a non-zero exit: npm would roll the whole install back for it. Whatever goes wrong here is said, and
+// setup.js (the `synabun` command) checks the build again and refuses to start a server that cannot load.
+try {
+  main();
+} catch (err) {
+  fail(`postinstall did not finish: ${err?.message || err}`);
+  info('Run synabun: it checks the build again and says what is missing.');
+}

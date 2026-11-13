@@ -8,7 +8,7 @@ import { config as memoryConfig, detectProject as memoryProject } from '../../mc
 import { Codex } from '@openai/codex-sdk';
 import { CodexWorkerAppServer } from './codex-worker-app-server.js';
 import { query as claudeQuery } from '@anthropic-ai/claude-agent-sdk';
-import { CLAUDE_EFFORT_LEVELS } from './claude-model-catalog.js';
+import { CLAUDE_EFFORT_LEVELS, CLAUDE_EFFORT_OFF } from './claude-model-catalog.js';
 import { CLAUDE_NOT_INSTALLED, resolveClaudeSdkExecutable } from './claude-executable.js';
 import { BACKGROUND_HOLD_DEFAULTS, createBackgroundTasks, createTurnHold, resultDeclaresDone } from './claude-background-hold.js';
 import { extractOpenCodeText } from './session-title-generator.js';
@@ -905,6 +905,8 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
   }
   if (model) queryOptions.model = model;
   if (effort && CLAUDE_EFFORT_LEVELS.includes(effort)) queryOptions.effort = effort;
+  // Off (the route card's, agent_dispatch effort "none"): no thinking at all, over the user's effortLevel setting.
+  else if (effort === CLAUDE_EFFORT_OFF) queryOptions.thinking = { type: 'disabled' };
   // Read-only: with the guard enforced the shell stays, limited to read-only commands by the hook, and only the
   // built-in writers are off the list; otherwise (warn, off) today's list, Bash included.
   if (capability === 'read-only' && !held) queryOptions.disallowedTools = guard?.enforced ? [...CLAUDE_READ_ONLY_WRITE_TOOLS] : [...CLAUDE_READ_ONLY_DISALLOWED_TOOLS];

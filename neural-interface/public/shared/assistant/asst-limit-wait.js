@@ -135,13 +135,13 @@ export function createLimitWait(opts = {}) {
     if (reducedMotion()) {
       try { rig?.destroy(); } catch { /* gone */ }
       rig = null;
-      face.innerHTML = mascotLib.mascotSvg({ width: 34, height: 17, className: 'synabun-mascot asst-still' });
+      face.innerHTML = mascotLib.mascotSvg({ width: 72, height: 36, className: 'synabun-mascot asst-still' });
       try { mascotLib.paintMascot(face.firstElementChild, mascotLib.stillFrame(next)); } catch { /* the plain face */ }
       return;
     }
     if (!rig) {
       face.textContent = '';
-      try { rig = mascotLib.createMascot(face, { width: 34, height: 17, pose: next }); return; } catch { rig = null; }
+      try { rig = mascotLib.createMascot(face, { width: 72, height: 36, pose: next }); return; } catch { rig = null; }
     }
     try { rig?.setPose(next, next === 'success' ? { then: 'idle' } : undefined); } catch { /* keeps its pose */ }
   }
@@ -295,7 +295,7 @@ const CSS = `
   .asst-limit-wait.is-indeterminate .asst-limit-ring-fill { stroke-dasharray: 18 82; animation: asst-limit-orbit 2.6s linear infinite; }
   @keyframes asst-limit-orbit { to { transform: rotate(360deg); } }
   .asst-limit-wait-face { position: absolute; inset: 0; display: grid; place-items: center; color: var(--lw-tone); line-height: 0; }
-  .asst-limit-wait-face svg { display: block; width: 34px; height: 17px; }
+  .asst-limit-wait-face svg { display: block; width: 72px; height: 36px; }
   .asst-limit-wait-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .asst-limit-wait-title { color: var(--asst-text-2); font-size: 12px; font-weight: 500; }
   .asst-limit-wait[data-state="restored"] .asst-limit-wait-title { color: var(--asst-brand); }
@@ -310,7 +310,7 @@ const CSS = `
   @container asst (max-width: 320px) {
     .asst-limit-wait { grid-template-columns: 44px minmax(0, 1fr); gap: 10px; padding: 10px; }
     .asst-limit-wait-stage, .asst-limit-ring { width: 44px; height: 44px; }
-    .asst-limit-wait-face svg { width: 28px; height: 14px; }
+    .asst-limit-wait-face svg { width: 56px; height: 28px; }
     .asst-limit-wait-clock { font-size: 17px; }
   }
   body.ui-interacting .asst-limit-ring-fill { animation-play-state: paused !important; }

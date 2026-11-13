@@ -1,6 +1,6 @@
 {
   "name": "synabun",
-  "version": "2.2.2",
+  "version": "2.3.0",
   "mcpName": "io.github.danilokhury/synabun",
   "description": "Local-first persistent vector memory, MCP tooling, and multi-agent workflows for AI assistants",
   "license": "Apache-2.0",
@@ -78,6 +78,7 @@
     "lib/first-launch-protection.js",
     "lib/update-snapshot.js",
     "lib/runtime-dependencies.js",
+    "lib/mcp-build.js",
     "lib/mcp-dist.js",
     "lib/tools-cli.js",
     "lib/package-processes.js",
@@ -126,6 +127,8 @@
     "@inquirer/prompts": "^8.2.0",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@openai/codex-sdk": "^0.160.0",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.12.0",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/addon-search": "0.16.0",
     "@xterm/addon-serialize": "0.14.0",
@@ -141,6 +144,7 @@
     "express": "^4.21.2",
     "node-html-markdown": "^2.0.0",
     "playwright": "^1.59.1",
+    "typescript": "^5.9.3",
     "undici": "^8.5.0",
     "uuid": "^14.0.0",
     "ws": "^8.21.0",
@@ -149,11 +153,6 @@
   },
   "optionalDependencies": {
     "node-pty": "^1.1.0"
-  },
-  "devDependencies": {
-    "@types/express": "^5.0.0",
-    "@types/node": "^22.12.0",
-    "typescript": "^5.9.3"
   },
   "overrides": {
     "@hono/node-server": "^1.19.13",

@@ -61,8 +61,11 @@ export const CODEX_FALLBACK_MODELS = [
 export const CODEX_DEFAULT_MODEL_IDS = CODEX_FALLBACK_MODELS.map(m => m.id);
 
 export const EFFORT_LEVELS_BY_PROFILE = {
+  // `off` is Auto: no --effort, the model's own default. Off (thinking disabled) is the id `none`
+  // (lib/effort-levels.js EFFORT_OFF), which every Claude Code runner starts with thinking disabled.
   'claude-code': [
-    { id: 'off', label: 'Off', desc: 'No thinking' },
+    { id: 'off', label: 'Auto', desc: 'Model default' },
+    { id: 'none', label: 'Off', desc: 'No thinking' },
     { id: 'low', label: 'Low', desc: 'Minimal' },
     { id: 'medium', label: 'Med', desc: 'Balanced', tier: 'default' },
     { id: 'high', label: 'High', desc: 'Deep' },
@@ -145,7 +148,7 @@ export function modelEffortIds(model) {
   return source ? sortEfforts(source) : null;
 }
 
-/** `effort` clamped into `ids`: kept, else the highest id below it, else the lowest. null for auto/none. */
+/** `effort` clamped into `ids`: kept, else the highest id below it, else the lowest (never `none`). null for auto. */
 export function clampEffortId(effort, ids) {
   const want = String(effort ?? '').trim();
   if (!want || AUTO_EFFORTS.has(want.toLowerCase()) || !ids?.length) return null;
@@ -153,7 +156,9 @@ export function clampEffortId(effort, ids) {
   if (same) return same;
   const rank = effortRank(want);
   if (rank < 0) return null;
-  const ranked = ids.filter(id => effortRank(id) >= 0);
+  // `none` (thinking off) is a choice, never where a correction lands (lib/effort-levels.js clampEffort).
+  const ranked = ids.filter(id => effortRank(id) >= 0 && id.toLowerCase() !== 'none');
+  if (!ranked.length) return ids.find(id => id.toLowerCase() !== 'none') || null;
   const below = ranked.filter(id => effortRank(id) < rank);
   return below.length ? below[below.length - 1] : (ranked[0] || ids[0]);
 }
@@ -679,11 +684,29 @@ export function getEffortLevelsForProfile(profileId) {
   return EFFORT_LEVELS_BY_PROFILE[profileId] || [];
 }
 
+// Off: thinking disabled. One id across providers (lib/effort-levels.js EFFORT_OFF).
+export const EFFORT_OFF = 'none';
+const EFFORT_OFF_CHOICE = Object.freeze({ id: EFFORT_OFF, label: 'Off', desc: 'No thinking' });
+
+/**
+ * Can this model run with thinking off? Mirrors lib/effort-levels.js supportsEffortOff: Claude Code
+ * whenever the model thinks at all (Haiku lists no level: no; a model nothing is known about: yes,
+ * the SDK and `--thinking disabled` work for any), Codex and OpenCode only when the model lists
+ * `none`, Antigravity never.
+ */
+export function modelSupportsEffortOff(profileId, model) {
+  const ids = modelEffortIds(model);
+  if (profileId === 'claude-code') return ids ? ids.some(id => id.toLowerCase() !== EFFORT_OFF) : true;
+  if (profileId === 'antigravity') return false;
+  return !!ids?.some(id => id.toLowerCase() === EFFORT_OFF);
+}
+
 // Effort levels a specific model actually supports, led by `off` (the model's
-// default). Every provider advertises them per model (see modelEffortIds), and
-// some models support none at all — Haiku has no thinking, so passing --effort
-// to it is meaningless. The provider list is only the fallback for a model
-// nothing is known about.
+// default, "Auto" for Claude Code), then Off (`none`, thinking disabled) where
+// the model can run it, then its levels. Every provider advertises them per
+// model (see modelEffortIds), and some models support none at all — Haiku has
+// no thinking, so passing --effort to it is meaningless. The provider list is
+// only the fallback for a model nothing is known about.
 export function getEffortLevelsForModel(profileId, model) {
   const profileLevels = getEffortLevelsForProfile(profileId);
   const advertised = modelEffortIds(model);
@@ -691,7 +714,9 @@ export function getEffortLevelsForModel(profileId, model) {
   const off = profileLevels.find(e => e.id === 'off') || { id: 'off', label: 'Default', desc: 'Model default' };
   if (!advertised.length) return [off];
   const byId = new Map(profileLevels.map(e => [e.id, e]));
-  return [off, ...advertised.map(id => byId.get(id) || { id, label: effortLabel(id), desc: '' })];
+  const levels = advertised.filter(id => id.toLowerCase() !== EFFORT_OFF)
+    .map(id => byId.get(id) || { id, label: effortLabel(id), desc: '' });
+  return [off, ...(modelSupportsEffortOff(profileId, model) ? [EFFORT_OFF_CHOICE] : []), ...levels];
 }
 
 // Does this model support any thinking at all? Used to disable the Think toggle.
@@ -702,13 +727,29 @@ export function modelSupportsEffort(model) {
   return model.supportsEffort !== false;
 }
 
+/**
+ * A profile's effort list for a form that knows no model, keeping a saved Off (`none`) the list
+ * does not show (Codex: only some models list it), so redrawing the form never drops it to Auto.
+ */
+export function getEffortLevelsKeeping(profileId, selected) {
+  const levels = getEffortLevelsForProfile(profileId);
+  const value = String(selected || '').trim().toLowerCase();
+  if (value !== EFFORT_OFF || levels.some(e => e.id === EFFORT_OFF) || !normalizeEffortForProfile(profileId, value)) return levels;
+  const [first, ...rest] = levels;
+  return first?.id === 'off' ? [first, EFFORT_OFF_CHOICE, ...rest] : [EFFORT_OFF_CHOICE, ...levels];
+}
+
 export function profileSupportsEffort(profileId) {
   return getEffortLevelsForProfile(profileId).some(e => e.id !== 'off');
 }
 
+// What a launch sends: `off` (Auto) is nothing; Off (`none`) is kept for every CLI that can switch
+// thinking off (Codex takes `model_reasoning_effort=none` whatever the fallback list says), so a
+// saved Off never turns into the model's default or a level on the way to the server.
 export function normalizeEffortForProfile(profileId, effort) {
   const value = String(effort || '').trim();
   if (!value || value === 'off') return null;
+  if (value.toLowerCase() === EFFORT_OFF) return profileId === 'claude-code' || profileId === 'codex' ? EFFORT_OFF : null;
   const levels = getEffortLevelsForProfile(profileId);
   return levels.some(e => e.id === value) ? value : null;
 }

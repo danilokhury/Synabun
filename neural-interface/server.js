@@ -20,12 +20,13 @@ import { createCodexAccounts, applyCodexLaunchEnv, codexAppServerArgs, codexExec
 import { codexWindowsSandbox, codexWindowsSandboxArgs } from './lib/agent-sandbox-elevation.js';
 import { createAdminSandboxSetting } from './lib/agent-sandbox-setting.js';
 import { createWorkerGuardSetting } from './lib/worker-guard-setting.js';
+import { createAutomationBrowserOwnerAccess } from './lib/automation-browser-owner-access.js';
 import { resolveWorkerConfinement } from './lib/worker-confinement.js';
 import { SANDBOX_EXEC, buildWorkerSandboxProfile, canonicalPath, sandboxExecArgv, sandboxExecAvailable, sandboxSupported, workerSandboxPlan, writeWorkerSandbox } from './lib/worker-sandbox.js';
 import { createWorkerMcpChannel } from './lib/worker-mcp-channel.js';
 import { createPageSession, PAGE_SECRET_PATHS, PAGE_SECRET_REFRESH_PATH, SERVICE_WORKER_PATH } from './lib/page-session.js';
 import { normalizeViewUrl } from './public/shared/view-variant.js';
-import { createPeerIdentity, debugClientPolicy } from './lib/peer-identity.js';
+import { createPeerIdentity, debugClientPolicy, PEER_VERDICT, peerAuthority } from './lib/peer-identity.js';
 import { createOwnerAuthority, isAgentCall } from './lib/owner-authority.js';
 import { collectRelayListenerPorts, localProxyPorts } from './lib/worker-relay-ports.js';
 import { machineNames } from './lib/machine-names.js';
@@ -40,8 +41,12 @@ import { createBrowserStartHandoff, startWaitMs } from './lib/browser-start-hand
 import { browserRequestDeadline, browserV2Enabled, browserRequestMiddleware, assertBrowserRequestActive, browserActionTimeout, markBrowserActionStarted, runBrowserRequest, cancellableBrowserDelay, measureBrowserPhase, createEngagementScheduler, engagementTargetSelector, isEngagementWriteSelector, isXShortcutPublish, isXScriptedWrite } from './lib/browser-execution.js';
 import { sessionCloseDecision, profileStopDecision, otherSessionOwners } from './lib/browser-session-close.js';
 import { isAutomationBrowserRoute, ownerOnlyCreateFields } from './lib/browser-automation-routes.js';
+import { withOnDeviceModelBlocked } from './lib/chromium-on-device-model.js';
 import { browserOwnerId, listedOwners } from './lib/browser-owner.js';
-import { createTerminalTokenRegistry, TERMINAL_TOKEN_ENV, TERMINAL_TOKEN_HEADER, BRAIN_CREDENTIAL_HEADER, redactTerminalSecrets } from './lib/terminal-tokens.js';
+import { createProfileChoiceStore, resolveProfileRef } from './lib/browser-profile-choices.js';
+import { scheduleReview, templateReview, sameDigest, scheduleMarked, templateMarked, clearScheduleMark, clearTemplateMark, markRecordsUnreviewed, REVIEW_CHANGED, UNREVIEWED_SOURCES } from './lib/automation-approval.js';
+import { AGENT_PROFILES_KEY, PROFILE_NOT_ALLOWED, normalizeAgentProfiles, agentProfileAllowed, withAgentProfile, profileNotAllowedError, pinUseRefusal, scheduleProfileAuthority, scheduleProfileRefusalText, describeProfile, profileKindLabel } from './lib/morelogin-agent-profiles.js';
+import { createTerminalTokenRegistry, TERMINAL_TOKEN_ENV, TERMINAL_TOKEN_HEADER, BRAIN_CREDENTIAL_HEADER, redactTerminalSecrets, logIdOf } from './lib/terminal-tokens.js';
 import { decideFailedTabRecovery } from './lib/browser-wedge-retire.js';
 import { createSocialWritePacer, socialPaceAccountKey, socialPaceRequest, socialPacingBlock, SOCIAL_PACE_LIMITS, SOCIAL_WRITE_GAPS } from './lib/social-write-pacing.js';
 import { describeLocatorMatches, healLocatorByText, validNthMatch, captureTargetIdentity, matchesTargetIdentity } from './lib/browser-targets.js';
@@ -56,7 +61,7 @@ import { runBrowserExtraction, readBrowserContentHtml } from './lib/browser-extr
 import { attachConsoleBuffer, readConsoleBuffer, parseConsoleSince } from './lib/browser-console.js';
 import { resolveBrowserLanguage, validateBrowserLanguageConfig } from './lib/browser-language.js';
 import { parseScreenshotOptions, captureScreenshot, screenshotPathRefusal, defaultScreenshotPath, writeScreenshotFile } from './lib/browser-screenshot.js';
-import { openBackgroundPage, selectedTabReading } from './lib/browser-background-tab.js';
+import { openBackgroundPageStrict, backgroundTabsEnabled, newContextWithId, selectedTabReading } from './lib/browser-background-tab.js';
 import { memoryRevision } from '../mcp-server/dist/services/memory-maintenance.js';
 import { startGatedMemoryMaintenance } from './lib/memory-timers.js';
 import { createEventLoopMonitor } from './lib/event-loop-monitor.js';
@@ -81,8 +86,16 @@ import {
   BROWSER_RECOVERY_PROBE_DEADLINE_MS,
   BROWSER_RECOVERY_STEP_DEADLINE_MS,
   BrowserPageFailureDisposition,
+  NAVIGATE_DCL_CAP_MS,
+  PAGE_STILL_PARSING_NOTICE,
+  SLOW_NAVIGATION_NOTICE,
+  SNAPSHOT_DCL_WAIT_MS,
   classifyBrowserPageError,
   isIgnorablePlaywrightLifecycleError,
+  navigationLandedDespiteTimeout,
+  scheduleSlowLoadProbe,
+  trackMainDocumentCommit,
+  waitForDomContentLoadedCapped,
   withBrowserOperationDeadline,
 } from './lib/browser-tab-recovery.js';
 
@@ -139,7 +152,8 @@ import { bindOpenCodeChildSessionTools } from './public/shared/ocp-v2/ocp-v2-too
 import { startIndexing, getIndexingStatus, mirrorExistingChunks } from './lib/session-indexer.js';
 import * as mcpInstaller from './lib/mcp-installer.js';
 import * as pluginInstaller from './lib/plugin-installer.js';
-import { loopLog, loopLogPath, flushLoopLogs } from './lib/loop-logger.js';
+// loopLog here is the wrapper below browserCaller (it never names a log file after a whole MCP session id).
+import { loopLog as writeLoopLog, loopLogPath, flushLoopLogs } from './lib/loop-logger.js';
 import {
   buildInstallCommand,
   buildUpdateCommand,
@@ -238,7 +252,8 @@ import {
   mergeScheduleLaunchSnapshot,
   resolveScheduleRunPresentation,
 } from './lib/schedule-launch-intent.js';
-import * as moreLogin from './lib/morelogin.js';
+// MoreLogin's profiles and SynaBun's own local profiles behind one face (lib/browser-profiles.js routes by profile id).
+import * as moreLogin from './lib/browser-profiles.js';
 import { createStyleGuideStore } from './lib/style-guide/store.js';
 import { registerStyleGuideRoutes } from './lib/style-guide/api.js';
 import { initBlobStore, blobGetNamespace, blobGet, blobPut, blobDelete, blobClearNamespace, blobPrune, closeBlobStore } from './lib/ui-blob-store.js';
@@ -258,6 +273,13 @@ import { ANTIGRAVITY_PANEL_CAPABILITIES, ANTIGRAVITY_WS_PATH, createAntigravityP
 import { migrateGeminiFiles, migrateUiStateValues as migrateGeminiUiState } from './lib/antigravity/migrate-gemini.js';
 import { groupSessionsByProject, listAntigravityModels, listAntigravitySessions } from './lib/antigravity/catalog.js';
 import { defaultAntigravityPolicy } from './lib/antigravity/policy.js';
+import { createMaritacaClient } from './lib/maritaca/client.js';
+import { createMaritacaKeyStore } from './lib/maritaca/key-store.js';
+import { createMaritacaSessionStore } from './lib/maritaca/sessions.js';
+import { createMaritacaPanelBridge } from './lib/maritaca/panel-bridge.js';
+import { registerMaritacaRoutes } from './lib/maritaca/api.js';
+import { createMaritacaOpencodeSync } from './lib/maritaca/opencode.js';
+import { createMaritacaOpencodeProxy, maritacaOpencodeProxyBaseUrl } from './lib/maritaca/opencode-proxy.js';
 import { antigravityHomeDir, antigravityHomesRoot, pruneAntigravityHomes } from './lib/antigravity/home.js';
 import { antigravityStores, findUserConversation, parseAntigravityTranscript, readTranscriptText } from './lib/antigravity/transcripts.js';
 import {
@@ -330,6 +352,7 @@ import { claudeBoolean } from './public/shared/skills/ss-profiles.js';
 import { generateSessionTitle } from './lib/session-title-generator.js';
 import {
   CLAUDE_EFFORT_LEVELS,
+  CLAUDE_EFFORT_OFF,
   CLAUDE_FALLBACK_MODELS,
   binaryIdentity,
   checkClaudeCliSkew,
@@ -379,7 +402,7 @@ import { prunePreUpdateSnapshots, resolvePreUpdateKeep } from '../lib/update-sna
 import { launcherRegistrationAllowed, registerStartLauncher, startLauncherState } from '../lib/start-launcher.js';
 import { effectiveNpmPrefix } from '../lib/child-path.js';
 import { checkRuntimeDependencies, fallbackInstallArgs, fallbackInstallEnv, findInstalled, mcpCompiler, npmCommand, npmInvocation } from '../lib/runtime-dependencies.js';
-import { mcpDistBuilt } from '../lib/mcp-dist.js';
+import { buildMcpServerSafelyAsync, mcpBuildNeeded, mcpDistWhole } from '../lib/mcp-build.js';
 import { STOP_MARKER_NAME, STOP_TOKEN_ENV, stopAnnouncement, writeStopMarker } from '../lib/server-exit.js';
 import { redactDeep, redactSecrets } from '../lib/log-redact.js';
 import { applyPackagedChildPath, durableEntry, mcpStdioCommand, npmGlobalBinFor, packagedNpmPrefix, packagedPathFolders, packagedRuntime } from '../lib/packaged-runtime.js';
@@ -577,7 +600,9 @@ _peerIdentity.probe();
 // and the agents' feature data, the two reads that hand out a secret, and the owner's sockets are refused to the
 // automation browser (its marker or its process), relays, other SynaBun servers, remote logins and an agent's tree
 // that does not say it is an agent's call. Requests from outside keep the guest rules.
-const _ownerAuthority = createOwnerAuthority({ pageSession: () => _pageSession, isRemote: (req) => requestGates.isRemote(req), peer: _peerIdentity, log: (line) => console.warn(line) });
+// The owner's setting "Let the automation browser act as owner" (lib/automation-browser-owner-access.js, made further
+// down with the data home): while on, the automation browser is not refused here nor by the page secret.
+const _ownerAuthority = createOwnerAuthority({ pageSession: () => _pageSession, isRemote: (req) => requestGates.isRemote(req), peer: _peerIdentity, log: (line) => console.warn(line), automationBrowserAllowed: () => _automationBrowserOwnerAccess.enabled() });
 app.use(_peerIdentity.middleware({ needs: peerLookupWanted }));
 app.use(_ownerAuthority.restGate);
 
@@ -990,7 +1015,7 @@ app.use(function uploadedLogoHeaders(req, res, next) {
 // middleware that sets it. GET /api/page-session is how an open tab gets this boot's cookie after a restart
 // (public/shared/page-session.js retries the refused write once with it).
 // The page secret, asked of the peer lookup mounted in front of every route (_peerIdentity, above).
-const _pageSession = createPageSession({ port: Number(PORT), isGuest: isGuestRequest, peer: _peerIdentity });
+const _pageSession = createPageSession({ port: Number(PORT), isGuest: isGuestRequest, peer: _peerIdentity, automationBrowserAllowed: () => _automationBrowserOwnerAccess.enabled() });
 /** Whether a request asks for the page secret (the app's pages, the refresh route, the Studio's owner reads, the
  *  service worker's script), is one of the owner's writes, or carries this boot's secret on an API request: only
  *  then is its peer looked up. */
@@ -1004,6 +1029,9 @@ function peerLookupWanted(req) {
   }
   // One of the owner's writes, or a read that hands out a secret (lib/owner-authority.js).
   if (_ownerAuthority.needsLookup(req)) return true;
+  // A new session of the plain /mcp mount (an initialize: a POST with no Mcp-Session-Id): whether it may get a proof
+  // of its own depends on what is at the other end (mcpSessionProofEligible: never a relay or a proxy).
+  if (req.method === 'POST' && (path === '/mcp' || path === '/mcp/') && req.headers['mcp-session-id'] === undefined) return true;
   return path.startsWith('/api/') && _pageSession.carriesSecret(req);
 }
 app.use(_pageSession.serviceWorker); // GET /sw.js: a worker that takes itself away, for a browser refused the secret
@@ -2437,6 +2465,8 @@ async function runGracefulShutdown(reason) {
   try { stopAllIsolatedServes(); } catch (err) { console.warn('  isolated opencode stop err:', err?.message); }
   // The Antigravity panel's `agy acp` processes (one per open panel socket).
   try { await antigravityPanel.closeAll(); } catch (err) { console.warn('  antigravity panel stop err:', err?.message); }
+  // The Maritaca panel's streaming turns (HTTP requests in flight).
+  try { await maritacaPanel.closeAll(); } catch (err) { console.warn('  maritaca panel stop err:', err?.message); }
   // The code editor's completion serve, and today's autocomplete counters.
   try { await editorCompletion.stop(); } catch (err) { console.warn('  editor completion stop err:', err?.message); }
 
@@ -2541,13 +2571,24 @@ let _restartRequestedAt = 0;
 // The supervisor an unsupervised restart started for itself: ended when a later stop calls the restart off.
 let _restartRespawn = null;
 app.post('/api/server/restart', async (req, res) => {
+  res.json(requestServerRestart());
+});
+// The body of the restart, after its route, so the restart reads as one piece between the two routes.
+/**
+ * Restart this server: the one way for everything in-process (the route below; the MCP build of /api/setup/build and
+ * of a restore, whose new dist the running server, with the old one in its module cache, cannot load). Answers at
+ * once with what the pages read (`bootId`: "back" is a different one in /api/health), tells every window, then shuts
+ * down: supervised (setup.js) with exit code 75, else with a detached setup.js of its own. A second call while a
+ * restart is under way starts nothing more (`already`).
+ */
+function requestServerRestart() {
   const supervised = process.env.SYNABUN_SUPERVISED === '1';
   if (_restartRequestedAt) {
-    return res.json({ ok: true, message: 'Server restarting...', supervised, bootId: SERVER_BOOT_ID, at: _restartRequestedAt, already: true });
+    return { ok: true, message: 'Server restarting...', supervised, bootId: SERVER_BOOT_ID, at: _restartRequestedAt, already: true };
   }
   console.log('[server] Restart requested.');
   _restartRequestedAt = Date.now();
-  res.json({ ok: true, message: 'Server restarting...', supervised, bootId: SERVER_BOOT_ID, at: _restartRequestedAt });
+  const answer = { ok: true, message: 'Server restarting...', supervised, bootId: SERVER_BOOT_ID, at: _restartRequestedAt };
   // Every open window is told before anything is torn down, so each one shows
   // the restart at once instead of finding its sockets closed (ui-loading.js).
   try { broadcastSync({ type: 'server:restarting', bootId: SERVER_BOOT_ID, supervised, at: _restartRequestedAt }); } catch {}
@@ -2590,7 +2631,8 @@ app.post('/api/server/restart', async (req, res) => {
     if (supervised && restart) _preserveExitCode = true; // supervisor needs RESTART_EXIT_CODE; skip SIGKILL
     process.exit(supervised && restart ? RESTART_EXIT_CODE : 0);
   }, 200);
-});
+  return answer;
+}
 
 // POST /api/server/shutdown — Graceful shutdown without restart. Used by
 // `npm uninstall synabun` (preuninstall.js) and the in-app updater.
@@ -4106,6 +4148,16 @@ const _workerGuard = createWorkerGuardSetting({
 });
 /** The `-c` words every Codex SynaBun starts gets for the setting (outside an account's launch plan). */
 function codexSandboxArgs() { return codexWindowsSandboxArgs(adminSandboxOn()); }
+// Let the automation browser act as owner (lib/automation-browser-owner-access.js): off by default; while on, the
+// page secret and the owner gate (made above, they read it on every request) treat SynaBun's automation browser as
+// the owner, so screenshot and visual-QA runs see the real UI. Settings → Browser → Automation browser access; the
+// owner's page only (PUT /api/assistant/automation-browser-owner-access), never the automation browser itself.
+const _automationBrowserOwnerAccess = createAutomationBrowserOwnerAccess({
+  path: resolve(DATA_HOME, 'data', 'automation-browser-owner-access.json'),
+  broadcast: (message) => broadcastSync(message),
+  log: (tag, message) => console.warn(`[${tag}]`, message),
+});
+{ const notice = _automationBrowserOwnerAccess.startupNotice(); if (notice) console.warn(notice); }
 
 // ── Worker OS isolation (macOS Seatbelt) ─────────────────────────────────────
 // A guarded Claude / OpenCode worker (Protect workers = Enforce) runs its whole process tree under sandbox-exec
@@ -4121,16 +4173,34 @@ let _workerMcpChannel = null;
 // Who a run is (lib/terminal-tokens.js): one token per run SynaBun starts (an agent, a terminal or exec loop, a native
 // run, a dispatched worker), minted with its terminal id, handed to that run's SynaBun MCP alone, revoked at its end.
 // The browser routes take a run's X-Synabun-Terminal only with that run's token (browserCaller). In memory only.
-const _terminalTokens = createTerminalTokenRegistry({ log: (line) => console.warn(line) });
+const _terminalTokens = createTerminalTokenRegistry({
+  log: (line) => console.warn(line),
+  // An id's owner ended (a run, a closed MCP session): what it held as its MoreLogin profile goes with it, so a pin or
+  // a saved choice never outlives its owner (review b6631e9d, finding 2). Declared further down; called at run time only.
+  onEnded: (id) => { try { forgetRunMoreLoginProfile(id); } catch (err) { console.warn(`[morelogin] ${logOwnerId(id)}: its profile pin was not forgotten: ${err.message}`); } },
+});
 /** The launch beacon's loopback port (lib/start-launcher.js startBeaconPort): a SynaBun listener while a launch lives. */
 function workerBeaconPort() { const p = Number(PORT) || 3344; return p + 10000 <= 65535 ? p + 10000 : p - 10000; }
 /** Browser-control ports a guarded worker must not reach, by fixed knowledge (dynamic ones come from detection,
  *  workerRelayPorts): MoreLogin's local API (a worker there starts another profile with its own CDP) and the CDP
  *  port SynaBun's own attach mode uses. Denied even when nothing is listening at profile-generation time. */
+/** Every port kept for the local profiles' relays and DevTools ports (lib/local-profiles.js LOCAL_PROFILE_PORT_RANGE). */
+function workerLocalProfilePorts() {
+  const range = moreLogin.localProfilePortRange();
+  const ports = [];
+  for (let p = range.from; p <= range.to; p += 1) ports.push(p);
+  return ports;
+}
 function workerBrowserControlPorts() {
   const ports = new Set([...moreLogin.MORELOGIN_FIXED_API_PORTS]);
   try { const p = moreLogin.getMoreLoginPort(loadBrowserConfig()); if (p > 0) ports.add(p); } catch {}
   try { if (CDP_PORT > 0) ports.add(CDP_PORT); } catch {}
+  // The ports kept for the local profiles (lib/local-profiles.js LOCAL_PROFILE_PORT_RANGE), all of them: every proxy
+  // relay (a loopback proxy without a login, a way out through a profile's own proxy) and every DevTools port of a
+  // local profile (full control of it) is allocated inside this range and nowhere else. Denied whole, as the
+  // OpenCode range is, so a relay or a profile started AFTER this worker's profile was written is covered too.
+  // (No try here: a range that could not be read must fail the profile's generation, never leave the range open.)
+  for (const p of workerLocalProfilePorts()) ports.add(p);
   return [...ports];
 }
 /** SynaBun's MCP server over HTTP (mcp-server/dist/http.js reads MCP_HTTP_PORT from its environment or this data
@@ -9190,6 +9260,39 @@ const antigravityPanel = createAntigravityPanelBridge({
   log: (line) => console.log(line),
 });
 
+// ── Maritaca AI side panel (/ws/maritaca, /api/maritaca) ──
+// Maritaca's Sabiá models over their OpenAI-compatible HTTP API (lib/maritaca/*; docs/maritaca-sidepanel.md): a chat
+// provider with a panel of its own, never a worker or a brain. The key lives in DATA_HOME/data/maritaca/.synabun-api-key
+// (or MARITACA_API_KEY), the conversations in DATA_HOME/data/maritaca/sessions/.
+const maritacaKeyStore = createMaritacaKeyStore({ dir: resolve(DATA_HOME, 'data', 'maritaca') });
+const maritacaSessions = createMaritacaSessionStore({ dir: resolve(DATA_HOME, 'data', 'maritaca', 'sessions') });
+const maritacaClient = createMaritacaClient({ baseUrl: process.env.SYNABUN_MARITACA_BASE_URL || undefined });
+const maritacaPanel = createMaritacaPanelBridge({
+  client: maritacaClient, keyStore: maritacaKeyStore, sessions: maritacaSessions,
+  onHumanPrompt: ({ project, words }) => { try { _greeting?.noteActivity({ cwd: project || PACKAGE_ROOT, surface: 'maritaca-panel', words }); } catch {} },
+  log: (line) => console.warn(line),
+});
+// OpenCode's requests for a Sabiá model come through this server (lib/maritaca/opencode-proxy.js): OpenCode 2 refuses
+// Maritaca's stream on a tool call ("received content after the finish reason"), and the route puts the stream in the
+// order OpenCode reads. It takes only a caller that presents the saved key, and sends the request on to the same API as
+// the panel's client.
+const maritacaOpencodeProxy = createMaritacaOpencodeProxy({ keyStore: maritacaKeyStore, upstreamBaseUrl: maritacaClient.baseUrl, log: (line) => console.log(line) });
+// Maritaca as an OpenCode provider (lib/maritaca/opencode.js; Settings → OpenCode → Providers): the provider block in
+// the global opencode.json, the key as a {file:…} / {env:…} reference OpenCode resolves itself, reloaded like the
+// Ollama card's, its base URL this server's route above. Everything it touches is handed in: it opens no file of its own.
+const maritacaOpencode = createMaritacaOpencodeSync({
+  keyStore: maritacaKeyStore,
+  baseUrl: () => maritacaOpencodeProxyBaseUrl(PORT),
+  readConfig: () => readOpencodeConfigDocument(getOpencodeConfigPath()).config,
+  updateConfig: (mutate) => updateOpencodeConfigFile(getOpencodeConfigDir(), mutate),
+  configPath: () => getOpencodeConfigPath(),
+  convertProviders: () => opencodeConvertedProviders(getOpencodeConfigPath()),
+  reload: () => reloadSharedOpencodeConfig(),
+  broadcast: () => broadcastToOpencodeV2Clients({ type: 'providers:changed' }),
+  catalogChanged: () => refreshOpencodeProviderConsumers(),
+  log: (line) => console.log(line),
+});
+
 function handleOpencodeV2Ws(ws) {
   _ocpV2WsClients.add(ws);
   ws._nativeLoopWindowId = null;
@@ -9979,6 +10082,15 @@ async function reloadSharedOpencodeConfig() {
   }
 }
 
+// A provider block SynaBun wrote into opencode.json (Ollama, Maritaca) after reloadSharedOpencodeConfig: the kept
+// provider list is read from the serve again and the Assistant's catalog rebuilt from it, so agent_catalog and the
+// Routes editor list the new models at once. Neither notices by itself: the list's change hook compares answers under
+// one key and a written file is another key, and the catalog keeps a build for 30 s.
+async function refreshOpencodeProviderConsumers() {
+  if (_ocpReady) { try { await readOpencodeProviders('compact', { refresh: true }); } catch { /* the catalog says why */ } }
+  try { await _assistantCatalog?.refresh?.(); } catch { /* no Assistant */ }
+}
+
 // ── Ollama local model endpoints ──
 
 const OLLAMA_BASE = 'http://localhost:11434';
@@ -10062,6 +10174,7 @@ app.post('/api/ollama/configure', async (req, res) => {
     console.log(`[ollama] Configured ${Object.keys(models).length} model(s) in ${configPath}`);
     await reloadSharedOpencodeConfig();
     broadcastToOpencodeV2Clients({ type: 'providers:changed' });
+    refreshOpencodeProviderConsumers().catch(() => {});
 
     _ollamaUserRemoved = false;
     _ollamaManagedByUs = true;
@@ -10078,6 +10191,7 @@ app.delete('/api/ollama/configure', async (req, res) => {
       console.log('[ollama] Removed Ollama provider from config');
       await reloadSharedOpencodeConfig();
       broadcastToOpencodeV2Clients({ type: 'providers:changed' });
+      refreshOpencodeProviderConsumers().catch(() => {});
     }
     _ollamaUserRemoved = true;
     res.json({ ok: true });
@@ -10451,6 +10565,8 @@ async function readOpencodeProviders(view = 'full', { refresh = false } = {}) {
 // Every window learns the list changed (an OpenCode panel's own socket says so only where one is open).
 function announceOpencodeProvidersChanged() {
   try { broadcastSync({ type: 'opencode:providers-changed' }); } catch {}
+  // The Assistant's catalog is a copy of this list (opencode rows): it is rebuilt with it.
+  try { _assistantCatalog?.refresh?.().catch(() => {}); } catch {}
   _announcingOpencodeProviders = true;
   try { broadcastToOpencodeV2Clients({ type: 'providers:changed' }); } finally { _announcingOpencodeProviders = false; }
 }
@@ -14077,6 +14193,8 @@ app.post('/api/loop/templates', (req, res) => {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
+  // Who wrote what a schedule with a MoreLogin profile would run (markTemplateAuthor; never read from the body).
+  markTemplateAuthor(template, req);
   templates.push(template);
   writeLoopTemplates(templates);
   res.json(toolListRecord(template, toolListOptions()));
@@ -14171,6 +14289,8 @@ app.post('/api/loop/templates/import', (req, res) => {
       createdAt: t.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+    // A file's entry is not the owner's reading of it: an agent's mark survives an export and import (markTemplateAuthor).
+    markTemplateAuthor(template, req, { before: existingIdx >= 0 ? existing[existingIdx] : null, source: t });
     if (existingIdx >= 0) {
       template.id = existing[existingIdx].id; // keep original id
       existing[existingIdx] = template;
@@ -14214,8 +14334,43 @@ app.put('/api/loop/templates/:id', (req, res) => {
   if (platform !== undefined) templates[idx].platform = platform || null;
   if (folderId !== undefined) templates[idx].folderId = folderId || null;
   templates[idx].updatedAt = new Date().toISOString();
+  // `before` is only "this is an edit": the mark goes when the body carries the instructions, never for a move (B2).
+  markTemplateAuthor(templates[idx], req, { before: templates[idx] });
   writeLoopTemplates(templates);
   res.json(toolListRecord(templates[idx], toolListOptions()));
+});
+
+// Template review and approval (finding 3 of the re-review of 2026-11-11; the block above /api/schedules/:id/approve).
+function templateReviewContext(id) {
+  const templates = readLoopTemplates();
+  const idx = templates.findIndex((t) => t.id === id);
+  if (idx === -1) return null;
+  const cfg = loadBrowserConfig();
+  const review = templateReview({ template: templates[idx], schedules: loadSchedules(), groups: loadScheduleGroups(), browserDefault: cfg, allowed: (envId) => agentProfileAllowed(cfg, envId), profileName: approvalProfileName(cfg) });
+  return { templates, idx, template: templates[idx], review };
+}
+app.get('/api/loop/templates/:id/review', (req, res) => {
+  if (!ownerPageApprovalCall(req)) return refuseApprovalCaller(req, res);
+  const ctx = templateReviewContext(req.params.id);
+  if (!ctx) return res.status(404).json({ ok: false, error: 'Template not found' });
+  res.json({ ok: true, review: ctx.review });
+});
+app.post('/api/loop/templates/:id/approve', (req, res) => {
+  if (!ownerPageApprovalCall(req)) return refuseApprovalCaller(req, res);
+  const digest = req.body?.digest;
+  if (typeof digest !== 'string' || !digest) return res.status(400).json({ ok: false, code: 'DIGEST_REQUIRED', error: 'digest is required: the one of the review you were shown (GET /api/loop/templates/:id/review).' });
+  const ctx = templateReviewContext(req.params.id);
+  if (!ctx) return res.status(404).json({ ok: false, error: 'Template not found' });
+  if (!sameDigest(digest, ctx.review.digest)) {
+    return res.status(409).json({ ok: false, code: REVIEW_CHANGED, review: ctx.review, error: 'This template\'s instructions changed after you opened the review (possibly by an agent). Nothing was approved: look at them again.' });
+  }
+  if (!ctx.review.needsApproval) return res.json({ ok: true, unchanged: true, template: ctx.template, review: ctx.review });
+  clearTemplateMark(ctx.templates[ctx.idx]);
+  ctx.templates[ctx.idx].updatedAt = new Date().toISOString();
+  writeLoopTemplates(ctx.templates);
+  console.log(`[loop] the owner approved template "${String(ctx.template.name || ctx.template.id).slice(0, 80)}"`);
+  const fresh = templateReviewContext(req.params.id);
+  res.json({ ok: true, template: fresh?.template || null, review: fresh?.review || null });
 });
 
 // DELETE /api/loop/templates/:id — delete a template
@@ -14590,9 +14745,15 @@ app.post('/api/loop/launch', async (req, res) => {
   let pendingNativeBrowserCleanup = null;
   // A terminal or exec loop's terminal token (lib/terminal-tokens.js), revoked when the launch fails before it runs.
   let issuedLoopTerminal = null;
+  // The run this launch pinned to a MoreLogin profile, unpinned when the launch fails before it runs.
+  let pinnedLoopTerminal = null;
   try {
     const { task: rawTask, context, iterations, maxMinutes, usesBrowser, cwd, profile, model: requestedModel, contextMode: requestedContextMode, effort, tools, platform, codexAccountId, browserSessionId: requestedBrowserSessionId, sidepanelWindowId, sidepanelClaimToken } = req.body;
     if (!rawTask?.trim()) return res.status(400).json({ error: 'task is required' });
+    // Optional moreloginEnvId (+ moreloginEnvName): the MoreLogin profile this launch opens its browser in. Decided
+    // here, before anything of the run exists: the owner's page may name any Chrome-type profile; any other caller
+    // (this route is agent-open) only one on the owner's list that MoreLogin lists (requestedLaunchMoreLoginProfile).
+    const launchMoreLogin = usesBrowser ? await requestedLaunchMoreLoginProfile(req) : null;
     // Resolve Facebook deal-link tokens against current fresh-release deals before the task is
     // stored, so the post links a real game page (/games/<slug>) — never the /deals listing.
     const { task, resolved: dealResolved, link: dealLink } = await resolveDealLink(rawTask);
@@ -14673,6 +14834,13 @@ app.post('/api/loop/launch', async (req, res) => {
     // A terminal or exec loop's token is minted with its id; a native run's by its runtime (NativeLoopRuntime.launch).
     const loopTerminalToken = nativeRuntime ? null : _terminalTokens.issue(terminalSessionId);
     if (loopTerminalToken) issuedLoopTerminal = terminalSessionId;
+    // The launch's MoreLogin profile (decided above) becomes the run's pin, as a schedule's does. None: the default
+    // browser of Settings → Browser, as before.
+    if (launchMoreLogin) {
+      pinRunMoreLoginProfile(terminalSessionId, launchMoreLogin.moreloginEnvId, launchMoreLogin.moreloginEnvName, launchMoreLogin.moreloginEnvBy);
+      pinnedLoopTerminal = terminalSessionId;
+      loopLog(terminalSessionId, 'launch:browser', `this launch runs in ${describeMoreLoginPin(runMoreLoginPin(terminalSessionId))}`);
+    }
     if (usesBrowser) {
       // Serialized reuse-or-create of the shared loop browser + a dedicated tab.
       // The mutex inside acquireLoopBrowserAndTab() prevents concurrent launches
@@ -14680,7 +14848,8 @@ app.post('/api/loop/launch', async (req, res) => {
       const acq = await acquireLoopBrowserAndTab({ requestedBrowserSessionId, terminalSessionId });
       if (acq.error) {
         loopLog(terminalSessionId, 'launch:browser', 'ABORT: browser acquisition failed — returning 500', { error: acq.error });
-        return res.status(500).json({ error: acq.error, ...(acq.code ? { code: acq.code, offenders: acq.offenders } : {}) });
+        forgetRunMoreLoginProfile(terminalSessionId);
+        return res.status(acq.code === PROFILE_NOT_ALLOWED ? 403 : 500).json({ error: acq.error, ...(acq.code ? { code: acq.code, offenders: acq.offenders } : {}) });
       }
       browserSessionId = acq.browserSessionId;
       browserTabId = acq.browserTabId;
@@ -14726,6 +14895,8 @@ app.post('/api/loop/launch', async (req, res) => {
       surface: nativeRuntime ? 'sidepanel' : 'terminal',
       runId: nativeRuntime ? terminalSessionId : null,
       cwd: loopCwd,
+      // The run's pinned MoreLogin profile (runMoreLoginPin reads it back when the in-memory pin is gone).
+      ...(launchMoreLogin || {}),
     };
     writeFileSync(resolve(LOOP_DIR, `${pendingId}.json`), JSON.stringify(loopState, null, 2));
     loopLog(terminalSessionId, 'launch:state', 'wrote pending loop file', { pendingId, loopFile: `${pendingId}.json`, loopState });
@@ -14856,6 +15027,7 @@ app.post('/api/loop/launch', async (req, res) => {
     // loop-stop cleanup owns it from this point onward (its terminal token too: endAutomationBrowser revokes it).
     pendingNativeBrowserCleanup = null;
     issuedLoopTerminal = null;
+    pinnedLoopTerminal = null;
     broadcastSync({ type: 'terminal:session-created', sessionId: terminalSessionId, profile: cliProfile });
 
     const responsePayload = {
@@ -14881,6 +15053,7 @@ app.post('/api/loop/launch', async (req, res) => {
     }
     // The loop never ran: nothing may act as it.
     if (issuedLoopTerminal) _terminalTokens.revoke(issuedLoopTerminal);
+    if (pinnedLoopTerminal) forgetRunMoreLoginProfile(pinnedLoopTerminal);
     loopLog(null, 'launch:error', 'POST /api/loop/launch threw', { err: err.message, stack: err.stack?.slice(0, 800) });
     res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
@@ -15062,6 +15235,10 @@ app.post('/api/loop/recover-browser', async (req, res) => {
     if (named && caller !== named) {
       return res.status(403).json({ error: `This caller (${caller}) may not take over the browser of run ${named}.`, code: 'TERMINAL_MISMATCH' });
     }
+    // The caller's MoreLogin profile pin (this route is not under /api/browser, so browserTerminalGate does not ask):
+    // never for an id this request did not prove, never in a profile off the owner's list (callerProfileRefusal).
+    const pinRefused = callerProfileRefusal(who);
+    if (pinRefused) return res.status(pinRefused.status).json({ ok: false, code: pinRefused.code, error: pinRefused.error });
     const owner = named || caller;
     if (named && automationRunState(named, { files: true }) === 'ended') {
       return res.status(409).json({ error: `Run ${named} has ended: its browser is not reopened.`, code: 'RUN_ENDED' });
@@ -15072,7 +15249,7 @@ app.post('/api/loop/recover-browser', async (req, res) => {
       const tabId = browserOwnerId(adopt.tabId);
       const cfg = loadBrowserConfig();
       const owned = !!named && !!sessionId && !!tabId && startedTabAlive(sessionId, tabId, named)
-        && (cfg.connectMode !== 'morelogin' || sessionServesMoreLoginDefault(browserSessions.get(sessionId), cfg));
+        && sessionServesRun(browserSessions.get(sessionId), cfg, named);
       if (!owned) return res.status(409).json({ error: `That tab is not an open tab of run ${named || caller} in the default browser.`, code: 'NOT_OWNED' });
       noteAutomationBrowserRoute(named, { browserSessionId: sessionId, browserTabId: tabId }, 'adopted');
       return res.json({ ok: true, sessionId, tabId, adopted: true });
@@ -15339,6 +15516,227 @@ function applyScheduleLaunchOverrides(schedule, source) {
   }
   normalizeAutomationRecord(schedule);
   delete schedule.mcpProfile;
+}
+
+// A schedule's or a schedule group's own MoreLogin profile (optional). Empty / null clears it: the run then opens the
+// default browser of Settings → Browser, as every record without the field does. The name is kept for display only.
+// At launch a schedule's own profile wins, then its group's (scheduleMoreLoginProfile); nothing is copied from a group
+// onto its schedules.
+function applyScheduleMoreLoginProfile(schedule, source) {
+  if (!source || source.moreloginEnvId === undefined) return;
+  const id = source.moreloginEnvId === null ? '' : String(source.moreloginEnvId).trim();
+  if (!id) {
+    delete schedule.moreloginEnvId;
+    delete schedule.moreloginEnvName;
+    return;
+  }
+  if (id.length > 128 || /[\u0000-\u001f]/.test(id)) {
+    throw Object.assign(new Error('moreloginEnvId is not a MoreLogin profile id'), { status: 400 });
+  }
+  schedule.moreloginEnvId = id;
+  const name = typeof source.moreloginEnvName === 'string' ? source.moreloginEnvName.trim().slice(0, 200) : '';
+  if (name) schedule.moreloginEnvName = name;
+  else if (source.moreloginEnvName !== undefined) delete schedule.moreloginEnvName;
+}
+
+/** The MoreLogin profile a request names for one launch (a quick timer, a manual launch): both fields, or neither. */
+function requestedMoreLoginProfile(source) {
+  const choice = {};
+  applyScheduleMoreLoginProfile(choice, source || {});
+  return choice.moreloginEnvId ? { moreloginEnvId: choice.moreloginEnvId, moreloginEnvName: choice.moreloginEnvName || null } : null;
+}
+
+/** The MoreLogin profile a schedule's run opens: its own, else its group's, else none (the default browser). */
+function scheduleMoreLoginProfile(schedule, group = null) {
+  const owner = schedule?.moreloginEnvId ? schedule : (group?.moreloginEnvId ? group : null);
+  return owner ? { envId: String(owner.moreloginEnvId), name: owner.moreloginEnvName || null, source: owner === schedule ? 'schedule' : 'group', holder: owner } : null;
+}
+
+// ── Who chose a profile on the launch and record routes (review b6631e9d, finding 4) ──
+// /api/loop, /api/schedules and /api/schedule-groups are agent-open (lib/owner-authority.js AGENT_OPEN_PREFIXES: the
+// /synabun skill creates loops and schedules with curl), and /api/quick-timer and /api/agents/launch let an agent's
+// process tree through as soon as it sends any agent header (ownerRefusal: `agentOpen || isAgentCall(req)`); where the
+// peer lookup does not run (not macOS, or off) every local caller reaches all of them. All took `moreloginEnvId` from
+// the body, checked for its shape only: an agent launched a run of its own task in any profile, any account.
+// Now the body's profile counts as the owner's choice only when the request is the owner's page (browserOwnerPageOnly:
+// this boot's page secret, never a guest, never the automation browser). From anybody else it must be on the owner's
+// list AND a profile MoreLogin lists, and it is recorded as an agent's (`moreloginEnvBy: 'agent'`), so the list is
+// asked again when the run starts and at every browser call. The marker is written here only, never read from a body.
+
+/** Whether a request's profile choice is the owner's own (SynaBun's page). */
+function profileChosenByOwner(req) { return browserOwnerPageOnly(req); }
+
+/**
+ * A profile an agent names, as it may be used: on the owner's list (checked first, so a refusal needs no MoreLogin
+ * and tells nothing about its profiles), then among MoreLogin's listed Chrome-type profiles. → { envId, name }.
+ * Throws 403 MORELOGIN_PROFILE_NOT_ALLOWED, or the resolver's own refusal (404 ENV_NOT_FOUND, 400 MORELOGIN_NOT_CHROMIUM…).
+ */
+async function agentMoreLoginProfileChoice(ref) {
+  const id = ref?.envId === undefined || ref?.envId === null ? '' : String(ref.envId).trim();
+  if (id && !moreLoginProfileAllowed(id)) throw profileNotAllowedError(id, typeof ref?.name === 'string' ? ref.name : null);
+  const found = await resolveMoreLoginProfileChoice(ref);
+  // Named by its name: the id is known only now.
+  if (!moreLoginProfileAllowed(found.envId)) throw profileNotAllowedError(found.envId, found.name);
+  return found;
+}
+
+/**
+ * The MoreLogin profile one launch request names (POST /api/loop/launch, /api/quick-timer, /api/quick-timer/now,
+ * /api/agents/launch), with who chose it: { moreloginEnvId, moreloginEnvName, moreloginEnvBy } or null (none named).
+ */
+async function requestedLaunchMoreLoginProfile(req) {
+  const choice = requestedMoreLoginProfile(req.body);
+  if (!choice) return null;
+  if (profileChosenByOwner(req)) {
+    await refuseFirefoxMoreLoginChoice(req.body); // never a Firefox-type profile: the run would only fail
+    return { ...choice, moreloginEnvBy: 'owner' };
+  }
+  const found = await agentMoreLoginProfileChoice({ envId: choice.moreloginEnvId });
+  return { moreloginEnvId: found.envId, moreloginEnvName: found.name || choice.moreloginEnvName || null, moreloginEnvBy: 'agent' };
+}
+
+/**
+ * What a save of a schedule or a group does to the record's MoreLogin profile, decided before the store is read (it
+ * may wait for MoreLogin; nothing waits between the store's read and its write). `saved`: the record as it is now
+ * (null for a new one). → { op: 'keep' } (the body names none), { op: 'clear' }, { op: 'same', envId } (an agent sent
+ * back the profile the record holds: nothing changes, not even who chose it) or { op: 'set', envId, name, by }.
+ * An agent may clear a profile (the run then opens the default browser, which every agent has) and may set one only
+ * from the owner's list; it can never move a record to a profile off the list, whoever set the one it holds.
+ */
+async function prepareRecordMoreLoginProfile(req, saved = null) {
+  const body = req.body || {};
+  if (body.moreloginEnvId === undefined) return { op: 'keep' };
+  const choice = requestedMoreLoginProfile(body); // throws 400 for a malformed id
+  if (!choice) return { op: 'clear' };
+  if (profileChosenByOwner(req)) {
+    // The profile the record already holds may be saved back by the owner (a Firefox one from before that rule too).
+    await refuseFirefoxMoreLoginChoice(body, saved?.moreloginEnvId ?? null);
+    return { op: 'set', envId: choice.moreloginEnvId, name: choice.moreloginEnvName, by: 'owner' };
+  }
+  if (saved?.moreloginEnvId && String(saved.moreloginEnvId) === choice.moreloginEnvId) return { op: 'same', envId: choice.moreloginEnvId };
+  const found = await agentMoreLoginProfileChoice({ envId: choice.moreloginEnvId });
+  return { op: 'set', envId: found.envId, name: found.name || choice.moreloginEnvName || null, by: 'agent' };
+}
+
+/** Applies prepareRecordMoreLoginProfile's decision to the record read from the store (synchronous). */
+function applyPreparedMoreLoginProfile(record, prepared) {
+  if (!prepared || prepared.op === 'keep') return;
+  if (prepared.op === 'same') {
+    // The record changed between the decision and this write: the decision was about another profile.
+    if (String(record.moreloginEnvId || '') !== prepared.envId) throw Object.assign(new Error('This record\'s MoreLogin profile changed while it was being saved. Save again.'), { status: 409, code: 'PROFILE_CHANGED' });
+    return;
+  }
+  if (prepared.op === 'clear') {
+    delete record.moreloginEnvId; delete record.moreloginEnvName; delete record.moreloginEnvBy;
+    return;
+  }
+  record.moreloginEnvId = prepared.envId;
+  if (prepared.name) record.moreloginEnvName = prepared.name; else delete record.moreloginEnvName;
+  record.moreloginEnvBy = prepared.by;
+}
+
+/** The fields of a schedule that decide WHAT runs in its profile (scheduleProfileAuthority reads `taskBy`). */
+const SCHEDULE_TASK_FIELDS = Object.freeze(['templateId', 'overrides', 'dayThemes', 'groupId']);
+// ── Who decided what a schedule or template runs, and when a mark goes away (re-review of 2026-11-11, finding 3) ──
+// The marks (`taskBy` on a schedule, `editedBy` on a template) say "an agent decided what this runs, the owner has
+// not approved it"; a marked record is held to the owner's list (scheduleProfileAuthority).
+// History: until 2026-11-10 any save from the owner's page deleted them (B2 of that day's re-review: a drag into a
+// folder or a group, the switch, a reset). That fix let a save that carried the "confirming" fields take the mark
+// away, and the Schedules editor then sent those fields by itself for a marked schedule, so renaming one cleared the
+// mark although the owner reviewed nothing (finding 3 of the re-review of 2026-11-11).
+// Now: NO save takes a mark away, whatever fields it carries and whoever sends it. The one way is the approve action
+// (POST /api/schedules/:id/approve, POST /api/loop/templates/:id/approve: the owner's page only, tied to the digest of
+// the content the owner was shown; lib/automation-approval.js). A record the owner's page creates starts without one.
+/**
+ * Marks a schedule an agent created or whose task fields (SCHEDULE_TASK_FIELDS) an agent changed `taskBy: 'agent'`.
+ * The owner's page creating a schedule leaves it unmarked; an owner's edit never touches the mark.
+ * `before`: the record's task fields as they were (null for a new schedule).
+ */
+function markScheduleTaskAuthor(schedule, req, before = null) {
+  const body = req.body || {};
+  if (profileChosenByOwner(req)) {
+    // A new record is all the owner's request. Never a delete on an edit (finding 3).
+    if (!before) { delete schedule.taskBy; delete schedule.unreviewedFrom; }
+    return;
+  }
+  const changed = !before || SCHEDULE_TASK_FIELDS.some((field) => body[field] !== undefined && JSON.stringify(schedule[field] ?? null) !== JSON.stringify(before[field] ?? null));
+  if (changed) { schedule.taskBy = 'agent'; delete schedule.unreviewedFrom; }
+}
+/** The fields of a template that are its instructions (an import that brings other ones marks it). */
+const TEMPLATE_INSTRUCTION_FIELDS = Object.freeze(['task', 'context']);
+/**
+ * The same for a loop template. An agent that creates, changes or imports one marks it `editedBy: 'agent'`.
+ *   • the owner's page creating one (`before` null, no `source`): unmarked, the whole template is the owner's request;
+ *   • the owner's edit: the mark stays as it is (finding 3: only the approve action takes it away);
+ *   • the owner's import (`source`: the file's entry): instructions a file brings are unreviewed. A new template, or
+ *     one whose task or context differ from what is stored, comes in marked (`unreviewedFrom: 'import'`), and so does
+ *     an entry the file marks. Only an entry that puts back, word for word, the instructions of a stored template keeps
+ *     that template's state (marked stays marked, unmarked stays unmarked). Nothing in a file takes a mark away.
+ */
+function markTemplateAuthor(template, req, { before = null, source = null } = {}) {
+  if (!profileChosenByOwner(req)) { template.editedBy = 'agent'; delete template.unreviewedFrom; return; }
+  if (source) {
+    const sameInstructions = !!before && TEMPLATE_INSTRUCTION_FIELDS.every((field) => (template[field] ?? null) === (before[field] ?? null));
+    if (source.editedBy === 'agent') { template.editedBy = 'agent'; delete template.unreviewedFrom; }
+    else if (sameInstructions) {
+      // The stored instructions, word for word: the stored template's state, unchanged.
+      if (before.editedBy === 'agent') { template.editedBy = 'agent'; if (before.unreviewedFrom) template.unreviewedFrom = before.unreviewedFrom; else delete template.unreviewedFrom; }
+      else { delete template.editedBy; delete template.unreviewedFrom; }
+    } else { template.editedBy = 'agent'; template.unreviewedFrom = 'import'; }
+    return;
+  }
+  if (!before) { delete template.editedBy; delete template.unreviewedFrom; }
+}
+
+// How long a save or a launch waits to learn which browser a newly chosen MoreLogin profile runs. Past it the
+// profile's browser is unknown, which is accepted (the start of the run still refuses a Firefox one).
+const MORELOGIN_CHOICE_LOOKUP_MS = 4000;
+
+/**
+ * Refuses a newly chosen MoreLogin profile that is known to run MoreLogin's Firefox browser: SynaBun drives a profile
+ * over the Chrome DevTools protocol, so a schedule, a group, a timer, a launch or the Browser default set to one
+ * could only fail when it runs. Throws status 400, code MORELOGIN_NOT_CHROMIUM. A browser MoreLogin does not say (the
+ * app closed, an older MoreLogin, no answer in time) is accepted.
+ * `saved`: the profile the record already holds. Sending it back unchanged is no new choice, so a record saved before
+ * this rule can still be edited and saved (its editor shows the warning); choosing a Firefox profile anew is refused.
+ * Awaited before a route reads the store it then writes, never between the read and the write.
+ */
+async function refuseFirefoxMoreLoginChoice(source, saved = null) {
+  if (!source || source.moreloginEnvId === undefined || source.moreloginEnvId === null) return;
+  const id = String(source.moreloginEnvId).trim();
+  if (!id || id.length > 128 || /[\u0000-\u001f]/.test(id)) return; // empty clears; a malformed id is refused where it is read
+  if (saved !== null && saved !== undefined && String(saved) === id) return;
+  let timer = null;
+  let kernel = null;
+  try {
+    kernel = await Promise.race([
+      moreLogin.lookupProfileKernel(id, { ..._moreLoginOpts(), timeout: MORELOGIN_CHOICE_LOOKUP_MS }),
+      new Promise((done) => { timer = setTimeout(() => done(null), MORELOGIN_CHOICE_LOOKUP_MS); timer.unref?.(); }),
+    ]);
+  } catch { kernel = null; }
+  finally { clearTimeout(timer); }
+  if (kernel === 'firefox') {
+    const name = typeof source.moreloginEnvName === 'string' ? source.moreloginEnvName.trim().slice(0, 200) : '';
+    throw moreLogin.notChromiumChoiceError(id, name || null);
+  }
+}
+
+/**
+ * MoreLogin's listed profiles, each with the browser it runs: `browser` is 'chromium', 'firefox' or null (not known,
+ * or not known yet). A Firefox-type profile cannot be driven by SynaBun; the pickers show it and do not offer it.
+ * Never the list's failure: whatever goes wrong here leaves every profile listed with `browser: null`.
+ * → { envs, browsersPending } (the count still being asked; a later call has them).
+ */
+async function withMoreLoginBrowsers(envs, opts = {}) {
+  const rows = Array.isArray(envs) ? envs : [];
+  let kernels = {};
+  let pending = 0;
+  try {
+    const answer = await moreLogin.profileKernels(rows.map((env) => env.id), { ...opts, timeout: 10000 });
+    kernels = answer?.kernels || {};
+    pending = Number(answer?.pending) || 0;
+  } catch { kernels = {}; pending = 0; }
+  return { envs: rows.map((env) => ({ ...env, browser: kernels[String(env.id)] || null })), browsersPending: pending };
 }
 
 function boundedScheduleNumber(value, fallback, min, max) {
@@ -15647,6 +16045,26 @@ async function launchScheduledLoop(schedule) {
       schedExtraEnv.OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS =
         process.env.OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || '300000';
     }
+    // The schedule's own MoreLogin profile, when it has one: the run is pinned to it before its browser is acquired,
+    // so the acquisition, every later recovery and the browser tools' gate all land in that profile and no other.
+    // A schedule without one takes its group's (a quick timer is a schedule of its own here, with the timer's profile).
+    const scheduledMoreLogin = scheduledUsesBrowser ? scheduleMoreLoginProfile(schedule, group) : null;
+    const scheduledMoreLoginEnvId = scheduledMoreLogin?.envId || null;
+    // Whose choice that profile is (lib/morelogin-agent-profiles.js scheduleProfileAuthority): the owner's only when
+    // the owner's page chose it on the schedule or the group AND no agent decided since what runs there (the
+    // schedule's task fields, its template). Anything else is an agent's and needs the profile on the owner's list,
+    // now and at every browser call of the run (the pin carries `by`). A refusal fails this launch by name; the run
+    // is not started in the default profile or in Chrome.
+    const scheduledMoreLoginAuthority = scheduledMoreLoginEnvId
+      ? scheduleProfileAuthority({ schedule: schedule._quickTimer ? null : schedule, holder: scheduledMoreLogin.holder, template, source: schedule._quickTimer ? 'timer' : scheduledMoreLogin.source })
+      : null;
+    if (scheduledMoreLoginEnvId && scheduledMoreLoginAuthority.by !== 'owner' && !moreLoginProfileAllowed(scheduledMoreLoginEnvId)) {
+      throw Object.assign(new Error(scheduleProfileRefusalText(scheduledMoreLoginEnvId, scheduledMoreLogin.name, scheduledMoreLoginAuthority)), { code: PROFILE_NOT_ALLOWED });
+    }
+    if (scheduledMoreLoginEnvId) {
+      pinRunMoreLoginProfile(terminalSessionId, scheduledMoreLoginEnvId, scheduledMoreLogin.name, scheduledMoreLoginAuthority.by);
+      console.log(`[schedule] "${schedule.name}" runs in ${describeMoreLoginPin(runMoreLoginPin(terminalSessionId))}${scheduledMoreLogin.source === 'group' ? ' (its group\'s profile)' : ''}`);
+    }
     if (scheduledUsesBrowser) {
       // Same serialized shared-browser + dedicated-tab acquisition as manual loops.
       const acq = await acquireLoopBrowserAndTab({ terminalSessionId, logTag: 'schedule:browser' });
@@ -15821,6 +16239,9 @@ async function launchScheduledLoop(schedule) {
       runId: nativeRuntime ? terminalSessionId : null,
       cwd: PACKAGE_ROOT,
       scheduledBy: schedule.id,
+      // The run's pinned MoreLogin profile (runMoreLoginPin reads it back when the in-memory pin is gone).
+      // `moreloginEnvBy`: whose choice it was at launch ('owner' is not held to the owner's list at use).
+      ...(scheduledMoreLoginEnvId ? { moreloginEnvId: scheduledMoreLoginEnvId, moreloginEnvName: scheduledMoreLogin.name, moreloginEnvBy: scheduledMoreLoginAuthority.by } : {}),
     };
     writeFileSync(resolve(LOOP_DIR, `${pendingId}.json`), JSON.stringify(loopState, null, 2));
 
@@ -15914,6 +16335,7 @@ async function launchScheduledLoop(schedule) {
   } catch (err) {
     if (registeredScheduledRunId) _runningScheduledLoops.delete(registeredScheduledRunId);
     // The loop never ran: nothing may act as it.
+    if (scheduledLaunchTerminalId) forgetRunMoreLoginProfile(scheduledLaunchTerminalId);
     if (issuedSchedTerminal) _terminalTokens.revoke(issuedSchedTerminal);
     if (scheduledLaunchTerminalId) {
       const terminal = terminalSessions.get(scheduledLaunchTerminalId);
@@ -16450,6 +16872,9 @@ function launchQuickTimer(timerId, templateId, context) {
     platform: timerData.platform,
     codexAccountId: timerData.codexAccountId || undefined,
     usesBrowser: timerData.usesBrowser,
+    // The timer's own MoreLogin profile (none: the default browser), pinned by the schedule fire path.
+    // `moreloginEnvBy`: who chose it when the timer was set (the owner's page, or an agent held to the owner's list).
+    ...(timerData.moreloginEnvId ? { moreloginEnvId: timerData.moreloginEnvId, moreloginEnvName: timerData.moreloginEnvName || null, moreloginEnvBy: timerData.moreloginEnvBy === 'owner' ? 'owner' : 'agent' } : {}),
     // Synthetic schedule (not persisted) — must bypass the queue's stillDue and
     // disabled/deleted guards, both of which key off persisted schedule state.
     _forced: true,
@@ -16488,16 +16913,20 @@ app.post('/api/quick-timer', async (req, res) => {
     try { await resolveAutomationLaunchChoice(timerProfile, timerModel, timerContextMode, timerCodexAccount?.home); }
     catch (error) { return res.status(400).json({ error: error.message }); }
     const timerUsesBrowser = usesBrowser !== undefined ? !!usesBrowser : !!template.usesBrowser;
+    // Optional: the MoreLogin profile this one run opens its browser in (moreloginEnvId + moreloginEnvName, as a
+    // schedule's). The owner's page: any Chrome-type profile. Anybody else (an agent's tree reaches this route with any
+    // agent header): only a profile on the owner's list, asked again when the timer fires (launchScheduledLoop).
+    const timerMoreLogin = timerUsesBrowser ? await requestedLaunchMoreLoginProfile(req) : null;
 
     const timeoutId = setTimeout(() => {
       launchQuickTimer(timerId, templateId, context);
       _quickTimers.delete(timerId);
     }, mins * 60_000);
 
-    _quickTimers.set(timerId, { timeoutId, templateId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, tools: timerTools, platform: automationPlatform({ platform }, null, template), codexAccountId: timerCodexAccountId, usesBrowser: timerUsesBrowser, createdAt: new Date().toISOString() });
+    _quickTimers.set(timerId, { timeoutId, templateId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, tools: timerTools, platform: automationPlatform({ platform }, null, template), codexAccountId: timerCodexAccountId, usesBrowser: timerUsesBrowser, ...(timerMoreLogin || {}), createdAt: new Date().toISOString() });
     console.log(`[quick-timer] Set: "${template.name}" fires in ${mins}m at ${firesAt} (${timerProfile}/${timerModel || 'default'}${timerEffort ? '/' + timerEffort : ''}${'/tools:' + serializeToolList(timerTools)})`);
-    broadcastSync({ type: 'quick-timer:set', timerId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, tools: timerTools, platform: automationPlatform({ platform }, null, template), usesBrowser: timerUsesBrowser });
-    res.json({ ok: true, timerId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, tools: timerTools, platform: automationPlatform({ platform }, null, template), usesBrowser: timerUsesBrowser });
+    broadcastSync({ type: 'quick-timer:set', timerId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, tools: timerTools, platform: automationPlatform({ platform }, null, template), usesBrowser: timerUsesBrowser, ...(timerMoreLogin || {}) });
+    res.json({ ok: true, timerId, templateName: template.name, firesAt, minutes: mins, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, tools: timerTools, platform: automationPlatform({ platform }, null, template), usesBrowser: timerUsesBrowser, ...(timerMoreLogin || {}) });
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
@@ -16507,7 +16936,7 @@ app.post('/api/quick-timer', async (req, res) => {
 app.get('/api/quick-timers', (_req, res) => {
   const timers = [];
   for (const [id, t] of _quickTimers) {
-    timers.push({ id, templateId: t.templateId, templateName: t.templateName, firesAt: t.firesAt, minutes: t.minutes, profile: t.profile, model: t.model, contextMode: t.contextMode, effort: t.effort, tools: storedToolList(t, toolListOptions()), usesBrowser: t.usesBrowser, createdAt: t.createdAt });
+    timers.push({ id, templateId: t.templateId, templateName: t.templateName, firesAt: t.firesAt, minutes: t.minutes, profile: t.profile, model: t.model, contextMode: t.contextMode, effort: t.effort, tools: storedToolList(t, toolListOptions()), usesBrowser: t.usesBrowser, ...(t.moreloginEnvId ? { moreloginEnvId: t.moreloginEnvId, moreloginEnvName: t.moreloginEnvName || null } : {}), createdAt: t.createdAt });
   }
   res.json(timers);
 });
@@ -16549,6 +16978,8 @@ app.post('/api/quick-timer/now', async (req, res) => {
     try { await resolveAutomationLaunchChoice(timerProfile, timerModel, timerContextMode, timerCodexAccount?.home); }
     catch (error) { return res.status(400).json({ error: error.message }); }
     const timerUsesBrowser = usesBrowser !== undefined ? !!usesBrowser : !!template.usesBrowser;
+    // As POST /api/quick-timer: the owner's page, or a profile on the owner's list.
+    const timerMoreLogin = timerUsesBrowser ? await requestedLaunchMoreLoginProfile(req) : null;
 
     const fakeSchedule = {
       id: `qt-now-${randomBytes(4).toString('hex')}`,
@@ -16563,6 +16994,7 @@ app.post('/api/quick-timer/now', async (req, res) => {
       tools: timerTools, platform: automationPlatform({ platform }, null, template),
       codexAccountId: timerCodexAccountId || undefined,
       usesBrowser: timerUsesBrowser,
+      ...(timerMoreLogin || {}),
       // Synthetic schedule (not persisted) — must bypass the queue's stillDue and
       // disabled/deleted guards, both of which key off persisted schedule state.
       _forced: true,
@@ -16575,7 +17007,7 @@ app.post('/api/quick-timer/now', async (req, res) => {
     processScheduleQueue();
 
     broadcastSync({ type: 'quick-timer:fired-now', templateName: template.name, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, tools: timerTools });
-    res.json({ ok: true, templateName: template.name, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, tools: timerTools, platform: automationPlatform({ platform }, null, template), usesBrowser: timerUsesBrowser });
+    res.json({ ok: true, templateName: template.name, profile: timerProfile, model: timerModel, contextMode: timerContextMode, effort: timerEffort, tools: timerTools, platform: automationPlatform({ platform }, null, template), usesBrowser: timerUsesBrowser, ...(timerMoreLogin || {}) });
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
@@ -16587,11 +17019,14 @@ app.get('/api/schedule-groups', (_req, res) => {
   res.json(loadScheduleGroups());
 });
 
-app.post('/api/schedule-groups', (req, res) => {
+app.post('/api/schedule-groups', async (req, res) => {
   try {
     const { name, color, icon, collapsed, mutualExclusion, profile, model, contextMode, effort, tools, platform, usesBrowser, codexAccountId } = req.body || {};
     if (unknownAutomationContextMode(contextMode)) return res.status(400).json({ error: `Invalid context mode: ${contextMode}` });
     if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
+    // The group's MoreLogin profile, decided before the store is read (nothing waits between that read and the
+    // save): the owner's page may pick any Chrome-type profile, anybody else only one on the owner's list.
+    const groupMoreLogin = await prepareRecordMoreLoginProfile(req, null);
 
     const groups = loadScheduleGroups();
     const group = {
@@ -16606,6 +17041,8 @@ app.post('/api/schedule-groups', (req, res) => {
       updatedAt: new Date().toISOString(),
     };
     applyScheduleLaunchOverrides(group, { profile, model, contextMode, effort, tools, platform, usesBrowser, codexAccountId });
+    // The group's MoreLogin profile (optional): what a schedule of the group without one of its own runs in.
+    applyPreparedMoreLoginProfile(group, groupMoreLogin);
     groups.push(group);
     saveScheduleGroups(groups);
     broadcastSync({ type: 'schedule-group:created', group });
@@ -16615,8 +17052,10 @@ app.post('/api/schedule-groups', (req, res) => {
   }
 });
 
-app.put('/api/schedule-groups/:id', (req, res) => {
+app.put('/api/schedule-groups/:id', async (req, res) => {
   try {
+    // Decided before the store is read below; the profile the group already holds may be sent back unchanged.
+    const groupMoreLogin = await prepareRecordMoreLoginProfile(req, loadScheduleGroups().find(g => g.id === req.params.id) || null);
     const store = loadScheduleStore();
     const groups = store.groups;
     const idx = groups.findIndex(g => g.id === req.params.id);
@@ -16645,6 +17084,9 @@ app.put('/api/schedule-groups/:id', (req, res) => {
       codexAccountId: groups[idx].codexAccountId,
     };
     applyScheduleLaunchOverrides(groups[idx], { profile, model, contextMode, effort, tools, platform, usesBrowser, codexAccountId });
+    // Read at launch through the group (scheduleMoreLoginProfile), never written through onto the schedules below:
+    // a schedule's own profile is what tells two accounts apart, and a group save must not replace it.
+    applyPreparedMoreLoginProfile(groups[idx], groupMoreLogin);
     groups[idx].updatedAt = new Date().toISOString();
 
     // Write-through: a launch override deliberately CHANGED in the group window is
@@ -16867,7 +17309,7 @@ app.get('/api/schedules/timers', (_req, res) => {
 });
 
 // POST /api/schedules — create a new schedule
-app.post('/api/schedules', (req, res) => {
+app.post('/api/schedules', async (req, res) => {
   try {
     const { name, templateId, cron, timezone, enabled, dayThemes, overrides, groupId, profile, model, contextMode, effort, tools, platform, usesBrowser, codexAccountId } = req.body;
     if (unknownAutomationContextMode(contextMode)) return res.status(400).json({ error: `Invalid context mode: ${contextMode}` });
@@ -16875,6 +17317,9 @@ app.post('/api/schedules', (req, res) => {
     if (!templateId?.trim()) return res.status(400).json({ error: 'templateId is required' });
     if (!cron?.trim()) return res.status(400).json({ error: 'cron is required' });
     if (cron.trim().split(/\s+/).length !== 5) return res.status(400).json({ error: 'cron must be a 5-field expression' });
+    // The schedule's MoreLogin profile, decided before the store is read (nothing waits between that read and the
+    // save): the owner's page may pick any Chrome-type profile, anybody else only one on the owner's list.
+    const scheduleMoreLogin = await prepareRecordMoreLoginProfile(req, null);
 
     const templates = readLoopTemplates();
     if (!templates.find(t => t.id === templateId)) return res.status(400).json({ error: 'Template not found' });
@@ -16900,6 +17345,8 @@ app.post('/api/schedules', (req, res) => {
       updatedAt: new Date().toISOString(),
     };
     applyScheduleLaunchOverrides(schedule, { profile, model, contextMode, effort, tools, platform, usesBrowser, codexAccountId });
+    applyPreparedMoreLoginProfile(schedule, scheduleMoreLogin);
+    markScheduleTaskAuthor(schedule, req, null);
 
     const schedules = loadSchedules();
     schedules.push(schedule);
@@ -16921,11 +17368,15 @@ app.get('/api/schedules/:id', (req, res) => {
 });
 
 // PUT /api/schedules/:id — update a schedule
-app.put('/api/schedules/:id', (req, res) => {
+app.put('/api/schedules/:id', async (req, res) => {
   try {
+    // Decided before the store is read below; the profile the schedule already holds may be sent back unchanged.
+    const scheduleMoreLogin = await prepareRecordMoreLoginProfile(req, loadSchedules().find(s => s.id === req.params.id) || null);
     const schedules = loadSchedules();
     const idx = schedules.findIndex(s => s.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: 'Schedule not found' });
+    // What it ran before this save (markScheduleTaskAuthor compares).
+    const taskBefore = Object.fromEntries(SCHEDULE_TASK_FIELDS.map((field) => [field, schedules[idx][field]]));
 
     const { name, templateId, cron, timezone, enabled, dayThemes, overrides, groupId, profile, model, contextMode, effort, tools, platform, usesBrowser, codexAccountId } = req.body;
     if (unknownAutomationContextMode(contextMode)) return res.status(400).json({ error: `Invalid context mode: ${contextMode}` });
@@ -16949,6 +17400,8 @@ app.put('/api/schedules/:id', (req, res) => {
       schedules[idx].groupId = normalizedGroupId;
     }
     applyScheduleLaunchOverrides(schedules[idx], { profile, model, contextMode, effort, tools, platform, usesBrowser, codexAccountId });
+    applyPreparedMoreLoginProfile(schedules[idx], scheduleMoreLogin);
+    markScheduleTaskAuthor(schedules[idx], req, taskBefore);
 
     schedules[idx].updatedAt = new Date().toISOString();
     schedules[idx].nextRun = getNextCronRun(schedules[idx].cron, schedules[idx].timezone);
@@ -16959,6 +17412,100 @@ app.put('/api/schedules/:id', (req, res) => {
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
+});
+
+// ── The owner's approval of a schedule or template an agent changed (re-review of 2026-11-11, finding 3) ──
+// GET  /api/schedules/:id/review           → { ok, review } (lib/automation-approval.js scheduleReview)
+// POST /api/schedules/:id/approve          { digest } → { ok, schedule, template, review }
+// GET  /api/loop/templates/:id/review      → { ok, review } (templateReview)
+// POST /api/loop/templates/:id/approve     { digest } → { ok, template, review }
+// GET  /api/automation-approvals           → { ok, schedules: { id: summary }, templates: { id: summary } } (the flags)
+// The owner's page only (ownerPageApprovalCall: this boot's page secret, never a guest, no run or agent header): an
+// agent, a run, a worker, the Assistant, a CLI MCP session, a guest and a bare request are refused 403
+// (PAGE_SECRET_REQUIRED; 503 where the caller could not be identified on macOS). The review is built from the stored
+// records each time it is served, and its digest covers every stored field a launch reads for what runs and where
+// (automation-approval.js scheduleCore / templateCore / groupCore / defaultCore). The approve request carries the
+// digest it was shown; the server builds the review again from the store and refuses 409 REVIEW_CHANGED (with the
+// fresh review) when they differ: the record, its template, its group's profile, its day themes or the default
+// changed since. Read, compare and write are synchronous, with no await in between, so nothing changes in between.
+// Approving a schedule clears its mark and its template's in one act; any later change by an agent marks again.
+/** Whether a request is the owner's page acting for itself (the same test as the default browser's writers). */
+function ownerPageApprovalCall(req) { return moreLoginOwnerPageCall(req); }
+function refuseApprovalCaller(req, res) {
+  return refuseNotOwnerPage(req, res, 'Approving what an agent changed is the owner\'s, from SynaBun\'s own page (Automation Studio or Schedules): no agent, run, session or program can approve it. Tell the user: the schedule or template waits for their approval there.');
+}
+/** The profile names the server knows without asking MoreLogin (the records' own names, the owner's list). */
+function approvalProfileName(cfg) {
+  const listed = normalizeAgentProfiles(cfg);
+  return (envId) => listed.find((row) => row.envId === String(envId))?.name || null;
+}
+/** Everything a schedule's review is built from, read from the store now. */
+function scheduleReviewContext(id) {
+  const schedules = loadSchedules();
+  const idx = schedules.findIndex((s) => s.id === id);
+  if (idx === -1) return null;
+  const schedule = schedules[idx];
+  const templates = readLoopTemplates();
+  const tIdx = templates.findIndex((t) => t.id === schedule.templateId);
+  const template = tIdx === -1 ? null : templates[tIdx];
+  const group = schedule.groupId ? loadScheduleGroups().find((g) => g.id === schedule.groupId) || null : null;
+  const cfg = loadBrowserConfig();
+  const review = scheduleReview({ schedule, template, group, browserDefault: cfg, allowed: (envId) => agentProfileAllowed(cfg, envId), profileName: approvalProfileName(cfg) });
+  return { schedules, idx, schedule, templates, tIdx, template, group, review };
+}
+app.get('/api/automation-approvals', (req, res) => {
+  if (!ownerPageApprovalCall(req)) return refuseApprovalCaller(req, res);
+  try {
+    const cfg = loadBrowserConfig();
+    const allowed = (envId) => agentProfileAllowed(cfg, envId);
+    const profileName = approvalProfileName(cfg);
+    const templates = readLoopTemplates();
+    const groups = loadScheduleGroups();
+    const schedules = loadSchedules();
+    const out = { schedules: {}, templates: {} };
+    for (const schedule of schedules) {
+      const template = templates.find((t) => t.id === schedule.templateId) || null;
+      if (!scheduleMarked(schedule) && !templateMarked(template)) continue;
+      const group = schedule.groupId ? groups.find((g) => g.id === schedule.groupId) || null : null;
+      const r = scheduleReview({ schedule, template, group, browserDefault: cfg, allowed, profileName });
+      out.schedules[schedule.id] = { case: r.case, marks: r.marks, account: r.account, afterApproval: r.afterApproval };
+    }
+    for (const template of templates) if (templateMarked(template)) out.templates[template.id] = { marks: { template: true, templateFrom: UNREVIEWED_SOURCES.includes(template.unreviewedFrom) ? template.unreviewedFrom : 'agent' } };
+    res.json({ ok: true, ...out });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+app.get('/api/schedules/:id/review', (req, res) => {
+  if (!ownerPageApprovalCall(req)) return refuseApprovalCaller(req, res);
+  const ctx = scheduleReviewContext(req.params.id);
+  if (!ctx) return res.status(404).json({ ok: false, error: 'Schedule not found' });
+  res.json({ ok: true, review: ctx.review });
+});
+app.post('/api/schedules/:id/approve', (req, res) => {
+  if (!ownerPageApprovalCall(req)) return refuseApprovalCaller(req, res);
+  const digest = req.body?.digest;
+  if (typeof digest !== 'string' || !digest) return res.status(400).json({ ok: false, code: 'DIGEST_REQUIRED', error: 'digest is required: the one of the review you were shown (GET /api/schedules/:id/review).' });
+  // Read, compare, write: synchronous from here to the answer (no await), so the content approved is the content stored.
+  const ctx = scheduleReviewContext(req.params.id);
+  if (!ctx) return res.status(404).json({ ok: false, error: 'Schedule not found' });
+  if (!sameDigest(digest, ctx.review.digest)) {
+    return res.status(409).json({ ok: false, code: REVIEW_CHANGED, review: ctx.review, error: 'What this schedule runs or where it runs changed after you opened the review (its template, its day themes, its group\'s profile or the default browser, possibly by an agent). Nothing was approved: look at it again.' });
+  }
+  if (!ctx.review.needsApproval) return res.json({ ok: true, unchanged: true, schedule: ctx.schedule, template: ctx.template, review: ctx.review });
+  const ownProfile = ctx.review.account.kind === 'morelogin' && ctx.review.account.source === 'schedule';
+  if (ctx.template && templateMarked(ctx.template)) {
+    clearTemplateMark(ctx.templates[ctx.tIdx]);
+    ctx.templates[ctx.tIdx].updatedAt = new Date().toISOString();
+    writeLoopTemplates(ctx.templates);
+  }
+  clearScheduleMark(ctx.schedules[ctx.idx], { ownProfileToOwner: ownProfile });
+  ctx.schedules[ctx.idx].updatedAt = new Date().toISOString();
+  saveSchedules(ctx.schedules);
+  console.log(`[schedule] the owner approved "${String(ctx.schedule.name || ctx.schedule.id).slice(0, 80)}"${ctx.review.marks.template ? ' and its template' : ''} (${ctx.review.account.kind === 'morelogin' ? `MoreLogin profile ${ctx.review.account.envId}, ${ctx.review.afterApproval === 'owner' ? 'the owner\'s choice from now on' : 'the group\'s profile, still held to the list'}` : 'the default browser'})`);
+  const fresh = scheduleReviewContext(req.params.id);
+  broadcastSync({ type: 'schedule:updated', schedule: fresh?.schedule || ctx.schedules[ctx.idx] });
+  res.json({ ok: true, schedule: fresh?.schedule || null, template: fresh?.template || null, review: fresh?.review || null });
 });
 
 // DELETE /api/schedules/:id — delete a schedule
@@ -17129,6 +17676,7 @@ function spawnAgentProcess(agent, prompt, extraEnv = {}) {
 
     if (agent.model && agent.model !== 'default') args.push('--model', toCliModelName(agent.model));
     if (agent.effort && CLAUDE_EFFORT_LEVELS.includes(agent.effort)) args.push('--effort', agent.effort);
+    else if (agent.effort === CLAUDE_EFFORT_OFF) args.push('--thinking', 'disabled');
     if (agent._maxTurns) args.push('--max-turns', String(agent._maxTurns));
     if (agent._systemPrompt) args.push('--system-prompt', agent._systemPrompt);
     if (agent._allowedTools?.length) args.push('--allowedTools', ...agent._allowedTools);
@@ -17569,6 +18117,10 @@ app.post('/api/agents/launch', async (req, res) => {
       mode, iterations, maxMinutes, context,
     } = req.body;
     if (!task?.trim()) return res.status(400).json({ error: 'task is required' });
+    // Optional moreloginEnvId (+ moreloginEnvName): the MoreLogin profile this agent works in. The owner's page: any
+    // Chrome-type profile. Anybody else (an agent's tree reaches this route with any agent header): only a profile on
+    // the owner's list. Decided before anything of the agent exists.
+    const agentMoreLogin = withSynabun ? await requestedLaunchMoreLoginProfile(req) : null;
     if (req.body.tools !== undefined && !Array.isArray(req.body.tools)) throw Object.assign(new Error('tools must be an array'), { code: 'TOOLS_INVALID', status: 400 });
     const tools = requireToolList(resolveToolList(req.body.tools ?? [], { source: 'runtime' })).items;
     selectExternalServers(tools, externalInventory('claude-code', cwd || PACKAGE_ROOT));
@@ -17584,11 +18136,15 @@ app.post('/api/agents/launch', async (req, res) => {
     let browserSessionId = null;
     let browserTabId = null;
     const agentId = randomUUID();
+    // The agent's MoreLogin profile (decided above) is its owner key's pin, every iteration, as a schedule's run is.
+    // None: the default browser.
+    if (agentMoreLogin) pinRunMoreLoginProfile(`agent:${agentId}`, agentMoreLogin.moreloginEnvId, agentMoreLogin.moreloginEnvName, agentMoreLogin.moreloginEnvBy);
     if (withSynabun) {
       const acq = await acquireSharedBrowserTab({ ownerKey: `agent:${agentId}`, ownerType: 'interactive', logTag: 'agent:browser' });
       if (acq.error) {
+        forgetRunMoreLoginProfile(`agent:${agentId}`);
         console.warn(`[agent] Browser tab acquire failed: ${acq.error}`);
-        return res.status(500).json({ error: `Could not start browser session for this automation: ${acq.error}`, ...(acq.code ? { code: acq.code, offenders: acq.offenders } : {}) });
+        return res.status(acq.code === PROFILE_NOT_ALLOWED ? 403 : 500).json({ error: `Could not start browser session for this automation: ${acq.error}`, ...(acq.code ? { code: acq.code, offenders: acq.offenders } : {}) });
       }
       browserSessionId = acq.browserSessionId;
       browserTabId = acq.browserTabId;
@@ -18033,6 +18589,8 @@ function systemActivitySources() {
     },
     // A prompt running in an Antigravity panel tab (lib/antigravity/panel-bridge.js); dispatched runs are under assistant.
     'antigravity-panel': () => antigravityPanel.turnsRunning(),
+    // A reply streaming in a Maritaca panel tab (lib/maritaca/panel-bridge.js).
+    'maritaca-panel': () => maritacaPanel.turnsRunning(),
     'claude-cli': () => recentCliSessions(sessionRegistry),
     loop: () => {
       // A dispatched worker also runs in the native runtime: it is counted under assistant.
@@ -18391,7 +18949,66 @@ app.get('/api/system/backup', async (req, res) => {
 const RESTORE_STAGING_DIR = resolve(DATA_HOME, 'backups', 'restore-staging');
 
 // POST /api/system/restore/preview — Read manifest from uploaded ZIP without applying
+/** One sentence for a failed MCP server build (lib/mcp-build.js result), with what the compiler said when it said anything. */
+function mcpBuildFailureMessage(build) {
+  const why = {
+    'no-compiler': 'TypeScript is not installed (npm install in the package root installs it)',
+    'no-source': 'this copy has no mcp-server/src to build from',
+    compile: 'the TypeScript compile failed',
+    'incomplete-output': 'the compiler wrote an incomplete build',
+    swap: 'the new build could not replace the previous one',
+    busy: 'another SynaBun process is building it right now: try again in a moment',
+    lock: 'the build lock could not be taken',
+    error: 'the build stopped on an error',
+  }[build.reason] || build.reason;
+  const detail = build.output ? `: ${String(build.output).trim()}` : '';
+  return `${why}${detail}. The previous build is kept.`;
+}
+
+// ── Restore is the owner's page's alone (re-review of 2026-11-11, finding 2) ──
+// POST /api/system/restore writes into DATA_HOME/data whatever the archive holds: browser-config.json (the owner's
+// list of profiles agents may choose, the default profile, the connect mode), the schedules and templates stores (and
+// with them the agent marks), the .env, ~/.claude/settings.json. It asked nothing itself, and lib/owner-authority.js
+// lets an agent's own call through on its route's rules (an agent or run header), so an agent process could replace
+// the list and the default. Now it, and its preview (which takes the same upload), need this boot's page secret, never
+// a guest, no run or agent header (restoreOwnerPageCall). Both of SynaBun's callers are pages that carry it (Settings →
+// Data, onboarding.html). Sibling routes checked: GET /api/system/backup and /backups read only; PUT /api/system/
+// auto-backup and POST /auto-backup/trigger write backups, never data; POST /api/system/run-update replaces the app,
+// not its data; POST /api/settings/move-db moves memory.db only; POST /api/loop/templates/import is agent-open on
+// purpose and marks what it brings (markTemplateAuthor). None of them can change the list, the default profile or a mark.
+// What a restore brings is the owner's act, the list included; but an archive is data: restored schedules and
+// templates come back marked unreviewed (markRestoredAutomationRecords), never with fewer marks than the archive.
+function restoreOwnerPageCall(req) { return moreLoginOwnerPageCall(req); }
+function refuseRestoreCaller(req, res) {
+  return refuseNotOwnerPage(req, res, 'Restoring a backup replaces the owner\'s settings and data: it is done from SynaBun\'s own page (Settings → Data → Restore), never by an agent, a run or another program.');
+}
+/**
+ * After a restore wrote its files: every schedule and template it put back is marked unreviewed (lib/automation-
+ * approval.js markRecordsUnreviewed: marks only added, a file's `moreloginEnvBy: 'owner'` not believed). `targets`:
+ * the paths the restore wrote. Returns how many records were marked.
+ */
+function markRestoredAutomationRecords(targets) {
+  let marked = 0;
+  for (const target of targets) {
+    if (resolve(dirname(target)) !== resolve(LOOP_DATA_DIR)) continue;
+    const name = basename(target);
+    const kind = LOOP_TEMPLATES_PATTERN.test(name) ? 'templates' : (LOOP_SCHEDULES_PATTERN.test(name) ? 'schedules' : null);
+    if (!kind) continue;
+    try {
+      const data = JSON.parse(readFileSync(target, 'utf-8'));
+      const out = markRecordsUnreviewed(data, kind, 'restore');
+      writeFileSync(target, JSON.stringify(out.data, null, 2));
+      marked += out.marked;
+    } catch (err) {
+      console.warn(`[restore] ${name}: its records could not be marked unreviewed (${err.message}); the file was left as the archive had it`);
+    }
+  }
+  _scheduleFilesCache = null;
+  return marked;
+}
+
 app.post('/api/system/restore/preview', async (req, res) => {
+  if (!restoreOwnerPageCall(req)) return refuseRestoreCaller(req, res);
   let upload = null;
   let zip = null;
   try {
@@ -18416,6 +19033,8 @@ app.post('/api/system/restore/preview', async (req, res) => {
 
 // POST /api/system/restore — Apply a full system backup from uploaded ZIP
 app.post('/api/system/restore', async (req, res) => {
+  // Finding 2 of the re-review of 2026-11-11: before the upload is read.
+  if (!restoreOwnerPageCall(req)) return refuseRestoreCaller(req, res);
   let upload = null;
   let zip = null;
   try {
@@ -18489,6 +19108,9 @@ app.post('/api/system/restore', async (req, res) => {
         await extractZipEntry(zip, entry, target);
         results.files.push(rel);
       }
+      // An archive is data: what it puts back in the schedules and templates stores is unreviewed (finding 2).
+      const unreviewed = markRestoredAutomationRecords(writes.map((w) => w.target));
+      if (unreviewed) results.unreviewed = unreviewed;
     }
 
     // Normalize SQLITE_DB_PATH from restored .env to local default
@@ -18538,23 +19160,29 @@ app.post('/api/system/restore', async (req, res) => {
     }
 
     // Post-restore: ensure MCP server is built (critical for fresh installs + restore). Built means dist/index.js
-    // and every module it imports (lib/mcp-dist.js).
-    if (!mcpDistBuilt(PACKAGE_ROOT)) {
+    // and every module it imports (lib/mcp-dist.js), stamped with this version and source (lib/mcp-build.js): the
+    // builder compiles into a temp folder and swaps it in only on success, so a failure keeps whatever dist there was.
+    // A packaged application is replaced whole: only a dist that is not whole counts, and nothing compiles it here.
+    // A new dist cannot be loaded by this server (the old one is in its module cache): a build asks for a restart.
+    if (mcpBuildNeeded(PACKAGE_ROOT, { packaged: !!PACKAGED_RUNTIME }).needed) {
       try {
-        // TypeScript is a devDependency of the package root (a development checkout also has it in mcp-server/).
-        const mcpDir = resolve(PACKAGE_ROOT, 'mcp-server');
+        // TypeScript is a dependency of the package root (a development checkout also has it in mcp-server/).
+        if (PACKAGED_RUNTIME) throw new Error('this application is incomplete: reinstall SynaBun');
         if (!mcpCompiler(PACKAGE_ROOT)) {
           const npm = npmCommand(npmInvocation(), fallbackInstallArgs({ includeDev: true }));
           await execFileAsync(npm.file, npm.args, { cwd: PACKAGE_ROOT, timeout: 600_000, maxBuffer: 16 * 1024 * 1024, shell: npm.shell, windowsHide: true, env: withPackagedPathLast(fallbackInstallEnv({ ...process.env, NODE_ENV: 'development' })) });
         }
-        await execFileAsync(process.execPath, [mcpCompiler(PACKAGE_ROOT), '-p', mcpDir], { cwd: mcpDir, timeout: 120_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true });
-        results.files.push('(auto-built MCP server)');
+        const build = await buildMcpServerSafelyAsync(PACKAGE_ROOT, { windowsHide: true });
+        if (build.status === 'failed') throw new Error(mcpBuildFailureMessage(build));
+        if (build.status === 'built') { results.files.push('(auto-built MCP server)'); results.restart = true; }
       } catch (buildErr) {
         results.errors.push(`MCP server auto-build failed: ${buildErr.message}`);
       }
     }
 
-    res.json({ ok: true, message: 'Backup restored successfully', results });
+    res.json({ ok: true, message: 'Backup restored successfully', results, ...(results.restart ? { restart: true, bootId: SERVER_BOOT_ID } : {}) });
+    // The new build loads only in a new server: the same restart as Apps → Restart Server, once the answer is out.
+    if (results.restart) setTimeout(() => { try { requestServerRestart(); } catch (err) { console.error('[restore] restart after the MCP build failed:', err?.message); } }, 500);
   } catch (err) {
     console.error('POST /api/system/restore error:', err.message);
     if (!res.headersSent) res.status(500).json({ error: err.message });
@@ -19420,15 +20048,139 @@ function _moreLoginOpts() { return { savedCfg: loadBrowserConfig() }; }
 // They act with the owner's powers: MoreLogin's local API with the owner's credentials, the default AI browser (a
 // setting), the profiles' browsers. The owner's page (this boot's page secret, never an invite guest) calls every one
 // of them; an automation that says who it is calls the ones the `morelogin` MCP tool uses (status, list, create, start,
-// stop, use_default) with rails: start and use_default only for a run SynaBun started (its terminal token, never an id
-// merely said), start answers no CDP port, stop only a profile the caller holds, use_default never while another
-// automation works in the browser. The API settings (config), the probe (test) and MoreLogin's own MCP registration
+// stop, use) with rails: start only for a run SynaBun started (its terminal token, never an id merely said) and only a
+// profile on the owner's list of profiles agents may choose (B1, moreLoginAutomationProfileCheck), start answers no CDP
+// port, stop only a profile the caller holds. use-default (the saved default profile and connect mode) is the owner's
+// page's alone since the re-review of 2026-11-11, finding 1 (refuseDefaultBrowserChange). The API settings (config), the probe (test) and MoreLogin's own MCP registration
 // (register-mcp, which writes a command into the agents' configurations) are the owner's page's only. Before, every
 // route answered whatever asked, and a request with no header stopped any profile as the owner.
 /** [method path] under /api/morelogin an automation may call (the `morelogin` MCP tool, mcp-server services). */
-const MORELOGIN_AUTOMATION_ROUTES = new Set(['GET /status', 'GET /profiles', 'POST /profiles', 'POST /start', 'POST /stop', 'POST /use-default']);
+const MORELOGIN_AUTOMATION_ROUTES = new Set(['GET /status', 'GET /profiles', 'POST /profiles', 'POST /start', 'POST /stop', 'POST /use']);
 /** Of those, the ones a run must prove (verified: its terminal token or a brain's credential), never an id said. */
-const MORELOGIN_VERIFIED_ROUTES = new Set(['POST /start', 'POST /use-default']);
+const MORELOGIN_VERIFIED_ROUTES = new Set(['POST /start', 'POST /use']);
+// ── MCP_SESSION_PROOFS: a plain CLI window's own MCP session (2026-11-10) ──
+// "A plain CLI terminal window's own MCP session" is an MCP client SynaBun did not start (the user's own Claude Code or
+// Codex in a terminal tab or any terminal, connected to this server's /mcp with no X-Synabun-Terminal pin). It names no
+// run: SynaBun's in-process MCP routes it as its Mcp-Session-Id (mcp-server/src/http.ts deriveIdentity), and sent that
+// id in X-Synabun-Terminal with no proof, so here it was `unregistered`: an id taken as said, which any local process
+// could also say (the id is in this server's log lines). That is why it was refused the verified routes: `start` (a
+// MoreLogin profile is another real account; the 2026-11-05 review, 972afb74 findings 1 and 7, closed every way for an
+// automation to choose a browser or act with the owner's MoreLogin powers by merely naming an id), `use_default`
+// (changes the browser of every session) and, today, `use`.
+// Now such a session gets a proof of its own when it initializes from this computer (loopback, no pin, never through
+// the tunnel; lib/terminal-tokens.js issueSession, kind 'mcp-session'): minted here, held only by the in-process MCP for
+// that one transport session (the SDK checks the Mcp-Session-Id, a random UUID only that client was given), sent by it
+// with the id on every request it makes for that session, never to the client, revoked when the session closes or is
+// evicted. The session's id is then `verified`: another process naming it is refused (403 TERMINAL_TOKEN_REQUIRED, on
+// every route that reads browserCaller, where before it was taken as said), and moreLoginGate lets it call `use` (its
+// own pin only: POST /use pins browserOwnerId(caller.id), never an id from the body). `start` and `use-default` stay
+// refused for this kind (MORELOGIN_RUN_ONLY_ROUTES): it is not a run SynaBun started. `use` needs no `start`: the
+// profile is started as part of acquiring the session's own tab (acquireSharedBrowserTab), as for any pinned run.
+// Its choice is not kept across a restart (its id dies with the server) and is dropped when the session ends.
+// What the proof is NOT (review b6631e9d of the same day, finding 1): it shows "the same MCP session", never "the
+// user's CLI window". Any program on this computer can initialize /mcp with no pin and is given one, so `use`'s
+// VERIFIED_RUN_REQUIRED excludes nobody local, and refusing `start` excludes nobody either (the acquisition starts the
+// profile). Decision: the proof is kept, because the owner's list of profiles agents may choose now bounds what such a
+// session reaches (agentMoreLoginProfileChoice in POST /use when the pin is set; moreLoginPinRefusal every time it is
+// used). With nothing on the list it reaches no profile. With profiles on the list, ANY local process can enter those
+// profiles, and only those: that residual is what the owner's toggle says ("agents may choose this profile") and it is
+// not closed. What the proof still does: one local process cannot act as ANOTHER session by naming its id, so a
+// session's tab, its pin and its choice are its own (findings 2 and 3 rest on that).
+/** Of the verified routes, the ones a plain MCP session's proof is not enough for (it is not a run SynaBun started). */
+const MORELOGIN_RUN_ONLY_ROUTES = new Set(['POST /start']);
+/** Set on a request that came in through the plain /mcp mount (never the keyed /mcp/<key> one). */
+const MCP_PLAIN_MOUNT = Symbol('synabun.mcpPlainMount');
+/**
+ * Whether an MCP initialize may get a session proof (review b6631e9d, finding 5). Before, the one router mounted at
+ * both /mcp and /mcp/<key> issued a proof to anything whose socket was loopback and that carried no CF-Connecting-IP:
+ * a reverse proxy on this computer (not Cloudflare's) in front of the keyed mount made a remote key holder look local.
+ * Now, all of:
+ *   • the plain /mcp mount (the keyed mount is how the outside comes in, and never issues one);
+ *   • not from outside by this server's own reading (requestGates.isRemote: the tunnel's and the invite proxy's
+ *     headers and names) and not from another machine (fromAnotherMachine: the socket's peer address);
+ *   • where the peer lookup runs (macOS), the process at the other end is not a relay, a listener (a proxy), an
+ *     automation browser, another SynaBun server or a closed client, and the lookup did not fail. An AI agent's CLI
+ *     (the case this exists for) and a plain local program pass. Where the lookup does not run (Windows, Linux,
+ *     SYNABUN_PEER_IDENTITY=off) a local proxy on the plain mount cannot be told apart: said in docs/browser-v2.md.
+ * A session without a proof still works as before; it only cannot call `use` (403 VERIFIED_RUN_REQUIRED).
+ */
+function mcpSessionProofEligible(req) {
+  try {
+    if (!req || req[MCP_PLAIN_MOUNT] !== true) return false;
+    if (requestGates.isRemote(req) || requestGates.fromAnotherMachine(req)) return false;
+    const auth = peerAuthority(req[PEER_VERDICT]);
+    if (auth.decision === 'before') return _peerIdentity.supported !== true; // macOS with no verdict: never identified
+    if (auth.decision === 'allowed') return true;
+    return auth.decision === 'refused' && auth.gone !== true && auth.kind === 'agent';
+  } catch { return false; }
+}
+/** Whether `ownerKey` is a plain MCP session proven by its own proof (MCP_SESSION_PROOFS). */
+function isMcpSessionOwner(ownerKey) { return _terminalTokens.kindOf(ownerKey) === 'mcp-session'; }
+/** A plain MCP session closed: what it held in any browser is released, its choice dropped, then its proof revoked. */
+async function endMcpSessionProof(sessionId) {
+  if (!isMcpSessionOwner(sessionId)) return;
+  try {
+    // Nothing of a closed session is written anywhere (finding 6: this used to `set(sessionId, null)`, which wrote a
+    // row for every session that ever closed and pushed real saved choices out of the file). Its pin is forgotten by
+    // the token registry's onEnded when the proof is revoked below (forgetRunMoreLoginProfile).
+    _movedAutomationRoutes.delete(sessionId);
+    await releaseBrowserOwnerEverywhere(sessionId);
+  } catch (err) {
+    console.warn(`[morelogin] MCP session ${logOwnerId(sessionId)}: release on close failed: ${err.message}`);
+  } finally {
+    _terminalTokens.revokeSession(sessionId);
+  }
+}
+// ── `start` and `use-default` are held to the owner's list (re-review of 2026-11-10, finding B1) ──
+// (For use-default this was superseded the next day: it is the owner's page's alone, refuseDefaultBrowserChange below.)
+// The list of profiles agents may choose was asked where a session picks a profile for itself (POST /use), where a
+// launch or a record names one, and where a pin is used, but not here. A run SynaBun started (its terminal token),
+// alone in the browser, called `use-default` with ANY Chrome-type profile: its next browser call landed there "as the
+// default" (the default is not held to the list), and the setting was saved, so every later run without a profile of
+// its own landed there too. `start` alone started any profile, any account. With nothing on the list an agent still
+// selected a profile, which is the one thing the list promises it cannot.
+// Now both routes refuse a caller that is not the owner's page (403 MORELOGIN_PROFILE_NOT_ALLOWED) unless the profile
+// is on the list. The owner's page keeps both for every profile. Other writers of the default: PUT /api/browser/config
+// is the owner's page's alone (browserTerminalGate: not an automation route), and `clear` here is the owner's too.
+/**
+ * Whether a MoreLogin request is the owner's page acting for itself: this boot's page secret, never a guest
+ * (browserOwnerPageOnly), and no run or agent header on it (browserCaller). moreLoginGate lets in the owner's page or
+ * an automation that named itself, so everything this is false for is an automation.
+ */
+function moreLoginOwnerPageCall(req) {
+  return browserOwnerPageOnly(req) && !browserCaller(req).automation;
+}
+/** Throws 403 MORELOGIN_PROFILE_NOT_ALLOWED when an automation names a profile that is not on the owner's list. */
+function moreLoginAutomationProfileCheck(req, envId) {
+  if (moreLoginOwnerPageCall(req)) return;
+  if (!moreLoginProfileAllowed(envId)) throw profileNotAllowedError(String(envId).trim().slice(0, 128));
+}
+// ── The default profile and the connect mode are the owner's page's alone (re-review of 2026-11-11, finding 1) ──
+// B1 above held `use-default` to the owner's list. That was not enough: the default is not a pin, so nothing recorded
+// who chose it. A run made a listed profile the default; the owner then switched the profile off the list; every run
+// without a profile of its own still acquired and drove it "as the default" (pinUseRefusal lets a missing pin through,
+// sessionServesRun takes the configured default), and the list was read before an awaited profile lookup and not again
+// before the save. The owner's decision: changing the saved default MoreLogin profile, or the browser connect mode, is
+// the owner's page's only (moreLoginOwnerPageCall: this boot's page secret, never a guest, no run or agent header). No
+// automation of any kind can do it: a run SynaBun started, a worker, the Assistant, a CLI MCP session, a guest, a bare
+// request, a listed profile or not. That is what keeps "the default" the owner's choice, so it needs no list. The
+// writers: POST /api/morelogin/use-default (refused in moreLoginGate before anything else) and PUT /api/browser/config
+// (browserDefaultChangeRefused). `start` stays what B1 made it (a verified run, a listed profile, no CDP port): it
+// changes nobody's browser, and a listed profile is one the run could enter anyway with `use`.
+/** What an automation that tried to change the default AI browser is told (status 403). */
+function refuseDefaultBrowserChange(res) {
+  return res.status(403).json({
+    ok: false, code: 'MORELOGIN_DEFAULT_OWNER_ONLY',
+    error: 'The default AI browser (the default MoreLogin profile and the browser connect mode) is the owner\'s choice, made in SynaBun → Settings → Browser; no agent, run, session or program can change it, whatever the profile. Nothing was changed. To work in another MoreLogin profile yourself, call morelogin with action "use" (envId or name): only your own browser tools move there. Tell the user: if every automation should use that profile by default, set it in Settings → Browser.',
+  });
+}
+/** Whether a write of the browser settings would change the default (connect mode or default profile) and its caller may not. */
+function browserDefaultChangeRefused(req, body, saved) {
+  if (moreLoginOwnerPageCall(req)) return false;
+  const mode = (cfg) => (['attach', 'morelogin'].includes(cfg?.connectMode) ? cfg.connectMode : 'mirror');
+  const env = (cfg) => (cfg?.moreloginEnvId ? String(cfg.moreloginEnvId) : null);
+  return mode(body) !== mode(saved) || env(body) !== env(saved);
+}
 /** envId → the automations that started that profile through POST /api/morelogin/start (what stop counts as held). */
 const _moreLoginStartedBy = new Map();
 function moreLoginGate(req, res, next) {
@@ -19436,10 +20188,20 @@ function moreLoginGate(req, res, next) {
   if (!caller.accepted) return refuseBrowserCaller(res, caller);
   const method = String(req.method || '').toUpperCase() === 'HEAD' ? 'GET' : String(req.method || '').toUpperCase();
   const key = `${method} ${String(req.path || '').replace(/\/$/, '')}`;
+  // Finding 1 of the re-review of 2026-11-11: the saved default profile and the connect mode are the owner's page's
+  // alone. Asked before anything else, so every other caller gets the same answer (MORELOGIN_DEFAULT_OWNER_ONLY).
+  if (key === 'POST /use-default' && !moreLoginOwnerPageCall(req)) return refuseDefaultBrowserChange(res);
   if (browserOwnerPageOnly(req)) return next();
   if (caller.id && MORELOGIN_AUTOMATION_ROUTES.has(key)) {
     if (MORELOGIN_VERIFIED_ROUTES.has(key) && caller.status !== 'verified') {
-      return res.status(403).json({ ok: false, code: 'VERIFIED_RUN_REQUIRED', error: `Starting a MoreLogin profile or making one the default AI browser is for a run SynaBun started (it proves its id with its terminal token), or the owner in Settings → Browser. ${String(caller.id).slice(0, 128)} is an id SynaBun gave no token.` });
+      return res.status(403).json({ ok: false, code: 'VERIFIED_RUN_REQUIRED', error: `Starting a MoreLogin profile, working in one, or making one the default AI browser is for a session that proves its id: a run SynaBun started (its terminal token), or a CLI window's own session of SynaBun's HTTP MCP (working in a profile only), or the owner in Settings → Browser. ${String(caller.id).slice(0, 128)} is an id SynaBun gave no proof (a stdio MCP server's own id, for one).` });
+    }
+    // An id that holds a profile pin and was not proven by this request reaches no MoreLogin route (finding 2). A pin
+    // off the owner's list does not close these routes: the session needs status, list and `use` to go back.
+    const pinRefused = callerProfileRefusal(caller);
+    if (pinRefused && pinRefused.code === 'PROFILE_PIN_UNVERIFIED') return res.status(pinRefused.status).json({ ok: false, code: pinRefused.code, error: pinRefused.error });
+    if (MORELOGIN_RUN_ONLY_ROUTES.has(key) && isMcpSessionOwner(caller.id)) {
+      return res.status(403).json({ ok: false, code: 'VERIFIED_RUN_REQUIRED', error: 'Starting a MoreLogin profile by itself or changing the default AI browser is for a run SynaBun started, or the owner in Settings → Browser. This session can work in a profile of its own: call morelogin with action "use" (the profile is started by your next browser call).' });
     }
     return next();
   }
@@ -19461,6 +20223,87 @@ function otherAutomationsInBrowser(caller) {
 }
 app.use('/api/morelogin', moreLoginGate);
 
+// ── Local profiles (2026-11-11): profiles SynaBun creates and runs itself, next to MoreLogin's ──
+// A local profile is a Chrome SynaBun starts with a data folder of its own (lib/local-profiles.js, DATA_HOME/data/
+// local-profiles/<id>). It is not a MoreLogin profile: nothing of MoreLogin's (its app data, its browser, its account,
+// its API) is used for it, and MoreLogin does not list it. Its id (`lp-` + 12 hex characters) travels every rail a
+// MoreLogin profile id does: `moreLogin` here is lib/browser-profiles.js, which sends a local id to the local launcher
+// and every other id to MoreLogin. So the default AI browser, the owner's list of profiles agents may choose, the pins,
+// the pickers and start / stop need nothing of their own for it.
+// Creating, changing, deleting one and checking its proxy are the owner's page's alone: none of these paths is in
+// MORELOGIN_AUTOMATION_ROUTES, so moreLoginGate answers every automation 403, and each route asks again by itself.
+moreLogin.configureLocalProfiles({
+  root: resolve(DATA_HOME, 'data', 'local-profiles'),
+  launchChrome: (launch) => _launchChromeAndWaitForCdp(launch),
+  // Attach mode's resolution: the path of Settings → Browser, the installed browser of its channel, Chrome on macOS.
+  resolveChromeBin: () => {
+    const cfg = loadBrowserConfig();
+    return [cfg.executablePath, findBrowserExecutable(cfg.channel)].find((p) => p && existsSync(p))
+      || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
+  },
+  log: (line) => console.log(`[local-profile] ${line}`),
+});
+/** Answers 403 and returns true when a local-profile route was not called by the owner's page. */
+function localProfileRouteRefused(req, res) {
+  if (moreLoginOwnerPageCall(req)) return false;
+  res.status(403).json({ ok: false, code: 'OWNER_ROUTE', error: 'Local profiles are created, changed and deleted by the owner in SynaBun → Settings → Connected tools → MoreLogin. An agent works in one the owner allowed: morelogin "list", then "use".' });
+  return true;
+}
+function localProfileRouteError(res, err) {
+  res.status(err?.status || 500).json({ ok: false, error: err?.message || String(err), ...(err?.code ? { code: err.code } : {}), ...(err?.field ? { field: err.field } : {}) });
+}
+// GET /api/morelogin/local-profiles — the editor's rows (never a proxy password; `hasPassword` says there is one)
+app.get('/api/morelogin/local-profiles', async (req, res) => {
+  try {
+    if (localProfileRouteRefused(req, res)) return;
+    res.json({ ok: true, profiles: await moreLogin.localProfileDetails() });
+  } catch (err) { localProfileRouteError(res, err); }
+});
+// POST /api/morelogin/local-profiles — { name, proxy?, language?, timezone?, window?, notes? } → { profile }
+app.post('/api/morelogin/local-profiles', async (req, res) => {
+  try {
+    if (localProfileRouteRefused(req, res)) return;
+    const profile = await moreLogin.createLocalProfile(req.body || {});
+    console.log(`[local-profile] the owner created ${profile.id} "${profile.name}"`);
+    res.json({ ok: true, profile });
+  } catch (err) { localProfileRouteError(res, err); }
+});
+// PUT /api/morelogin/local-profiles/:id — new settings; they hold from the profile's next start (`restartNeeded`)
+app.put('/api/morelogin/local-profiles/:id', async (req, res) => {
+  try {
+    if (localProfileRouteRefused(req, res)) return;
+    const profile = await moreLogin.updateLocalProfile(String(req.params.id), req.body || {});
+    res.json({ ok: true, profile, restartNeeded: profile.restartNeeded === true });
+  } catch (err) { localProfileRouteError(res, err); }
+});
+// DELETE /api/morelogin/local-profiles/:id — stops it, removes its folder (cookies, logins) and its entry
+app.delete('/api/morelogin/local-profiles/:id', async (req, res) => {
+  try {
+    if (localProfileRouteRefused(req, res)) return;
+    const id = String(req.params.id);
+    const cfg = loadBrowserConfig();
+    if (cfg.connectMode === 'morelogin' && String(cfg.moreloginEnvId || '') === id) {
+      return res.status(409).json({ ok: false, code: 'LOCAL_PROFILE_IS_DEFAULT', error: 'This local profile is the default AI browser: choose another default first (Settings → Browser, or "Use as default" on another profile), then delete it.' });
+    }
+    const removed = await moreLogin.deleteLocalProfile(id);
+    _moreLoginStartedBy.delete(id);
+    // Off the agents' list with it (the list's one writer). A pin that still names it fails at its next use: the
+    // profile is not found.
+    try { if (moreLoginProfileAllowed(id)) writeAgentProfileChoice(id, null, false); }
+    catch (err) { console.warn(`[local-profile] ${id} was deleted but is still on the agents' list: ${err.message}`); }
+    console.log(`[local-profile] the owner deleted ${id} "${removed.name}"`);
+    res.json({ ok: true, id, name: removed.name });
+  } catch (err) { localProfileRouteError(res, err); }
+});
+// POST /api/morelogin/local-profiles/:id/check-proxy — { proxy? } (the editor's unsaved values) → { ok, ip, via, ms }
+app.post('/api/morelogin/local-profiles/:id/check-proxy', async (req, res) => {
+  try {
+    if (localProfileRouteRefused(req, res)) return;
+    const result = await moreLogin.checkLocalProfileProxy(String(req.params.id), req.body && req.body.proxy);
+    res.json(result);
+  } catch (err) { localProfileRouteError(res, err); }
+});
+
 // GET /api/morelogin/status — install + running + port + default-profile state
 app.get('/api/morelogin/status', async (req, res) => {
   try {
@@ -19471,6 +20314,21 @@ app.get('/api/morelogin/status', async (req, res) => {
       ...status,
       isDefault: cfg.connectMode === 'morelogin',
       defaultEnvId: cfg.moreloginEnvId || null,
+      // SynaBun's own local profiles (lib/local-profiles.js): `installed`, `running` and `profileCount` are MoreLogin's.
+      localProfileCount: moreLogin.localProfileCount(),
+      // The profile the calling session's own browser tools work in (POST /api/morelogin/use, or the profile its run
+      // was launched with), when that is not the default.
+      // Only for a caller this request proved (finding 2): an id merely said learns nothing about a pin.
+      ...(() => {
+        const who = browserCaller(req);
+        const pin = who.automation && who.accepted && who.status === 'verified' ? runMoreLoginPin(browserOwnerId(who.id)) : null;
+        if (!pin) return {};
+        const refused = moreLoginPinRefusal(browserOwnerId(who.id), pin);
+        return { yourProfile: { envId: pin.envId, name: pin.name || null, ...(refused ? { refused: refused.error } : {}) } };
+      })(),
+      // The owner's list of profiles agents may choose (Settings → Connected tools → MoreLogin): an agent reads it
+      // here before it tries a profile. Empty: no session, dispatch or agent-made launch can choose one.
+      agentProfiles: moreLoginAgentProfiles(),
       // MoreLogin's local API does not expose its website blacklist/whitelist, so
       // report the blocks we actually observed instead of the config we can't read.
       blockedNavigations: moreLoginBlockStats.count,
@@ -19525,10 +20383,20 @@ app.post('/api/morelogin/test', async (req, res) => {
 // GET /api/morelogin/profiles — list browser profiles (environments)
 app.get('/api/morelogin/profiles', async (req, res) => {
   try {
-    const envs = await moreLogin.listProfiles(_moreLoginOpts());
-    res.json({ ok: true, envs });
+    // Each with the browser it runs (`browser`): "use as default" is not offered for a Firefox-type one.
+    // MoreLogin's profiles and SynaBun's local ones (`kind: 'local'`). With MoreLogin closed the local ones are still
+    // listed, and `moreloginError` says why MoreLogin's are missing.
+    const rows = await moreLogin.listProfiles(_moreLoginOpts());
+    const listed = await withMoreLoginBrowsers(rows, _moreLoginOpts());
+    // `agentsMayChoose`: on the owner's list (the Settings toggle, and what the `morelogin` tool's "list" shows).
+    const allowed = moreLoginAgentProfiles();
+    res.json({
+      ok: true, envs: listed.envs.map((env) => ({ ...env, agentsMayChoose: allowed.some((row) => row.envId === String(env.id)) })), browsersPending: listed.browsersPending, agentProfiles: allowed,
+      local: { count: listed.envs.filter((env) => env.kind === 'local').length },
+      ...(rows.moreloginError ? { moreloginError: rows.moreloginError.message } : {}),
+    });
   } catch (err) {
-    res.json({ ok: false, error: err.message, envs: [] });
+    res.json({ ok: false, error: err.message, envs: [], local: { count: 0 } });
   }
 });
 
@@ -19539,6 +20407,11 @@ app.post('/api/morelogin/profiles', async (req, res) => {
     const result = await moreLogin.createProfile({ ..._moreLoginOpts(), name });
     res.json({ ok: true, ...result });
   } catch (err) {
+    // MoreLogin's plan holds no more profiles: said as such, so the page can offer a local profile (which needs no
+    // MoreLogin slot). The match is loose (lib/browser-profiles.js isMoreLoginPlanLimit): MoreLogin's words vary.
+    if (moreLogin.isMoreLoginPlanLimit(err)) {
+      return res.status(409).json({ ok: false, code: 'MORELOGIN_PLAN_LIMIT', error: `${err.message}. Its plan seems to hold no more profiles. A local profile needs no MoreLogin slot: SynaBun runs it itself on this computer (Settings → Connected tools → MoreLogin → Profiles, "Where": Local).` });
+    }
     res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -19548,12 +20421,17 @@ app.post('/api/morelogin/start', async (req, res) => {
   try {
     const envId = req.body && req.body.envId;
     if (!envId) return res.status(400).json({ ok: false, error: 'envId is required' });
-    const out = await moreLogin.startProfile(envId, _moreLoginOpts());
+    // B1: an automation starts only a profile on the owner's list, checked before MoreLogin is asked for anything.
+    moreLoginAutomationProfileCheck(req, envId);
+    // `owner`: the owner's own Start (the page; moreLoginGate let nobody else through without the automation mark).
+    // Only that may end a running local profile to start it again (lib/local-profiles.js startNow); an automation
+    // gets LOCAL_PROFILE_RESTART_NEEDED / LOCAL_PROFILE_BUSY by name below, and no browser.
     const who = browserCaller(req);
+    const out = await moreLogin.startProfile(envId, { ..._moreLoginOpts(), owner: !who.automation && moreLoginOwnerPageCall(req) });
     if (!who.automation) return res.json({ ok: true, ...out });
     // An automation's start: the profile is the caller's to stop later (POST /api/morelogin/stop), and the answer
     // carries no CDP port (a raw debugging connection drives the profile's browser past every check SynaBun makes;
-    // SynaBun's browser tools reach the default profile without it).
+    // SynaBun's browser tools reach the caller's own profile without it: POST /api/morelogin/use).
     if (who.id) {
       const starters = _moreLoginStartedBy.get(String(envId)) || new Set();
       starters.add(who.id);
@@ -19562,7 +20440,7 @@ app.post('/api/morelogin/start', async (req, res) => {
     }
     res.json({ ok: true, started: true, envId: String(envId) });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    res.status(err.status || 500).json({ ok: false, error: err.message, ...(err.code ? { code: err.code } : {}) });
   }
 });
 
@@ -19580,11 +20458,11 @@ app.post('/api/morelogin/stop', async (req, res) => {
     const caller = who.automation ? who.ownerKey : null;
     const decision = profileStopDecision(browserSessions, envId, caller, { startedBy: (id) => _moreLoginStartedBy.get(id) || [] });
     if (decision.action === 'refuse' && decision.reason === 'not_owned') {
-      console.warn(`[morelogin] stop of env ${envId} by ${caller} refused: it holds nothing on that profile`);
+      console.warn(`[morelogin] stop of env ${envId} by ${logOwnerId(caller)} refused: it holds nothing on that profile`);
       return res.status(403).json({ ok: false, code: 'NOT_OWNED', error: `MoreLogin profile ${envId} was not stopped: you did not start it and have no tab in it. Stop only a profile you started; the owner stops the others in Settings → Browser.` });
     }
     if (decision.action === 'refuse') {
-      console.warn(`[morelogin] stop of env ${envId} by ${caller} refused: ${decision.others.length} other automation(s) work in it (${decision.others.join(', ')})`);
+      console.warn(`[morelogin] stop of env ${envId} by ${logOwnerId(caller)} refused: ${decision.others.length} other automation(s) work in it (${decision.others.map(logOwnerId).join(', ')})`);
       return res.status(409).json({
         ok: false, code: 'PROFILE_IN_USE', others: decision.others.length, sessionIds: decision.sessionIds,
         error: `MoreLogin profile ${envId} was not stopped: ${decision.others.length} other automation(s) have a tab in it, and stopping the profile would close their tabs. To start over in a fresh tab, close only your own (browser_session close, which keeps a shared session for the others); to stop the profile, ask the owner or wait until the other runs end.`,
@@ -19602,18 +20480,9 @@ app.post('/api/morelogin/stop', async (req, res) => {
 // { envId } to set, or { clear: true } to revert to the normal mirror browser.
 app.post('/api/morelogin/use-default', async (req, res) => {
   try {
-    // An automation's change of the default AI browser (moreLoginGate let a verified run through): to a profile
-    // MoreLogin lists, never back to another browser (`clear` is the owner's), and never while another automation works
-    // in the browser (its next call would be refused NOT_DEFAULT_BROWSER mid-task).
-    const who = browserCaller(req);
-    if (who.automation) {
-      if (req.body?.clear || !req.body?.envId) return res.status(403).json({ ok: false, code: 'OWNER_ROUTE', error: 'Going back from MoreLogin to another default browser is the owner\'s (Settings → Browser).' });
-      const busy = otherAutomationsInBrowser(who.ownerKey);
-      if (busy.length) return res.status(409).json({ ok: false, code: 'BROWSER_IN_USE', others: busy.length, error: `The default AI browser was not changed: ${busy.length} other automation(s) work in the browser now, and their next call would land in another profile. Try again when they are done, or ask the owner.` });
-      let envs = [];
-      try { envs = await moreLogin.listProfiles(_moreLoginOpts()); } catch (err) { return res.status(502).json({ ok: false, error: `MoreLogin's profile list could not be read: ${err.message}` }); }
-      if (!(envs || []).some((env) => String(env?.id) === String(req.body.envId))) return res.status(404).json({ ok: false, code: 'ENV_NOT_FOUND', error: `MoreLogin has no profile ${String(req.body.envId).slice(0, 64)}. Use the "list" action for its ids.` });
-    }
+    // The owner's page only (finding 1 of the re-review of 2026-11-11): moreLoginGate refused everybody else before
+    // this ran. Asked again here so the route never depends on the gate's order.
+    if (!moreLoginOwnerPageCall(req)) return refuseDefaultBrowserChange(res);
     const cfg = loadBrowserConfig();
     if (req.body && req.body.clear) {
       cfg.connectMode = 'mirror';
@@ -19621,13 +20490,174 @@ app.post('/api/morelogin/use-default', async (req, res) => {
     } else {
       const envId = req.body && req.body.envId;
       if (!envId) return res.status(400).json({ ok: false, error: 'envId is required' });
+      // The default AI browser is driven over CDP: never a profile known to be Firefox-type (starting one stays allowed).
+      await refuseFirefoxMoreLoginChoice({ moreloginEnvId: envId });
       cfg.connectMode = 'morelogin';
       cfg.moreloginEnvId = String(envId);
     }
     saveBrowserConfig(cfg);
     res.json({ ok: true, connectMode: cfg.connectMode, moreloginEnvId: cfg.moreloginEnvId || null });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    res.status(err.status || 500).json({ ok: false, error: err.message, ...(err.code ? { code: err.code } : {}) });
+  }
+});
+
+// ── A session's own MoreLogin profile (2026-11-10) ──
+// POST /api/morelogin/use — the calling session works in a MoreLogin profile of its own from now on:
+// { envId }, { name } or { profile } (either; a profile MoreLogin lists), or { default: true } to go back to the default of Settings →
+// Browser. The choice is the caller's pin (pinRunMoreLoginProfile, the pin a schedule's run is launched with), so its
+// acquisitions, its recoveries, the per-request gate and its view of GET /api/browser/sessions all follow it. Nothing
+// else changes: not the default AI browser, not another session's pin, tab or route. This is what an agent uses to
+// work in a second profile while other automations work in the default one; use-default (which moves everybody) keeps
+// its refusal while others use the browser.
+// A switch is clean: what the caller owned in a browser that is no longer its own is released here, before the answer,
+// and from then on the gate refuses its requests there (409 NOT_DEFAULT_BROWSER); its next browser call opens its tab
+// in the new profile (started then; a profile that cannot start fails that call by name, never another profile or
+// Chrome). A Firefox-type profile is refused (400 MORELOGIN_NOT_CHROMIUM) and the choice stays what it was.
+// For a session that proves its id (moreLoginGate: a run's terminal token, a brain's credential, or a plain CLI MCP
+// session's own proof, MCP_SESSION_PROOFS), never the owner's page (which has no session: the
+// owner picks in Settings → Browser or where the run is set up).
+const _profileChoiceStore = createProfileChoiceStore({
+  file: resolve(LOOP_DATA_DIR, 'browser-profile-choices.json'),
+  log: (line) => console.warn(`[morelogin] ${line}`),
+});
+
+/**
+ * The owners of the saved choices are retired when the server starts (called once, as it starts listening, before any
+ * request is answered): their ids are refused until their owner registers again (a side panel's new token, a brain's
+ * credential, a resumed run's token; lib/terminal-tokens.js retire). The choices themselves stay in the file and are
+ * read when their owner, verified, next uses the browser (runMoreLoginPin).
+ * Before (finding 2) every saved choice was put straight back into the pin map, and the token registry is empty after
+ * a restart: every saved id was `unregistered`, taken as said, so any process that named one (they are in this file
+ * in plain text) got a tab in that id's profile. A choice is deleted when its owner ends (forgetRunMoreLoginProfile),
+ * and one older than 14 days is not read back.
+ */
+function retireSavedProfileChoiceOwners() {
+  let retired = 0;
+  for (const [owner] of _profileChoiceStore.entries()) { if (_terminalTokens.retire(owner)) retired++; }
+  return retired;
+}
+
+/**
+ * The profile a request names ({ envId } / { name } / { profile }: id or name) among MoreLogin's and the local ones,
+ * Chrome-type only. With MoreLogin closed a local profile is still found; a profile that is not found then may be one
+ * of MoreLogin's, so the answer stays 502 MORELOGIN_UNREACHABLE, never "no such profile".
+ */
+async function resolveMoreLoginProfileChoice(ref) {
+  let envs = [];
+  const unreachable = (reason) => Object.assign(new Error(`MoreLogin's profile list could not be read: ${reason}. Open the MoreLogin app (its Local API must be on).`), { status: 502, code: 'MORELOGIN_UNREACHABLE' });
+  try { envs = await moreLogin.listProfiles(_moreLoginOpts()); } catch (err) { throw unreachable(err.message); }
+  let found;
+  try { found = resolveProfileRef(ref, envs); } catch (err) {
+    if (envs.moreloginError && err?.code === 'ENV_NOT_FOUND') throw unreachable(envs.moreloginError.message);
+    throw err;
+  }
+  await refuseFirefoxMoreLoginChoice({ moreloginEnvId: found.envId, moreloginEnvName: found.name });
+  return found;
+}
+
+/**
+ * `ownerKey` works in `choice` ({ envId, name }) from now on, or in the default browser (null). Its pin is set and
+ * kept (the choices file), and whatever it owned in a browser that is not its own any more is released: its tab
+ * closed (left open only when it is the browser's last), its claims and its recorded route dropped.
+ * → { previous, released: [{ sessionId, tabId }] }
+ */
+async function chooseSessionMoreLoginProfile(ownerKey, choice) {
+  const previous = runMoreLoginPin(ownerKey);
+  // A session's own choice is always an agent's ('agent'): held to the owner's list when it is set (the route) and at
+  // every use (moreLoginPinRefusal).
+  pinRunMoreLoginProfile(ownerKey, choice?.envId || null, choice?.name || null, 'agent');
+  // A plain MCP session's id dies with this server: its choice is never kept for a restart (MCP_SESSION_PROOFS).
+  if (!isMcpSessionOwner(ownerKey)) _profileChoiceStore.set(ownerKey, choice?.envId ? choice : null);
+  const cfg = loadBrowserConfig();
+  const agent = agentForTerminal(ownerKey);
+  const released = [];
+  for (const [sessionId, session] of [...browserSessions]) {
+    const holds = session._tabOwners?.has(ownerKey) || session._loopOwned?.has(ownerKey) || session._interactiveOwned?.has(ownerKey);
+    if (!holds || sessionServesRun(session, cfg, ownerKey)) continue;
+    const tabId = session._tabOwners?.get(ownerKey) || null;
+    await releaseSharedBrowserTab(sessionId, ownerKey).catch(() => {});
+    if (agent) session._agentOwnedSet?.delete(agent.id);
+    released.push({ sessionId, tabId });
+  }
+  const moved = _movedAutomationRoutes.get(ownerKey);
+  if (moved && !sessionServesRun(browserSessions.get(moved.browserSessionId), cfg, ownerKey)) _movedAutomationRoutes.delete(ownerKey);
+  try { _assistantDispatcher?.noteBrowserProfile?.(ownerKey, choice?.envId ? { envId: choice.envId, name: choice.name || null } : null); } catch (err) { console.warn(`[morelogin] run ${logOwnerId(ownerKey)}: run record not updated: ${err.message}`); }
+  loopLog(ownerKey, 'browser:profile', `this session now works in ${describeMoreLoginPin(choice?.envId ? choice : null)}`, { previous: previous?.envId || null, released });
+  return { previous, released };
+}
+
+app.post('/api/morelogin/use', async (req, res) => {
+  try {
+    const who = browserCaller(req);
+    if (!who.accepted) return refuseBrowserCaller(res, who);
+    const owner = who.automation ? browserOwnerId(who.id) : null;
+    if (!owner) {
+      return res.status(400).json({ ok: false, code: 'SESSION_REQUIRED', error: 'This picks the MoreLogin profile of the calling agent session (the morelogin tool\'s "use" action). The owner picks the default in Settings → Browser, and a run\'s profile where the run is set up.' });
+    }
+    if (automationRunState(owner) === 'ended') {
+      return res.status(409).json({ ok: false, code: 'RUN_ENDED', error: `Run ${owner} has ended: its browser profile is not changed.` });
+    }
+    const body = req.body || {};
+    const toDefault = body.default === true || body.default === 'true';
+    // The owner's list (review b6631e9d, finding 1): a session works only in a profile the owner allowed agents to
+    // choose. Going back to the default needs no entry. Whoever calls this is never the owner's page (SESSION_REQUIRED
+    // above), so there is no exception here. The gate in front proved the caller's id (MORELOGIN_VERIFIED_ROUTES).
+    const choice = toDefault ? null : await agentMoreLoginProfileChoice({ envId: body.envId, name: body.name, profile: body.profile });
+    const before = runMoreLoginPin(owner);
+    // Asked again for what it already has: nothing is released (its tab there stays its tab), and a pin the owner's
+    // page set at launch stays the owner's (it is not rewritten as the session's own).
+    if ((before?.envId || null) === (choice?.envId || null)) {
+      if (choice && before?.by !== 'owner') { pinRunMoreLoginProfile(owner, choice.envId, choice.name, 'agent'); if (!isMcpSessionOwner(owner)) _profileChoiceStore.set(owner, choice); }
+      return res.json({ ok: true, changed: false, envId: choice?.envId || null, name: choice?.name || null, default: !choice, released: [] });
+    }
+    const { previous, released } = await chooseSessionMoreLoginProfile(owner, choice);
+    res.json({
+      ok: true, changed: true, envId: choice?.envId || null, name: choice?.name || null, default: !choice,
+      previous: previous ? { envId: previous.envId, name: previous.name || null } : null,
+      released,
+    });
+  } catch (err) {
+    res.status(err.status || 500).json({ ok: false, error: err.message, ...(err.code ? { code: err.code } : {}), ...(err.ids ? { ids: err.ids } : {}) });
+  }
+});
+
+// ── The owner's list of profiles agents may choose (2026-11-10, review b6631e9d) ──
+// GET  /api/morelogin/agent-profiles          → { ok, profiles: [{ envId, name }] }
+// PUT  /api/morelogin/agent-profiles          { envId, name?, allowed: boolean } → the list after the change
+// The owner's page only: neither path is in MORELOGIN_AUTOMATION_ROUTES, so moreLoginGate answers a run, an MCP
+// session, a worker, a brain, a guest and a bare request 403 (OWNER_ROUTE / TERMINAL_REQUIRED / PAGE_SECRET_REQUIRED),
+// and lib/owner-authority.js refuses the write from the automation browser, a relay or an agent's tree before that. A
+// tunnel caller is a guest at best. Agents read the list through GET /status and GET /profiles (`agentProfiles`,
+// `agentsMayChoose`). Kept in the owner's browser settings (browser-config.json `moreloginAgentProfiles`); PUT
+// /api/browser/config keeps the saved list whatever its body says, so this route is its only writer. One profile per
+// request, so two toggles never overwrite each other. A change holds from the next request: nothing caches the list.
+/**
+ * The list's one writer: `envId` put on the owner's list of profiles agents may choose (`allowed` true) or taken off
+ * it. Called by the owner's page's own routes only: PUT /api/morelogin/agent-profiles (the switch) and DELETE
+ * /api/morelogin/local-profiles/:id (a deleted local profile leaves the list). → the list after the change.
+ */
+function writeAgentProfileChoice(envId, name, allowed) {
+  const cfg = loadBrowserConfig();
+  if (browserConfigUnreadable(cfg)) throw Object.assign(new Error(`browser-config.json is unreadable (${browserConfigUnreadable(cfg)}); fix it in Settings → Browser first.`), { status: 500 });
+  cfg[AGENT_PROFILES_KEY] = withAgentProfile(cfg, envId, name, allowed);
+  saveBrowserConfig(cfg);
+  return cfg[AGENT_PROFILES_KEY];
+}
+app.get('/api/morelogin/agent-profiles', (req, res) => {
+  res.json({ ok: true, profiles: moreLoginAgentProfiles() });
+});
+app.put('/api/morelogin/agent-profiles', (req, res) => {
+  try {
+    const body = req.body || {};
+    const envId = body.envId === undefined || body.envId === null ? '' : String(body.envId).trim();
+    if (!envId || envId.length > 128 || /[\u0000-\u001f]/.test(envId)) return res.status(400).json({ ok: false, code: 'PROFILE_REQUIRED', error: 'envId is required: the id of the MoreLogin profile.' });
+    if (typeof body.allowed !== 'boolean') return res.status(400).json({ ok: false, code: 'ALLOWED_REQUIRED', error: 'allowed must be true or false.' });
+    const profiles = writeAgentProfileChoice(envId, typeof body.name === 'string' ? body.name : null, body.allowed);
+    console.log(`[morelogin] the owner ${body.allowed ? 'allowed agents to choose' : 'took off the agents\' list'} profile ${envId.slice(0, 64)} (${profiles.length} on the list)`);
+    res.json({ ok: true, profiles });
+  } catch (err) {
+    res.status(err.status || 500).json({ ok: false, error: err.message });
   }
 });
 
@@ -19855,7 +20885,7 @@ app.get('/api/setup/onboarding', async (req, res) => {
     const vars = parseEnvFile(ENV_PATH);
     const setupComplete = vars.SETUP_COMPLETE === 'true';
     const dbExists = existsSync(getDbPath());
-    const mcpBuilt = mcpDistBuilt(PACKAGE_ROOT);
+    const mcpBuilt = mcpDistWhole(PACKAGE_ROOT).complete;
     const { mcpCommand, mcpArgs } = getMcpPaths();
 
     res.json({
@@ -19930,9 +20960,13 @@ app.post('/api/setup/build', async (req, res) => {
     { name: 'MCP Server', path: resolve(PACKAGE_ROOT, 'mcp-server') },
   ];
 
-  // Check if MCP server needs building (determines if we need dev deps): dist/index.js and every module it imports.
-  const mcpDist = resolve(PACKAGE_ROOT, 'mcp-server', 'dist', 'index.js');
-  const mcpNeedsBuild = !mcpDistBuilt(PACKAGE_ROOT);
+  // Everything below is inside one try: the stream always ends with a `complete` event the wizard reads, and a
+  // throw never reaches the process-wide unhandled-rejection handler, which would exit the server.
+  try {
+  // Check if MCP server needs building (determines if we need dev deps): every runtime entry of dist and every
+  // module it imports, stamped with this version and source (lib/mcp-build.js). A packaged application is replaced
+  // whole and has no compiler: there only completeness counts, and a whole dist is never built again.
+  const mcpNeedsBuild = mcpBuildNeeded(PACKAGE_ROOT, { packaged: !!PACKAGED_RUNTIME }).needed;
 
   // Phase 1: the dependencies. `npm i -g synabun` installed them at the package root (lib/runtime-dependencies.js
   // checks that Node finds them from both parts); only what is missing is installed, once, at the package root,
@@ -19966,37 +21000,39 @@ app.post('/api/setup/build', async (req, res) => {
     }
   }
 
-  // Phase 2: Build MCP server
-  const mcpSrc = resolve(PACKAGE_ROOT, 'mcp-server', 'src', 'index.ts');
-  let needsBuild = !mcpDistBuilt(PACKAGE_ROOT);
-  if (!needsBuild) {
-    try { needsBuild = statSync(mcpSrc).mtimeMs > statSync(mcpDist).mtimeMs; } catch { needsBuild = true; }
-  }
-
-  if (!needsBuild) {
+  // Phase 2: Build MCP server (lib/mcp-build.js: compiled into a temp folder, checked, swapped in only on success,
+  // stamped so setup.js sees it as current at the next launch; a failure keeps the previous dist).
+  let restart = false;
+  if (!mcpNeedsBuild) {
     send('build', { status: 'skipped', output: 'dist/index.js is up to date' });
+  } else if (PACKAGED_RUNTIME) {
+    // Whole or not, nothing compiles it here (mcpBuildNeeded said it is not whole).
+    send('build', { status: 'error', output: 'This application is incomplete: reinstall SynaBun.' });
+    send('complete', { ok: false, error: 'The application is incomplete' });
+    return res.end();
   } else {
     send('build', { status: 'start' });
-    try {
-      // The TypeScript Node finds from mcp-server/ (the root's devDependency in a fresh checkout), by this Node.
-      const tsc = mcpCompiler(PACKAGE_ROOT);
-      if (!tsc) throw new Error('TypeScript is not installed: npm install in the package root installs it');
-      const { stdout } = await execFileAsync(process.execPath, [tsc, '-p', resolve(PACKAGE_ROOT, 'mcp-server')], {
-        cwd: resolve(PACKAGE_ROOT, 'mcp-server'),
-        timeout: 120_000,
-        maxBuffer: 16 * 1024 * 1024,
-        windowsHide: true,
-      });
-      send('build', { status: 'done', output: tail(stdout) });
-    } catch (err) {
-      send('build', { status: 'error', output: tail(err.stderr || err.message) });
-      send('complete', { ok: false, error: 'MCP server build failed' });
+    const build = await buildMcpServerSafelyAsync(PACKAGE_ROOT, { windowsHide: true });
+    if (build.status === 'failed') {
+      send('build', { status: 'error', output: tail(mcpBuildFailureMessage(build)) });
+      send('complete', { ok: false, error: build.reason === 'busy' ? 'MCP server build already running' : 'MCP server build failed' });
       return res.end();
     }
+    send('build', { status: build.status === 'built' ? 'done' : 'skipped', output: tail(build.output || (build.status === 'built' ? 'MCP server built' : 'dist/index.js is up to date')) });
+    // This server has the previous dist in its module cache: only a new server loads the build (requestServerRestart,
+    // the same restart as Apps → Restart Server). The wizard waits for a new bootId before it goes on.
+    restart = build.status === 'built';
   }
 
-  send('complete', { ok: true });
+  send('complete', { ok: true, ...(restart ? { restart: true, bootId: SERVER_BOOT_ID } : {}) });
   res.end();
+  if (restart) setTimeout(() => { try { requestServerRestart(); } catch (err) { console.error('[setup/build] restart after the MCP build failed:', err?.message); } }, 500);
+  } catch (err) {
+    console.error('POST /api/setup/build error:', err?.message);
+    try { send('build', { status: 'error', output: tail(err?.message || String(err)) }); } catch {}
+    try { send('complete', { ok: false, error: 'MCP server build failed' }); } catch {}
+    try { res.end(); } catch {}
+  }
 });
 
 // Legacy setup stubs for UI compatibility
@@ -21666,6 +22702,11 @@ function antigravitySynabunMcpEntry() {
 app.get('/api/antigravity/panel', (req, res) => {
   res.json({ ok: true, socket: ANTIGRAVITY_WS_PATH, capabilities: [...ANTIGRAVITY_PANEL_CAPABILITIES], live: antigravityPanel.liveCount() });
 });
+
+// /api/maritaca — the Maritaca panel's REST side (lib/maritaca/api.js): the key and defaults (never the key back),
+// a key test, the model list and the conversations. Owner routes (editorOwnerGuard) under an admin-only prefix; and
+// OpenCode's way to Maritaca (POST /api/maritaca/opencode/v1/chat/completions: loopback, the saved key presented).
+registerMaritacaRoutes(app, { client: maritacaClient, keyStore: maritacaKeyStore, sessions: maritacaSessions, bridge: maritacaPanel, guard: editorOwnerGuard, opencode: maritacaOpencode, proxy: maritacaOpencodeProxy, log: (line) => console.warn(line) });
 
 // ── Hybrid session content search (FTS5 + semantic re-rank for Claude) ──
 // GET /api/session-search?q=<query>&provider=<p>&project=<path>&limit=50
@@ -23348,6 +24389,12 @@ function skillBrowserAvailability() {
     const cfg = loadBrowserConfig();
     const unreadable = browserConfigUnreadable(cfg);
     if (unreadable) return { available: false, reason: `The browser settings cannot be read (${unreadable}): fix them in Settings → Browser.` };
+    if (cfg.connectMode === 'morelogin' && cfg.moreloginEnvId && moreLogin.isLocalProfileId(String(cfg.moreloginEnvId))) {
+      // The default is one of SynaBun's own local profiles: MoreLogin is not needed for it.
+      return moreLogin.localProfileName(String(cfg.moreloginEnvId))
+        ? { available: true, reason: null }
+        : { available: false, reason: 'The default browser (Settings → Browser) is a local profile that no longer exists: choose another one.' };
+    }
     if (cfg.connectMode === 'morelogin') {
       // The exe in a known folder, or the local API answered lately (an install in a custom folder). This is read
       // synchronously, so a miss refreshes the answer in the background for the next call.
@@ -25555,7 +26602,7 @@ function applyRuntimeTools(req, res) {
   }
   const who = browserCaller(req);
   if (!who.accepted) {
-    noteRefusedBrowserCaller(`runtime-tools:${who.code}:${asserted.slice(0, 128)}`, `[mcp/tools] runtime tools of ${asserted.slice(0, 128)} refused: ${who.code}`);
+    noteRefusedBrowserCaller(`runtime-tools:${who.code}:${asserted.slice(0, 128)}`, `[mcp/tools] runtime tools of ${logOwnerId(asserted)} refused: ${who.code}`);
     return res.status(who.httpStatus || 403).json({ ok: false, code: who.code, error: who.error });
   }
   const terminalId = who.id || asserted;
@@ -25695,7 +26742,7 @@ function applyRuntimeTools(req, res) {
               { nativeRunId: run?.provider === 'opencode' ? run.runId : null },
             );
           }
-          console.log(`[mcp/tools] OpenCode MCP reconnected terminal=${terminalId} tools=${toolKey} correlation=${refreshCorrelationId}`);
+          console.log(`[mcp/tools] OpenCode MCP reconnected terminal=${logOwnerId(terminalId)} tools=${toolKey} correlation=${refreshCorrelationId}`);
         } catch (err) {
           if (_ocpIsoServes.get(terminalId) !== entry || serializeToolList(entry.tools) !== toolKey) return;
           entry.toolsRefreshFailed = true;
@@ -26642,7 +27689,11 @@ try {
   // (lib/terminal-tokens.js): the MCP server routes it as its own MCP session, so it never shares the run's identity
   // (its browser pins, its recovered tab) and never sends the run's id to the browser routes.
   const terminalAuth = (pin, token) => _terminalTokens.accepts(pin, token);
-  const mcpRouter = createMcpRoutes({ terminalAuth });
+  // A plain MCP session's own proof (a CLI window SynaBun did not start; mcp-server/src/http.ts sessionProof): see
+  // MCP_SESSION_PROOFS above moreLoginGate. Only this router's sessions get one: the worker-only channel's never do.
+  // `eligible` is this server's own answer to "is this initialize a program on this computer talking to the plain
+  // /mcp mount directly" (mcpSessionProofEligible, finding 5); the MCP's own loopback check stays in front of it.
+  const mcpRouter = createMcpRoutes({ terminalAuth, sessionProof: { eligible: (req) => mcpSessionProofEligible(req), issue: (sid) => _terminalTokens.issueSession(sid), revoke: (sid) => { endMcpSessionProof(sid); } } });
 
   // Keyed path: /mcp/<key> — validates key, then forwards to MCP router
   app.use('/mcp/:key', (req, res, next) => {
@@ -26655,7 +27706,8 @@ try {
   // Open path: /mcp — for this computer only. What comes in from outside (the tunnel, or anything under the
   // tunnel's or the invite proxy's name) needs /mcp/<key>, and is refused while no key is set
   // (lib/request-gate.js mcpWithoutKey)
-  app.use('/mcp', requestGates.mcpWithoutKey, mcpRouter);
+  // Marked as the plain mount: only a session initialized here can get a proof of its own (never /mcp/<key>).
+  app.use('/mcp', requestGates.mcpWithoutKey, (req, _res, next) => { req[MCP_PLAIN_MOUNT] = true; next(); }, mcpRouter);
 
   console.log('  MCP HTTP endpoint mounted at /mcp' + (activeMcpKey ? ' (from outside: /mcp/<key>)' : ' (local only: no key is set)'));
 
@@ -26819,6 +27871,11 @@ function getTerminalProfile(profileId, opts = {}) {
   if (opts.effort && profileId === 'claude-code') {
     if (CLAUDE_EFFORT_LEVELS.includes(opts.effort)) {
       cmd = `${cmd} --effort ${opts.effort}`;
+    } else if (opts.effort === CLAUDE_EFFORT_OFF) {
+      // Off (a schedule's, loop's or timer's `none`): thinking disabled, the flag the Agent SDK passes
+      // for `thinking: { type: 'disabled' }`, over any effortLevel in the user's settings. `off` (Auto)
+      // passes nothing: the model's own default.
+      cmd = `${cmd} --thinking disabled`;
     }
   } else if (opts.effort && profileId === 'codex') {
     const codexEffort = toCodexReasoningEffort(opts.effort);
@@ -28409,6 +29466,12 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       localPortRange: { from: OCP_SHARED_PORT_MIN, to: OCP_ISO_PORT_MAX },
       toolListOptions,
       acquireLoopBrowserAndTab, releaseSharedBrowserTab, reconcileKeepAwake,
+      // A worker's own MoreLogin profile (agent_dispatch morelogin_profile): the pin a schedule's run is launched with.
+      // Held to the owner's list of profiles agents may choose (agentMoreLoginProfileChoice: 403
+      // MORELOGIN_PROFILE_NOT_ALLOWED), whoever dispatches; the pin is an agent's, so the list is asked again when the
+      // worker's tab is acquired (a start, a resume) and at each of its browser calls.
+      resolveBrowserProfile: (ref) => agentMoreLoginProfileChoice(ref),
+      pinBrowserProfile: (runId, envId, name) => pinRunMoreLoginProfile(runId, envId, name, 'agent'),
       memory: assistantMemory, detectProject: assistantDetectProject,
       // Limits are read live from assistant-config.json `limits`; the money is the session budget (the planner).
       limits: {},
@@ -28542,6 +29605,8 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       adminSandbox: _agentSandbox,
       // GET / PUT /api/assistant/worker-guard (the PUT answers UI_ONLY to agents).
       workerGuard: _workerGuard,
+      // GET / PUT /api/assistant/automation-browser-owner-access (the owner's page only; never the automation browser).
+      automationBrowserOwnerAccess: _automationBrowserOwnerAccess,
       // A request without an agent pin is the owner's page only with this boot's page secret (lib/page-session.js).
       pageSession: _pageSession,
       // A pin counts only with its proof (lib/terminal-tokens.js): a worker's run id, a brain's id.
@@ -31196,7 +32261,156 @@ function moreLoginDefaultEnvId(cfg) {
 function sessionServesMoreLoginDefault(session, cfg) {
   if (!session || session._profileMode !== 'morelogin') return false;
   const envId = moreLoginDefaultEnvId(cfg);
-  return !envId || String(session._mlEnvId || '') === String(envId);
+  // No default profile chosen yet: any MoreLogin session serves, except one opened for a schedule's own profile.
+  if (!envId) return !session._mlPinned;
+  return String(session._mlEnvId || '') === String(envId);
+}
+
+// ── A run's own MoreLogin profile (a schedule's, its group's, a quick timer's, a manual launch's, an agent's) ──
+// ownerKey (the run's terminalSessionId) → { envId, name, by }. A pinned run works in that profile only: its
+// acquisition, its recoveries, the browser tools' gate and its view of GET /api/browser/sessions all read the pin, so
+// it never lands in the default browser or in another run's profile, and an unpinned run never lands in a pinned
+// profile's session unless that profile is the default too. Sessions of different profiles coexist in browserSessions;
+// two runs pinned to the same profile share its one session, each in its own tab.
+//
+// What the review of 2026-11-10 (run b6631e9d) changed here, and why:
+//   • `by` says who chose the profile: 'owner' only where this server saw the owner's page choose it (a schedule, a
+//     group, a timer, a launch set up there); everything else is 'agent' (a session's own `use`, a dispatch, a launch
+//     or record an agent made, a record with no marker). An 'agent' pin needs its profile on the owner's list every time
+//     it is USED, not only when it is set (moreLoginPinRefusal, lib/morelogin-agent-profiles.js pinUseRefusal), so
+//     taking a profile off the list stops the sessions on it at their next browser call: refused, never the default
+//     profile and never Chrome.
+//   • A pin is honoured for a REQUEST only when the server verified who sent it (callerProfileRefusal, finding 2):
+//     before, any process that said a pinned id (they are in loop files and logs) got a tab in that id's profile.
+//   • Nothing a request sends can evict a pin (finding 3). Before, a miss was cached as null in this one map, capped
+//     at 2,000 with oldest-first eviction: 2,000 made-up ids pushed every real pin out, and a session that chose its
+//     profile with `use` (no loop file to read back) fell to the default profile, another account. Now this map holds
+//     only what this server decided (a launch, a `use`, a dispatch, a pin read back from its own files) and never
+//     evicts: a new pin is refused when the table is full. Misses go to a map of their own (_runMoreLoginNoPin),
+//     whose eviction only costs a re-read.
+//   • A pin ends with its owner (forgetRunMoreLoginProfile, called by the token registry's onEnded for every ended
+//     run and every closed MCP session), with its saved choice.
+const _runMoreLoginPins = new Map();
+/** Owner keys known to hold no pin (a cache of misses only: losing an entry costs one re-read, never a pin). */
+const _runMoreLoginNoPin = new Map();
+const RUN_MORELOGIN_PINS_MAX = 5000;
+const RUN_MORELOGIN_NO_PIN_MAX = 5000;
+/** Plain MCP sessions (anybody on this computer can open one) share this many pins at most, apart from the runs'. */
+const RUN_MORELOGIN_SESSION_PINS_MAX = 200;
+
+/**
+ * `ownerKey` works in MoreLogin profile `envId` from now on, or (no envId) in the default browser by its own choice.
+ * Only for code that decided it: a launch, POST /api/morelogin/use after its checks, a dispatch. `by`: 'owner' when
+ * the owner's page chose the profile, else 'agent'. Throws 503 PROFILE_PINS_FULL in place of evicting another pin.
+ */
+function pinRunMoreLoginProfile(ownerKey, envId, name = null, by = 'agent') {
+  if (!ownerKey) return;
+  _runMoreLoginNoPin.delete(ownerKey);
+  if (!_runMoreLoginPins.has(ownerKey)) {
+    const session = isMcpSessionOwner(ownerKey);
+    const sessionPins = session ? [..._runMoreLoginPins.keys()].filter((key) => isMcpSessionOwner(key)).length : 0;
+    if (_runMoreLoginPins.size >= RUN_MORELOGIN_PINS_MAX || (session && sessionPins >= RUN_MORELOGIN_SESSION_PINS_MAX)) {
+      throw Object.assign(new Error('Too many sessions hold a browser profile of their own right now; nothing was changed. Try again when some have ended.'), { status: 503, code: 'PROFILE_PINS_FULL' });
+    }
+  }
+  _runMoreLoginPins.set(ownerKey, envId ? { envId: String(envId), name: name ? String(name) : null, by: by === 'owner' ? 'owner' : 'agent' } : null);
+}
+
+/** `ownerKey` ended, or its launch failed: its pin and its saved choice are forgotten (nothing outlives its owner). */
+function forgetRunMoreLoginProfile(ownerKey) {
+  if (!ownerKey || typeof ownerKey !== 'string') return;
+  _runMoreLoginPins.delete(ownerKey);
+  _runMoreLoginNoPin.delete(ownerKey);
+  _profileChoiceStore.delete(ownerKey);
+}
+
+/**
+ * The pin of a run ({ envId, name, by }) or null. What this process did not decide itself is read from its own files:
+ * the choice the owner key saved with `use` (it wins; `envId: null` is "the default, by choice"), else the run's loop
+ * file (`moreloginEnvBy` says who chose it; absent is 'agent'). Reading never evicts anything (see above).
+ * This is the pin of an OWNER KEY. Whether a request may use it is callerProfileRefusal's question, never this one's.
+ */
+function runMoreLoginPin(ownerKey) {
+  if (!ownerKey || typeof ownerKey !== 'string') return null;
+  if (_runMoreLoginPins.has(ownerKey)) return _runMoreLoginPins.get(ownerKey);
+  if (_runMoreLoginNoPin.has(ownerKey)) return null;
+  let pin = null;
+  let decided = false;
+  try {
+    const chosen = _profileChoiceStore.get(ownerKey);
+    if (chosen !== undefined) {
+      decided = true;
+      pin = chosen.envId ? { envId: String(chosen.envId), name: chosen.name || null, by: 'agent' } : null;
+    } else {
+      const loopFile = findLoopFileForTerminal(ownerKey);
+      if (loopFile) {
+        const data = JSON.parse(readFileSync(resolve(LOOP_DIR, loopFile), 'utf-8'));
+        if (data.moreloginEnvId) pin = { envId: String(data.moreloginEnvId), name: data.moreloginEnvName ? String(data.moreloginEnvName) : null, by: data.moreloginEnvBy === 'owner' ? 'owner' : 'agent' };
+      }
+    }
+  } catch { /* no pin */ }
+  if (pin || decided) {
+    // From this server's own files: kept while there is room, read again otherwise. Never by evicting another.
+    if (_runMoreLoginPins.size < RUN_MORELOGIN_PINS_MAX) _runMoreLoginPins.set(ownerKey, pin);
+  } else {
+    _runMoreLoginNoPin.set(ownerKey, true);
+    while (_runMoreLoginNoPin.size > RUN_MORELOGIN_NO_PIN_MAX) _runMoreLoginNoPin.delete(_runMoreLoginNoPin.keys().next().value);
+  }
+  return pin;
+}
+
+function describeMoreLoginPin(pin) {
+  if (!pin) return 'the default browser';
+  // `MoreLogin profile "X" (id)`, or `local profile "X" (id)` for one of SynaBun's own (lib/local-profiles.js).
+  return describeProfile(pin.envId, pin.name);
+}
+
+// ── The owner's list of profiles agents may choose (lib/morelogin-agent-profiles.js) ──
+/** The list as kept in the owner's browser settings: [{ envId, name }]. An unreadable config allows none. */
+function moreLoginAgentProfiles() { return normalizeAgentProfiles(loadBrowserConfig()); }
+/** Whether agents may choose `envId` (the owner's list, read at every check: a change holds from the next request). */
+function moreLoginProfileAllowed(envId) { return agentProfileAllowed(loadBrowserConfig(), envId); }
+/**
+ * Why `ownerKey`'s pin may not be USED now, or null: an 'agent' pin whose profile is not on the owner's list
+ * ({ status: 403, code: 'MORELOGIN_PROFILE_NOT_ALLOWED', error }). Asked wherever a pin leads to a browser: the
+ * acquisition (acquireSharedBrowserTab), every request of a pinned caller (callerProfileRefusal) and sessionServesRun.
+ */
+function moreLoginPinRefusal(ownerKey, pin = runMoreLoginPin(ownerKey)) {
+  return pinUseRefusal(pin, loadBrowserConfig());
+}
+/**
+ * Why a request may not act with the MoreLogin profile its caller id is pinned to, or null (no pin, or it may).
+ *   • PROFILE_PIN_UNVERIFIED (finding 2): the id holds a pin and this request did not prove it is that id (an id
+ *     SynaBun gave no proof is otherwise taken as said, and a grace acceptance is no proof either). Refused outright:
+ *     it gets neither the pinned profile nor, silently, the default one.
+ *   • MORELOGIN_PROFILE_NOT_ALLOWED: the pin is an agent's and its profile is not on the owner's list (any more).
+ * Called by browserTerminalGate (every /api/browser route), moreLoginGate and POST /api/loop/recover-browser.
+ */
+function callerProfileRefusal(who) {
+  if (!who?.automation || !who.accepted || !who.id) return null;
+  const owner = browserOwnerId(who.id);
+  const pin = owner ? runMoreLoginPin(owner) : null;
+  if (!pin) return null;
+  if (who.status !== 'verified') {
+    return {
+      status: 403, code: 'PROFILE_PIN_UNVERIFIED',
+      error: `${String(who.id).slice(0, 128)} works in ${describeMoreLoginPin(pin)}, and this request did not prove it is that session (no terminal token or session proof for the id it names). A browser profile is another account: SynaBun acts in one only for the session it verified. Nothing was opened, in that profile or in the default one.`,
+    };
+  }
+  return moreLoginPinRefusal(owner, pin);
+}
+
+function sessionServesMoreLoginEnv(session, envId) {
+  return !!session && session._profileMode === 'morelogin' && String(session._mlEnvId || '') === String(envId);
+}
+
+/** Whether `session` is a browser run `ownerKey` may work in: its pinned profile's, else the default browser's. */
+function sessionServesRun(session, cfg, ownerKey) {
+  const pin = runMoreLoginPin(ownerKey);
+  // A pin that may not be used (an agent's, its profile off the owner's list) serves in no session at all: not its
+  // profile's, and never the default browser's.
+  if (pin) return !pinUseRefusal(pin, cfg) && sessionServesMoreLoginEnv(session, pin.envId);
+  return cfg.connectMode !== 'morelogin' || sessionServesMoreLoginDefault(session, cfg);
 }
 
 function describeBrowserSessionForLog(session) {
@@ -31207,7 +32421,7 @@ function describeBrowserSessionForLog(session) {
 }
 
 async function findReusableBrowserSession(opts = {}) {
-  const { excludeAgentOwned = true, excludeLoopOwned = true } = opts;
+  const { excludeAgentOwned = true, excludeLoopOwned = true, moreloginEnvId = null } = opts;
   const cfg = loadBrowserConfig();
   // Don't reuse across connect modes: an attach (cdp) session and a mirror session
   // are not interchangeable. Protects in-flight loops when the mode is switched.
@@ -31235,7 +32449,10 @@ async function findReusableBrowserSession(opts = {}) {
     // MoreLogin sessions are keyed by env id (not a userDataDir). When either the
     // active config OR this session is MoreLogin-backed, both must be — and the env
     // id must line up exactly — otherwise they aren't interchangeable.
-    if (wantMoreLogin || session._profileMode === 'morelogin') {
+    if (moreloginEnvId) {
+      // A run pinned to a profile reuses that profile's session and no other, whatever the default browser is.
+      if (!sessionServesMoreLoginEnv(session, moreloginEnvId)) continue;
+    } else if (wantMoreLogin || session._profileMode === 'morelogin') {
       if (!wantMoreLogin || !sessionServesMoreLoginDefault(session, cfg)) continue;
     } else {
       if (wantAttach && session._profileMode !== 'cdp') continue;
@@ -31268,24 +32485,81 @@ async function findReusableBrowserSession(opts = {}) {
   return null;
 }
 
-// Serializes shared-loop-browser acquisition so concurrent loop/cron launches
-// don't each create a separate "shared" browser. Without this mutex, two launches
-// in the same tick both see findReusableBrowserSession() === null (before either
-// createBrowserSession() registers its session) and each spawns a browser —
-// breaking the single-shared-browser model that tab isolation depends on.
-let _loopBrowserAcquireChain = Promise.resolve();
-function withLoopBrowserLock(fn) {
-  const result = _loopBrowserAcquireChain.then(fn, fn);
-  // Keep the chain from latching into a rejected state after a failed acquisition.
-  _loopBrowserAcquireChain = result.then(() => {}, () => {});
+// Serializes shared-browser acquisition per browser, so concurrent loop / cron launches of ONE browser don't each
+// create it. Without this, two launches in the same tick both see findReusableBrowserSession() === null (before either
+// createBrowserSession() registers its session) and each spawns a browser — breaking the single-shared-browser model
+// that tab isolation depends on.
+//
+// One queue per browser (loopBrowserLockKey): `ml:<envId>` for a MoreLogin profile, 'default' for everything else
+// (the clean, persistent and attach browsers of Settings → Browser, which keep the one queue they always had).
+// Acquisitions of different profiles run side by side, so a cold start of one profile (up to about two minutes) no
+// longer holds back another profile's run; two runs of one profile still queue, and the second finds the first one's
+// session and takes a tab in it. Before 2026-11-10 there was one queue for everything.
+//
+// What the one queue also covered, and what covers it now:
+//   - find-or-create of a browser, the owner marks and the owner's tab in it: all of one session, and a session
+//     belongs to one key, so its queue;
+//   - the health checks that destroy a dead session (strategy 0, findReusableBrowserSession): they only reach
+//     sessions the caller may run in, which are its key's (an acquisition that could reach another key's takes the
+//     whole registry, below);
+//   - starting the MoreLogin app itself: lib/morelogin.js ensureMoreLoginRunning is one start shared by everybody
+//     who waits for it at once (profiles of different queues would otherwise each launch the app);
+//   - browserSessions and the pin map are only ever changed synchronously, and createBrowserSession touches nothing
+//     shared until it registers its own session id; the idle reaper and the grace timers never ran under the queue.
+// An acquisition whose browser cannot be named before it runs (MoreLogin is the default with no profile chosen yet,
+// or a requested session of another key) takes the whole registry: it waits for every queue and every queue waits
+// for it, which is the old behaviour.
+let _loopBrowserAcquireChain = Promise.resolve(); // the tail of the whole-registry acquisitions
+const _loopBrowserAcquireTails = new Map();       // key → the tail of that browser's queue
+
+function withLoopBrowserLock(key, fn) {
+  const settled = () => {};
+  if (key === null) {
+    // Everything queued so far, on every key, then this one alone.
+    const result = Promise.all([..._loopBrowserAcquireTails.values(), _loopBrowserAcquireChain]).then(fn);
+    // Never latch into a rejected state after a failed acquisition.
+    _loopBrowserAcquireChain = result.then(settled, settled);
+    return result;
+  }
+  const result = Promise.all([_loopBrowserAcquireTails.get(key), _loopBrowserAcquireChain]).then(fn);
+  // A failure or a timeout ends this holder's turn on its own key and on no other.
+  const tail = result.then(settled, settled);
+  _loopBrowserAcquireTails.set(key, tail);
+  tail.then(() => { if (_loopBrowserAcquireTails.get(key) === tail) _loopBrowserAcquireTails.delete(key); });
   return result;
+}
+
+/** The queue of the browser a session is: its MoreLogin profile's, or the one of every other browser. */
+function browserSessionLockKey(session) {
+  return session?._profileMode === 'morelogin' && session._mlEnvId ? `ml:${session._mlEnvId}` : 'default';
+}
+
+/**
+ * The queue an acquisition waits in: the browser `ownerKey` will get. null = it cannot be named up front, so the
+ * acquisition takes the whole registry (withLoopBrowserLock).
+ */
+function loopBrowserLockKey(ownerKey, requestedBrowserSessionId, cfg) {
+  const pin = runMoreLoginPin(ownerKey);
+  let key;
+  if (pin) key = `ml:${pin.envId}`;
+  else if (cfg.connectMode === 'morelogin') {
+    const envId = moreLoginDefaultEnvId(cfg);
+    // No default profile chosen: createBrowserSession picks (or creates) one, which may be a pinned run's.
+    if (!envId) return null;
+    key = `ml:${envId}`;
+  } else key = 'default';
+  // Strategy 0 works in the requested session when the owner may run in it: that session's queue must be this one.
+  const requested = requestedBrowserSessionId ? browserSessions.get(requestedBrowserSessionId) : null;
+  if (requested && sessionServesRun(requested, cfg, ownerKey) && browserSessionLockKey(requested) !== key) return null;
+  return key;
 }
 
 /**
  * Acquire (reuse-or-create) the ONE shared browser and create a dedicated tab for
  * the caller, recording ownerKey → tabId so getTargetPage() can route that caller's
- * tab-less calls back to its own tab. Serialized via withLoopBrowserLock so
- * concurrent launches share one browser and never collide during find-or-create.
+ * tab-less calls back to its own tab. Serialized per browser via withLoopBrowserLock so
+ * concurrent launches of one browser share it and never collide during find-or-create,
+ * while launches of different MoreLogin profiles proceed side by side.
  *
  * ownerType: 'loop' marks the session _loopOwned (active-automation semantics);
  * 'interactive' marks it _interactiveOwned (a non-loop CLI MCP process claiming a
@@ -31295,7 +32569,11 @@ function withLoopBrowserLock(fn) {
  * Returns { browserSessionId, browserTabId } on success, or { error } on failure.
  */
 async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, ownerKey, ownerType = 'loop', logTag = 'launch:browser' }) {
-  return withLoopBrowserLock(async () => {
+  const lockKey = loopBrowserLockKey(ownerKey, requestedBrowserSessionId, loadBrowserConfig());
+  const acquired = await withLoopBrowserLock(lockKey, async () => {
+    // The browser this owner gets changed while it waited (Settings → Browser, a requested session that went away):
+    // it queues again for the right one, outside this turn.
+    if (loopBrowserLockKey(ownerKey, requestedBrowserSessionId, loadBrowserConfig()) !== lockKey) return { requeue: true };
     let browserSessionId = null;
     let browserTabId = null;
     const ownerProp = ownerType === 'interactive' ? '_interactiveOwned' : '_loopOwned';
@@ -31305,13 +32583,23 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
     // the default MoreLogin profile.
     const policyCfg = loadBrowserConfig();
     const moreLoginDefault = policyCfg.connectMode === 'morelogin';
+    // The owner's own MoreLogin profile (a schedule's), when it is pinned to one: then that profile is the only
+    // browser it may get, in place of the default.
+    const pin = runMoreLoginPin(ownerKey);
+    // The owner's list, at use: an agent's pin whose profile is not on it (any more) gets no browser at all. This is
+    // the one place every acquisition passes (a launch, a recovery, a session create, a resume after a restart).
+    const pinRefused = pinUseRefusal(pin, policyCfg);
+    if (pinRefused) {
+      loopLog(ownerKey, logTag, 'ABORT: the run\'s MoreLogin profile is not on the owner\'s list of profiles agents may choose', { envId: pin.envId });
+      return { error: pinRefused.error, code: pinRefused.code };
+    }
     if (requestedBrowserSessionId) {
       const requested = browserSessions.get(requestedBrowserSessionId);
-      const unfit = requested && moreLoginDefault && !sessionServesMoreLoginDefault(requested, policyCfg);
+      const unfit = requested && !sessionServesRun(requested, policyCfg, ownerKey);
       if (unfit) {
         loopLog(ownerKey, logTag, 'strategy 0 skipped: requested browser is not the default browser profile', {
           requestedBrowserSessionId, ...describeBrowserSessionForLog(requested),
-          wantMoreLoginEnvId: moreLoginDefault ? moreLoginDefaultEnvId(policyCfg) : null,
+          wantMoreLoginEnvId: pin ? pin.envId : (moreLoginDefault ? moreLoginDefaultEnvId(policyCfg) : null),
         });
       } else if (requested) {
         try {
@@ -31334,7 +32622,10 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
     // have its own browser, so keep agent-owned excluded to preserve per-agent isolation.
     if (!browserSessionId) {
       const persistentProfile = !!loadBrowserConfig().userDataDir;
-      const reusable = await findReusableBrowserSession({ excludeAgentOwned: !persistentProfile, excludeLoopOwned: false });
+      const reusable = pin
+        // One Chromium per MoreLogin profile: every run pinned to it joins the same session, each in its own tab.
+        ? await findReusableBrowserSession({ excludeAgentOwned: false, excludeLoopOwned: false, moreloginEnvId: pin.envId })
+        : await findReusableBrowserSession({ excludeAgentOwned: !persistentProfile, excludeLoopOwned: false });
       if (reusable) {
         browserSessionId = reusable.id;
         loopLog(ownerKey, logTag, 'strategy 1: reusing shared browser session', { browserSessionId });
@@ -31349,7 +32640,9 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
     let createError = null;
     if (!browserSessionId) {
       try {
-        const result = await createBrowserSession({ url: 'about:blank' });
+        const result = await createBrowserSession(pin
+          ? { url: 'about:blank', connectMode: 'morelogin', moreloginEnvId: pin.envId, _mlPinned: true }
+          : { url: 'about:blank' });
         browserSessionId = result.sessionId;
         loopLog(ownerKey, logTag, 'strategy 2: created shared browser session', {
           browserSessionId, profileMode: result.profileMode, profileSource: result.profileSource,
@@ -31369,7 +32662,13 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
       // Carry the real reason (e.g. "MoreLogin connect failed: … unreachable") into the
       // run's log, lastRunResult and the schedule:failed toast.
       return {
-        error: createError
+        error: pin
+          // Never another profile and never regular Chrome: the run fails and says which profile it was.
+          ? `Could not start ${describeMoreLoginPin(pin)} for this run${createError ? `: ${createError.error}` : '.'} The run was not started in another profile or browser: ${
+            createError?.code === 'MORELOGIN_NOT_CHROMIUM' || createError?.code === 'MORELOGIN_NOT_DEVTOOLS'
+              ? 'pick a Chrome-type profile where this run is set up.'
+              : 'check that MoreLogin is open and that the profile still exists, or pick another profile where this run is set up.'}`
+          : createError
           ? `Could not start the shared browser session: ${createError.error}`
           : 'Could not start the shared browser session. Open Browser Settings and verify the selected profile can launch.',
         ...(createError?.code ? { code: createError.code, offenders: createError.offenders } : {}),
@@ -31379,7 +32678,15 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
     // Invariant: never hand an automation a browser other than the default MoreLogin
     // profile while MoreLogin is the default (strategies 0–2 already enforce it).
     const chosenSession = browserSessions.get(browserSessionId);
-    if (moreLoginDefault && chosenSession && !sessionServesMoreLoginDefault(chosenSession, policyCfg)) {
+    if (pin && chosenSession && !sessionServesMoreLoginEnv(chosenSession, pin.envId)) {
+      loopLog(ownerKey, logTag, 'ABORT: acquired session is not the run\'s MoreLogin profile', {
+        browserSessionId, ...describeBrowserSessionForLog(chosenSession), wantMoreLoginEnvId: pin.envId,
+      });
+      return {
+        error: `Refusing browser session ${browserSessionId} (${chosenSession._profileMode || 'unknown'} mode${chosenSession._mlEnvId ? `, MoreLogin env ${chosenSession._mlEnvId}` : ''}): this run is set to ${describeMoreLoginPin(pin)} and never falls back to another profile or browser.`,
+      };
+    }
+    if (!pin && moreLoginDefault && chosenSession && !sessionServesMoreLoginDefault(chosenSession, policyCfg)) {
       loopLog(ownerKey, logTag, 'ABORT: acquired session is not the default MoreLogin profile', {
         browserSessionId, ...describeBrowserSessionForLog(chosenSession),
       });
@@ -31437,8 +32744,20 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
       }
     }
 
+    // The owner chose another profile while this tab was being opened (its own POST /api/morelogin/use, during a cold
+    // start): the tab is in a browser that is no longer its own. It goes, and the acquisition runs again for the
+    // profile it has now, so nothing of the owner's is left where it does not work any more.
+    if ((runMoreLoginPin(ownerKey)?.envId || null) !== (pin?.envId || null)) {
+      claimedSession[ownerProp]?.delete(ownerKey);
+      if (claimedSession._tabOwners?.get(ownerKey) === browserTabId) claimedSession._tabOwners.delete(ownerKey);
+      if (browserTabId && claimedSession.tabs.size > 1) await closeSessionTab(claimedSession, browserSessionId, browserTabId).catch(() => {});
+      loopLog(ownerKey, logTag, 'the owner\'s MoreLogin profile changed during the acquisition: tab released, acquiring again', { browserSessionId, browserTabId });
+      return { requeue: true };
+    }
+
     return { browserSessionId, browserTabId };
   });
+  return acquired?.requeue ? acquireSharedBrowserTab({ requestedBrowserSessionId, ownerKey, ownerType, logTag }) : acquired;
 }
 
 /**
@@ -31545,7 +32864,7 @@ async function closeUnclaimedBrowserStart(sessionId, ownerKey, { tabId = null, s
   const decision = sessionCloseDecision(session, ownerKey);
   if (decision.action === 'release') await releaseSharedBrowserTab(sessionId, ownerKey);
   else await destroyBrowserSession(sessionId, { closeOwnTabs: true });
-  console.warn(`[browser] a browser start nobody took was ${decision.action === 'release' ? 'released' : 'closed'}: session ${sessionId} of ${ownerKey || 'the page'}`);
+  console.warn(`[browser] a browser start nobody took was ${decision.action === 'release' ? 'released' : 'closed'}: session ${sessionId} of ${ownerKey ? logOwnerId(ownerKey) : 'the page'}`);
 }
 
 // Native runs the runtime still runs (or will resume): every other status has ended.
@@ -31632,7 +32951,7 @@ function liveAutomationRoute(terminalSessionId, { files = false, cfg: knownCfg =
   const route = recordedAutomationRoute(terminalSessionId, { files });
   if (!route?.browserTabId || !startedTabAlive(route.browserSessionId, route.browserTabId, terminalSessionId)) return null;
   const cfg = knownCfg || loadBrowserConfig();
-  if (cfg.connectMode === 'morelogin' && !sessionServesMoreLoginDefault(browserSessions.get(route.browserSessionId), cfg)) return null;
+  if (!sessionServesRun(browserSessions.get(route.browserSessionId), cfg, terminalSessionId)) return null;
   return route;
 }
 
@@ -31648,7 +32967,7 @@ function noteAutomationBrowserRoute(terminalSessionId, acq, reason = 'recovered'
   if (automationRunState(terminalSessionId) === 'ended') return;
   const agent = agentForTerminal(terminalSessionId);
   if (_nativeLoopRuntime?.get?.(terminalSessionId)) {
-    try { _nativeLoopRuntime.setBrowserRoute(terminalSessionId, route); } catch (err) { console.warn(`[browser] run ${terminalSessionId}: route not recorded: ${err.message}`); }
+    try { _nativeLoopRuntime.setBrowserRoute(terminalSessionId, route); } catch (err) { console.warn(`[browser] run ${logOwnerId(terminalSessionId)}: route not recorded: ${err.message}`); }
   } else if (agent) {
     // The agent's record and its claim on the session (grace / reuse checks) move with it; its iteration and its end
     // release what it owns wherever that is (releaseAgentBrowser).
@@ -31672,7 +32991,7 @@ function noteAutomationBrowserRoute(terminalSessionId, acq, reason = 'recovered'
       }
     }
   }
-  try { _assistantDispatcher?.noteBrowserRoute?.(terminalSessionId, { ...route, reason }); } catch (err) { console.warn(`[browser] run ${terminalSessionId}: run record not updated: ${err.message}`); }
+  try { _assistantDispatcher?.noteBrowserRoute?.(terminalSessionId, { ...route, reason }); } catch (err) { console.warn(`[browser] run ${logOwnerId(terminalSessionId)}: run record not updated: ${err.message}`); }
   loopLog(terminalSessionId, 'browser:route', `browser route ${reason}`, route);
 }
 
@@ -32469,6 +33788,7 @@ async function _launchChromeAndWaitForCdp({
   userDataDir,
   timeoutMs,
   allowPreferredPortProbe,
+  env = null, // a local profile's own environment (its timezone); the server's when not given
 }) {
   const { spawn: spawnChild } = await import('node:child_process');
   const stderrLines = [];
@@ -32476,7 +33796,7 @@ async function _launchChromeAndWaitForCdp({
   let spawnError = null;
 
   console.log(`[browser] Spawning: ${chromeBin} ${chromeArgs.join(' ')}`);
-  const cp = spawnChild(chromeBin, chromeArgs, { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
+  const cp = spawnChild(chromeBin, chromeArgs, { stdio: ['ignore', 'ignore', 'pipe'], detached: true, ...(env && { env }) });
   cp.on('error', (err) => { spawnError = err; });
   cp.stderr?.on('data', (chunk) => {
     const text = String(chunk || '');
@@ -32612,7 +33932,8 @@ async function ensureChromeDebuggable(opts = {}) {
 
   const vpW = viewport?.width || 1280;
   const vpH = viewport?.height || 800;
-  const baseArgs = [
+  // withOnDeviceModelBlocked: keeps Chrome from downloading its on-device model into the profile.
+  const baseArgs = withOnDeviceModelBlocked([
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-popup-blocking',
@@ -32621,7 +33942,7 @@ async function ensureChromeDebuggable(opts = {}) {
     '--disable-renderer-backgrounding',
     '--disable-background-timer-throttling',
     '--restore-last-session',
-  ];
+  ]);
   if (userDataDir) baseArgs.push(`--user-data-dir=${userDataDir}`);
   if (profileDirectory) baseArgs.push(`--profile-directory=${profileDirectory}`);
 
@@ -32803,6 +34124,7 @@ async function protectNativeServeContext(ctx, { deadline = Infinity, signal = nu
 function browserStartFailure(err) {
   const out = { error: err?.message || String(err) };
   if (err?.code === 'NATIVE_SERVE_UNVERIFIED') { out.code = err.code; out.offenders = narrowOffenders(err.offenders); }
+  if (err?.code === 'MORELOGIN_NOT_CHROMIUM' || err?.code === 'MORELOGIN_NOT_DEVTOOLS') out.code = err.code;
   return out;
 }
 
@@ -33048,7 +34370,10 @@ async function createBrowserSession(options = {}) {
     const extra = savedCfg.extraArgs.split(/\s+/).filter(Boolean);
     stealthArgs.push(...extra);
   }
-  const launchOpts = { headless: headlessVal, args: stealthArgs, timeout: 45000 };
+  // One --disable-features (Chromium reads only one), which also keeps Chromium from downloading its
+  // on-device model into the profile (lib/chromium-on-device-model.js).
+  const chromiumArgs = withOnDeviceModelBlocked(stealthArgs);
+  const launchOpts = { headless: headlessVal, args: chromiumArgs, timeout: 45000 };
   // Priority: user-configured executablePath > channel > auto-detected executablePath.
   // User explicitly set executablePath = intentional override, always respect it.
   // Channel = let Playwright resolve the binary for that browser brand.
@@ -33155,6 +34480,7 @@ async function createBrowserSession(options = {}) {
   }
 
   let browser, context, page;
+  let _browserContextId = null; // the clean launch's own context, for its background tabs
   let _isPersistent = false;
   let _chromeProcess = null; // CDP mode: ref to spawned Chrome process
   let _profileMode = userDataDir ? (_selectedProfileKind === 'managed' ? 'managed' : 'direct') : 'clean';
@@ -33176,6 +34502,9 @@ async function createBrowserSession(options = {}) {
   let _mlEnvId = null;
   let _mlDebugPort = null;
   let _moreLoginConnected = false;
+  // A local profile (lib/local-profiles.js): a Chrome SynaBun starts itself, driven the same way. Its id takes the
+  // place of a MoreLogin env id everywhere below; only the MoreLogin app is not asked for it.
+  let _localProfileTimezone = null;
   // Localhost opens in MoreLogin like any other URL. A port missing from the
   // profile's Port scan protection list lands on the stop page, which the start
   // navigation below reports (moreLoginBlockError).
@@ -33183,10 +34512,17 @@ async function createBrowserSession(options = {}) {
     || !!options.moreloginEnvId
     || savedCfg.connectMode === 'morelogin';
   if (_wantMoreLogin) {
+    // The profile asked for, and whether it is one of SynaBun's own local profiles (by its id).
+    const _wantedEnvId = options.moreloginEnvId
+      || savedCfg.moreloginEnvId
+      || (savedCfg.morelogin && savedCfg.morelogin.defaultEnvId)
+      || null;
+    const _localProfile = !!_wantedEnvId && moreLogin.isLocalProfileId(String(_wantedEnvId));
+    const _localProfileInfo = _localProfile ? moreLogin.localProfileSettings(String(_wantedEnvId)) : null;
     try {
       // An install outside the known folders (a custom folder on Windows) still
       // counts when its local API answers.
-      if (!moreLogin.isMoreLoginInstalled().installed && !(await moreLogin.probeMoreLoginApi({ savedCfg })).running) {
+      if (!_localProfile && !moreLogin.isMoreLoginInstalled().installed && !(await moreLogin.probeMoreLoginApi({ savedCfg })).running) {
         throw new Error(`MoreLogin desktop app was not found and its local API does not answer on port ${moreLogin.getMoreLoginPort(savedCfg)}`);
       }
       // Installed but possibly not running (e.g. an autonomous schedule fires with
@@ -33196,20 +34532,20 @@ async function createBrowserSession(options = {}) {
       // MoreLogin is a heavy multi-process Electron app whose API port can accept
       // connections well before it actually serves (observed cold-boot timeouts
       // past the old 25s default).
-      const running = await moreLogin.ensureMoreLoginRunning({ savedCfg, timeoutMs: 120000 });
+      // A local profile needs no MoreLogin: the app is neither looked for nor started.
+      const running = _localProfile ? { running: true } : await moreLogin.ensureMoreLoginRunning({ savedCfg, timeoutMs: 120000 });
       if (!running.running) {
         throw new Error(`MoreLogin app is not reachable (${running.launchError || running.error || 'unknown error'})`);
       }
       const mlOpts = { savedCfg };
-      let envId = options.moreloginEnvId
-        || savedCfg.moreloginEnvId
-        || (savedCfg.morelogin && savedCfg.morelogin.defaultEnvId)
-        || null;
+      let envId = _wantedEnvId;
       if (!envId) {
         const def = await moreLogin.ensureDefaultProfile(mlOpts);
         envId = def.id;
       }
-      const { debugPort } = await moreLogin.startProfile(envId, mlOpts);
+      // requireCdp: a Firefox-type profile has no DevTools endpoint and is refused, before it is started when
+      // MoreLogin says what it is up front.
+      const { debugPort } = await moreLogin.startProfile(envId, { ...mlOpts, requireCdp: true });
       // Wait for MoreLogin's Chromium DevTools endpoint to come up.
       let endpoint = null;
       for (let i = 0; i < 40; i++) {
@@ -33217,12 +34553,21 @@ async function createBrowserSession(options = {}) {
         if (probed.ok) { endpoint = probed.httpEndpoint; break; }
         await new Promise(r => setTimeout(r, 250));
       }
-      if (!endpoint) endpoint = `http://127.0.0.1:${debugPort}`;
+      if (!endpoint) {
+        // Ten seconds without a DevTools answer. A port that answers HTTP as something else will never become
+        // one: say what it is, in place of Playwright's "Unexpected status 404 … try connecting via ws://". A
+        // port nothing listens on yet still gets the connect attempt below.
+        const seen = await moreLogin.describeDebugEndpoint(debugPort);
+        if (seen.kind === 'not-devtools') throw moreLogin.notDevToolsError(envId, debugPort, seen);
+        endpoint = `http://127.0.0.1:${debugPort}`;
+      }
 
       const { browser: cdpBrowser, context: cdpContext, page: cdpPage } = await moreLogin.attachProfileBrowser(
         chromium, endpoint,
         (cdpBrowser, cdpContext) => newSessionPage({ browser: cdpBrowser, context: cdpContext, _profileMode: 'morelogin' }),
       ); // fresh tab in the real profile; never substitute an incognito context
+      // A local profile's timezone on this first tab (every later tab gets it in newSessionPage, from the session).
+      if (_localProfileInfo?.timezone) await applyPageTimezone(cdpContext, cdpPage, _localProfileInfo.timezone);
 
       browser = cdpBrowser;
       context = cdpContext;
@@ -33232,11 +34577,31 @@ async function createBrowserSession(options = {}) {
       _chromeProcess = null;          // teardown disconnects; MoreLogin owns the Chromium
       _mlEnvId = String(envId);
       _mlDebugPort = debugPort;
-      _profileSourceName = `MoreLogin · ${envId}`;
+      _profileSourceName = _localProfile ? `Local · ${_localProfileInfo?.name || envId}` : `MoreLogin · ${envId}`;
+      _localProfileTimezone = _localProfile ? (_localProfileInfo?.timezone || null) : null;
       _moreLoginConnected = true;
-      console.log(`[browser] Connected to MoreLogin env ${envId} via CDP at ${endpoint}`);
+      console.log(`[browser] Connected to ${_localProfile ? `local profile ${envId}` : `MoreLogin env ${envId}`} via CDP at ${endpoint}`);
     } catch (err) {
+      if (_localProfile) {
+        // SynaBun's own profile: MoreLogin has no part in it, so no "open the MoreLogin app" advice.
+        const refused = new Error(`Local profile ${_localProfileInfo?.name ? `"${_localProfileInfo.name}" (${_wantedEnvId})` : _wantedEnvId} could not be opened: ${err.message}. Nothing was opened elsewhere: ${options.moreloginEnvId ? 'a session asked for a profile never falls back to another profile or to Chrome' : 'sessions do not fall back to Chrome while a profile is the default browser'}.`);
+        if (err?.code) refused.code = err.code;
+        throw refused;
+      }
       const port = moreLogin.getMoreLoginPort(savedCfg);
+      if (err?.code === 'MORELOGIN_NOT_CHROMIUM' || err?.code === 'MORELOGIN_NOT_DEVTOOLS') {
+        // MoreLogin is open and the profile exists: it is the profile's browser SynaBun cannot drive. No "open the
+        // MoreLogin app" advice, and the code travels so the run's message does not add it either.
+        const rule = options.moreloginEnvId
+          ? 'a session asked for a MoreLogin profile never falls back to another profile or to Chrome'
+          : 'sessions will not fall back to Chrome while MoreLogin is the default browser';
+        const refused = new Error(`MoreLogin connect failed: ${err.message}. Nothing was opened elsewhere: ${rule}.`);
+        refused.code = err.code;
+        throw refused;
+      }
+      if (options.moreloginEnvId) {
+        throw new Error(`MoreLogin connect failed for profile ${options.moreloginEnvId}: ${err.message}. Open the MoreLogin app (or check its Local API on :${port}) — a session asked for a MoreLogin profile never falls back to another profile or to Chrome.`);
+      }
       throw new Error(`MoreLogin connect failed: ${err.message}. Open the MoreLogin app (or check its Local API on :${port}) — sessions will not fall back to Chrome while MoreLogin is the default browser.`);
     }
   }
@@ -33250,7 +34615,7 @@ async function createBrowserSession(options = {}) {
 
     const _browserLabel = _sourceBrowser === 'msedge' ? 'Edge' : _sourceBrowser === 'chromium' ? 'Chromium' : 'Chrome';
     const launchPersistentProfile = async (launchRoot, launchProfileDir, launchMode) => {
-      const launchArgs = [...stealthArgs];
+      const launchArgs = [...chromiumArgs];
 
       // Kill orphan Chrome processes holding this user-data-dir BEFORE removing locks.
       // Otherwise launchPersistentContext hangs indefinitely waiting for the singleton.
@@ -33356,7 +34721,8 @@ async function createBrowserSession(options = {}) {
 
       const launchBrowser = launchContext;
       const existingPages = launchContext.pages();
-      const launchPage = await launchContext.newPage();
+      // The session's tab opens behind the window's first tab (strict: never selected, never brought forward).
+      const launchPage = await newSessionPage({ browser: launchContext.browser?.() || launchContext, context: launchContext, _profileMode: launchMode });
       for (const existing of existingPages) {
         await existing.close().catch(() => {});
       }
@@ -33441,8 +34807,13 @@ async function createBrowserSession(options = {}) {
   } else {
     // ── Standard: clean sandboxed browser ──
     browser = await chromium.launch(launchOpts);
-    context = await browser.newContext(contextOpts);
-    page = await context.newPage();
+    // The context's CDP id lets its first tab be created in the background in that context.
+    const created = backgroundTabsEnabled(loadBrowserConfig())
+      ? await newContextWithId(browser, contextOpts)
+      : { context: await browser.newContext(contextOpts), browserContextId: null };
+    context = created.context;
+    _browserContextId = created.browserContextId;
+    page = await newSessionPage({ browser, context, _profileMode: 'clean', _browserContextId });
   }
 
   // ── Decrypt and inject cookies from Chrome profile (macOS) ──
@@ -33547,13 +34918,16 @@ async function createBrowserSession(options = {}) {
       cdpSession,        // alias → active tab's CDP session (backward compat)
       _isPersistent,
       _profileMode: _profileMode || 'clean',
+      _browserContextId,
       _profileSourceName: _profileSourceName || null,
       _storageStatePath: STORAGE_STATE_PATH,
       _launchUserDataDir: _launchUserDataDir || null,
       _launchProfileDirectory: _launchProfileDirectory || null,
       _selectedProfilePath: _sourceProfilePath || null,
       _chromeProcess: _chromeProcess || null, // CDP mode: spawned Chrome process
-      _mlEnvId: _mlEnvId || null,        // MoreLogin env id (morelogin mode)
+      _mlEnvId: _mlEnvId || null,        // MoreLogin env id (morelogin mode), or a local profile's id
+      _tzOverride: _localProfileTimezone || null, // a local profile's timezone, set on every tab SynaBun opens there
+      _mlPinned: _profileMode === 'morelogin' && options._mlPinned === true, // opened for a schedule's own profile
       _mlDebugPort: _mlDebugPort || null,
       clients: new Set(),       // WebSocket connections for screencast
       screencastActive: false,
@@ -33677,7 +35051,7 @@ async function createBrowserSession(options = {}) {
     // Handle context close (browser quit / crash)
     context.on('close', () => {
       const orphanedLoops = session._loopOwned?.size > 0 ? [...session._loopOwned] : [];
-      console.log(`Browser context closed for session ${sessionId}${session._agentOwnedSet?.size ? ` (agent-owned: ${[...session._agentOwnedSet].join(',')})` : ''}${orphanedLoops.length ? ` (orphaning loops: ${orphanedLoops.join(', ')})` : ''}`);
+      console.log(`Browser context closed for session ${sessionId}${session._agentOwnedSet?.size ? ` (agent-owned: ${[...session._agentOwnedSet].join(',')})` : ''}${orphanedLoops.length ? ` (orphaning loops: ${orphanedLoops.map(logOwnerId).join(', ')})` : ''}`);
       session.screencastActive = false;
       detachScreencastFrameHandler(session);
       // Stop autosave interval
@@ -33844,35 +35218,53 @@ async function stopScreencast(session) {
 // ── Multi-tab helpers ──
 
 /**
- * The page of a new tab, for every tab SynaBun opens in a browser the user
- * shares with the runs (`_profileMode` morelogin or cdp): the first tab of a
- * session (createBrowserSession, which has no session object yet and passes
- * browser, context and mode), each further tab (createSessionTab) and the
- * replacement of a wedged tab (recoverSessionTabPage).
+ * The page of a new tab, for every tab SynaBun opens in any session: the first
+ * tab of a session (createBrowserSession: MoreLogin, attached Chrome, the
+ * managed / mirror / direct persistent launches and the clean launch, which
+ * have no session object yet and pass browser, context and mode), each further
+ * tab (createSessionTab) and the replacement of a wedged tab
+ * (recoverSessionTabPage).
  *
- * openTabsInBackground: true in browser-config.json (only that; not set or
- * anything else, this is context.newPage() exactly as before) opens such a tab
- * behind the selected one: the window is neither restored nor brought forward,
- * and the tab is not the selected tab when it opens. It does not cover SynaBun's
- * own windows (managed, mirror, direct and clean sessions), tabs a page opens
- * itself, or what selects a tab afterwards (the user, or the selected tab
- * closing next to it). A browser that cannot gets a normal tab.
+ * Background tabs are on unless browser-config.json says
+ * `openTabsInBackground: false` (backgroundTabsEnabled). On, the tab opens with
+ * Target.createTarget { background: true } behind the selected one: the window
+ * is neither restored nor brought forward and on macOS the user's Space does
+ * not switch. Strict: one retry in the background, then BackgroundTabError;
+ * never context.newPage(), which selects the tab and activates the window. Not
+ * covered: tabs a page opens itself, what selects a tab afterwards, and the
+ * window a launch itself puts on screen. Off, this is context.newPage().
  *
  * Every page it returns is recorded in synabunOpenedPages: an explicit close
  * of such a session closes those, and only those (closeOwnTabsBeforeDisconnect).
  */
 async function newSessionPage(session, { timeoutMs } = {}) {
-  if (loadBrowserConfig().openTabsInBackground === true && (session._profileMode === 'morelogin' || session._profileMode === 'cdp')) {
-    const page = await openBackgroundPage(session.browser, session.context, timeoutMs ? { timeoutMs } : undefined).catch(() => null);
-    if (page) {
-      synabunOpenedPages.add(page);
-      return page;
-    }
-    console.warn('[browser] could not open the tab in the background; opening it as the selected tab');
+  let page;
+  if (backgroundTabsEnabled(loadBrowserConfig())) {
+    page = await openBackgroundPageStrict(session.browser, session.context, {
+      ...(timeoutMs && { timeoutMs }),
+      ...(session._browserContextId && { browserContextId: session._browserContextId }),
+    });
+  } else {
+    page = await session.context.newPage();
   }
-  const page = await session.context.newPage();
   synabunOpenedPages.add(page);
+  // A local profile's timezone (lib/local-profiles.js). Its Chrome is started with TZ, which Chrome on Windows does
+  // not read: the tabs SynaBun opens there are told over DevTools too. The CDP session stays with the page (the
+  // override ends when it detaches). Best effort: a tab without it still has the timezone of the profile's start.
+  if (session._tzOverride) await applyPageTimezone(session.context, page, session._tzOverride);
   return page;
+}
+
+/**
+ * Tells one page its timezone over DevTools (`Emulation.setTimezoneOverride`). The CDP session stays with the page:
+ * the override ends when it detaches. Best effort, never throws: a tab without it still has the timezone its Chrome
+ * was started with.
+ */
+async function applyPageTimezone(context, page, timezoneId) {
+  try {
+    const tzSession = await context.newCDPSession(page);
+    await tzSession.send('Emulation.setTimezoneOverride', { timezoneId });
+  } catch (err) { console.warn(`[browser] timezone ${timezoneId} not set on a new tab: ${err.message}`); }
 }
 
 // The pages newSessionPage opened. In a browser the user owns (MoreLogin, their Chrome over CDP) context.pages() is
@@ -33943,8 +35335,8 @@ async function recoverSessionTabPage(session, sessionId, tabId, reason = 'page b
     };
     try {
       replacementPage = await withBrowserOperationDeadline(
-        // A background attempt gets half of the step, so a normal tab still fits after it.
-        newSessionPage(session, { timeoutMs: BROWSER_RECOVERY_STEP_DEADLINE_MS / 2 }),
+        // Two background attempts (strict, no foreground tab) share the step.
+        newSessionPage(session, { timeoutMs: BROWSER_RECOVERY_STEP_DEADLINE_MS / 3 }),
         BROWSER_RECOVERY_STEP_DEADLINE_MS,
         'Creating replacement browser tab',
         {
@@ -34453,6 +35845,33 @@ function browserCaller(req) {
   if (req && typeof req === 'object') { try { Object.defineProperty(req, BROWSER_CALLER, { value: caller, configurable: true }); } catch { /* frozen */ } }
   return caller;
 }
+// ── A session id as a log shows it (re-review of 2026-11-10: session ids in logs) ──
+// An Mcp-Session-Id is all a client needs to send requests on an MCP session (the SDK checks nothing else), and a
+// session with a proof can pick its MoreLogin profile: the whole id is a bearer. mcp-server/src/http.ts prints its
+// first 8 characters (sessionLogId); this server printed it whole wherever an owner key reached a log line: the browser
+// gate's refusals, the MoreLogin stop and close refusals, the release warning of a closed session, and the name of
+// the per-owner log file (data/logs/loop-<id>.log) of every browser acquisition and `browser:profile` line.
+/**
+ * `id` as a log line may show it. An MCP session's id (a proof of kind 'mcp-session', or an id of the shape the MCP
+ * transport mints, a UUID, that holds no other proof) is cut to its first 8 characters and "…", like sessionLogId. A
+ * run's id is not a bearer (it is nothing without its terminal token) and stays whole, up to 128 characters, so a
+ * log still finds the run.
+ */
+function logOwnerId(id) {
+  let kind = null;
+  try { kind = _terminalTokens.kindOf(String(id ?? '')) || null; } catch { kind = null; }
+  // A proof of another kind (a run's token) is never cut, even for an id of the UUID shape.
+  if (kind && kind !== 'mcp-session') return String(id ?? '').slice(0, 128);
+  return logIdOf(id, kind === 'mcp-session');
+}
+/**
+ * loopLog for every caller in this file. An MCP session's lines go to a file named by its 8 characters and a digest
+ * of the whole id (lib/loop-logger.js loopLogFileKey, finding 5 of the re-review of 2026-11-11), never by the id.
+ */
+function loopLog(ownerKey, tag, msg, meta = undefined) {
+  const mcpSession = !!ownerKey && logOwnerId(ownerKey).endsWith('…');
+  return writeLoopLog(ownerKey, tag, msg, meta, { mcpSession });
+}
 /** The answer to a request that names a run it cannot prove it is (TERMINAL_TOKEN_REQUIRED / TERMINAL_TOKEN_INVALID). */
 function refuseBrowserCaller(res, caller) {
   return res.status(caller.httpStatus || 403).json({ error: caller.error, code: caller.code });
@@ -34512,18 +35931,35 @@ function browserSessionCountRead(req, caller = browserCaller(req)) {
 function browserTerminalGate(req, res, next) {
   const caller = browserCaller(req);
   if (!caller.accepted) {
-    noteRefusedBrowserCaller(`${caller.code}:${String(caller.asserted).slice(0, 128)}`, `[browser] ${req.method} ${String(req.path || '').slice(0, 80)} refused: ${caller.code} (X-Synabun-Terminal ${String(caller.asserted).slice(0, 128)})`);
+    noteRefusedBrowserCaller(`${caller.code}:${String(caller.asserted).slice(0, 128)}`, `[browser] ${req.method} ${String(req.path || '').slice(0, 80)} refused: ${caller.code} (X-Synabun-Terminal ${logOwnerId(caller.asserted)})`);
     return refuseBrowserCaller(res, caller);
   }
   const automationRoute = isAutomationBrowserRoute(req.method, req.path);
-  if (caller.id && automationRoute) return next();
+  if (caller.id && automationRoute) {
+    // The caller's MoreLogin profile pin, before any browser route runs (callerProfileRefusal; review b6631e9d):
+    //   • an id that holds a pin and was not proven by this request reaches nothing (finding 2), its release included
+    //     (an unproven caller never closes a pinned session's tab);
+    //   • an agent's pin whose profile is not on the owner's list is refused every route that opens or drives a page.
+    //     It still lists the sessions, releases and closes what it holds, so it can leave the profile cleanly.
+    const pinRefused = callerProfileRefusal(caller);
+    if (pinRefused) {
+      const method = String(req.method || 'GET').toUpperCase();
+      const bare = String(req.path || '').replace(/\/$/, '');
+      const leaving = (method === 'GET' && bare === '/sessions') || (method === 'POST' && bare === '/release') || (method === 'DELETE' && /^\/sessions\/[^/]+$/.test(bare));
+      if (pinRefused.code === 'PROFILE_PIN_UNVERIFIED' || !leaving) {
+        noteRefusedBrowserCaller(`${pinRefused.code}:${String(caller.id).slice(0, 128)}`, `[browser] ${req.method} ${String(req.path || '').slice(0, 80)} refused: ${pinRefused.code} (X-Synabun-Terminal ${logOwnerId(caller.id)})`);
+        return res.status(pinRefused.status).json({ ok: false, code: pinRefused.code, error: pinRefused.error });
+      }
+    }
+    return next();
+  }
   // The owner's page; an invite guest the guest rules let use the browser, on the browser panel's routes only.
   if (automationRoute ? browserPageOwner(req) : browserOwnerPageOnly(req)) return next();
   if (browserSessionCountRead(req, caller)) return next();
   let guest = false;
   try { guest = !!isGuestRequest(req); } catch { guest = true; }
   if (caller.id || guest) {
-    noteRefusedBrowserCaller(`OWNER_ROUTE:${String(req.path || '').slice(0, 80)}`, `[browser] ${req.method} ${String(req.path || '').slice(0, 80)} refused: OWNER_ROUTE (automation ${String(caller.id).slice(0, 128)})`);
+    noteRefusedBrowserCaller(`OWNER_ROUTE:${String(req.path || '').slice(0, 80)}`, `[browser] ${req.method} ${String(req.path || '').slice(0, 80)} refused: OWNER_ROUTE (automation ${logOwnerId(caller.id)})`);
     return res.status(403).json({ ok: false, code: 'OWNER_ROUTE', error: 'This browser route is the owner\'s (SynaBun\'s page: the browser settings, the money guard, CDP, tab management). An automation drives the browser through SynaBun\'s browser tools only.' });
   }
   if (caller.automation) {
@@ -34555,7 +35991,7 @@ function refuseNotOwnerPage(req, res, error) {
 function browserSocketRefusal(req, sessionId) {
   if (browserPageOwner(req)) return null;
   const who = browserCaller(req);
-  const logRefusal = (code) => noteRefusedBrowserCaller(`ws:${code}:${String(who.asserted || '').slice(0, 128)}`, `[ws-browser] socket for session ${String(sessionId).slice(0, 80)} refused: ${code}${who.asserted ? ` (X-Synabun-Terminal ${String(who.asserted).slice(0, 128)})` : ''}`);
+  const logRefusal = (code) => noteRefusedBrowserCaller(`ws:${code}:${String(who.asserted || '').slice(0, 128)}`, `[ws-browser] socket for session ${String(sessionId).slice(0, 80)} refused: ${code}${who.asserted ? ` (X-Synabun-Terminal ${logOwnerId(who.asserted)})` : ''}`);
   if (!who.accepted) { logRefusal(who.code); return { status: who.httpStatus || 403, code: who.code }; }
   if (!who.automation) {
     let down = null;
@@ -34583,7 +36019,7 @@ function trackRoute(session, identityKey, tabId, source) {
   const key = identityKey || 'anon';
   const prev = session._routeLog.get(key);
   if (prev && prev.tabId !== tabId) {
-    console.warn(`[browser] route-change: id=${key} tab ${prev.tabId} (${prev.source}) → ${tabId} (${source})`);
+    console.warn(`[browser] route-change: id=${logOwnerId(key)} tab ${prev.tabId} (${prev.source}) → ${tabId} (${source})`);
   }
   session._routeLog.set(key, { tabId, source, count: (prev?.count || 0) + 1, lastSeen: Date.now() });
 }
@@ -34615,7 +36051,7 @@ function getTargetPage(session, req) {
     const tab = session.tabs?.get(tabId);
     if (!tab) return null;
     if (isAutomation && ownTabId !== tabId) {
-      console.warn(`[browser] tab-not-owned: refusing explicit tab ${String(tabId).slice(0, 40)} to an automation that does not own it (id=${terminalId || 'none'})`);
+      console.warn(`[browser] tab-not-owned: refusing explicit tab ${String(tabId).slice(0, 40)} to an automation that does not own it (id=${terminalId ? logOwnerId(terminalId) : 'none'})`);
       return null;
     }
     trackRoute(session, terminalId, tabId, 'explicit-tab');
@@ -34638,7 +36074,7 @@ function getTargetPage(session, req) {
   // 3. An automation that owns no open tab here: FAIL CLOSED. It never inherits another automation's tab, a tab nobody
   // owns, or the owner's manual tab; the MCP-side recovery acquires it a fresh owned tab instead.
   if (isAutomation) {
-    console.warn(`[browser] tab-pin-missing: refusing a tab the automation does not own (id=${terminalId || 'none'}, tabs=${session.tabs?.size ?? 0}, owners=${sessionOwnerCount(session)}) — returning 404 to avoid cross-automation leak`);
+    console.warn(`[browser] tab-pin-missing: refusing a tab the automation does not own (id=${terminalId ? logOwnerId(terminalId) : 'none'}, tabs=${session.tabs?.size ?? 0}, owners=${sessionOwnerCount(session)}) — returning 404 to avoid cross-automation leak`);
     return null;
   }
 
@@ -34722,7 +36158,16 @@ app.use('/api/browser/sessions/:id', (req, res, next) => {
     const session = browserSessions.get(req.params.id);
     if (!session) return next();
     const cfg = loadBrowserConfig();
-    if (cfg.connectMode !== 'morelogin' || sessionServesMoreLoginDefault(session, cfg)) return next();
+    // A run pinned to a MoreLogin profile of its own (its schedule's) acts on that profile's session only.
+    const callerPin = runMoreLoginPin(browserOwnerId(browserCaller(req).id));
+    if (sessionServesRun(session, cfg, browserOwnerId(browserCaller(req).id))) return next();
+    // (A pin this caller may not use was refused by browserTerminalGate in front: callerProfileRefusal.)
+    if (callerPin) {
+      return res.status(409).json({
+        error: `Session ${req.params.id} is not this run's browser (${session._profileMode || 'unknown'} mode${session._mlEnvId ? `, MoreLogin env ${session._mlEnvId}` : ''}; this run is set to ${describeMoreLoginPin(callerPin)}), so SynaBun's browser tools do not act on it. Leave sessionId out: browser_navigate opens the page in this run's profile.`,
+        code: 'NOT_DEFAULT_BROWSER',
+      });
+    }
     const envId = moreLoginDefaultEnvId(cfg);
     res.status(409).json({
       error: `Session ${req.params.id} is not the default browser (${session._profileMode || 'unknown'} mode${session._mlEnvId ? `, MoreLogin env ${session._mlEnvId}` : ''}; the default is MoreLogin${envId ? ` env ${envId}` : ''}), so SynaBun's browser tools do not act on it. Leave sessionId out: browser_navigate opens the page in the default browser.`,
@@ -34763,6 +36208,7 @@ app.get('/api/browser/sessions', (req, res) => {
   // run's or the owner's tabs, nor the session's address and title, which are its active tab's (2026-11-05: workers
   // listed every tab of the shared MoreLogin session and could not tell theirs).
   const automationView = who.automation && !revealOwners;
+  const callerPin = who.automation ? runMoreLoginPin(caller) : null;
   const liveUrl = (t) => { try { return t.page?.url?.() || t.url; } catch { return t.url; } };
   const sessions = [...browserSessions.entries()].map(([id, s]) => {
     const allTabs = s.tabs ? [...s.tabs.entries()] : [];
@@ -34779,7 +36225,8 @@ app.get('/api/browser/sessions', (req, res) => {
     profileMode: s._profileMode || 'clean',
     profileSource: s._profileSourceName || null,
     moreloginEnvId: s._mlEnvId || null,
-    servesDefault: moreLoginDefault ? sessionServesMoreLoginDefault(s, policyCfg) : true,
+    // For a run pinned to a MoreLogin profile of its own, "the default" is that profile's session (sessionServesRun).
+    servesDefault: callerPin ? sessionServesMoreLoginEnv(s, callerPin.envId) : (moreLoginDefault ? sessionServesMoreLoginDefault(s, policyCfg) : true),
     // The browser's own CDP endpoint drives every tab past every check here: the owner's page's only.
     wsEndpoint: who.automation || s._isPersistent ? null : (s.browser.wsEndpoint?.() || null),
     activeTabId: automationView ? (ownTabId && s.activeTabId === ownTabId ? ownTabId : null) : (s.activeTabId || null),
@@ -34805,10 +36252,18 @@ app.get('/api/browser/sessions', (req, res) => {
   const yourRoute = caller ? liveAutomationRoute(caller, { cfg: policyCfg }) : null;
   res.json({
     sessions,
-    defaultBrowser: moreLoginDefault
+    defaultBrowser: callerPin
+      ? { connectMode: 'morelogin', moreloginEnvId: callerPin.envId }
+      : moreLoginDefault
       ? { connectMode: 'morelogin', moreloginEnvId: moreLoginDefaultEnvId(policyCfg) }
       : { connectMode: policyCfg.connectMode || null },
     ...(yourRoute ? { yourRoute: { sessionId: yourRoute.browserSessionId, tabId: yourRoute.browserTabId } } : {}),
+    // The MoreLogin profile this caller works in when it is not the default (its launch's, or its own choice: POST
+    // /api/morelogin/use). The MCP reads it to move a run whose pinned tab is in a browser it left.
+    ...(callerPin ? { yourProfile: { envId: callerPin.envId, name: callerPin.name || null } } : {}),
+    // The caller chose its browser itself (a profile, or back to the default): a run's launch tab may be in the
+    // browser it left, and its MCP then moves it instead of failing the run.
+    ...(caller && who.automation && _profileChoiceStore.get(caller) !== undefined ? { profileChosen: true } : {}),
     // POST /api/loop/recover-browser records a run's move to a tab of its own (`adopt`): an MCP asks it only of a
     // server that says so (an older one reads the request as a recovery and opens a tab).
     adoptRoute: true,
@@ -34819,10 +36274,15 @@ app.post('/api/browser/sessions', async (req, res) => {
   const { url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone, connectMode, moreloginEnvId } = req.body;
   // Which browser or MoreLogin profile a session starts on is the owner's choice (Settings → Browser): an automation's
   // create opens the default browser and names neither (lib/browser-automation-routes.js; review 972afb74, finding 1).
+  // N1 (re-review of 2026-11-10): the check asked `creator.automation` only, so an invite guest with the `browser`
+  // permission (browserTerminalGate lets a guest reach this route: browserPageOwner) who knew a profile's id opened
+  // that profile, any account, past the owner's list. Now only the owner's page itself (its page secret, never a
+  // guest, no run or agent header: browserOwnerPageOnly) names either field; a guest's create opens the default browser.
   const creator = browserCaller(req);
-  const ownerFields = creator.automation ? ownerOnlyCreateFields(req.body) : [];
+  const ownerFields = (creator.automation || !browserOwnerPageOnly(req)) ? ownerOnlyCreateFields(req.body) : [];
   if (ownerFields.length) {
-    return res.status(403).json({ ok: false, code: 'OWNER_ONLY_FIELDS', fields: ownerFields, error: `An automation opens the default browser: ${ownerFields.join(' and ')} ${ownerFields.length === 1 ? 'is' : 'are'} the owner's choice (Settings → Browser). Leave ${ownerFields.length === 1 ? 'it' : 'them'} out.` });
+    const guestCreate = !creator.automation;
+    return res.status(403).json({ ok: false, code: 'OWNER_ONLY_FIELDS', fields: ownerFields, error: `${guestCreate ? 'A guest' : 'An automation'} opens the default browser: ${ownerFields.join(' and ')} ${ownerFields.length === 1 ? 'is' : 'are'} the owner's choice (Settings → Browser). Leave ${ownerFields.length === 1 ? 'it' : 'them'} out.` });
   }
   // A create-session startUrl that points at one of SynaBun's own live OpenCode serve ports is refused up front, like
   // navigate and new-tab: the serve's API can change what a worker session may do, and createBrowserSession navigates
@@ -34849,6 +36309,25 @@ app.post('/api/browser/sessions', async (req, res) => {
     const who = browserCaller(req);
     if (!who.accepted) return refuseBrowserCaller(res, who);
     const creatorTerminalId = browserOwnerId(who.id);
+    // An automation that works in a MoreLogin profile of its own (its launch's, or its own choice: POST
+    // /api/morelogin/use) gets a tab of its own in that profile's one browser, like every other owner there, never a
+    // second connection to it and never the default browser. `handedOver` tells the MCP the tab is at about:blank.
+    const creatorPin = who.automation && creatorTerminalId ? runMoreLoginPin(creatorTerminalId) : null;
+    if (creatorPin) {
+      const outcome = await browserStartHandoff.run(`acquire:${creatorTerminalId}`, async () => {
+        const acq = await acquireSharedBrowserTab({ ownerKey: creatorTerminalId, ownerType: 'interactive', logTag: 'create:profile' });
+        if (acq.error) throw Object.assign(new Error(acq.error), { acquisition: acq });
+        return acq;
+      }, {
+        gone: browserCallerGone(req, res),
+        waitMs: startWaitMs(req.browserRequest?.deadline),
+        alive: (acq) => startedTabAlive(acq.browserSessionId, acq.browserTabId, creatorTerminalId),
+        onUnclaimed: (acq, info) => closeUnclaimedBrowserStart(acq.browserSessionId, creatorTerminalId, { tabId: acq.browserTabId, since: info?.parkedAt, run: creatorTerminalId }),
+      });
+      if (outcome.pending) return res.status(202).json(browserStartingAnswer('create'));
+      const acq = outcome.value;
+      return res.json({ sessionId: acq.browserSessionId, tabId: acq.browserTabId || null, url: 'about:blank', wsEndpoint: null, profileMode: 'morelogin', profileSource: `${profileKindLabel(creatorPin.envId) === 'local profile' ? 'Local' : 'MoreLogin'} · ${creatorPin.envId}`, shared: true, handedOver: outcome.from !== 'started' ? outcome.from : 'profile' });
+    }
     // The start, its owner and its broadcast: once per start, whoever ends up with it.
     const start = async () => {
       const result = await createBrowserSession({
@@ -34891,6 +36370,8 @@ app.post('/api/browser/sessions', async (req, res) => {
     });
   } catch (err) {
     console.error('Browser session create error:', err.message);
+    const acq = err?.acquisition;
+    if (acq) return res.status(500).json({ error: acq.error, ...(acq.code ? { code: acq.code, offenders: acq.offenders } : {}) });
     res.status(500).json(browserStartFailure(err));
   }
 });
@@ -34908,12 +36389,12 @@ app.delete('/api/browser/sessions/:id', async (req, res) => {
     // An automation closes only a session it works in (a tab of its own, or a hold on the session): the owner's manual
     // session, or a session nobody holds, is the owner's to close (review 972afb74, finding 4).
     if (decision.action === 'refuse') {
-      console.warn(`[browser] close of session ${req.params.id} by ${caller} refused: it owns no tab and holds nothing there`);
+      console.warn(`[browser] close of session ${req.params.id} by ${logOwnerId(caller)} refused: it owns no tab and holds nothing there`);
       return res.status(403).json({ ok: false, code: 'NOT_OWNED', error: `Session ${req.params.id} is not yours to close: you have no tab in it. Close only the sessions you opened; the owner closes the others from SynaBun's page.` });
     }
     if (decision.action === 'release') {
       await releaseSharedBrowserTab(req.params.id, caller);
-      console.warn(`[browser] close of shared session ${req.params.id} by ${caller}: kept for ${decision.others.length} other owner(s) (${decision.others.join(', ')}); ${decision.ownTabId ? `closed only its tab ${decision.ownTabId}` : 'it had no tab of its own there'}`);
+      console.warn(`[browser] close of shared session ${req.params.id} by ${logOwnerId(caller)}: kept for ${decision.others.length} other owner(s) (${decision.others.map(logOwnerId).join(', ')}); ${decision.ownTabId ? `closed only its tab ${decision.ownTabId}` : 'it had no tab of its own there'}`);
       return res.json({ ok: true, sessionKept: true, releasedTabId: decision.ownTabId, otherOwners: decision.others.length });
     }
     // An explicit close (browser_session close, the UI): in MoreLogin or the user's Chrome, the tabs SynaBun opened for it close too.
@@ -35283,17 +36764,45 @@ app.post('/api/browser/sessions/:id/navigate', async (req, res) => {
       retryAfterMs: circuit.remainingMs,
     });
   }
+  // A new navigation of this tab ends the delayed probe an earlier slow load left on it.
+  session._slowLoadProbes?.get(routed.tabId)?.cancel();
+  // Whether the main frame committed the requested document (or its redirect target) while the
+  // goto ran: a timeout after that is a slow page (x.com's cold first load), answered below,
+  // never a wedged tab to reset. Its listeners go on every exit (finally below).
+  let commit = null;
   try {
     await humanThink(session, req, true);
     markBrowserActionStarted(req);
-    const response = await measureBrowserPhase('action', () => routed.page.goto(url, { waitUntil: 'domcontentloaded', timeout: browserActionTimeout(req, 15000) }));
+    commit = trackMainDocumentCommit(routed.page, url);
+    // Answer once the document commits (the action timeout still bounds the commit), then give
+    // DOMContentLoaded a short, never-failing wait: callers learn which one they got (loadState).
+    const navTimeout = browserActionTimeout(req, 15000);
+    const response = await measureBrowserPhase('action', () => routed.page.goto(url, { waitUntil: 'commit', timeout: navTimeout })
+      .finally(() => commit.stop()));
     let httpStatus = null;
     try { httpStatus = response ? response.status() : null; } catch { httpStatus = null; }
     clearBrowserNavigationWedge(session, routed.tabId, url);
+    const wantsSnapshot = !!(snapshot && snapshot !== 'none') || !!returnSnapshot;
+    // An explicit snapshot waits for DCL within the old budget, so it never captures a document
+    // still being replaced ("Page navigated during capture"); otherwise only the short cap.
+    const loadState = await waitForDomContentLoadedCapped(routed.page,
+      wantsSnapshot ? navTimeout : Math.min(NAVIGATE_DCL_CAP_MS, navTimeout));
+    if (wantsSnapshot && loadState !== 'domcontentloaded') {
+      // What a DCL timeout answered before: a slow page, read later, probed once.
+      res.json({ ok: true, url: routed.page.url(), title: '', slowLoad: true, loadState, notice: SLOW_NAVIGATION_NOTICE });
+      scheduleSlowLoadRecheck(session, req.params.id, routed, req, url, new Error(`Timeout ${navTimeout}ms exceeded waiting for DOMContentLoaded`));
+      return;
+    }
     const state = await getBrowserActionState(session, routed, compact);
     const blocked = moreLoginBlockError(session, url, state.url);
     if (blocked) return res.status(502).json({ error: blocked, moreLoginBlocked: true, landedUrl: state.url });
-    const body = { ok: true, url: state.url, title: state.title };
+    const body = { ok: true, url: state.url, title: state.title, loadState };
+    if (httpStatus != null) body.status = httpStatus;
+    if (loadState === 'commit') {
+      body.notice = PAGE_STILL_PARSING_NOTICE;
+      // Nobody waited for this page to parse: one delayed liveness probe still resets a dead tab.
+      scheduleSlowLoadRecheck(session, req.params.id, routed, req, url, new Error(`DOMContentLoaded did not arrive within ${NAVIGATE_DCL_CAP_MS}ms`));
+    }
     if (snapshot && snapshot !== 'none') {
       await settleAfterAction(routed.page);
       const snap = await buildSnapshotResponse(routed.page, {
@@ -35312,18 +36821,19 @@ app.post('/api/browser/sessions/:id/navigate', async (req, res) => {
       }).catch(err => ({ snapshot: null, snapshotError: err.message }));
       Object.assign(body, snap);
     }
-    // Bounded, value-free context for the page-state judgment, in the same round
-    // trip. A plain DOM scan (never a snapshot, which would replace the refs just
-    // delivered), time-boxed, and its failure never fails the navigation.
-    if (req.body.semanticContext === true && req.get('X-Synabun-Batch') !== '1') {
-      try {
-        if (!(snapshot && snapshot !== 'none')) await settleAfterAction(routed.page);
-        body.semanticContext = await runBrowserRequest(req, () => measureBrowserPhase('semanticContext',
-          () => collectSemanticContext(routed.page, { purpose: 'navigation', httpStatus })), 1500);
-      } catch { body.semanticContextError = 'unavailable'; }
-    }
+    // No page-state judgment here any more (2026-11-08): it cost a settle and a DOM scan per
+    // navigate. browser_batch asks for its one assessment through the context route.
     res.json(body);
   } catch (err) {
+    commit?.stop();
+    if (navigationLandedDespiteTimeout(err, { committed: commit?.committed === true, url: routed.page.url() })) {
+      // The document is there and still loading; its renderer may be too busy for a probe, a
+      // snapshot or a title. Answer what is known and let the next call read the page; a
+      // delayed, bounded probe (below) still resets a tab that turns out to be dead.
+      res.json({ ok: true, url: routed.page.url(), title: '', slowLoad: true, notice: SLOW_NAVIGATION_NOTICE });
+      scheduleSlowLoadRecheck(session, req.params.id, routed, req, url, err);
+      return;
+    }
     const recovery = await recoverBrowserRouteFailure(session, req.params.id, routed, req, 'navigate', err);
     if (recovery?.recovered) rememberBrowserNavigationWedge(session, routed.tabId, url, err);
     res.status(500).json({
@@ -35332,8 +36842,33 @@ app.post('/api/browser/sessions/:id/navigate', async (req, res) => {
       ...(recovery?.sessionInvalidated && { sessionInvalidated: true }),
       ...(recovery?.wedgedTabRetired && { wedgedTabRetired: true }),
     });
+  } finally {
+    commit?.stop();
   }
 });
+
+/**
+ * The delayed liveness probe of a slow load (lib/browser-tab-recovery.js scheduleSlowLoadProbe):
+ * after the answer went out, ask the tab once; a dead one gets the recovery a failed navigate
+ * gets (reset, and the URL on the two-minute circuit). One probe per tab: a new navigate, the
+ * tab's close, its replacement or a new document in it cancels it.
+ */
+function scheduleSlowLoadRecheck(session, sessionId, routed, req, url, err) {
+  if (!session._slowLoadProbes) session._slowLoadProbes = new Map();
+  session._slowLoadProbes.get(routed.tabId)?.cancel();
+  const isCurrent = () => !session._invalidating && browserSessions.get(sessionId) === session
+    && session.tabs.get(routed.tabId)?.page === routed.page;
+  const probe = scheduleSlowLoadProbe(routed.page, {
+    isCurrent,
+    onDead: async (probeError) => {
+      const failure = Object.assign(new Error(`${err.message}; the slow page then failed its liveness probe: ${probeError.message}`), { code: probeError.code });
+      const recovery = await recoverBrowserRouteFailure(session, sessionId, routed, req, 'navigate', failure);
+      if (recovery?.recovered) rememberBrowserNavigationWedge(session, routed.tabId, url, failure);
+    },
+  });
+  session._slowLoadProbes.set(routed.tabId, probe);
+  probe.done.finally(() => { if (session._slowLoadProbes?.get(routed.tabId) === probe) session._slowLoadProbes.delete(routed.tabId); });
+}
 
 app.post('/api/browser/sessions/:id/back', async (req, res) => {
   const session = browserSessions.get(req.params.id);
@@ -35999,6 +37534,9 @@ app.post('/api/browser/sessions/:id/snapshot', async (req, res) => {
   const { selector: rawSel, mode, viewport, depth, diff, force, maxChars, baselineId, includeFullText } = req.body || {};
   const scopeSel = rawSel ? normalizeSelector(rawSel) : null;
   try {
+    // A page browser_navigate answered at commit may still be parsing: let it, briefly, so the
+    // capture does not race the document ("Page navigated during capture").
+    await waitForDomContentLoadedCapped(routed.page, SNAPSHOT_DCL_WAIT_MS);
     const payload = await buildSnapshotResponse(routed.page, {
       scopeSel, mode, viewport, depth, diff, force, maxChars, baselineId, includeFullText: includeFullText === true,
       ...snapshotRequestOptions(req, res, req.params.id, routed),
@@ -36739,18 +38277,32 @@ app.get('/api/browser/config', async (req, res) => {
       || (await moreLogin.probeMoreLoginApi({ savedCfg: config, timeout: 1500 })).running;
   } catch {}
   const unreadable = browserConfigUnreadable(config);
-  res.json({ config, detectedPath: detected, chromeRunning, attachSeeded, moreloginInstalled, ...(unreadable && { configError: `browser-config.json is unreadable (${unreadable}); saving these settings replaces it` }) });
+  res.json({ config, backgroundTabs: backgroundTabsEnabled(config), detectedPath: detected, chromeRunning, attachSeeded, moreloginInstalled, ...(unreadable && { configError: `browser-config.json is unreadable (${unreadable}); saving these settings replaces it` }) });
 });
 
-app.put('/api/browser/config', (req, res) => {
+app.put('/api/browser/config', async (req, res) => {
   try {
     // Full replacement — the frontend sends the complete config object
     const body = validateBrowserLanguageConfig(req.body || {});
+    // Finding 1 of the re-review of 2026-11-11: only the owner's page changes the default AI browser (connect mode,
+    // default MoreLogin profile). browserTerminalGate already keeps this route from automations; this is the route's own.
+    if (browserDefaultChangeRefused(req, body, loadBrowserConfig())) return refuseDefaultBrowserChange(res);
     if (body.connectMode !== undefined) body.connectMode = ['attach', 'morelogin'].includes(body.connectMode) ? body.connectMode : 'mirror';
     if (body.attachSeed !== undefined) body.attachSeed = body.attachSeed === 'fresh' ? 'fresh' : 'real';
     if (body.moreloginEnvId !== undefined && body.moreloginEnvId !== null && body.moreloginEnvId !== '') body.moreloginEnvId = String(body.moreloginEnvId);
+    // The default MoreLogin profile is driven over CDP: a newly chosen one known to be Firefox-type is refused. The
+    // one already in use as the default may be saved back with the rest of the form.
+    if (body.connectMode === 'morelogin' && body.moreloginEnvId) {
+      const before = loadBrowserConfig();
+      await refuseFirefoxMoreLoginChoice({ moreloginEnvId: body.moreloginEnvId }, before.connectMode === 'morelogin' ? before.moreloginEnvId : null);
+    }
     // openTabsInBackground is not in the Settings form: a save from the form keeps
     // it. What it covers is said at newSessionPage, which reads it.
+    // The owner's list of profiles agents may choose is not in the form either, and has one writer (PUT
+    // /api/morelogin/agent-profiles): a save here keeps the saved list whatever the body carries.
+    const savedAgentProfiles = normalizeAgentProfiles(loadBrowserConfig());
+    delete body[AGENT_PROFILES_KEY];
+    if (savedAgentProfiles.length) body[AGENT_PROFILES_KEY] = savedAgentProfiles;
     const savedBackgroundTabs = loadBrowserConfig().openTabsInBackground;
     if (body.openTabsInBackground === undefined && typeof savedBackgroundTabs === 'boolean') body.openTabsInBackground = savedBackgroundTabs;
     saveBrowserConfig(body);
@@ -36762,7 +38314,8 @@ app.put('/api/browser/config', (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     const invalidLanguage = err.status === 400 && ['locale', 'acceptLanguage'].includes(err.field);
-    res.status(invalidLanguage ? 400 : 500).json({ error: err.message, ...(invalidLanguage && { field: err.field }) });
+    const refusedProfile = err.status === 400 && err.code === 'MORELOGIN_NOT_CHROMIUM';
+    res.status(invalidLanguage || refusedProfile ? 400 : 500).json({ error: err.message, ...(invalidLanguage && { field: err.field }), ...(refusedProfile && { code: err.code, field: 'moreloginEnvId' }) });
   }
 });
 
@@ -36783,21 +38336,36 @@ app.get('/api/browser/morelogin-envs', async (req, res) => {
   try {
     const cfg = loadBrowserConfig();
     const port = moreLogin.getMoreLoginPort(cfg);
+    // The default browser's mode: the schedule editor shows its MoreLogin profile row where MoreLogin is in use.
+    const connectMode = cfg.connectMode || null;
+    // SynaBun's own local profiles (`kind: 'local'`, lib/local-profiles.js) are in every answer, also while MoreLogin
+    // is closed, not installed or refusing: `installed`, `running`, `port` and `error` keep describing MoreLogin
+    // alone, and `local.count` says how many of `envs` are local.
+    let localEnvs = [];
+    let localError = null;
+    try { localEnvs = (await moreLogin.listLocalProfiles()).map((env) => ({ ...env, browser: 'chromium' })); }
+    catch (err) { localError = err.message; }
+    const local = { count: localEnvs.length, ...(localError ? { error: localError } : {}) };
     // Probe first: the install-folder check knows only the default folders, and an
     // answering local API proves the app is there wherever it was installed.
     const probe = await moreLogin.probeMoreLoginApi({ savedCfg: cfg, port });
     const installed = probe.running || moreLogin.isMoreLoginInstalled().installed;
-    if (!installed) return res.json({ ok: true, installed: false, running: false, port, envs: [], error: probe.error || null });
-    if (!probe.running) return res.json({ ok: true, installed: true, running: false, port, envs: [], error: probe.error || null });
+    if (!installed) return res.json({ connectMode, ok: true, installed: false, running: false, port, envs: localEnvs, local, error: probe.error || null });
+    if (!probe.running) return res.json({ connectMode, ok: true, installed: true, running: false, port, envs: localEnvs, local, error: probe.error || null });
     // The API answered with an error (signature required, API off): say why, never an empty list.
-    if (probe.apiError) return res.json({ ok: false, installed: true, running: true, port, envs: [], error: probe.apiError });
-    const envs = await moreLogin.listProfiles({ savedCfg: cfg, port });
+    if (probe.apiError) return res.json({ connectMode, ok: false, installed: true, running: true, port, envs: localEnvs, local, error: probe.apiError });
+    // MoreLogin's own rows (the list holds the local ones too: they are added once, below).
+    const listedEnvs = (await moreLogin.listProfiles({ savedCfg: cfg, port })).filter((env) => env.kind !== 'local');
     // The API counted profiles but none could be read: a shape problem, never "no profiles yet".
-    if (probe.count > 0 && !envs.length) {
-      return res.json({ ok: false, installed: true, running: true, port, envs: [], error: `MoreLogin reports ${probe.count} profile(s) but SynaBun could not read them from its answer; a newer MoreLogin may have changed its API.` });
+    if (probe.count > 0 && !listedEnvs.length) {
+      return res.json({ connectMode, ok: false, installed: true, running: true, port, envs: localEnvs, local, error: `MoreLogin reports ${probe.count} profile(s) but SynaBun could not read them from its answer; a newer MoreLogin may have changed its API.` });
     }
+    // Each profile with the browser it runs (`browser`: 'chromium' | 'firefox' | null = not known): the list call
+    // does not say it, so it is looked up per profile, kept, and never waited for longer than the lookup's budget.
+    // A Firefox-type profile cannot be driven (CDP only): the pickers list it and do not offer it.
+    const { envs, browsersPending } = await withMoreLoginBrowsers(listedEnvs, { savedCfg: cfg, port });
     res.json({
-      ok: true, installed: true, running: true, port, envs,
+      connectMode, ok: true, installed: true, running: true, port, envs: [...envs, ...localEnvs], local, browsersPending,
       // Observed website-policy blocks — MoreLogin's local API never exposes the
       // blacklist/whitelist itself, so the picker reports what actually happened.
       blockedNavigations: moreLoginBlockStats.count,
@@ -36976,6 +38544,9 @@ function startLaunchWarmup() {
 reloadConfig();
 
 const httpServer = app.listen(PORT, async () => {
+  // Before anything else: the sessions that saved a MoreLogin profile choice (POST /api/morelogin/use) must prove
+  // who they are again before that choice is used (retireSavedProfileChoiceOwners).
+  try { retireSavedProfileChoiceOwners(); } catch (err) { console.warn(`[morelogin] the owners of the saved profile choices were not retired: ${err.message}`); }
   console.log(`\n  Neural Memory Interface`);
   console.log(`  ──────────────────────`);
   console.log(`  Server:    http://localhost:${PORT}`);
@@ -37041,6 +38612,18 @@ const httpServer = app.listen(PORT, async () => {
       .catch((err) => console.warn('  Embeddings warmup failed:', err.message));
     try { memoryVectors.size(); } catch { /* cache builds lazily on failure */ }
   }, 500);
+
+  // Local profiles still running from before this start (their Chrome outlives the server, as a MoreLogin profile
+  // does): the proxy relay of each is put back on the port its Chrome was started with. Until then, and when the port
+  // was taken meanwhile, that profile's pages fail (never a direct connection); its next start starts it again.
+  setTimeout(async () => {
+    try {
+      const adopted = await moreLogin.adoptLocalProfiles();
+      if (!adopted.length) return;
+      const stuck = adopted.filter((p) => p.relay === 'restart-needed');
+      console.log(`  Local profiles: ${adopted.length} running${stuck.length ? ` · ${stuck.length} need a restart (proxy relay port taken): ${stuck.map((p) => p.name).join(', ')}` : ''}`);
+    } catch (err) { console.warn(`  Local profiles: not picked up (${err.message})`); }
+  }, 200);
 
   // Detect MoreLogin (anti-detect browser) — DETECTION ONLY, never auto-activates.
   // Activation is an explicit user choice via Settings → Browser / the MoreLogin tab.
@@ -37327,7 +38910,7 @@ httpServer.on('upgrade', function onUpgrade(req, socket, head) {
   if (guest) {
     if (url.pathname.startsWith('/ws/terminal/') && !invitePermissions.terminal) { socket.destroy(); return; }
     if (url.pathname.startsWith('/ws/browser/') && !invitePermissions.browser) { socket.destroy(); return; }
-    if (['/ws/claude-skin', '/ws/codex-skin', '/ws/opencode-v2', '/ws/antigravity'].includes(url.pathname) || url.pathname.startsWith('/ws/assistant/')) {
+    if (['/ws/claude-skin', '/ws/codex-skin', '/ws/opencode-v2', '/ws/antigravity', '/ws/maritaca'].includes(url.pathname) || url.pathname.startsWith('/ws/assistant/')) {
       socket.destroy();
       return;
     }
@@ -37375,7 +38958,7 @@ httpServer.on('upgrade', function onUpgrade(req, socket, head) {
     }
   }
 
-  if (url.pathname.startsWith('/ws/browser/') || url.pathname.startsWith('/ws/assistant/') || url.pathname === '/ws/whiteboard' || url.pathname === '/ws/cards' || url.pathname === '/ws/sync' || url.pathname === '/ws/claude-skin' || url.pathname === '/ws/codex-skin' || url.pathname === '/ws/opencode-v2' || url.pathname === '/ws/antigravity' || url.pathname === '/ws/sessions') {
+  if (url.pathname.startsWith('/ws/browser/') || url.pathname.startsWith('/ws/assistant/') || url.pathname === '/ws/whiteboard' || url.pathname === '/ws/cards' || url.pathname === '/ws/sync' || url.pathname === '/ws/claude-skin' || url.pathname === '/ws/codex-skin' || url.pathname === '/ws/opencode-v2' || url.pathname === '/ws/antigravity' || url.pathname === '/ws/maritaca' || url.pathname === '/ws/sessions') {
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit('connection', ws, req);
     });
@@ -37445,6 +39028,12 @@ wss.on('connection', (ws, req) => {
   // ── Route: Antigravity side panel (Google's agy over ACP) ──
   if (url.pathname === '/ws/antigravity') {
     antigravityPanel.handleSocket(ws);
+    return;
+  }
+
+  // ── Route: Maritaca AI side panel (Sabiá models over HTTP) ──
+  if (url.pathname === '/ws/maritaca') {
+    maritacaPanel.handleSocket(ws);
     return;
   }
 

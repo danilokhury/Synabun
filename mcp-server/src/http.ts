@@ -88,6 +88,22 @@ export interface McpRoutesOptions {
    * the run's id to the Neural Interface. Without it, every pin is taken as it is said (the standalone server).
    */
   terminalAuth?: (pin: string, token: string | null) => boolean;
+  /**
+   * The host's proof for a plain MCP session (neural-interface/lib/terminal-tokens.js issueSession / revokeSession):
+   * a CLI window's Claude Code or Codex that SynaBun did not start names no run, so its id to the Neural Interface is
+   * its Mcp-Session-Id. `issue` is asked once, when such a session initializes from this computer (loopback, no pin,
+   * not through the tunnel), and the session then sends its proof with its id on every Neural Interface request it
+   * makes (callerTerminalToken), so no other process can act as it there, and the Neural Interface can let it pick its
+   * own MoreLogin profile (`morelogin` `use`). The proof never leaves this process: it is not sent to the MCP client.
+   * `revoke` is called when the session closes or is evicted. Without it (the standalone server, the worker-only
+   * channel) a plain session has no proof, as before.
+   * `eligible` is the host's own answer for the initializing request, asked after wantsSessionProof and before
+   * `issue`: the Neural Interface says yes only on its plain /mcp mount (never /mcp/<key>, which shares this router),
+   * for a request that is not from outside by its own rules and whose peer process is not a relay or a proxy (review
+   * b6631e9d, finding 5: a loopback socket without CF-Connecting-IP is also what a local reverse proxy in front of the
+   * keyed mount looks like). A host that gives `issue` without `eligible` gets no proof issued: fail closed.
+   */
+  sessionProof?: { issue: (sessionId: string) => string | null; revoke: (sessionId: string) => void; eligible?: (req: Request) => boolean };
 }
 
 /**
@@ -123,8 +139,12 @@ interface McpHttpSession {
   transport: StreamableHTTPServerTransport;
   server: ReturnType<typeof createMcpServer>;
   lastSeen: number;
+  /** The host's proof of this session's own id (McpRoutesOptions.sessionProof), for a plain session only. */
+  proof?: string | null;
 }
 const mcpSessions = new Map<string, McpHttpSession>();
+/** sid → the host's revoke for the proof it gave that session (the router that initialized it), or null. */
+const revokeProof = new Map<string, ((sessionId: string) => void) | null>();
 
 const MCP_SESSION_TTL_MS = parseInt(process.env.SYNABUN_MCP_SESSION_TTL_MS || '', 10) || 60 * 60 * 1000;
 
@@ -136,7 +156,7 @@ function startSessionSweeper(): void {
     const now = Date.now();
     for (const [sid, entry] of mcpSessions) {
       if (now - entry.lastSeen > MCP_SESSION_TTL_MS) {
-        console.error(`[mcp-http] session ${sid} evicted after ${Math.round((now - entry.lastSeen) / 60000)}min idle (${mcpSessions.size - 1} remain)`);
+        console.error(`[mcp-http] session ${sessionLogId(sid)} evicted after ${Math.round((now - entry.lastSeen) / 60000)}min idle (${mcpSessions.size - 1} remain)`);
         // transport.close() fires onclose → map cleanup + releaseIdentity + server.close.
         try { entry.transport.close(); } catch { /* already closed */ }
       }
@@ -179,7 +199,9 @@ export function acceptedTerminalPin(req: Pick<Request, 'get'>, options: McpRoute
   if (!refusedPinsLogged.has(pin)) {
     refusedPinsLogged.add(pin);
     if (refusedPinsLogged.size > 1000) refusedPinsLogged.delete(refusedPinsLogged.values().next().value as string);
-    console.error(`[mcp-http] X-Synabun-Terminal ${pin} came without that run's terminal token: routed as its own MCP session`);
+    // Finding 4 (re-review of 2026-11-11): the refused value may be a live Mcp-Session-Id (a bearer for that session),
+    // so the log line carries its short form only, never the whole value.
+    console.error(`[mcp-http] X-Synabun-Terminal ${sessionLogId(pin)} came without that run's terminal token: routed as its own MCP session`);
   }
   return null;
 }
@@ -240,8 +262,46 @@ export function requestBrainCredential(req: Pick<Request, 'get'>): string | null
 function runRequest<T>(req: Request, sid: string | undefined, options: McpRoutesOptions, fn: () => T): T {
   const pin = acceptedTerminalPin(req, options);
   const token = pin ? requestTerminalToken(req) : null;
-  return runWithTerminalToken(pin && token ? { terminal: pin, token } : null, () =>
+  // A plain session (no accepted pin) routes as its Mcp-Session-Id: the proof the host gave that id at its initialize
+  // goes with it. Only the session's own transport (this sid, which the SDK checked) ever carries it.
+  const own = !pin && sid ? sessionProofGrant(sid) : null;
+  return runWithTerminalToken(pin && token ? { terminal: pin, token } : own, () =>
     runWithBrainCredential(requestBrainCredential(req), () => runWithIdentity(deriveIdentity(req, sid, pin), fn)));
+}
+
+/** The proof of plain session `sid` as a grant for its own id, or null. */
+function sessionProofGrant(sid: string): { terminal: string; token: string } | null {
+  const proof = mcpSessions.get(sid)?.proof;
+  return proof ? { terminal: sid, token: proof } : null;
+}
+
+/**
+ * Whether a session initializing with `req` may get the host's proof (McpRoutesOptions.sessionProof): no accepted
+ * pin (a run or a panel routes as its pin and proves it with its own token), from this computer's loopback, and not
+ * through the tunnel (a remote MCP-key holder).
+ */
+export function wantsSessionProof(req: Pick<Request, 'get'> & { socket?: { remoteAddress?: string } }, pin: string | null): boolean {
+  if (pin) return false;
+  if (req.get('cf-connecting-ip')) return false;
+  const addr = String(req.socket?.remoteAddress || '');
+  return /^(?:::ffff:)?127\.\d+\.\d+\.\d+$/.test(addr) || addr === '::1';
+}
+
+/** The host's own check of the initializing request (McpRoutesOptions.sessionProof.eligible): absent or failing is no. */
+export function hostAllowsSessionProof(req: Request, options: McpRoutesOptions): boolean {
+  const eligible = options.sessionProof?.eligible;
+  if (typeof eligible !== 'function') return false;
+  try { return eligible(req) === true; } catch { return false; }
+}
+
+/**
+ * A session id as the log shows it: its first 8 characters. The Mcp-Session-Id is all a client needs to send requests
+ * on a session (the SDK checks nothing else), and a session with a proof can pick its MoreLogin profile, so the whole
+ * id is a bearer and never goes to stderr (which the background launch writes to launcher.log; review b6631e9d, note 8).
+ */
+export function sessionLogId(sid: string | undefined | null): string {
+  const text = String(sid || '');
+  return text.length > 8 ? `${text.slice(0, 8)}…` : text;
 }
 
 function jsonRpcError(res: express.Response, status: number, code: number, message: string): void {
@@ -316,9 +376,14 @@ export function createMcpRoutes(options: McpRoutesOptions = {}): Router {
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (newSid) => {
-          mcpSessions.set(newSid, { transport, server, lastSeen: Date.now() });
           // The pin the host accepted (terminalAuth): a refused one is no pin, here as on every later request.
           const terminal = acceptedTerminalPin(req, options);
+          let proof: string | null = null;
+          if (options.sessionProof && wantsSessionProof(req, terminal) && hostAllowsSessionProof(req, options)) {
+            try { proof = options.sessionProof.issue(newSid) || null; } catch { proof = null; }
+          }
+          mcpSessions.set(newSid, { transport, server, lastSeen: Date.now(), proof });
+          revokeProof.set(newSid, proof && options.sessionProof ? options.sessionProof.revoke : null);
           deriveIdentity(req, newSid, terminal);
           // The warm server was built role-less, on focus. The SDK awaits this
           // hook BEFORE dispatching the initialize request, so binding the
@@ -334,7 +399,7 @@ export function createMcpRoutes(options: McpRoutesOptions = {}): Router {
           const grant = remote ? null : sanitizeDesktopGrant(req.get('x-synabun-desktop-grant'));
           if (grant) setServerCapabilities(server, { computer: true });
           const tools = selection.source === 'http' ? '' : `, tools=${selection.mode}:${selection.groups.join(',') || 'memory'}${selection.listError ? ' (unreadable)' : ''}`;
-          console.error(`[mcp-http] session ${newSid} init (terminal=${terminal || 'none'}${role ? `, role=${role}` : ''}${grant ? ', computer' : ''}${tools}, sessions=${mcpSessions.size})`);
+          console.error(`[mcp-http] session ${sessionLogId(newSid)} init (terminal=${terminal || 'none'}${role ? `, role=${role}` : ''}${grant ? ', computer' : ''}${tools}, sessions=${mcpSessions.size})`);
         },
       });
       // Re-entry guard: server.close() closes its transport, which fires
@@ -345,11 +410,18 @@ export function createMcpRoutes(options: McpRoutesOptions = {}): Router {
         tornDown = true;
         const closedSid = transport.sessionId;
         if (closedSid && mcpSessions.has(closedSid)) {
+          // Its tab is released as the session itself (its proof, while it still holds one), then the proof stops
+          // working (the id stays refused: nobody can be this session afterwards). The host releases what the
+          // session still held in its revoke too, so a release that arrives after it is no loss.
+          const grant = sessionProofGrant(closedSid);
+          const revoke = revokeProof.get(closedSid);
+          revokeProof.delete(closedSid);
           mcpSessions.delete(closedSid);
           // Releases the identity's acquired browser tab (if any). Header-keyed
           // identities (loops) are keyed by terminal id, not sid — untouched.
-          releaseIdentity(closedSid);
-          console.error(`[mcp-http] session ${closedSid} closed (${mcpSessions.size} remain)`);
+          runWithTerminalToken(grant, () => releaseIdentity(closedSid));
+          if (revoke) { try { revoke(closedSid); } catch { /* the host's own failure */ } }
+          console.error(`[mcp-http] session ${sessionLogId(closedSid)} closed (${mcpSessions.size} remain)`);
         }
         try { server.close(); } catch { /* already closed */ }
       };

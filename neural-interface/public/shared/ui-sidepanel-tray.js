@@ -12,6 +12,7 @@ import { toggleClaudePanel, isClaudePanelOpen, bootClaudePanel } from './ui-clau
 import { toggleCodexPanel, isCodexPanelOpen, bootCodexPanel } from './ui-codex-panel.js';
 import { toggleOpencodePanel, isOpencodePanelOpen, bootOpencodePanel } from './ui-opencode-panel-v2.js';
 import { toggleAntigravityPanel, isAntigravityPanelOpen, bootAntigravityPanel } from './ui-antigravity-panel.js';
+import { toggleMaritacaPanel, isMaritacaPanelOpen, bootMaritacaPanel } from './ui-maritaca-panel.js';
 import { nativeLoopWindowId } from './ui-native-window-id.js';
 
 const PLACEHOLDER_CLASS = 'sidepanel-tray-placeholder';
@@ -62,6 +63,13 @@ const PROVIDERS = {
     attentionClass: 'agy-pill-attention',
     eventName: 'antigravity-panel:show',
   },
+  maritaca: {
+    providerId: 'maritaca',
+    windowKey: 'mtc-window-id',
+    tabsKeyPrefix: 'synabun-maritaca-panel-tabs',
+    pillClass: 'mtc-session-pill',
+    eventName: 'maritaca-panel:show',
+  },
 };
 
 // How each panel boots without showing itself, and whether it should: OpenCode only
@@ -73,6 +81,8 @@ const BOOT_HIDDEN = {
   // An Antigravity turn ends with the page that ran it (its `agy acp` belongs to the panel socket), so a saved tab is
   // never working after a reload: booting would only start Antigravity to say so.
   antigravity: { boot: () => bootAntigravityPanel(), ready: async () => false },
+  // Maritaca turns outlive a page reload; boot hidden to recover their live partial and pill.
+  maritaca: { boot: () => bootMaritacaPanel(), ready: async () => (await (await fetch('/api/maritaca/panel')).json())?.turns > 0 },
   opencode: {
     boot: () => bootOpencodePanel(),
     ready: async () => (await (await fetch('/api/opencode-v2/status')).json())?.running === true,
@@ -176,8 +186,17 @@ function hasAntigravityState(tab) {
   );
 }
 
+function hasMaritacaState(tab) {
+  return !!(tab.sessionId || tab.running || tab.attachments?.length || normalizeLabel(tab.draft) || normalizeLabel(tab.title));
+}
+
 function tabLabel(provider, tab) {
   if (provider === 'claude') return normalizeLabel(tab.label) || 'New chat';
+  if (provider === 'maritaca') {
+    const title = normalizeLabel(tab.title);
+    if (title) return title;
+    return tab.sessionId ? `Maritaca · ${String(tab.sessionId).slice(0, 8)}` : 'New conversation';
+  }
   if (provider === 'antigravity') {
     const title = normalizeLabel(tab.title || tab.label);
     if (title && !isDefaultLabel(title, ['new session'])) return title;
@@ -199,6 +218,7 @@ function tabId(provider, tab, index) {
   if (provider === 'codex' && tab.threadId) return String(tab.threadId);
   if (provider === 'opencode' && tab.sessionId) return String(tab.sessionId);
   if (provider === 'antigravity' && tab.sessionId) return String(tab.sessionId);
+  if (provider === 'maritaca' && tab.sessionId) return String(tab.sessionId);
   return `${provider}-${index}`;
 }
 
@@ -369,6 +389,7 @@ function statePredicate(provider) {
   if (provider === 'claude') return hasClaudeState;
   if (provider === 'codex') return hasCodexState;
   if (provider === 'antigravity') return hasAntigravityState;
+  if (provider === 'maritaca') return hasMaritacaState;
   return hasOpenCodeState;
 }
 
@@ -376,6 +397,7 @@ function dedupeKeyForTab(provider, tab) {
   if (provider === 'claude') return tab.sessionId ? `cp:${tab.sessionId}` : null;
   if (provider === 'codex') return tab.threadId ? `cxp:${tab.threadId}` : null;
   if (provider === 'antigravity') return tab.sessionId ? `agy:${tab.sessionId}` : null;
+  if (provider === 'maritaca') return tab.sessionId ? `mtc:${tab.sessionId}` : null;
   return tab.sessionId ? `ocp:${tab.sessionId}` : null;
 }
 
@@ -547,6 +569,8 @@ async function openProvider(provider, tabIdValue, sourceKey) {
       if (!isOpencodePanelOpen()) await toggleOpencodePanel();
     } else if (provider === 'antigravity') {
       if (!isAntigravityPanelOpen()) await toggleAntigravityPanel();
+    } else if (provider === 'maritaca') {
+      if (!isMaritacaPanelOpen()) await toggleMaritacaPanel();
     }
     emit(PROVIDERS[provider]?.eventName, { tabId: tabIdValue });
   } finally {

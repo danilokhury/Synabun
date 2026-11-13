@@ -241,6 +241,7 @@
       "codexPanel": "Codex panel",
       "opencodePanel": "OpenCode panel",
       "antigravityPanel": "Antigravity panel",
+      "maritacaPanel": "Maritaca panel",
       "terminal": "New terminal",
       "claudeTerminal": "Claude Code terminal",
       "browser": "Browser",
@@ -1479,7 +1480,7 @@
           "help": "Storage, search, backups"
         },
         "ai_decisions": {
-          "label": "Jev",
+          "label": "AI decisions",
           "help": "Smart judgments and cost"
         },
         "projects": {
@@ -1492,7 +1493,7 @@
         },
         "connected_tools": {
           "label": "Connected tools",
-          "help": "Default tools and MCP servers"
+          "help": "Servers and profiles"
         },
         "tool_access": {
           "label": "Tool access",
@@ -1537,7 +1538,7 @@
           "purpose": "See where your memories live, choose how SynaBun finds them, and keep a copy you can restore."
         },
         "ai_decisions": {
-          "title": "Jev",
+          "title": "AI decisions",
           "purpose": "Control where smart judgments help, what they may use, and how much they cost."
         },
         "projects": {
@@ -1706,9 +1707,17 @@
           "advanced_browser_behavior": {
             "title": "Advanced browser behavior",
             "purpose": "Timing, security, location, permissions, network and recording. The defaults suit almost everyone."
+          },
+          "automation_browser_owner_access": {
+            "title": "Automation browser access",
+            "purpose": "Whether SynaBun's own automation browser, the one the browser tools drive, may use this Neural Interface as the owner."
           }
         },
         "connected_tools": {
+          "default_tools": {
+            "title": "Default tools",
+            "purpose": "Choose the SynaBun groups new runtimes start with."
+          },
           "added_servers": {
             "title": "Added servers",
             "purpose": "Tool servers from other makers that are registered with your assistants, and Claude Code plugins."
@@ -1728,10 +1737,6 @@
           "morelogin_tool_server": {
             "title": "MoreLogin tool server",
             "purpose": "Optionally add MoreLogin's own tool server to your assistants."
-          },
-          "default_tools": {
-            "title": "Default tools",
-            "purpose": "Choose the SynaBun groups new runtimes start with."
           }
         },
         "projects": {
@@ -1901,13 +1906,13 @@
           }
         },
         "code_editor": {
-          "ai_autocomplete": {
-            "title": "AI autocomplete",
-            "purpose": "Grey suggestions after the caret that Tab accepts. Off until you switch it on."
-          },
           "editing": {
             "title": "Editing",
             "purpose": "How the editor shows text, indents it and saves it. The View menu in the editor changes the same settings."
+          },
+          "ai_autocomplete": {
+            "title": "AI autocomplete",
+            "purpose": "Grey suggestions after the caret that Tab accepts. Off until you switch it on."
           }
         },
         "about": {
@@ -1950,7 +1955,6 @@
         "advanced": "Advanced options",
         "allPages": "Settings page",
         "navLabel": "Settings pages",
-        "onThisPage": "On this page",
         "advancedTag": "Advanced"
       },
       "control": {
@@ -2569,6 +2573,14 @@
         "mcp001": {
           "label": "Default tools or added servers",
           "help": "Switches between default tools and the servers you added."
+        },
+        "mcp004": {
+          "label": "Remove added server",
+          "help": "Removes this server from SynaBun."
+        },
+        "mcp005": {
+          "label": "Agents may use it",
+          "help": "Allows this server in Codex, OpenCode and Claude task runs and the OpenCode tools picker."
         },
         "mcp006": {
           "label": "+ Add a server",
@@ -3306,26 +3318,6 @@
           "label": "Disconnect OpenClaw",
           "help": "Removes OpenClaw's memories from the map. OpenClaw's own files are not touched."
         },
-        "aut053": {
-          "label": "Knowledge of you",
-          "help": "Starts each Assistant conversation with a short digest of what SynaBun has learned about how you work, and keeps learning from what you type. Learning needs Jev. Off: no digest and nothing new is learned; what is already in Memory stays."
-        },
-        "aut054": {
-          "label": "Recent-interaction nudges",
-          "help": "Reminds the Assistant of the last conversation, of what is still open and of what changed since. Off: no reminders, and no record of a conversation is kept for the next one."
-        },
-        "aut055": {
-          "label": "Show the trace",
-          "help": "Adds one line under each reply in the Assistant panel: what the model was told, what was held back and what was learned. Needs one of the two settings above. Off: new replies get no line; the two settings keep working."
-        },
-        "aut056": {
-          "label": "What a new conversation is told about you",
-          "help": "The digest every new Assistant conversation starts with. Select a line to open its memory and correct it."
-        },
-        "aut057": {
-          "label": "See all in Memory",
-          "help": "Opens the memory explorer on everything SynaBun knows about you."
-        },
         "skl004": {
           "label": "Skills",
           "help": "Slash commands that give your assistants extra abilities."
@@ -3478,21 +3470,25 @@
           "label": "Language",
           "help": "SynaBun reloads to apply the language."
         },
-        "aut058": {
-          "label": "Greet me when I come back",
-          "help": "In the Assistant, the Claude Code, Codex, OpenCode and Antigravity panels and a terminal Claude Code session: after an hour away, and only when there is something new to say. SynaBun writes it ahead of time, so the session's own model spends nothing on it. Off: every session opens quietly."
+        "aut053": {
+          "label": "Knowledge of you",
+          "help": "Starts each Assistant conversation with a short digest of what SynaBun has learned about how you work, and keeps learning from what you type. Learning needs Jev. Off: no digest and nothing new is learned; what is already in Memory stays."
         },
-        "aut059": {
-          "label": "What a new session would open with",
-          "help": "Built from your recent conversations and sessions, the runs you dispatched, schedules that did not complete and what SynaBun knows about you. Open “Based on” to see the records and what the sentence cost."
+        "aut054": {
+          "label": "Recent-interaction nudges",
+          "help": "Reminds the Assistant of the last conversation, of what is still open and of what changed since. Off: no reminders, and no record of a conversation is kept for the next one."
         },
-        "aut060": {
-          "label": "Write it now",
-          "help": "Asks the writer for this sentence now instead of waiting for the background: one small call on the cheapest Claude model."
+        "aut055": {
+          "label": "Show the trace",
+          "help": "Adds one line under each reply in the Assistant panel: what the model was told, what was held back and what was learned. Needs one of the two settings above. Off: new replies get no line; the two settings keep working."
         },
-        "aut061": {
-          "label": "Protect workers",
-          "help": "What a worker the Assistant dispatches with capability read-only or workspace may touch, on Claude Code, Codex, OpenCode and Antigravity alike: writes inside its working directory, the temp folder and its own scratch folder only; never ~/.claude, ~/.codex, ~/.agents, ~/.config/opencode, ~/.gemini, ~/.synabun or another project; a read-only worker runs read-only commands only. Capability full is never limited."
+        "aut056": {
+          "label": "What a new conversation is told about you",
+          "help": "The digest every new Assistant conversation starts with. Select a line to open its memory and correct it."
+        },
+        "aut057": {
+          "label": "See all in Memory",
+          "help": "Opens the memory explorer on everything SynaBun knows about you."
         },
         "edt001": {
           "label": "Suggest code as I type",
@@ -3586,6 +3582,18 @@
           "label": "End files with one newline on save",
           "help": "When a file is saved, a missing final line break is added and empty lines after the last line of text are removed."
         },
+        "aut058": {
+          "label": "Greet me when I come back",
+          "help": "In the Assistant, the Claude Code, Codex, OpenCode and Antigravity panels and a terminal Claude Code session: after an hour away, and only when there is something new to say. SynaBun writes it ahead of time, so the session's own model spends nothing on it. Off: every session opens quietly."
+        },
+        "aut059": {
+          "label": "What a new session would open with",
+          "help": "Built from your recent conversations and sessions, the runs you dispatched, schedules that did not complete and what SynaBun knows about you. Open “Based on” to see the records and what the sentence cost."
+        },
+        "aut060": {
+          "label": "Write it now",
+          "help": "Asks the writer for this sentence now instead of waiting for the background: one small call on the cheapest Claude model."
+        },
         "abt001": {
           "label": "Check for updates",
           "help": "Looks for a newer version of SynaBun and of the coding tools: the same check as Check for updates in the Apps menu."
@@ -3642,17 +3650,85 @@
           "label": "Restart SynaBun",
           "help": "Restarts SynaBun's server: the same as Restart Server in the Apps menu."
         },
+        "aut061": {
+          "label": "Protect workers",
+          "help": "What a worker the Assistant dispatches with capability read-only or workspace may touch, on Claude Code, Codex, OpenCode and Antigravity alike: writes inside its working directory, the temp folder and its own scratch folder only; never ~/.claude, ~/.codex, ~/.agents, ~/.config/opencode, ~/.gemini, ~/.synabun or another project; a read-only worker runs read-only commands only. Capability full is never limited."
+        },
         "aut062": {
           "label": "SynaBun hooks in Claude Code",
           "help": "Memory, recall and plan capture for the Claude Code sessions you start yourself (a terminal, VS Code, the desktop app) and for the Assistant's Claude brain, which reads them from the same ~/.claude/settings.json."
         },
-        "mcp004": {
-          "label": "Remove added server",
-          "help": "Removes this server from SynaBun."
+        "brw087": {
+          "label": "Let the automation browser act as owner (screenshots and visual QA)",
+          "help": "While on, agents driving the SynaBun browser can read and act on the Neural Interface as the owner: the memory map, the Assistant, the side panels, Skills Studio and Settings. Keep it off otherwise."
         },
-        "mcp005": {
-          "label": "Agents may use it",
-          "help": "Allows this server in Codex, OpenCode and Claude task runs and the OpenCode tools picker."
+        "ml020": {
+          "label": "Where to create the profile",
+          "help": "Local makes a profile SynaBun runs itself on this computer. MoreLogin makes one in the MoreLogin app, which counts toward its plan."
+        },
+        "ml021": {
+          "label": "Edit",
+          "help": "Change this local profile's name, proxy, language, timezone and window size."
+        },
+        "ml022": {
+          "label": "Delete",
+          "help": "Stop this local profile and remove its cookies, logins and other browser data from this computer."
+        },
+        "ml023": {
+          "label": "Name",
+          "help": "Shown in the lists, in the profile pickers and in the profile's window."
+        },
+        "ml024": {
+          "label": "Proxy type",
+          "help": "None uses this computer's own connection."
+        },
+        "ml025": {
+          "label": "Proxy host",
+          "help": "A host name or an IP address, without http:// and without the login."
+        },
+        "ml026": {
+          "label": "Proxy port",
+          "help": "A number from 1 to 65535."
+        },
+        "ml027": {
+          "label": "Proxy username",
+          "help": "Leave empty for a proxy without a login."
+        },
+        "ml028": {
+          "label": "Proxy password",
+          "help": "Kept on this computer only. It is never shown again after saving."
+        },
+        "ml029": {
+          "label": "Show or hide the proxy password",
+          "help": "Show the password you are typing."
+        },
+        "ml030": {
+          "label": "Check proxy",
+          "help": "Asks api.ipify.org for the address websites would see through this proxy, using the values typed here."
+        },
+        "ml031": {
+          "label": "Language",
+          "help": "A language tag such as pt-BR or en-US. Empty keeps Chrome's own language."
+        },
+        "ml032": {
+          "label": "Timezone",
+          "help": "An IANA name such as America/Sao_Paulo. Empty keeps this computer's timezone."
+        },
+        "ml033": {
+          "label": "Window size",
+          "help": "Width and height in pixels."
+        },
+        "ml034": {
+          "label": "Notes",
+          "help": "For you only: what this profile is for."
+        },
+        "ml035": {
+          "label": "Save",
+          "help": "Save this local profile's settings. They apply the next time it starts."
+        },
+        "ml036": {
+          "label": "Cancel",
+          "help": "Close the editor without saving."
         }
       },
       "pane": {
@@ -3804,6 +3880,25 @@
         "removeConfirm": "Remove…",
         "envVarTitle": "Environment variable: {env}",
         "storedConversations": "Stored conversations",
+        "maritacaSubname": "(Sabiá)",
+        "maritacaUnavailableStatus": "Needs a restart",
+        "maritacaUnavailableNote": "This server cannot register Maritaca in OpenCode yet. Restart SynaBun.",
+        "maritacaNoKeyStatus": "No key",
+        "maritacaNoKeyNote": "Save a Maritaca API key in the Maritaca panel (the cog) first. OpenCode uses that same key.",
+        "maritacaOpenPanel": "Open the Maritaca panel",
+        "maritacaNotRegisteredStatus": "Not registered",
+        "maritacaNotRegisteredNote": "Registers every Sabiá model in OpenCode with {source}. OpenCode reaches Maritaca through SynaBun, which keeps tool calls working. The key itself is never copied into opencode.json.",
+        "maritacaConfigure": "Configure",
+        "maritacaRegisteredStatus": "Registered",
+        "maritacaRegisteredTag": "Synced · {source}",
+        "maritacaKeyFile": "the saved key",
+        "maritacaKeyEnv": "MARITACA_API_KEY",
+        "maritacaStaleStatus": "Out of sync",
+        "maritacaStaleNote": "The key, the model list or the address OpenCode reaches Maritaca through changed since the provider was written. Re-sync writes it again.",
+        "maritacaResync": "Re-sync",
+        "maritacaErrorStatus": "Error",
+        "maritacaProviderRegistered": "Maritaca registered in OpenCode ({count} models)",
+        "maritacaProviderRemoved": "Maritaca provider removed from OpenCode",
         "bufferDefault": "OpenCode's default",
         "saveFailed": "Not saved: {message}",
         "installedVersion": "OpenCode {version} · {path}",
@@ -3843,7 +3938,7 @@
         "rulesActions": "Rule actions for {name}",
         "previewRules": "{name} rules text",
         "previewSnippet": "{name} snippet text",
-        "rulesIntro": "SynaBun puts its rules where each connected assistant loads them for every project. There is nothing to paste, and a project's own CLAUDE.md and AGENTS.md are not touched.",
+        "rulesIntro": "SynaBun puts its rules where each connected assistant loads them for every project. There is nothing to paste.",
         "copyOnly": "Copy only",
         "cursorHelp": "Cursor keeps its User Rules inside the app, so SynaBun cannot install them. Copy the rules and paste them into Cursor Settings → Rules.",
         "coexistTitle": "Using other memory tools",
@@ -3872,7 +3967,7 @@
         "removeTheseRules": "Remove these {label} rules?",
         "untilThenTheRulesCanOnly": "{RESTART_HINT} Until then the rules can only be viewed and copied.",
         "pastedCopies": "Pasted copies",
-        "theseFilesStillHoldAnOlder": "These files still hold an older SynaBun ruleset that was pasted by hand. With the rules installed above, the pasted copy is a duplicate. SynaBun only changes these files when you press Remove pasted copy.",
+        "theseFilesStillHoldAnOlder": "These files still hold an older SynaBun ruleset that was pasted by hand. With the rules installed above, the pasted copy is a duplicate.",
         "file": "file",
         "removePastedCopy": "Remove pasted copy",
         "theTextWasChangedAfterIt": "The text was changed after it was pasted, so SynaBun leaves it for you to review",
@@ -3905,8 +4000,6 @@
         "automaticRuleUpdatesAreOff": "Automatic rule updates are off",
         "noConnectedToolNeedsRules": "No connected tool needs rules",
         "rulesInstalledFor": "Rules installed for {map}",
-        "rulesAlreadyCurrentFor": "Rules already up to date for {map}",
-        "rulesInstalledAt": "Rules live in: {where}. Project CLAUDE.md and AGENTS.md files are left as they are.",
         "copyCliCommand": "Copy CLI Command",
         "copyJsonConfig": "Copy JSON Config",
         "copyTomlConfig": "Copy TOML Config",
@@ -3917,7 +4010,9 @@
         "rulesRemoved2": "{label} rules removed",
         "rulesInstalled2": "{label} rules installed",
         "rulesUpdated2": "{label} rules updated",
-        "installedWithFailure": "{count} installed. {host}: {error}"
+        "installedWithFailure": "{count} installed. {host}: {error}",
+        "rulesAlreadyCurrentFor": "Rules already up to date for {map}",
+        "rulesInstalledAt": "Rules live in: {where}. Project CLAUDE.md and AGENTS.md files are left as they are."
       },
       "terminal": {
         "detectTip": "Find this command automatically",
@@ -3997,6 +4092,8 @@
         "restoring": "Restoring...",
         "applyingBackup": "Applying backup...",
         "doneFilesRestored": "Done! {restoredFileCount} files restored.",
+        "restartingAfterRestore": "Restored. Restarting SynaBun to load the new MCP server build...",
+        "serverNotBackAfterRestore": "Restored, but the server did not come back yet: reload this page in a moment.",
         "done": "Done",
         "invalidBackup": "Invalid backup: {message}",
         "backupHealth": "Backup health:",
@@ -4296,6 +4393,9 @@
         "previewOptions": "Live preview options",
         "permissionsHelp": "Ticked permissions are granted to every site without asking. Leave them unticked to keep the usual prompts.",
         "saveBar": "Save or reset the browser settings",
+        "moreloginCustomPathHint": "Installed in another folder? Set MORELOGIN_APP_PATH to the full path of MoreLogin.exe in SynaBun's .env.",
+        "moreloginFirefoxOption": "{name} (Firefox profile, not usable)",
+        "moreloginFirefoxDefault": "The selected profile is a Firefox-type profile. SynaBun can only drive Chrome-type MoreLogin profiles, so browser runs fail until you pick a Chrome-type profile.",
         "browserStreamConsumesSignificantGpuResou": "Browser stream consumes significant GPU resources and is mostly cosmetic. The automation browser runs headful — you can interact with it directly.",
         "noChromeChromiumFoundPlaywrightWill": "No Chrome/Chromium found — Playwright will use its bundled browser",
         "detectionFailed": "Detection failed: {message}",
@@ -4334,13 +4434,32 @@
         "detected": "Detected: {detectedPath}",
         "error2": "Error:",
         "profileSApiPort": "{count} profile(s) · API port {port}",
-        "moreloginCustomPathHint": "Installed in another folder? Set MORELOGIN_APP_PATH to the full path of MoreLogin.exe in SynaBun's .env."
+        "ownerAccess": {
+          "onWarning": "On: every agent that drives the SynaBun browser holds the owner's powers on this SynaBun until you switch this off.",
+          "applies": "Takes effect at once for new requests and sockets. Only this page can change it: never an agent, a worker or the automation browser itself.",
+          "stateOn": "On",
+          "stateOff": "Off",
+          "restart": "Restart SynaBun to use this: the server that is running was started before it was added. Until then the automation browser is refused owner access.",
+          "failed": "This setting did not start ({reason}). Restart SynaBun; if it happens again, the server log says why.",
+          "failedNoReason": "This setting did not start. Restart SynaBun; if it happens again, the server log says why.",
+          "unreadable": "The setting could not be read ({reason}).",
+          "unreadableNoReason": "The setting could not be read.",
+          "save": {
+            "failed": "\"{state}\" was not saved: {reason}.",
+            "noAnswer": "\"{state}\" was not saved: SynaBun did not answer. Is the server running?",
+            "oldServer": "\"{state}\" was not saved: the server that is running was started before this setting existed. Restart SynaBun.",
+            "automationBrowser": "\"{state}\" was not saved: this page is open in SynaBun's automation browser, which may never change it. Use your own browser or the app."
+          }
+        },
+        "moreloginLocalOption": "{name} · local",
+        "localProfilesOnly": "{count} local profile(s)."
       },
       "mcp": {
         "tab": {
-          "installed": "Added servers",
-          "tools": "Default tools"
+          "tools": "Default tools",
+          "installed": "Added servers"
         },
+        "defaultToolsHelp": "Choose which groups new runtimes start with. Running sessions keep their own tools.",
         "noteTitle": "Scope",
         "noteBody": "OpenCode and Antigravity load the selected groups. Claude Code and Codex reach every SynaBun tool on demand.",
         "externalServers": "Your other MCP servers",
@@ -4396,8 +4515,7 @@
         "synabunRegistry": "SynaBun registry",
         "repoAlsoShipsAClaudeCode": "(repo also ships a Claude Code plugin — install separately if desired)",
         "skippedLocalDeps": "⚙ Skipped local deps — {reason}",
-        "error": "Error: {message}",
-        "defaultToolsHelp": "Choose which groups new runtimes start with. Running sessions keep their own tools."
+        "error": "Error: {message}"
       },
       "product": {
         "claudeCode": "Claude Code",
@@ -4420,10 +4538,10 @@
         "moreloginNotInstalled": "MoreLogin not installed",
         "notInstalled": "not installed",
         "installedApiNotRunningPort": "Installed · API not running (port {port})",
+        "appClosed": "app closed",
         "runningApiRejected": "Running · the local API answered with an error (port {port}): {reason}",
         "apiError": "API error",
         "customPathHint": "Installed MoreLogin in another folder? Add MORELOGIN_APP_PATH=<full path to MoreLogin.exe> to SynaBun's .env and restart SynaBun, so it can find the app and open it when it is closed.",
-        "appClosed": "app closed",
         "connectedProfileSPort": "Connected · {profileCount} profile(s) · port {port}",
         "connected": "connected",
         "defaultAiBrowserSet": "default AI browser set",
@@ -4431,6 +4549,17 @@
         "noProfilesCreateOneAboveOr": "No profiles — create one above, or one is auto-created on first use.",
         "default": "★ default",
         "useAsDefault": "Use as default",
+        "firefoxNotUsable": "Firefox profile: not usable as the AI browser",
+        "firefoxDefault": "★ default · Firefox profile: not usable",
+        "firefoxNotUsableHelp": "SynaBun drives a MoreLogin profile over the Chrome DevTools protocol, which a Firefox-type profile does not have. Use a Chrome-type profile as the AI browser. Start and Stop still work.",
+        "agentsMayChoose": "Agents may choose",
+        "agentsMayChooseHelp": "Each MoreLogin profile is a separate signed-in account. Switch a profile on to let AI agents pick it by themselves: a chat or side panel session, a CLI window and a dispatched worker can then work in it, and so can any program on this computer that uses SynaBun's tools. Off, the default, means agents cannot choose that profile. Schedules, groups, timers and launches you set up yourself can use any profile either way, and the default AI browser is not affected.",
+        "agentsMayChooseWarning": "Switching a profile on shares that account with every agent and every program on this computer, not only the session you have in mind. Keep accounts that can pay or do things that cannot be undone switched off.",
+        "agentsMayChooseAria": "Agents may choose {name}",
+        "agentsMayChooseOn": "Agents may now choose {name}",
+        "agentsMayChooseOff": "Agents can no longer choose {name}. Sessions working in it are refused at their next browser call.",
+        "agentsMayChooseFailed": "The list of profiles agents may choose was not changed: {error}",
+        "agentsMayChooseRestart": "Restart SynaBun to choose which profiles agents may use: the running server is older than this list.",
         "start": "Start",
         "stop": "Stop",
         "moreloginSetAsDefaultAiBrowser": "MoreLogin set as default AI browser",
@@ -4450,7 +4579,59 @@
         "noAgentConfigsFound": "(no agent configs found)",
         "removedFrom": "Removed from: {targets}",
         "none": "(none)",
-        "networkError": "Network error"
+        "networkError": "Network error",
+        "local": {
+          "intro": "A local profile is a Chrome that SynaBun runs on this computer with its own cookies, logins, proxy, language and timezone. It needs no MoreLogin slot, and the MoreLogin app does not list it. It is plain Chrome: nothing about its fingerprint is faked.",
+          "restartServer": "Restart SynaBun to use local profiles: the running server is older than them.",
+          "whereLocal": "Local (this computer)",
+          "whereMoreLogin": "MoreLogin",
+          "tag": "Local",
+          "running": "running",
+          "stopped": "stopped",
+          "noProxy": "no proxy",
+          "proxyLogin": "with login",
+          "restartNeeded": "Restart the profile to apply",
+          "moreloginMissing": "MoreLogin's own profiles are not listed: {error}",
+          "defaultName": "Local {n}",
+          "created": "Local profile created. Set it up below.",
+          "createFailed": "The local profile was not created: {error}",
+          "planLimit": "MoreLogin did not create the profile: its plan holds no more profiles.",
+          "planLimitCreateLocal": "Create it as a local profile",
+          "editorTitle": "Edit {name}",
+          "proxyType": {
+            "none": "None",
+            "http": "HTTP",
+            "https": "HTTPS",
+            "socks5": "SOCKS5"
+          },
+          "ph": {
+            "host": "proxy.example.com",
+            "port": "8080",
+            "language": "pt-BR",
+            "timezone": "America/Sao_Paulo"
+          },
+          "windowHeight": "Window height in pixels",
+          "passwordKept": "Leave empty to keep the saved password",
+          "passwordAgain": "The proxy or its login changed: type the password again.",
+          "checking": "Checking…",
+          "checkOk": "Exit address {ip} ({via}, {ms} ms)",
+          "checkDirect": "No proxy: websites see this computer's address, {ip}",
+          "checkFailed": "Proxy check failed: {error}",
+          "saved": "Local profile saved",
+          "savedRestart": "Saved. Restart the profile to apply.",
+          "saveFailed": "Not saved: {error}",
+          "invalid": {
+            "name": "Enter a name of at most 80 characters.",
+            "host": "Enter the proxy host, without http:// and without the login.",
+            "port": "The proxy port is a number from 1 to 65535.",
+            "language": "That is not a language tag. Example: pt-BR",
+            "timezone": "That is not a timezone name. Example: America/Sao_Paulo",
+            "window": "The window is 400 to 7680 wide and 300 to 4320 high."
+          },
+          "deleteConfirm": "Delete the local profile \"{name}\"? Its cookies, logins and other browser data are removed from this computer. This cannot be undone.",
+          "deleted": "Local profile {name} deleted",
+          "deleteFailed": "Not deleted: {error}"
+        }
       },
       "skills": {
         "installFor": "Install /{skill} for {assistant}",
@@ -4483,19 +4664,9 @@
           "sharedHelp": "Off: SynaBun installs a skill into each assistant’s own folder. On: an install can also go into ~/.agents/skills, which Codex and OpenCode both read.",
           "sharedOn": "On",
           "sharedOff": "Off",
-          "stepOffer": "{runtime} {name}: a bridge file SynaBun cannot prove is its own ({why}) Tick it to move it too: it becomes SynaBun’s {name} skill folder, and the file is kept in the move’s record.",
+          "stepOffer": "{runtime} {name}: a bridge file SynaBun cannot prove is its own ({why}) Tick it to move it too: it becomes SynaBun's {name} skill folder, and the file is kept in the move’s record.",
           "stepConfirmed": "{runtime} {name}: moved too, as you confirmed: becomes a skill folder at {destination}; the file is kept in the move’s record.",
-          "offerTick": "Move {name} too",
-          "autoNote": "SynaBun moves the bridge files it recognises as its own by itself when it starts (Skills Studio says so once, with Undo). What it cannot recognise waits here for you."
-        },
-        "assistants": {
-          "title": "My assistants",
-          "help": "A new install goes to these assistants unless a review names others; Skills Studio ticks them in Publish.",
-          "detected": "Detected on this computer: {detected}.",
-          "chosen": "Your choice; detected on this computer: {detected}.",
-          "useDetected": "Use what is detected",
-          "chipOn": "New skills install for {assistant}. Click to leave it out.",
-          "chipOff": "New skills do not install for {assistant}. Click to include it."
+          "offerTick": "Move {name} too"
         },
         "chip": {
           "installed": "/{skill} is installed for {assistant}. Click to remove it.",
@@ -4509,6 +4680,15 @@
           "installedReload": "/{skill} is installed for {runtime}. Its skills folder is new: run /reload-skills in sessions that are already open.",
           "installedNewSession": "/{skill} is installed for {runtime}: start a new {runtime} session to use it.",
           "installedBridgeLeft": "/{skill} is installed for {runtime} as a skill folder of its own. Its old bridge file is still there: move it under Skill folders."
+        },
+        "assistants": {
+          "title": "My assistants",
+          "help": "A new install goes to these assistants unless a review names others; Skills Studio ticks them in Publish.",
+          "detected": "Detected on this computer: {detected}.",
+          "chosen": "Your choice; detected on this computer: {detected}.",
+          "useDetected": "Use what is detected",
+          "chipOn": "New skills install for {assistant}. Click to leave it out.",
+          "chipOff": "New skills do not install for {assistant}. Click to include it."
         },
         "openStudio": "Open Skills Studio",
         "openStudioHelp": "Edit, version and publish skills, agents and commands, and review what the Assistant makes, in Skills Studio."
@@ -4576,8 +4756,8 @@
         "apikey": {
           "title": "Access key",
           "none": "No key: anyone with the address can connect",
-          "noneClosed": "No key: MCP cannot be reached from outside",
-          "saveNow": "Copy it now. It will not be shown again."
+          "saveNow": "Copy it now. It will not be shown again.",
+          "noneClosed": "No key: MCP cannot be reached from outside"
         },
         "connectorsHint": "In {link}, open Connectors and add the connection address.",
         "claudeWeb": "Claude on the web",
@@ -4627,35 +4807,9 @@
         "failedToGenerateKey": "Failed to generate key",
         "copyKey": "Copy Key",
         "revokeThisApiKeyTheMcp": "Revoke this API key? The MCP endpoint will become open.",
-        "revokeKeyClosed": "Revoke this access key? Nothing reaches MCP from outside until you create a new one.",
         "noKeyConfiguredTunnelIsOpen": "No key configured - tunnel is open",
         "generateKey": "Generate Key",
         "failed2": "Failed: {message}",
-        "workerGuard": {
-          "mode": {
-            "enforce": "Enforce",
-            "warn": "Warn only",
-            "off": "Off"
-          },
-          "modeHelp": {
-            "enforce": "A call outside the capability is refused, with the reason in the run's transcript. On macOS, Claude Code and OpenCode workers also run under an OS sandbox (Seatbelt) that blocks SynaBun's own control port, so nothing they run can reach it; a guarded Codex worker runs with its shell network off (no internet — Codex's sandbox network is all-or-nothing). Off macOS the in-code guard applies, without the OS sandbox. Claude Code: a hook on every tool call. Codex: its sandbox, without the parent folder. OpenCode: rules in the run's config, each ask answered by the policy.",
-            "warn": "Nothing new is refused and no OS sandbox is applied. Claude Code keeps its read-only tool list from before (no shell under read-only); Codex keeps its sandbox and internet as before (the parent folder writable under workspace); OpenCode answers every ask \"once\". Each call Enforce would refuse — and the internet it would cut from a Codex worker — is noted in the run's transcript.",
-            "off": "The capability is instructions only, as before this setting: Codex keeps its sandbox (the parent folder writable), Claude Code and OpenCode are not held back."
-          },
-          "applies": "Applies to workers started from now on; a running worker keeps the mode it started with.",
-          "sandboxFallback": "Protect workers couldn't apply the macOS sandbox to this run ({reason}); the built-in guard is active.",
-          "sandboxStrict": "Protect workers couldn't check which local programs could relay this run to SynaBun ({reason}), so its sandbox is stricter: local servers aren't reachable in this run (dev servers, tests that start a server, local proxies); the internet's web, SSH and DNS ports and SynaBun's own tools still work.",
-          "restart": "Restart SynaBun to use this: the server that is running was started before it was added. Until then workers are not held back.",
-          "failed": "This setting did not start ({reason}). Restart SynaBun; if it happens again, the server log says why.",
-          "failedNoReason": "This setting did not start. Restart SynaBun; if it happens again, the server log says why.",
-          "unreadable": "The setting could not be read ({reason}).",
-          "unreadableNoReason": "The setting could not be read.",
-          "save": {
-            "failed": "\"{mode}\" was not saved: {reason}.",
-            "noAnswer": "\"{mode}\" was not saved: SynaBun did not answer. Is the server running?",
-            "oldServer": "\"{mode}\" was not saved: the server that is running was started before this setting existed. Restart SynaBun."
-          }
-        },
         "uc": {
           "restart": "Restart SynaBun to use these: the server that is running was started before they were added.",
           "failed": "The Assistant is running without these: this part of SynaBun did not start ({reason}). Restart SynaBun; if it happens again, the server log says why.",
@@ -4664,11 +4818,6 @@
           "unreadableNoReason": "SynaBun could not read these settings. Nothing was changed. Close Settings and open it again.",
           "applies": "A change applies from your next message to the Assistant.",
           "noStore": "Memory is not available on this server, so this does nothing for now.",
-          "tokens": "{tokens} of {max} tokens",
-          "openMemory": "Open this memory",
-          "seed": "from an earlier note",
-          "empty": "Nothing learned yet. It fills in as you tell the Assistant how you want things done.",
-          "omitted": "{n} more did not fit and are brought up only when relevant.",
           "learn": {
             "killSwitch": "Not learning right now: smart judgments are switched off for this server (SYNABUN_TYPESAFE=off). What is already known is still used.",
             "masterOff": "Not learning right now: {page} is switched off. What is already known is still used.",
@@ -4686,6 +4835,11 @@
           "trace": {
             "nothing": "Nothing to show while both settings above are off."
           },
+          "tokens": "{tokens} of {max} tokens",
+          "openMemory": "Open this memory",
+          "seed": "from an earlier note",
+          "empty": "Nothing learned yet. It fills in as you tell the Assistant how you want things done.",
+          "omitted": "{n} more did not fit and are brought up only when relevant.",
           "off": {
             "note": "Nothing: “Knowledge of you” is off, so a new conversation starts without a digest. What SynaBun has learned stays in Memory."
           },
@@ -4727,6 +4881,32 @@
             "oldServer": "Could not save: the running server does not have the greeting yet. Restart SynaBun.",
             "forbidden": "Could not save: this window is not allowed to change settings.",
             "noAnswer": "Could not save: the server did not answer. The switch is back where it was."
+          }
+        },
+        "revokeKeyClosed": "Revoke this access key? Nothing reaches MCP from outside until you create a new one.",
+        "workerGuard": {
+          "mode": {
+            "enforce": "Enforce",
+            "warn": "Warn only",
+            "off": "Off"
+          },
+          "modeHelp": {
+            "enforce": "A call outside the capability is refused, with the reason in the run's transcript. On macOS, Claude Code and OpenCode workers also run under an OS sandbox (Seatbelt) that blocks SynaBun's own control port, so nothing they run can reach it; a guarded Codex worker runs with its shell network off (no internet — Codex's sandbox network is all-or-nothing). Off macOS the in-code guard applies, without the OS sandbox. Claude Code: a hook on every tool call. Codex: its sandbox, without the parent folder. OpenCode: rules in the run's config, each ask answered by the policy.",
+            "warn": "Nothing new is refused and no OS sandbox is applied. Claude Code keeps its read-only tool list from before (no shell under read-only); Codex keeps its sandbox and internet as before (the parent folder writable under workspace); OpenCode answers every ask \"once\". Each call Enforce would refuse — and the internet it would cut from a Codex worker — is noted in the run's transcript.",
+            "off": "The capability is instructions only, as before this setting: Codex keeps its sandbox (the parent folder writable), Claude Code and OpenCode are not held back."
+          },
+          "applies": "Applies to workers started from now on; a running worker keeps the mode it started with.",
+          "sandboxFallback": "Protect workers couldn't apply the macOS sandbox to this run ({reason}); the built-in guard is active.",
+          "sandboxStrict": "Protect workers couldn't check which local programs could relay this run to SynaBun ({reason}), so its sandbox is stricter: local servers aren't reachable in this run (dev servers, tests that start a server, local proxies); the internet's web, SSH and DNS ports and SynaBun's own tools still work.",
+          "restart": "Restart SynaBun to use this: the server that is running was started before it was added. Until then workers are not held back.",
+          "failed": "This setting did not start ({reason}). Restart SynaBun; if it happens again, the server log says why.",
+          "failedNoReason": "This setting did not start. Restart SynaBun; if it happens again, the server log says why.",
+          "unreadable": "The setting could not be read ({reason}).",
+          "unreadableNoReason": "The setting could not be read.",
+          "save": {
+            "failed": "\"{mode}\" was not saved: {reason}.",
+            "noAnswer": "\"{mode}\" was not saved: SynaBun did not answer. Is the server running?",
+            "oldServer": "\"{mode}\" was not saved: the server that is running was started before this setting existed. Restart SynaBun."
           }
         },
         "claudeHooks": {
@@ -4906,12 +5086,11 @@
         "allCustomIconsReset": "All custom icons reset"
       },
       "judgments": {
-        "budgetShareScore": "{provider}: share score {score} · confidence {confidence}",
         "showEveryJudgmentAboutThisMemory": ": show every judgment about this memory in the log",
         "checkingTypesafe": "Checking TypeSafe…",
-        "learnMoreAtTypesafe": "Learn more at",
         "jevTypesafeSystemOneReturnsTyped": "Jev (TypeSafe System One) returns typed judgments where SynaBun used to guess with a regex or a similarity constant. The key is stored in",
         "andNeverLeavesTheServerOnly": "and never leaves the server; only its last four characters reach this page.",
+        "learnMoreAtTypesafe": "Learn more at",
         "apiKey": "API key",
         "pasteATypesafeApiKey": "paste a TypeSafe API key",
         "noKeyStored": "No key stored.",
@@ -5338,6 +5517,7 @@
         },
         "stateOn": "on",
         "stateShadow": "shadow",
+        "budgetShareScore": "{provider}: share score {score} · confidence {confidence}",
         "errJudgments": "Judgments: {error}",
         "keyStored": "Stored {key} · source: {source}{note}",
         "callsWindows": "Calls 24 h / 7 d",
@@ -5826,16 +6006,16 @@
           "saved": "WhatsApp model saved. It applies from your next message."
         },
         "voice": {
-          "ready": "Voice notes are transcribed on this computer.",
-          "readyOff": "Voice notes can be transcribed on this computer; turned off.",
-          "notSetUp": "Voice notes: not set up — missing {missing}.",
-          "partInvalid": "{name}: the path set for it does not work",
           "part": {
             "engine": "whisper.cpp (whisper-cli)",
             "model": "the speech model (ggml-small.bin)",
             "ffmpeg": "FFmpeg",
             "tools": "the transcription tools"
-          }
+          },
+          "readyOff": "Voice notes can be transcribed on this computer; turned off.",
+          "ready": "Voice notes are transcribed on this computer.",
+          "partInvalid": "{name}: the path set for it does not work",
+          "notSetUp": "Voice notes: not set up — missing {missing}."
         },
         "phoneError": {
           "NEEDS_COUNTRY_CODE": "Add your country code first, for example +44 for the UK or +1 for the US.",
@@ -6041,7 +6221,7 @@
             "ai_decisions": "jev, typesafe, judgments, api key, cost, tokens, log",
             "projects": "workspace, folder, repository, repo, path, cache, disk space",
             "browser": "chrome, chromium, profile, cookies, user agent, proxy, viewport, headless",
-            "connected_tools": "mcp, server, plugin, tools, default tools, morelogin, extension",
+            "connected_tools": "mcp, server, plugin, tools, morelogin, profile, extension",
             "tool_access": "skills, slash commands, permissions, allow, deny, approve",
             "automations": "assistant, knowledge, hooks, greeting, tunnel, remote, cloudflare, social, youtube",
             "messages": "whatsapp, discord, phone, chat, bot, messaging",
@@ -6094,15 +6274,16 @@
               "browser_profiles": "cookies, login, session, sign in, persistent, user data",
               "identity_privacy": "user agent, locale, timezone, fingerprint, geolocation",
               "display": "viewport, resolution, screen, device, mobile, dark mode, color scheme, scale, retina",
-              "advanced_browser_behavior": "proxy, timeout, headless, permissions, location, network, recording, video, security, downloads, certificate"
+              "advanced_browser_behavior": "proxy, timeout, headless, permissions, location, network, recording, video, security, downloads, certificate",
+              "automation_browser_owner_access": "automation browser, owner access, screenshots, visual QA, worker browser, MoreLogin, agents, owner"
             },
             "connected_tools": {
+              "default_tools": "mcp, tool groups, default tools, context",
               "added_servers": "mcp server, add server, github, plugin, stdio, http, environment variables, oauth, headers",
               "morelogin_connection": "port, antidetect, connect, local api",
               "morelogin_profiles": "browser profile, create profile, default profile",
               "morelogin_credentials": "api id, api key, secret, signed requests, token",
-              "morelogin_tool_server": "mcp, add to assistants",
-              "default_tools": "mcp, tool groups, default tools, context"
+              "morelogin_tool_server": "mcp, add to assistants"
             },
             "tool_access": {
               "skills": "slash commands, install, synabun",
@@ -6299,6 +6480,7 @@
           "npm": "npm install",
           "git": "Git clone"
         },
+        "afterRestart": "Shown after SynaBun restarts.",
         "restartNote": "Links, dependencies and the full system details appear after SynaBun restarts: the server that is running is older than this page.",
         "copied": "Copied to the clipboard.",
         "copyFailed": "The browser did not allow copying.",
@@ -6345,8 +6527,7 @@
           "license": "Licensed under {license}.",
           "copyright": "Copyright © {years} {holder}",
           "builtWith": "Built with open-source software"
-        },
-        "afterRestart": "Shown after SynaBun restarts."
+        }
       },
       "app": {
         "version": "SynaBun {version}",
@@ -8430,6 +8611,7 @@
           "memory": "Memories",
           "import": "Skill"
         },
+        "groups": {"everyday": "Everyday", "engineering": "Engineering", "desktop": "Web & desktop", "media": "Design & media"},
         "editorTitle": {
           "conversation": "Pick a session",
           "url": "A web page",
@@ -10186,6 +10368,10 @@
       "effort": "Thinking effort",
       "effortHint": "effort",
       "effortOff": "off",
+      "effortAuto": "Auto",
+      "effortAutoDesc": "Model default",
+      "effortNone": "Off",
+      "effortNoneDesc": "No thinking",
       "agent": "OpenCode agent",
       "agentHint": "agent",
       "agentDefault": "default",
@@ -10550,6 +10736,7 @@
       "reloadModels": "Reload models",
       "fieldLabel": "{task}: {field}, {value}",
       "editorEffortAuto": "Auto",
+      "editorEffortOff": "Off",
       "editorInConversation": "This conversation",
       "editorUnusedValue": "—",
       "editorSessionOverride": "This conversation overrides the default: {mode}.",
@@ -10606,7 +10793,7 @@
         }
       },
       "efforts": {
-        "none": "None",
+        "none": "Off",
         "thinking": "Thinking",
         "minimal": "Minimal",
         "low": "Low",
@@ -10654,6 +10841,7 @@
         "offline": "Offline. Your edits are kept. Reconnect to save or reload models.",
         "loadingRoutes": "Loading routing settings and models…",
         "loadingModels": "Loading models…",
+        "modelsUpdating": "Updating models…",
         "modelsFailed": "Could not refresh the model list. Showing provider lists where available. Reload models to verify your choices.",
         "modelsEmpty": "No models are available. Check Models or connect a provider, then reload.",
         "tasksEmpty": "No task classes are available on this server.",
@@ -10666,6 +10854,7 @@
         "contextUnknown": "Context unknown",
         "contextTokens": "{count} tokens",
         "hiddenCount": "{count} hidden in Models",
+        "maritacaUnavailable": "Register Maritaca under Settings → OpenCode → Providers",
         "noCompatible": "No compatible models shown for this provider.",
         "providerEmpty": "No models shown for this provider.",
         "noMatches": "No matching models. Check Models for hidden choices.",
@@ -11871,6 +12060,77 @@
     "errorUnknown": "The download did not finish.",
     "errorRequest": "SynaBun did not answer: {message}"
   },
+  "automationApproval": {
+    "account": {
+      "unknown": "The account it runs in is not known.",
+      "ownProfile": "MoreLogin profile {profile} (this schedule's own)",
+      "groupProfile": "MoreLogin profile {profile} (its group {group})",
+      "defaultProfile": "The default browser of Settings → Browser: MoreLogin profile {profile}",
+      "defaultBrowser": "The default browser of Settings → Browser"
+    },
+    "from": {
+      "agent": "an agent",
+      "import": "an import",
+      "restore": "a restored backup"
+    },
+    "what": {
+      "both": "this schedule and its automation",
+      "schedule": "this schedule",
+      "template": "its automation"
+    },
+    "flag": {
+      "blockedShort": "Needs your approval to run in {profile}",
+      "blocked": "Changed by {who}: {what}. It needs your approval to run in {profile}; until then its runs are refused, because that profile is not on the list of profiles agents may choose.",
+      "onListShort": "Changed by an agent",
+      "onList": "Changed by {who}: {what}. It runs in {profile} as before, because that profile is on the list of profiles agents may choose. Approve it to make it your own choice.",
+      "noProfileShort": "Changed by an agent",
+      "noProfile": "Changed by {who}: {what}. It runs in the default browser, so nothing is held back today; approve it so a MoreLogin profile set later is not held to the agents' list.",
+      "templateShort": "Needs your approval",
+      "template": "These instructions came from {who} and you have not approved them. A schedule that runs them in a MoreLogin profile off the list of profiles agents may choose is refused until you do.",
+      "review": "Review and approve"
+    },
+    "after": {
+      "owner": "Approving makes this run in {profile} your own choice; any later change by an agent needs your approval again.",
+      "groupStillAgent": "The profile comes from the group {group}, chosen by an agent: after approving, this schedule's runs there still need that profile on the agents' list. To make the profile your choice, pick it again in the group.",
+      "default": "Approving makes this content your own; any later change by an agent needs your approval again.",
+      "template": "Approving makes these instructions your own; any later change by an agent needs your approval again."
+    },
+    "dialog": {
+      "scheduleTitle": "Review what this schedule runs",
+      "templateTitle": "Review these instructions",
+      "intro": "Read what will run and where, then approve it.",
+      "nothing": "Nothing here waits for your approval.",
+      "changed": "This changed after you opened it, possibly by an agent. Nothing was approved: this is what it holds now.",
+      "failed": "Not approved: {error}",
+      "loadFailed": "The review could not be loaded: {error}",
+      "template": "Automation",
+      "templateMissing": "its automation is missing",
+      "task": "Task",
+      "context": "Context",
+      "none": "None",
+      "dayThemes": "Day themes (added to the context on their day)",
+      "noDayThemes": "No day themes.",
+      "themeNoText": "No text.",
+      "limits": "Limits",
+      "limitsValue": "{iterations} iterations, {minutes} minutes",
+      "account": "Where it runs",
+      "onList": "This profile is on the list of profiles agents may choose.",
+      "offList": "This profile is not on the list of profiles agents may choose.",
+      "chosenByOwner": "You chose this profile in SynaBun's page.",
+      "chosenByAgent": "An agent chose this profile, or SynaBun has no record that you did.",
+      "whatRuns": "What it runs",
+      "wholeContent": "SynaBun does not keep what the agent changed, so this is the whole content that runs.",
+      "usedBy": "Schedules that run it",
+      "usedByNone": "No schedule runs it.",
+      "scheduleAlsoMarked": "also needs approval",
+      "cancel": "Cancel",
+      "approve": "Approve",
+      "approveBoth": "Approve both"
+    },
+    "toast": {
+      "approved": "Approved"
+    }
+  },
   "schedules": {
     "window": {
       "title": "Schedules",
@@ -11975,7 +12235,8 @@
       "thinking": "thinking {value}",
       "mcp": "SynaBun tools: {value}",
       "browserOn": "browser on",
-      "browserOff": "browser off"
+      "browserOff": "browser off",
+      "morelogin": "MoreLogin: {value}"
     },
     "note": {
       "showingBefore": "{error} Showing what loaded before.",
@@ -12120,7 +12381,26 @@
       "browser": "Browser",
       "group": "Group",
       "name": "Name",
-      "launchOverrides": "Launch overrides"
+      "launchOverrides": "Launch overrides",
+      "moreloginProfile": "MoreLogin profile",
+      "moreloginDefault": "Browser settings default",
+      "moreloginRefresh": "Refresh the MoreLogin profile list",
+      "moreloginHelp": "The MoreLogin profile this schedule opens its browser in. Schedules with different profiles can run at the same time.",
+      "moreloginLoading": "Loading MoreLogin profiles…",
+      "moreloginNotRunning": "MoreLogin is not running, so its profiles cannot be listed. Open MoreLogin, then refresh.",
+      "moreloginError": "MoreLogin's profile list could not be read: {error}",
+      "moreloginMissing": "The saved profile {name} is no longer in MoreLogin. Runs of this schedule fail until you pick another profile or the Browser settings default.",
+      "moreloginMissingOption": "{name} (no longer in MoreLogin)",
+      "moreloginGroupProfile": "Group profile: {name}",
+      "moreloginHelpGroup": "The MoreLogin profile the schedules of this group open their browser in. A schedule with a profile of its own keeps it.",
+      "moreloginHelpRun": "The MoreLogin profile this run opens its browser in. Runs with different profiles can start at the same time.",
+      "moreloginMissingGroup": "The saved profile {name} is no longer in MoreLogin. Runs of this group's schedules without a profile of their own fail until you pick another profile or the Browser settings default.",
+      "moreloginMissingRun": "The profile {name} is no longer in MoreLogin. Pick another profile or the Browser settings default.",
+      "moreloginFirefoxOption": "{name} (Firefox profile, not usable)",
+      "moreloginLocalOption": "{name} · local",
+      "moreloginFirefox": "The saved profile {name} is a Firefox-type profile, and SynaBun can only drive Chrome-type MoreLogin profiles. Runs of this schedule fail until you pick another profile or the Browser settings default.",
+      "moreloginFirefoxGroup": "The saved profile {name} is a Firefox-type profile, and SynaBun can only drive Chrome-type MoreLogin profiles. Runs of this group's schedules without a profile of their own fail until you pick another profile or the Browser settings default.",
+      "moreloginFirefoxRun": "The profile {name} is a Firefox-type profile, and SynaBun can only drive Chrome-type MoreLogin profiles. Pick another profile or the Browser settings default."
     },
     "launch": {
       "default": "Default",
@@ -12139,6 +12419,7 @@
       "contextExtendedSize": "Extended ({size})",
       "word": {
         "off": "Off",
+        "auto": "Auto",
         "default": "Default",
         "low": "Low",
         "medium": "Med",
@@ -12370,6 +12651,7 @@
       "factMcp": "Tools and MCP servers",
       "factAccount": "OpenAI account",
       "factBrowser": "Browser",
+      "factMoreLogin": "MoreLogin profile",
       "valueDefault": "Default",
       "valueOn": "On",
       "valueOff": "Off",
@@ -12546,6 +12828,232 @@
       "label": "TicTacToe",
       "purpose": "Play TicTacToe on the board"
     }
+  },
+  "maritacaPanel": {
+    "title": "Maritaca",
+    "toolbar": "Maritaca side panel",
+    "transcript": "Maritaca conversation",
+    "newSession": "New conversation",
+    "newTab": "New tab",
+    "closeTab": "Close tab",
+    "minimize": "Minimize to pill",
+    "rename": "Rename conversation",
+    "sessions": "Conversations",
+    "sessionsEmpty": "No Maritaca conversations yet.",
+    "sessionsLoading": "Loading conversations…",
+    "sessionsFailed": "Could not list conversations: {error}",
+    "sessionsSearch": "Search conversations",
+    "delete": "Delete",
+    "deleteConfirm": "Delete \"{title}\"?",
+    "cancel": "Cancel",
+    "save": "Save",
+    "project": "Project",
+    "chooseProject": "Choose a project",
+    "noProjectLabel": "No project",
+    "branch": "Branch",
+    "noBranch": "No branch",
+    "branchStopFirst": "Stop the active Sabiá turn before switching branches.",
+    "branchStatusIncomplete": "Git status is incomplete. Refresh before switching branches.",
+    "branchConfirm": "Switch from {from} to {to} with {count} uncommitted change(s)? Git will preserve them when possible.",
+    "branchCurrentFallback": "the current branch",
+    "branchSwitched": "Switched working tree to {branch}.",
+    "branchFailed": "Branch checkout failed: {error}",
+    "placeholder": "Ask Sabiá…",
+    "placeholderNoKey": "Add your Maritaca API key to start.",
+    "send": "Send",
+    "stop": "Stop",
+    "model": "Model",
+    "modelDefault": "Default model",
+    "effort": "Reasoning",
+    "effortDefault": "Model default",
+    "effort_none": "Off",
+    "effort_low": "Low",
+    "effort_medium": "Medium",
+    "effort_high": "High",
+    "effortLabel": "Effort",
+    "effortMenu": "Reasoning effort",
+    "effortDefaultDesc": "Now {level}",
+    "effortDesc_none": "No reasoning: the fastest and cheapest replies",
+    "effortDesc_low": "Short reasoning",
+    "effortDesc_medium": "Balanced quality and cost",
+    "effortDesc_high": "Longest reasoning, for hard problems",
+    "effortTitle": "Reasoning effort: {level} ({model})",
+    "effortTitleDefault": "Reasoning effort: {level}, the default ({model})",
+    "effortUnsupported": "{model} has no reasoning levels. Pick an S5 model to choose one.",
+    "effortUnsupportedShort": "This model has no reasoning levels.",
+    "effortUnknown": "Reasoning levels show once the model list has loaded.",
+    "plan": "Plan",
+    "planOn": "Plan",
+    "planOff": "Chat",
+    "planToggleOn": "Plan mode: on. Replies are plans to review before any work (Shift+Tab)",
+    "planToggleOff": "Plan mode: off (Shift+Tab)",
+    "planUnavailable": "Plan mode needs a SynaBun restart: this server does not know it yet.",
+    "planPlaceholder": "Describe what to plan…",
+    "planBadge": "Plan",
+    "planReview": "Plan review",
+    "planHeader": "Plan complete",
+    "planNote": "Review the plan. Continue to have Sabiá carry it out, or suggest changes for a new version.",
+    "planContinue": "Continue with this plan",
+    "planFeedbackLabel": "Suggest changes",
+    "planFeedbackPlaceholder": "Add a requirement, change the approach, remove a step…",
+    "planFeedbackHint": "⌘/Ctrl + Enter to update",
+    "planUpdate": "Update plan",
+    "planCopy": "Copy plan",
+    "planDismiss": "Dismiss",
+    "planContinuePrompt": "The plan above is approved. Carry it out now, step by step, and give the complete result.",
+    "planRevisePrompt": "Revise the plan with these changes:\n\n{changes}",
+    "contextSettings": "Context settings",
+    "contextSettingsPressure": "Context settings, {share} of the context window used",
+    "ctxSectionContext": "Context window",
+    "ctxSectionConversation": "Conversation",
+    "ctxSectionConnection": "Connection",
+    "ctxNotReported": "Not reported yet",
+    "ctxUsage": "{used} / {size}",
+    "ctxHeadline": "{share} of the context window used ({used} of {size} tokens)",
+    "ctxWindow": "Window",
+    "ctxLastInput": "Last prompt",
+    "ctxLastOutput": "Last answer",
+    "ctxCached": "Cached input",
+    "ctxReasoningTokens": "Reasoning tokens",
+    "ctxMode": "Mode",
+    "ctxEffortNone": "Not offered",
+    "ctxMessages": "Messages",
+    "ctxReplies": "Replies",
+    "ctxCost": "Cost",
+    "ctxDraft": "Draft",
+    "ctxConversationId": "Conversation ID",
+    "ctxNotStarted": "Not started",
+    "ctxCopied": "Copied",
+    "ctxCopyId": "Copy conversation ID",
+    "ctxSystemOn": "On ({count} characters)",
+    "ctxSystemOff": "Off",
+    "ctxTempDefault": "Default (0.7)",
+    "ctxTempIgnored": "{value} (not sent to S5 models)",
+    "ctxKey": "API key",
+    "ctxKeyMissing": "Not set",
+    "ctxKeySaved": "Saved ({masked})",
+    "ctxKeyEnv": "Environment ({masked})",
+    "ctxServer": "Panel server",
+    "ctxServerReady": "Up to date",
+    "ctxServerRestart": "Restart SynaBun for plan mode",
+    "ctxSettings": "Settings",
+    "ctxSettingsName": "Maritaca settings",
+    "ctxMeter": "{share} · {used}/{size}",
+    "ctxMeterEmpty": "{size} context",
+    "ctxMeterLabel": "Context window usage",
+    "working": "Thinking…",
+    "workingFor": "Thinking… {seconds}s",
+    "reasoning": "Reasoning",
+    "reasoningFor": "Reasoned",
+    "emptyTitle": "Maritaca AI",
+    "emptyBody": "Sabiá models, trained for Portuguese and the Brazilian context, through Maritaca's API. Pick a model below and ask away.",
+    "emptyNoKey": "SynaBun needs your Maritaca API key. Create one on the Maritaca platform and paste it in the panel settings.",
+    "emptyKeyButton": "Add API key",
+    "emptyKeyLink": "Get a key at plataforma.maritaca.ai",
+    "settingsTitle": "Maritaca settings",
+    "settingsClose": "Close settings",
+    "settingsSectionKey": "API key",
+    "settingsSectionDefaults": "Defaults",
+    "settingsSectionInstructions": "Instructions",
+    "settingsSectionSampling": "Sampling",
+    "settingsSectionAbout": "About",
+    "settingsKeySave": "Save key",
+    "settingsKeyHint": "Kept in SynaBun's data folder and never sent back to the page. MARITACA_API_KEY in the server's environment is used when no key is saved.",
+    "settingsDefaultsHint": "New tabs start on the default model. Each tab can pick its own model, reasoning level and mode in the footer.",
+    "settingsSystemCount": "{count} / {max} characters · sent first in every request",
+    "settingsTemperatureDefault": "Default",
+    "settingsSaveDefaults": "Save settings",
+    "settingsSaving": "Saving…",
+    "settingsUnsaved": "Unsaved changes",
+    "settingsNotApplied": "Saved, but the server kept other values for: {fields}",
+    "settingsKey": "API key",
+    "settingsKeyPlaceholder": "Paste your Maritaca API key",
+    "settingsKeySaved": "Key saved ({masked})",
+    "settingsKeyEnv": "Key from the MARITACA_API_KEY environment variable ({masked})",
+    "settingsKeyNone": "No key saved",
+    "settingsKeyForget": "Forget key",
+    "settingsKeyTest": "Test connection",
+    "settingsKeyTesting": "Testing…",
+    "settingsKeyOk": "Maritaca accepted the key.",
+    "settingsKeyFailed": "Test failed: {error}",
+    "settingsSaved": "Settings saved.",
+    "settingsKeyStored": "Key saved.",
+    "settingsKeyForgotten": "Key forgotten.",
+    "settingsFailed": "Could not save: {error}",
+    "settingsModel": "Default model",
+    "settingsEffort": "Default reasoning (S5)",
+    "settingsSystem": "System prompt",
+    "settingsSystemPlaceholder": "Instructions sent at the start of every conversation (optional)",
+    "settingsTemperature": "Temperature",
+    "settingsTemperatureHint": "Empty uses Maritaca's default (0.7). The S5 family ignores temperature.",
+    "settingsDocs": "Maritaca API documentation",
+    "settingsKeys": "Manage keys on the Maritaca platform",
+    "settingsRestart": "This server does not know the Maritaca panel yet: restart SynaBun to use it.",
+    "usage_in": "{value} in",
+    "usage_out": "{value} out",
+    "usage_cached": "{value} cached",
+    "costBrl": "R$ {value}",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyAnswer": "Copy answer",
+    "retry": "Regenerate reply",
+    "editResend": "Edit and resend from here",
+    "editNotice": "Editing an earlier prompt. Sending replaces the replies after it; attached files stay included.",
+    "cancelEdit": "Cancel edit",
+    "attach": "Attach text or code files",
+    "attachmentRemove": "Remove {name}",
+    "attachmentCount": "At most {count} files per message.",
+    "attachmentSize": "Each file must be at most {size}.",
+    "attachmentTooLarge": "Each file must be at most 100 KB.",
+    "attachmentType": "{name} must be a text or code file in UTF-8.",
+    "attachmentTextOnly": "Attach UTF-8 text or code files. Binary files are not supported.",
+    "attachmentDamaged": "An attachment arrived damaged. Remove it and attach it again.",
+    "attachmentFailed": "Could not attach {name}: {error}",
+    "imageUnsupported": "This model does not read images. Attach a text or code file instead.",
+    "promptTooLong": "The message including files is longer than 200,000 characters.",
+    "uploading": "Reading files…",
+    "sending": "Sending…",
+    "draftHint": "{chars} characters · ~{tokens} tokens (estimate)",
+    "dropFiles": "Drop text or code files here",
+    "conversationCost": "Conversation: R$ {value}",
+    "dismiss": "Dismiss notice",
+    "copyFailed": "Could not copy. Select the text and copy it manually.",
+    "renameFailed": "Could not rename: {error}",
+    "deleteFailed": "Could not delete: {error}",
+    "sessionsProject": "This project only",
+    "shortcuts": "Enter sends · Shift+Enter newline · Shift+Tab plan mode · Esc stops · Ctrl/⌘+Alt+N new tab · Ctrl/⌘+Alt+←/→ switch tabs",
+    "commandMenu": "Panel commands",
+    "cmd_new": "Start a new conversation",
+    "cmd_sessions": "Search conversations",
+    "cmd_rename": "Rename this conversation",
+    "cmd_retry": "Regenerate the latest reply",
+    "cmd_copy": "Copy the latest reply",
+    "cmd_model": "Pick a model",
+    "cmd_plan": "Turn plan mode on or off (/plan on, /plan off)",
+    "cmd_effort": "Pick the reasoning effort (/effort low, medium, high, off, default)",
+    "cmd_context": "Show the context window and the conversation details",
+    "cmd_settings": "Open panel settings",
+    "cmd_help": "Show commands and keyboard shortcuts",
+    "finishLength": "The reply stopped at the model's output limit.",
+    "finishCancelled": "Stopped.",
+    "turnFailed": "Maritaca could not answer: {error}",
+    "errorNoKey": "Save a Maritaca API key first.",
+    "errorKeyRejected": "Maritaca rejected the saved key. Check it in the panel settings.",
+    "errorRateLimited": "Maritaca is rate limiting this key. Wait a moment and try again.",
+    "errorUnreachable": "Could not reach Maritaca. Check the connection and try again.",
+    "errorDisconnected": "The connection to SynaBun dropped. Reconnecting…",
+    "connBlocked_restart": "This server does not know the Maritaca panel yet: restart SynaBun to use it.",
+    "connBlocked_automation": "The Maritaca panel is not available in SynaBun's automation browser.",
+    "connBlocked_guest": "The Maritaca panel is the owner's: an invite guest cannot use it.",
+    "connBlocked_refused": "SynaBun refused the Maritaca panel socket: {message}",
+    "connRetrying": "Reconnecting to SynaBun… ({attempt})",
+    "freeTag": "free",
+    "brTag": "BR",
+    "priceTag": "R$ {input} / {output} per 1M",
+    "contextTag": "{context} context",
+    "jumpLatest": "Latest",
+    "tabTitleFallback": "Conversation",
+    "providerNote": "Maritaca is a chat API: it answers here and is not a worker the Assistant can dispatch to."
   },
   "antigravityPanel": {
     "title": "Antigravity",

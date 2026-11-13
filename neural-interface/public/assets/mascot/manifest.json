@@ -1,0 +1,254 @@
+{
+  "think": {
+    "source": "gifs/thinking.gif",
+    "duration": 2020,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 19379
+  },
+  "shell": {
+    "source": "gifs/shell.gif",
+    "duration": 2020,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 22095
+  },
+  "read": {
+    "source": "gifs/read.gif",
+    "duration": 2020,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 21765
+  },
+  "edit": {
+    "source": "gifs/edit.gif",
+    "duration": 2020,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 21031
+  },
+  "search": {
+    "source": "gifs/search.gif",
+    "duration": 2020,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 21002
+  },
+  "web": {
+    "source": "gifs/web.gif",
+    "duration": 2020,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 21447
+  },
+  "subagent": {
+    "source": "gifs/subagent.gif",
+    "duration": 2020,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 22982
+  },
+  "plan": {
+    "source": "gifs/plan.gif",
+    "duration": 2060,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 22273
+  },
+  "memory": {
+    "source": "gifs/memory.gif",
+    "duration": 2080,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 18648
+  },
+  "runs": {
+    "source": "gifs/runs.gif",
+    "duration": 2020,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 22330
+  },
+  "computer": {
+    "source": "gifs/computer.gif",
+    "duration": 2020,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 24397
+  },
+  "mcp": {
+    "source": "gifs/mcp.gif",
+    "duration": 2020,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 20753
+  },
+  "idle": {
+    "source": "gifs/idle.gif",
+    "duration": 2840,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 17047
+  },
+  "sleep": {
+    "source": "gifs/sleep.gif",
+    "duration": 3480,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 10410
+  },
+  "watch": {
+    "source": "gifs/watch.gif",
+    "duration": 2020,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 19030
+  },
+  "wait": {
+    "source": "gifs/wait.gif",
+    "duration": 3060,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 20151
+  },
+  "success": {
+    "source": "gifs/success.gif",
+    "duration": 1660,
+    "once": true,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 16678
+  },
+  "error": {
+    "source": "gifs/error.gif",
+    "duration": 1720,
+    "once": true,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 19703
+  },
+  "blocked": {
+    "source": "gifs/blocked.gif",
+    "duration": 3100,
+    "once": true,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 23455
+  },
+  "offline": {
+    "source": "gifs/offline.gif",
+    "duration": 3260,
+    "once": true,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 20745
+  },
+  "project": {
+    "source": "gifs/project.gif",
+    "duration": 2020,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 21648
+  },
+  "budget": {
+    "source": "gifs/budget.gif",
+    "duration": 2020,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 21166
+  },
+  "skill": {
+    "source": "gifs/skill.gif",
+    "duration": 2020,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 20951
+  },
+  "present": {
+    "source": "gifs/present.gif",
+    "duration": 2020,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 20716
+  },
+  "pick": {
+    "source": "gifs/pick.gif",
+    "duration": 2020,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 20521
+  },
+  "ask": {
+    "source": "gifs/ask.gif",
+    "duration": 3260,
+    "once": true,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 22095
+  },
+  "idle-hero": {
+    "source": "gifs/idle-hero.gif",
+    "duration": 2780,
+    "once": false,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 17084
+  },
+  "hover-attention": {
+    "source": "gifs/hover-attention.gif",
+    "duration": 1740,
+    "once": true,
+    "width": 480,
+    "height": 480,
+    "frames": 8,
+    "bytes": 16953
+  }
+}

@@ -51,7 +51,7 @@ import { baseName, isMarkdownFile, languageLabel } from './editor-languages.js';
 import { renderMarkdown } from './editor-markdown.js';
 import {
   closeConfirm, controlsState, describeOpenFailure, displayPath, isSamePlan, isSamePlanOwner,
-  matchesExpectedMarkdown, minimapShown, nextWhitespace, planEvent, planIdentityKey, planSourceLabel, viewMenuChange, viewMenuItems,
+  matchesExpectedMarkdown, minimapShown, nextWhitespace, planEvent, planIdentityKey, planSourceLabel, splitDisplayPath, viewMenuChange, viewMenuItems,
 } from './editor-panel-logic.js';
 import {
   activateTab, closeTab, closeTargets, createTabs, findTab, getTab, moveTab, neighborTab, normalizePath, openTab, pinTab,
@@ -420,7 +420,15 @@ function renderHeader(doc) {
   const pathEl = $('fe-editor-filepath');
   if (!pathEl) return;
   const path = doc ? (doc.file?.path || doc.path) : '';
-  pathEl.textContent = displayPath(path, _host.projectRoot());
+  // The folders and the name are two spans (the name is drawn brighter) inside one left-to-right run: the box is
+  // right-to-left so that a long path is clipped at its start, and the run keeps a leading dot or a slash in place.
+  const { dir, name } = splitDisplayPath(displayPath(path, _host.projectRoot()));
+  const run = document.createElement('span');
+  run.className = 'fe-editor-pathtext';
+  const part = (className, text) => { const span = document.createElement('span'); span.className = className; span.textContent = text; return span; };
+  if (dir) run.append(part('fe-editor-filedir', dir));
+  run.append(part('fe-editor-filename', name));
+  pathEl.replaceChildren(run);
   pathEl.title = String(path || '');
 }
 

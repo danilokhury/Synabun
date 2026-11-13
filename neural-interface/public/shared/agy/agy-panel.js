@@ -51,7 +51,7 @@ import { setCliInstallTranslator } from '../cli-install-view.js';
 import { workerRestart } from '../worker-restart.js';
 import { endWorkerRunOnClose, forgetWorkerEnd, trackWorkerEnd } from '../ui-worker-end.js';
 import { nativeLoopWindowId } from '../ui-native-window-id.js';
-import { runAwaitsAnswer } from '../sidepanel-session-status.js';
+import { runAwaitsAnswer, runTurnLive } from '../sidepanel-session-status.js';
 import { wireFileLinks } from '../ui-file-links.js';
 import { notify, NOTIF_TYPE } from '../ui-notifications.js';
 import { forgetGreeting, mountGreeting } from '../greeting/greeting-card.js';
@@ -2482,7 +2482,7 @@ export async function attachAntigravityAutomation(run, { focus = !!run?.focus, i
   tab.automationActive = !!restart?.active || running;
   tab.automationOwnerId = nativeLoopWindowId;
   tab.automationAwaits = runAwaitsAnswer(run);
-  tab.running = running && run.turnState !== 'idle';
+  tab.running = runTurnLive(run);
   const rt = runtimeOf(tab);
   syncWorkerQuestions(tab, run, {
     open: (id, pending) => rt.elicitations.set(id, { ...pending.input, ...(pending.questions?.length ? { message: pending.questions.map((q) => q.header || q.question).join(' · ') } : {}), requestId: id, state: 'open', errors: {} }),

@@ -104,7 +104,7 @@ export const RACK_CSS = `
      mascot and the bubble's notch: under the mascot here (the bubble is beside it), after it ≤400 (the bubble is under it). */
   .asst-rack-set { grid-area: face; align-self: start; display: flex; flex-direction: column; align-items: center; gap: 4px 6px; min-width: 0; line-height: 0; }
   .asst-rack-face { color: var(--rk-text); line-height: 0; }
-  .asst-rack-face svg { display: block; width: 72px; height: 36px; }
+  .asst-rack-face svg { display: block; width: 144px; height: 72px; }
   .asst-rack-scene { color: var(--rk-text-2); line-height: 0; }
   .asst-rack-scene:empty { display: none; }
   /* 96×32 (the 120×40 scene at .8, strokes held near the run stage's weight). */
@@ -305,7 +305,7 @@ export const RACK_CSS = `
   .asst-rack.is-staged > .asst-rack-receipt,
   .asst-rack.is-live.is-nested > .asst-rack-receipt { display: none; }
   .asst-rack-receipt-face { flex: none; align-self: stretch; display: inline-flex; align-items: center; justify-content: center; width: 46px; box-shadow: inset -1px 0 0 var(--rk-line); color: var(--rk-text-2); line-height: 0; }
-  .asst-rack-receipt-face svg { display: block; width: 32px; height: 16px; }
+  .asst-rack-receipt-face svg { display: block; width: 64px; height: 32px; }
   .asst-rack-receipt-text {
     flex: 0 1 auto;
     min-width: 0;
@@ -387,7 +387,7 @@ export const RACK_CSS = `
   .asst-station[data-state="waiting"] > .asst-station-hdr { box-shadow: inset 0 0 0 1px var(--rk-line-2); }
   /* The glyph slot: the kind's prop alone (rows differ at a squint); the awake row wears the eyes. */
   .asst-station-face { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 16px; color: var(--rk-text-2); line-height: 0; }
-  .asst-station-face svg { display: block; width: 28px; height: 14px; }
+  .asst-station-face svg { display: block; width: 56px; height: 28px; }
   .asst-station-face svg.asst-prop-glyph { width: 24px; height: 16px; }
   .asst-station[data-state="awake"] .asst-station-face { color: var(--rk-text); }
   .asst-station-label { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--rk-text-2); font-weight: 500; }
@@ -586,7 +586,7 @@ export const RACK_CSS = `
     .asst-bubble-meta { display: none; }
   }
   @container asst (max-width: 299px) {
-    .asst-rack-face svg { width: 56px; height: 28px; }
+    .asst-rack-face svg { width: 112px; height: 56px; }
     .asst-rack-scene .asst-scene { width: 72px; height: 24px; stroke-width: 2.2; }
     .asst-bubble::before { left: 22px; }
   }

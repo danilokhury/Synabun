@@ -25,6 +25,16 @@ export function displayPath(path, projectRoot) {
   return rel.startsWith('/') ? rel.slice(1) : rel;
 }
 
+/**
+ * The header's path in its two parts: the folders, with the separator that ends them, and the file's name. The
+ * header draws the name brighter than the folders; together they are still the one string displayPath gives.
+ */
+export function splitDisplayPath(display) {
+  const text = String(display ?? '');
+  const at = Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'));
+  return at < 0 ? { dir: '', name: text } : { dir: text.slice(0, at + 1), name: text.slice(at + 1) };
+}
+
 /** The name a plan's banner uses for the panel that opened it. */
 export function planSourceLabel(source) {
   if (source === 'codex') return 'Codex';

@@ -17,9 +17,9 @@ export const ASK_STYLE_ID = 'asst-ask-styles';
 
 export const ASK_CSS = `
   .asst-ask {
-    --ask-face-col: 68px;
-    --ask-face-w: 64px;
-    --ask-face-h: 32px;
+    --ask-face-col: 124px;
+    --ask-face-w: 120px;
+    --ask-face-h: 60px;
     --ask-ring: var(--asst-line);
   }
   .asst-ask-face { display: flex; flex: 0 0 var(--ask-face-col); justify-content: center; align-self: flex-start; min-width: 0; padding-top: 2px; color: var(--asst-text); line-height: 0; }
@@ -178,9 +178,9 @@ export const ASK_CSS = `
   .asst-followups.asst-ask[data-style="question"] { --ask-ring: color-mix(in srgb, var(--asst-info) 30%, transparent); }
   .asst-ask-receipt { display: none; }
   .asst-followups.asst-ask:not([data-state="open"]):not([data-phase="sending"]) {
-    --ask-face-col: 28px;
-    --ask-face-w: 28px;
-    --ask-face-h: 14px;
+    --ask-face-col: 48px;
+    --ask-face-w: 48px;
+    --ask-face-h: 24px;
     flex-direction: row;
     align-items: center;
     gap: 8px;
@@ -243,12 +243,12 @@ export const ASK_CSS = `
 
   /* Narrow panels: a smaller mascot in a narrower column; at 320px the keys line goes. */
   @container asst (max-width: 400px) {
-    .asst-ask { --ask-face-col: 52px; --ask-face-w: 48px; --ask-face-h: 24px; }
+    .asst-ask { --ask-face-col: 100px; --ask-face-w: 96px; --ask-face-h: 48px; }
     .asst-followups.asst-ask, .asst-control.asst-ask { padding: 10px; }
     .asst-ask .asst-ask-option { min-height: 40px; }
   }
   @container asst (max-width: 320px) {
-    .asst-ask { --ask-face-col: 44px; --ask-face-w: 40px; --ask-face-h: 20px; }
+    .asst-ask { --ask-face-col: 84px; --ask-face-w: 80px; --ask-face-h: 40px; }
     .asst-ask .asst-ask-option { gap: 8px; padding: 6px 8px; }
     .asst-ask:focus-within .asst-ask-keys { display: none; }
   }

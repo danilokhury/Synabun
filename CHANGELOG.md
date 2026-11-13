@@ -1,3 +1,29 @@
+# SynaBun v.2.3.0
+
+SynaBun 2.3.0 adds local browser profiles and lets automations use separate profiles in parallel. Browser work stays in the background, with clearer profile choices and tighter control over which accounts agents may use.
+
+## ✨ New
+
+- **Local browser profiles.** Create separate browser profiles alongside MoreLogin profiles, each with its own storage, proxy, language and timezone. Manage them from Settings and choose them for browser automations.
+- **A browser profile for each automation.** Choose a profile for a schedule, group, quick timer or launch. Runs using different profiles can work in parallel, and sessions can select an allowed profile without changing the default browser.
+- **Animated mascot artwork.** The assistant mascot has new animated artwork for its poses.
+- **Owner access for the automation browser.** A Settings switch lets you grant the automation browser owner access for screenshots and visual checks of your workspace.
+
+## 🛠 Fixed
+
+- **MoreLogin profile creation.** Creating a profile works with the operating-system fields required by newer MoreLogin versions, and the profile receives its chosen name after creation.
+- **Clearer unsupported-profile messages.** Firefox profiles are marked as unusable for automation in profile pickers. Attempts to run one explain which browser type is needed.
+- **Profile permissions.** Agents can choose only the profiles you allow. Default-browser changes and permission changes require owner authority, and approvals remain tied to the choices presented.
+- **Sabiá tool calls in OpenCode.** Maritaca responses arrive in the streaming order OpenCode expects, resolving errors on tool calls.
+- **Background browser work.** Browser automations avoid bringing windows forward or switching your macOS Space while you work.
+
+## ⚙️ Changed
+
+- **Faster navigation.** Browser navigation returns when loading begins. Page observations can be requested separately when needed.
+- **Smaller browser storage.** SynaBun’s Chromium disables downloads of its on-device model.
+
+---
+
 # SynaBun v.2.2.2
 
 2.2.2 makes browser automations hold on to their tabs: a lost tab is announced and replaced instead of failing quietly, and one run can no longer close a browser session other runs are using. It also fixes a slow interface on Windows, tightens SynaBun's security on macOS, and tidies how SynaBun tool calls appear in the side panels.

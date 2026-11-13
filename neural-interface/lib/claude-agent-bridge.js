@@ -27,7 +27,7 @@ import { detectProject as memoryProject } from '../../mcp-server/dist/config.js'
 // WS bound, so page-refresh reattach is the same object.
 
 import { query, startup } from '@anthropic-ai/claude-agent-sdk';
-import { CLAUDE_EFFORT_LEVELS } from './claude-model-catalog.js';
+import { CLAUDE_EFFORT_LEVELS, CLAUDE_EFFORT_OFF, isThinkingOff } from './claude-model-catalog.js';
 import { CLAUDE_NOT_INSTALLED, resolveClaudeSdkExecutable } from './claude-executable.js';
 import { diagnoseLaunchFailure, isNativeBinaryLaunchFailure } from './native-binary-runtime.js';
 import { normalizePanelSession, startSignature, applyPanelSessionOptions, liveSettingsPatch, normalizeMcpServers, mergeTabMcpServers } from './claude-panel-session.js';
@@ -787,7 +787,8 @@ export class ClaudeSession {
     if (this.model) options.model = this.model;
     // Off is the user's pick, not the model's default: without it an
     // effortLevel in the user's settings would still apply.
-    if (this.panel && this.effort === 'off') options.thinking = { type: 'disabled' };
+    // `none` is the Assistant's Off (route card, dispatch, brain turns): the same, for every session.
+    if ((this.panel && this.effort === 'off') || this.effort === CLAUDE_EFFORT_OFF) options.thinking = { type: 'disabled' };
     if (this.effort && CLAUDE_EFFORT_LEVELS.includes(this.effort)) {
       // Panel sessions use the typed option; every other caller keeps the flag it had.
       if (this.panel) options.effort = this.effort;
@@ -3044,9 +3045,11 @@ export class ClaudeSession {
 
     // Effort alone switches on the live CLI. A restart would cold-start the
     // session and kill any background agents it is running.
-    // (Off disables thinking, a start-up option: to or from it the session restarts.)
+    // (Off disables thinking, a start-up option: to or from it the session restarts. Outside the panel
+    // 'off' is Auto: a level back to the model's default switches live, `effortLevel: null`.)
+    const thinkingOff = (value) => isThinkingOff(value, { panel: !!this.panel });
     if (this.q && effortChanged && !cwdChanged && !sessionChanged && !newChat
-      && prevEffort !== 'off' && effort !== 'off'
+      && !thinkingOff(prevEffort) && !thinkingOff(effort)
       && typeof this.q.applyFlagSettings === 'function') {
       const effortLevel = CLAUDE_EFFORT_LEVELS.includes(effort) ? effort : null;
       this.q.applyFlagSettings({ effortLevel }).catch(err => log('applyFlagSettings(effort) failed:', err.message));

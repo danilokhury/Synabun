@@ -164,12 +164,21 @@ self.addEventListener('activate', (event) => { event.waitUntil(self.registration
  *   request (req[PEER_VERDICT], read through peerAuthority) decides; `supported` (macOS, not off) makes a missing
  *   verdict on a request that hands out or carries the secret a failed lookup. A stand-in without verdicts may answer
  *   `refusal(req)` (a sentence: refused).
+ * @param {() => boolean} [o.automationBrowserAllowed] the owner's setting (lib/automation-browser-owner-access.js
+ *   `enabled`): while true, the automation browser (its marker or its peer) is handed the secret and verifies as the
+ *   owner; the service worker rule and every other refusal stay.
  */
-export function createPageSession({ secret = null, cookieName = null, port = null, secure = false, isGuest = null, peer = null, networkRule = setBrowserNetworkRule } = {}) {
+export function createPageSession({ secret = null, cookieName = null, port = null, secure = false, isGuest = null, peer = null, networkRule = setBrowserNetworkRule, automationBrowserAllowed = null } = {}) {
   const value = typeof secret === 'string' && secret.length >= 32 ? secret : randomBytes(32).toString('hex');
   const expected = Buffer.from(value);
   const name = typeof cookieName === 'string' && cookieName ? cookieName : pageSecretCookieName(port);
   const guest = (req) => { try { return typeof isGuest === 'function' && isGuest(req) === true; } catch { return true; } };
+  /**
+   * The owner's setting "Let the automation browser act as owner" (lib/automation-browser-owner-access.js), read on
+   * every request: while on, the automation browser (its marker, or its peer process) is handed the secret and
+   * verifies as the owner. Off, missing or failing: the rules above, exactly. Never a grant for any other refusal.
+   */
+  const allowed = () => { try { return typeof automationBrowserAllowed === 'function' && automationBrowserAllowed() === true; } catch { return false; } };
   /** The lookup runs on this server (macOS, not off): where the secret is at stake, no verdict is no proof. */
   const peerRequired = () => { try { return peer?.supported === true; } catch { return true; } };
   /**
@@ -177,20 +186,24 @@ export function createPageSession({ secret = null, cookieName = null, port = nul
    * `secretAtStake`: the request is handed the secret or carries it, so on a server whose lookup runs a missing verdict
    * is a failed lookup. Never throws: on a server whose lookup runs a failure here is a failed lookup too.
    */
-  function peerDecision(req, { secretAtStake = false } = {}) {
+  function peerDecision(req, { secretAtStake = false, grant = true } = {}) {
     if (!peer) return { decision: 'before' };
+    let auth;
     try {
       const verdict = req?.[PEER_VERDICT];
-      if (verdict != null) return peerAuthority(verdict);
-      if (typeof peer.refusal === 'function') {
-        const why = peer.refusal(req);
-        if (why) return { decision: 'refused', code: 'PEER_REFUSED', why: String(why), pid: null };
-      }
-      return secretAtStake && peerRequired() ? peerAuthority(failedPeerVerdict('the request was not identified')) : { decision: 'before' };
+      if (verdict != null) auth = peerAuthority(verdict);
+      else if (typeof peer.refusal === 'function' && peer.refusal(req)) auth = { decision: 'refused', code: 'PEER_REFUSED', why: String(peer.refusal(req)), pid: null };
+      else auth = secretAtStake && peerRequired() ? peerAuthority(failedPeerVerdict('the request was not identified')) : { decision: 'before' };
     } catch (error) {
-      return peerRequired() ? peerAuthority(failedPeerVerdict(`the lookup failed (${error?.message || error})`)) : { decision: 'before' };
+      auth = peerRequired() ? peerAuthority(failedPeerVerdict(`the lookup failed (${error?.message || error})`)) : { decision: 'before' };
     }
+    // The one grant: the automation browser, by its process, while the owner's setting is on (never a peer refused
+    // for any other reason, never a failed lookup). `grant: false` asks the rules without it (the service worker).
+    if (grant && auth.decision === 'refused' && auth.kind === 'automation-browser' && allowed()) return { decision: 'allowed', granted: 'automation-browser' };
+    return auth;
   }
+  /** The automation browser's marker counts unless the owner's setting lets that browser act as the owner. */
+  const markerHolds = (req, { grant = true } = {}) => hasWorkerMarker(req) && !(grant && allowed());
   const refusedText = (auth) => (auth.gone || auth.pid == null ? auth.why : `${auth.why}: pid ${auth.pid} (${auth.name})`);
   /** Why the peer lookup refuses this request the secret (a sentence), or null (never asked, not looked up here, or
    *  allowed). A failed lookup on macOS is a refusal too. */
@@ -206,9 +219,9 @@ export function createPageSession({ secret = null, cookieName = null, port = nul
     return auth.decision === 'unavailable' ? auth : null;
   };
   /** A request that may neither be handed the secret nor use it: a marker of the automation browser, or its peer. */
-  const heldBack = (req) => {
-    if (hasWorkerMarker(req)) return true;
-    const decision = peerDecision(req, { secretAtStake: true }).decision;
+  const heldBack = (req, { grant = true } = {}) => {
+    if (markerHolds(req, { grant })) return true;
+    const decision = peerDecision(req, { secretAtStake: true, grant }).decision;
     return decision === 'refused' || decision === 'unavailable';
   };
 
@@ -243,10 +256,22 @@ export function createPageSession({ secret = null, cookieName = null, port = nul
     if (!carriesSecret(req)) return false;
     return !heldBack(req);
   }
-  /** Whether a request comes from a tab of SynaBun's automation browser (the marker cookie or the host-proof header). */
+  /** Whether a request comes from a tab of SynaBun's automation browser (the marker cookie or the host-proof header),
+   *  whatever the owner's setting says (the owner gate asks the setting itself). */
   function fromWorkerBrowser(req) {
     return hasWorkerMarker(req);
   }
+  /**
+   * Whether a request is the automation browser's by any sign: its marker, or a peer verdict that names a browser
+   * started for automation. Never changed by the owner's setting: this is what refuses that browser the change of
+   * the setting itself (PUT /api/assistant/automation-browser-owner-access), on or off.
+   */
+  function isAutomationBrowser(req) {
+    if (hasWorkerMarker(req)) return true;
+    try { return peerAuthority(req?.[PEER_VERDICT]).kind === 'automation-browser'; } catch { return false; }
+  }
+  /** Whether the owner's setting lets the automation browser act as the owner right now. */
+  function automationBrowserGranted() { return allowed(); }
   /**
    * Mark a Playwright browser context as SynaBun's automation browser. Two markers, both HttpOnly / network-level so
    * no page script reads or drops them, and never throws:
@@ -309,7 +334,7 @@ export function createPageSession({ secret = null, cookieName = null, port = nul
   function refresh(req, res) {
     res.setHeader('Cache-Control', 'no-store');
     if (guest(req)) return res.status(403).json({ ok: false, code: 'GUEST_FORBIDDEN', error: 'Available to the owner only.' });
-    if (hasWorkerMarker(req)) return res.status(403).json({ ok: false, code: 'WORKER_BROWSER', error: 'SynaBun\'s automation browser does not hold the owner\'s page secret.' });
+    if (markerHolds(req)) return res.status(403).json({ ok: false, code: 'WORKER_BROWSER', error: 'SynaBun\'s automation browser does not hold the owner\'s page secret.' });
     const auth = peerDecision(req, { secretAtStake: true });
     if (auth.decision === 'unavailable') return sendUnavailable(res, req, auth);
     if (auth.decision === 'refused') return res.status(403).json({ ok: false, code: 'PEER_REFUSED', error: `SynaBun hands its page secret to the owner's own browser only; this request comes from ${refusedText(auth)}.` });
@@ -319,15 +344,16 @@ export function createPageSession({ secret = null, cookieName = null, port = nul
   /**
    * Express middleware for GET /sw.js: a browser that may not hold the secret (the automation browser's marker, a
    * refused peer, or on macOS one that could not be identified) gets SERVICE_WORKER_NOOP, so no service worker answers
-   * its requests out of the server's sight; everyone else falls through to the real public/sw.js.
+   * its requests out of the server's sight; everyone else falls through to the real public/sw.js. The owner's setting
+   * that lets the automation browser act as the owner does not reach here: that browser still gets no service worker.
    */
   function serviceWorker(req, res, next) {
-    if ((req.method === 'GET' || req.method === 'HEAD') && req.path === SERVICE_WORKER_PATH && heldBack(req)) {
+    if ((req.method === 'GET' || req.method === 'HEAD') && req.path === SERVICE_WORKER_PATH && heldBack(req, { grant: false })) {
       res.setHeader('Cache-Control', 'no-store');
       res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
       return res.end(req.method === 'HEAD' ? undefined : SERVICE_WORKER_NOOP);
     }
     next();
   }
-  return { cookieName: name, cookie, attach, carriesSecret, verify, require, pages, refresh, serviceWorker, fromWorkerBrowser, peerRefusal, peerUnavailable, sendUnavailable, markWorkerBrowserContext };
+  return { cookieName: name, cookie, attach, carriesSecret, verify, require, pages, refresh, serviceWorker, fromWorkerBrowser, isAutomationBrowser, automationBrowserGranted, peerRefusal, peerUnavailable, sendUnavailable, markWorkerBrowserContext };
 }

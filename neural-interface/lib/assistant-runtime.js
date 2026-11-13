@@ -2972,6 +2972,9 @@ export function createAssistantRuntime({
       const input = { ...base, ...patch.brain, model: patch.brain.model || base.model };
       if (patch.brain.mcpProfile !== undefined) throw Object.assign(new Error('Use tools: [group ids].'), { code: 'MCP_PROFILE_REMOVED', status: 400 });
       let next = normalizeSessionBrain(input, base, { catalog: catalog?.peek?.() || null });
+      // An effort the panel cleared (its Auto row: `effort: null`) is the model's default. normalizeBrain
+      // would fall back to the one before it, and Off (`none`, no thinking) or a level would stay on.
+      if (Object.hasOwn(patch.brain, 'effort') && (patch.brain.effort === null || patch.brain.effort === '')) next = { ...next, effort: null };
       next = await resolveAutoAccount(next);
       const modelChanged = next.model !== live.record.brain.model || next.provider !== live.record.brain.provider;
       if (modelChanged) next = (await enabledBrain(next)).brain;

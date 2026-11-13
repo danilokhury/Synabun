@@ -13,10 +13,10 @@
 //
 // DOM-free on purpose (node:test, tests/assistant-worker-stage.test.mjs):
 // the phases, the scene a run shows, its step line and its accessible name,
-// and the scenes' SVG markup as strings. The motion is CSS
-// (asst-scene-styles.js): transform and opacity only, run while the scene
-// carries data-live. Decorative SVG only: the stage is named by stageLabel().
+// and allowlisted scene artwork. GIF playback follows data-live; inactive
+// and reduced-motion scenes use PNGs. The stage is named by stageLabel().
 
+import { sceneAsset, SCENE_ASSET_KEYS } from '../synabun-mascot-assets.js';
 import { isRunIdle, isTerminalRunStatus, runNeedsAttention, runStatusFromState, runTone } from './asst-state.js';
 import { kindOf, parseToolName, sayCall, tFallback, verbText } from './asst-tool-kinds.js';
 import { redactSecrets, safeStepInput } from './asst-redact.js';
@@ -43,6 +43,12 @@ export const SCENE_SPECS = Object.freeze({
   video_gen: { label: ['assistant.stage.scene.video_gen', 'Making a video'], pose: 'watch', gaze: 'strip' },
   generic: { label: ['assistant.stage.scene.generic', 'Working'], pose: 'think' },
 });
+
+// Activity artwork shares the matching class's translated label and pose.
+export const ACTIVITY_SCENE_SPECS = Object.freeze(Object.fromEntries(
+  Object.entries({ edit: 'design', shell: 'code', read: 'review', search: 'research', web: 'browser', memory: 'research', thinking: 'complex' })
+    .map(([id, cls]) => [id, { ...SCENE_SPECS[cls], pose: id === 'thinking' ? 'think' : id }]),
+));
 
 /** Phases a stage is open and moving (or waiting on you) in; the rest settle it. */
 export const LIVE_PHASES = Object.freeze(['queued', 'starting', 'working', 'waiting']);
@@ -287,13 +293,8 @@ function obj(v) {
 /** The scene a tool call implies on its own, or null (the class decides). */
 export function activityScene(activity, taskClass = '') {
   if (!activity?.kind) return null;
-  if (activity.kind === 'computer') return 'computer';
-  if (activity.kind !== 'web') return null;
-  const tool = parseToolName(activity.name).tool;
-  if (tool.startsWith('browser_')) return 'browser';
-  // A page read or a web search reads as research, unless the run already browses or researches.
-  const cls = sceneOfClass(taskClass);
-  return cls === 'browser' || cls === 'research' ? null : 'research';
+  const id = activity.kind === 'think' ? 'thinking' : activity.kind;
+  return SCENE_ASSET_KEYS.includes(id) ? id : null;
 }
 
 /** The activity while it still speaks for the worker (at most ACTIVITY_FRESH_MS old), else null. */
@@ -355,7 +356,7 @@ export function stepLine(activity, t = tFallback, now = Date.now()) {
 
 /** A scene's words ("Coding"), localized. */
 export function sceneLabel(scene, t = tFallback) {
-  const [key, fallback] = (SCENE_SPECS[scene] || SCENE_SPECS.generic).label;
+  const [key, fallback] = (SCENE_SPECS[scene] || ACTIVITY_SCENE_SPECS[scene] || SCENE_SPECS.generic).label;
   return t(key, fallback);
 }
 
@@ -415,315 +416,42 @@ export function stageLabel({ scene = 'generic', phase = 'working', title = '', m
 // beat share a layer (the image's tiles); a part that stood above a moving
 // one stays above it in a still layer of its own (`.sc-top`: the playhead).
 
-/** The code scene's six lines, repeated twice so its stepped scroll loops seamlessly: [indent, keyword, rest]. */
-export const CODE_LINES = Object.freeze([[6, 8, 26], [12, 10, 42], [12, 6, 22], [18, 9, 35], [12, 12, 48], [6, 7, 14]]);
-export const CODE_STEP = 6; // one line, in viewBox units
-/** The code scene's scrolling window and the video scene's film window (full) and the mini film's: [x, y, w, h]. */
-export const CODE_WINDOW = Object.freeze([4, 4, 112, 32]);
-export const FILM_WINDOW = Object.freeze([4, 4, 112, 32]);
-export const FILM_MINI_WINDOW = Object.freeze([2, 2, 36, 16]);
+/** Scene art retains its 3:1 ratio in both full and compact placements. */
+export const SCENE_BOX = Object.freeze({ full: Object.freeze({ w: 120, h: 40 }), mini: Object.freeze({ w: 40, h: 40 / 3 }) });
 
-/** The viewBox of a full scene and of a mini, in units. */
-export const SCENE_BOX = Object.freeze({ full: Object.freeze({ w: 120, h: 40 }), mini: Object.freeze({ w: 40, h: 20 }) });
-
-const r1 = (v) => Math.round(v * 100) / 100;
-const r3 = (v) => Math.round(v * 1000) / 1000;
-
-/** A length in viewBox units as a percentage of the box's width or height: boxPct(14, 120) → '11.667%'. */
-export function boxPct(v, of) {
-  return `${r3((Number(v) / of) * 100)}%`;
-}
-
-/**
- * The centre of a polyline path's box (M L H V Z, absolute or relative):
- * where an SVG part with transform-box: fill-box turned round (a tick, the
- * zap, a triangle). Curves are not read (no moving part has one).
- */
-export function pathCentre(d) {
-  const tokens = String(d).match(/[MLHVZmlhvz]|-?\d*\.?\d+/g) || [];
-  const xs = [];
-  const ys = [];
-  let x = 0;
-  let y = 0;
-  let sx = 0;
-  let sy = 0;
-  let cmd = 'M';
-  let i = 0;
-  const num = () => Number(tokens[i++]);
-  while (i < tokens.length) {
-    if (/^[A-Za-z]$/.test(tokens[i])) {
-      cmd = tokens[i];
-      i += 1;
-      if (cmd === 'Z' || cmd === 'z') { x = sx; y = sy; continue; }
-    }
-    if (cmd === 'M') { x = num(); y = num(); sx = x; sy = y; cmd = 'L'; }
-    else if (cmd === 'm') { x += num(); y += num(); sx = x; sy = y; cmd = 'l'; }
-    else if (cmd === 'L') { x = num(); y = num(); }
-    else if (cmd === 'l') { x += num(); y += num(); }
-    else if (cmd === 'H') x = num();
-    else if (cmd === 'h') x += num();
-    else if (cmd === 'V') y = num();
-    else if (cmd === 'v') y += num();
-    else { i += 1; continue; }
-    xs.push(x);
-    ys.push(y);
-  }
-  if (!xs.length) return [0, 0];
-  return [r3((Math.min(...xs) + Math.max(...xs)) / 2), r3((Math.min(...ys) + Math.max(...ys)) / 2)];
-}
-
-/** A gear outline: n trapezoid teeth between radius r and R round (cx, cy). */
-export function gearPath(cx, cy, r, R, n) {
-  const pts = [];
-  const step = (Math.PI * 2) / n;
-  for (let i = 0; i < n; i += 1) {
-    const a = i * step;
-    for (const [rad, off] of [[r, -0.32], [R, -0.18], [R, 0.18], [r, 0.32]]) {
-      pts.push(`${r1(cx + rad * Math.cos(a + off * step))},${r1(cy + rad * Math.sin(a + off * step))}`);
-    }
-  }
-  return `M${pts.join('L')}Z`;
-}
-
-/** Where the code scene's caret sits after step `s` (the newest line at the bottom slot): its x. */
-export function codeCaretX(s) {
-  const [indent, key, rest] = CODE_LINES[(4 + s) % CODE_LINES.length];
-  return 4 + indent + key + 3 + rest + 2;
-}
-
-const SVG_ATTRS = 'fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" focusable="false"';
-const svgOf = (viewBox, body) => `<svg viewBox="${viewBox}" ${SVG_ATTRS}>${body}</svg>`;
-
-/** Everything of a scene that stands still: one SVG under the layers. */
-function base(box, body) {
-  return `<svg class="sc-base" viewBox="0 0 ${box.w} ${box.h}" width="${box.w}" height="${box.h}" ${SVG_ATTRS}>${body}</svg>`;
-}
-
-/**
- * One moving part's layer, over the whole box (or over a window: clipOf).
- * `cls` names its motion (the CSS animates it); `body` is the part's SVG
- * markup in the box's units, or `html` another layer inside it (a caret that
- * blinks inside a caret that steps). `origin` [x, y]: what rotation and scale
- * turn round (the old fill-box centre, or a view-box point); `still` [x, y,
- * more]: the resting transform of a part drawn at 0,0; `i`: its beat.
- */
-function layerOf(box, cls, body, { origin = null, still = null, i = null, html = null } = {}) {
-  const style = [];
-  if (i != null) style.push(`--i:${i}`);
-  if (origin) style.push(`transform-origin:${boxPct(origin[0], box.w)} ${boxPct(origin[1], box.h)}`);
-  if (still) style.push(`transform:translate(${boxPct(still[0], box.w)},${boxPct(still[1], box.h)})${still[2] ? ` ${still[2]}` : ''}`);
-  const inner = html != null ? html : svgOf(`0 0 ${box.w} ${box.h}`, body);
-  return `<span class="sc-layer${cls ? ` ${cls}` : ''}"${style.length ? ` style="${style.join(';')}"` : ''}>${inner}</span>`;
-}
-
-/** A still part that stood above a moving one: it stays above it. */
-const topOf = (box, body) => layerOf(box, 'sc-top', body);
-
-/** A clipped window of the scene ([x, y, w, h] in units): what scrolls inside it is cut at its edges. */
-function clipOf(box, [x, y, w, h], inner) {
-  return `<span class="sc-clip" style="left:${boxPct(x, box.w)};top:${boxPct(y, box.h)};width:${boxPct(w, box.w)};height:${boxPct(h, box.h)}">${inner}</span>`;
-}
-
-/** Parts that share a beat (`--i`) share one layer: [{ i, body }] → one layer per beat, in first-seen order. */
-function beatLayers(box, cls, parts) {
-  const beats = new Map();
-  for (const { i, body } of parts) beats.set(i, (beats.get(i) || '') + body);
-  return [...beats].map(([i, body]) => layerOf(box, cls, body, { i })).join('');
-}
-
-function codeFull(box) {
-  let lines = '';
-  for (let i = 0; i < CODE_LINES.length * 2; i += 1) {
-    const [indent, key, rest] = CODE_LINES[i % CODE_LINES.length];
-    const y = 5 + CODE_STEP * i;
-    lines += `<path class="sc-mid" d="M${indent} ${y}h${key}"/><path class="sc-dim" d="M${indent + key + 3} ${y}h${rest}"/>`;
-  }
-  const [, , w, h] = CODE_WINDOW;
-  const caret = layerOf(box, 'sc-caret', '<rect class="sc-gold sc-fill" x="0" y="30.5" width="2" height="5" rx="1"/>');
-  return base(box, '<rect class="sc-dim" x="1" y="1.5" width="118" height="37" rx="5"/>')
-    + clipOf(box, CODE_WINDOW, layerOf({ w, h }, 'sc-code-scroll', lines))
-    + layerOf(box, 'sc-code-caret', null, { still: [codeCaretX(0), 0], html: caret });
-}
-
-const GEAR_BIG = gearPath(66, 20, 9, 12.5, 8);
-const GEAR_SMALL = gearPath(86.5, 12.5, 5.5, 8, 6);
-
-function complexFull(box) {
-  return base(box, '<path class="sc-dim" d="M14 7h13l5 5v21H14z"/><path class="sc-mid" d="M8 11h13l5 5v21H8zM21 11v5h5M12 23h9M12 28h11"/><path class="sc-dim" d="M98 30h14M102 25h10"/>')
-    + layerOf(box, 'sc-gear-big', `<path class="sc-mid" d="${GEAR_BIG}"/><circle class="sc-dim" cx="66" cy="20" r="3.2"/>`, { origin: [66, 20] })
-    + layerOf(box, 'sc-gear-small', `<path class="sc-gold" d="${GEAR_SMALL}"/><circle class="sc-gold" cx="86.5" cy="12.5" r="2"/>`, { origin: [86.5, 12.5] });
-}
-
-/** A review tick, its own layer (it pops round its own centre). */
-function tickLayer(box, d, i) {
-  return layerOf(box, 'sc-tick', `<path class="sc-gold" d="${d}"/>`, { origin: pathCentre(d), i });
-}
-
-function reviewFull(box) {
-  const rows = [[9, '+', 52], [16, '-', 64], [23, '+', 40], [30, '+', 58]];
-  let still = '<rect class="sc-dim" x="1" y="1.5" width="118" height="37" rx="5"/>';
-  let ticks = '';
-  rows.forEach(([y, sign, len], i) => {
-    still += sign === '+' ? `<path class="sc-mid" d="M6 ${y}h4M8 ${y - 2}v4"/>` : `<path class="sc-mid" d="M6 ${y}h4"/>`;
-    still += `<path class="sc-dim" d="M15 ${y}h${len}"/>`;
-    ticks += tickLayer(box, `M95 ${y}l2.2 2.2 4.4-4.6`, i);
-  });
-  return base(box, still) + ticks;
-}
-
-function researchFull(box) {
-  const page = (x) => `<rect class="sc-dim" x="${x}" y="4" width="40" height="32" rx="3"/><path class="sc-dim" d="M${x + 6} 11h26M${x + 6} 17h22M${x + 6} 23h28M${x + 6} 29h16"/>`;
-  return base(box, page(8) + page(56))
-    + layerOf(box, 'sc-lens', '<circle class="sc-gold" cx="24" cy="17" r="7"/><path class="sc-gold" d="M29.2 22.2l5 5"/>');
-}
-
-const POINTER = 'M0 0v10.5l2.8-2.6 2 4.4 2-.9-2-4.3h3.9z';
-
-/** A click's ring (a layer that starts invisible: .sc-ring) and the pointer that clicks there (drawn at 0,0, placed by its layer). */
-function pointerLayers(box, kind, [cx, cy], r) {
-  return layerOf(box, `sc-ring sc-ripple-${kind}`, `<circle class="sc-gold" cx="${cx}" cy="${cy}" r="${r}"/>`, { origin: [cx, cy] })
-    + layerOf(box, `sc-point-${kind}`, `<path class="sc-gold sc-fill" d="${POINTER}"/>`, { still: [cx, cy] });
-}
-
-function browserFull(box) {
-  return base(box, '<rect class="sc-dim" x="1" y="1.5" width="118" height="37" rx="5"/><path class="sc-dim" d="M1 9.5h118"/>'
-    + '<circle class="sc-mid sc-fill" cx="6" cy="5.5" r="1"/><circle class="sc-mid sc-fill" cx="10" cy="5.5" r="1"/><circle class="sc-mid sc-fill" cx="14" cy="5.5" r="1"/>'
-    + '<rect class="sc-dim" x="22" y="3.5" width="56" height="4" rx="2"/>'
-    + '<path class="sc-mid" d="M8 16h36"/><path class="sc-dim" d="M8 22h54M8 27h44M8 32h30"/><rect class="sc-mid" x="78" y="25" width="28" height="8" rx="2"/>')
-    + pointerLayers(box, 'browser', [92, 29], 5);
-}
-
-function computerFull(box) {
-  return base(box, '<rect class="sc-dim" x="10" y="1.5" width="100" height="30" rx="3"/><path class="sc-dim" d="M60 31.5v4M48 37.5h24"/>'
-    + '<rect class="sc-mid sc-shade" x="16" y="6" width="44" height="20" rx="2"/><path class="sc-dim" d="M16 10h44M21 15h20M21 20h28"/>'
-    + '<rect class="sc-mid sc-shade" x="52" y="11" width="50" height="17" rx="2"/><path class="sc-dim" d="M52 15h50"/><rect class="sc-mid" x="84" y="20" width="13" height="5" rx="1.5"/>')
-    + pointerLayers(box, 'computer', [90, 22.5], 4.5);
-}
-
-function automationFull(box) {
-  // The hub dot sits in the still SVG: hand and dot are the same gold, so which is on top shows nowhere.
-  return base(box, '<circle class="sc-mid" cx="18" cy="20" r="13"/><path class="sc-dim" d="M18 9v2M18 29v2M7 20h2M27 20h2"/>'
-    + '<path class="sc-mid" d="M18 20l5-4"/><circle class="sc-gold sc-fill" cx="18" cy="20" r="1.6"/>'
-    + '<path class="sc-dim" d="M52 24h14M76 24h14"/><rect class="sc-mid" x="44" y="20" width="8" height="8" rx="2"/><rect class="sc-mid" x="66" y="20" width="10" height="8" rx="2"/><rect class="sc-mid" x="90" y="20" width="8" height="8" rx="2"/>'
-    + '<path class="sc-dim" d="M94 17c0-9-46-9-46 0M48 17l-2.5-3M48 17l3-2"/>')
-    + layerOf(box, 'sc-hand', '<path class="sc-gold" d="M18 20v-9"/>', { origin: [18, 20] })
-    + layerOf(box, 'sc-run-dot', '<circle class="sc-gold sc-fill" cx="48" cy="24" r="2.2"/>');
-}
-
-const TRIANGLE = 'M86 28l9-16 9 16z';
-
-function designFull(box) {
-  return base(box, '<rect class="sc-gold sc-fill sc-swatch" x="4" y="5" width="9" height="9" rx="2"/><rect class="sc-mid sc-fill sc-swatch-b" x="4" y="16" width="9" height="9" rx="2"/><rect class="sc-dim sc-fill sc-swatch-c" x="4" y="27" width="9" height="9" rx="2"/>'
-    + '<rect class="sc-dim" x="20" y="2.5" width="96" height="35" rx="4"/>')
-    + layerOf(box, 'sc-shape', '<circle class="sc-mid" cx="40" cy="20" r="8"/>', { origin: [40, 20], i: 0 })
-    + layerOf(box, 'sc-shape', '<rect class="sc-mid" x="58" y="12" width="16" height="16" rx="3"/>', { origin: [66, 20], i: 1 })
-    + layerOf(box, 'sc-shape', `<path class="sc-mid" d="${TRIANGLE}"/>`, { origin: pathCentre(TRIANGLE), i: 2 })
-    + layerOf(box, 'sc-pen', '<path class="sc-gold" d="M0 0l6-6M6-6l2.5 2.5M0 0l-1.2 3.7L2.5 2.5z"/>', { still: [40, 20] });
-}
-
-const SPARKLE = 'M104 6l1.6 4.4L110 12l-4.4 1.6L104 18l-1.6-4.4L98 12l4.4-1.6z';
-
-function imageFull(box) {
-  const tiles = [];
-  for (let row = 0; row < 3; row += 1) {
-    for (let col = 0; col < 4; col += 1) {
-      const gold = (row === 1 && col === 2) || (row === 2 && col === 0);
-      tiles.push({ i: row + col, body: `<rect class="${gold ? 'sc-gold' : 'sc-mid'} sc-fill" x="${34 + col * 13.5}" y="${6 + row * 10}" width="11.5" height="8" rx="1.5"/>` });
-    }
-  }
-  return base(box, '<rect class="sc-dim" x="30" y="2.5" width="61" height="35" rx="3"/><path class="sc-dim" d="M100 26h12M100 31h8"/>')
-    + beatLayers(box, 'sc-tile', tiles)
-    + layerOf(box, 'sc-sparkle', `<path class="sc-gold sc-fill" d="${SPARKLE}"/>`, { origin: pathCentre(SPARKLE) });
-}
-
-function filmFrames(width, y, h, frameW, count) {
-  let out = `<rect class="sc-dim" x="0" y="${y}" width="${width}" height="${h}" rx="2"/>`;
-  for (let i = 0; i < count; i += 1) out += `<rect class="sc-mid" x="${i * frameW + 3}" y="${y + 5}" width="${frameW - 6}" height="${h - 10}" rx="1.5"/>`;
-  for (let x = 2; x < width; x += 6) out += `<rect class="sc-dim sc-fill" x="${x}" y="${y + 1.5}" width="2.4" height="2" rx=".6"/><rect class="sc-dim sc-fill" x="${x}" y="${y + h - 3.5}" width="2.4" height="2" rx=".6"/>`;
-  return out;
-}
-
-function videoFull(box) {
-  const [, , w, h] = FILM_WINDOW;
-  return base(box, '')
-    + clipOf(box, FILM_WINDOW, layerOf({ w, h }, 'sc-film', filmFrames(160, 2, 28, 24, 7)))
-    + topOf(box, '<path class="sc-gold" d="M58 2v36M55 2h6l-3 3z"/>');
-}
-
-/** An open-end wrench, horizontal, its jaw round (0, 0): place it with translate(bolt) rotate(a) translate(3.5 0). */
-const WRENCH = 'M-4.6 -3.86L-1 -2V2L-4.6 3.86A6 6 0 0 0 5.5 2.4H24A2.4 2.4 0 0 0 24 -2.4H5.5A6 6 0 0 0 -4.6 -3.86Z';
-const hexagon = (cx, cy, r) => `M${[0, 1, 2, 3, 4, 5].map(i => `${r1(cx + r * Math.cos(i * Math.PI / 3))} ${r1(cy + r * Math.sin(i * Math.PI / 3))}`).join('L')}Z`;
-const ZAP = 'M92 5l-8 15h7l-3 14 11-18h-7.5z';
-
-/** Sparks off the bolt: one layer each (they flash one after another). */
-const sparkLayers = (box, ds) => ds.map((d, i) => layerOf(box, 'sc-spark', `<path class="sc-gold" d="${d}"/>`, { i })).join('');
-
-function quickFull(box) {
-  return base(box, `<path class="sc-mid" d="${hexagon(38, 24, 3.4)}"/>`)
-    + layerOf(box, 'sc-wrench', `<path class="sc-gold" transform="translate(38 24) rotate(-32) translate(3.5 0)" d="${WRENCH}"/>`, { origin: [38, 24] })
-    + sparkLayers(box, ['M30.5 19.5l-3-2', 'M29.5 24.5h-3.5', 'M30.5 29.5l-3 2'])
-    + layerOf(box, 'sc-zap', `<path class="sc-gold" d="${ZAP}"/>`, { origin: pathCentre(ZAP) });
-}
-
-function genericFull(box) {
-  return base(box, '<path class="sc-dim" d="M14 20h92"/><circle class="sc-mid" cx="14" cy="20" r="3"/><circle class="sc-mid" cx="60" cy="20" r="3"/><circle class="sc-mid" cx="106" cy="20" r="3"/>')
-    + layerOf(box, 'sc-slide', '<rect class="sc-gold sc-fill" x="14" y="18.5" width="24" height="3" rx="1.5"/>');
-}
-
-const MINI_TRIANGLE = 'M29 15l4.5-8 4.5 8z';
-
-// Minis (40×20, the tray at 32×16): one gesture each.
-const MINI = {
-  code: box => base(box, '<path class="sc-mid" d="M5 5h20M9 10h24M5 15h14"/>')
-    + layerOf(box, 'sc-caret', '<rect class="sc-gold sc-fill" x="21.5" y="12.5" width="1.8" height="5" rx=".9"/>'),
-  complex: box => base(box, '')
-    + layerOf(box, 'sc-gear-big', `<path class="sc-mid" d="${gearPath(14, 11, 4.5, 6.6, 6)}"/>`, { origin: [14, 11] })
-    + layerOf(box, 'sc-gear-small', `<path class="sc-gold" d="${gearPath(26.5, 7.5, 3, 4.6, 6)}"/>`, { origin: [26.5, 7.5] }),
-  review: box => base(box, '<path class="sc-dim" d="M4 5h20M4 10h24M4 15h18"/>')
-    + tickLayer(box, 'M30 5l1.6 1.6 3.2-3.4', 0) + tickLayer(box, 'M32 10l1.6 1.6 3.2-3.4', 1),
-  research: box => base(box, '<rect class="sc-dim" x="3" y="2.5" width="26" height="15" rx="2"/><path class="sc-dim" d="M7 7h16M7 11h12M7 15h14"/>')
-    + layerOf(box, 'sc-lens-mini', '<circle class="sc-gold" cx="12" cy="9" r="3.8"/><path class="sc-gold" d="M14.8 11.8l2.8 2.8"/>'),
-  browser: box => base(box, '<rect class="sc-dim" x="2" y="2" width="36" height="16" rx="2.5"/><path class="sc-dim" d="M2 6h36"/><rect class="sc-mid" x="24" y="11" width="10" height="4" rx="1.2"/>')
-    + layerOf(box, 'sc-point-mini', `<path class="sc-gold sc-fill" d="${POINTER}"/>`, { still: [29, 13, 'scale(.6)'] }),
-  computer: box => base(box, '<rect class="sc-dim" x="5" y="1.5" width="30" height="14" rx="2"/><path class="sc-dim" d="M20 15.5v2M15 18.5h10"/><rect class="sc-mid" x="8" y="4.5" width="13" height="8" rx="1"/>')
-    + layerOf(box, 'sc-point-mini', `<path class="sc-gold sc-fill" d="${POINTER}"/>`, { still: [29, 13, 'scale(.6)'] }),
-  automation: box => base(box, '<circle class="sc-mid" cx="11" cy="10" r="7.5"/><path class="sc-dim" d="M11 10l3-2.5"/><path class="sc-mid" d="M33.5 10a5 5 0 1 1-1.5-3.6M32 3.6v2.8h-2.8"/>')
-    + layerOf(box, 'sc-hand', '<path class="sc-gold" d="M11 10V4.5"/>', { origin: [11, 10] }),
-  design: box => base(box, '<rect class="sc-mid sc-fill" x="3" y="3" width="6" height="6" rx="1.5"/><rect class="sc-dim sc-fill" x="3" y="11" width="6" height="6" rx="1.5"/>')
-    + layerOf(box, 'sc-shape', '<circle class="sc-gold" cx="21" cy="10" r="5"/>', { origin: [21, 10], i: 0 })
-    + layerOf(box, 'sc-shape', `<path class="sc-mid" d="${MINI_TRIANGLE}"/>`, { origin: pathCentre(MINI_TRIANGLE), i: 1 }),
-  image_gen: (box) => {
-    const tiles = [];
-    for (let row = 0; row < 2; row += 1) for (let col = 0; col < 3; col += 1) tiles.push({ i: row + col, body: `<rect class="${row === 1 && col === 2 ? 'sc-gold' : 'sc-mid'} sc-fill" x="${11 + col * 6.4}" y="${5 + row * 5.6}" width="5" height="4.2" rx="1"/>` });
-    return base(box, '<rect class="sc-dim" x="9" y="2.5" width="22" height="15" rx="2"/>') + beatLayers(box, 'sc-tile', tiles);
-  },
-  video_gen: (box) => {
-    const [, , w, h] = FILM_MINI_WINDOW;
-    return base(box, '')
-      + clipOf(box, FILM_MINI_WINDOW, layerOf({ w, h }, 'sc-film-mini', filmFrames(60, 1, 14, 12, 5)))
-      + topOf(box, '<path class="sc-gold" d="M20 1v18"/>');
-  },
-  quick: box => base(box, `<path class="sc-mid" d="${hexagon(11, 11, 2.6)}"/>`)
-    + layerOf(box, 'sc-wrench', `<path class="sc-gold" stroke-width="2.4" transform="translate(11 11) rotate(-32) scale(.62) translate(3.5 0)" d="${WRENCH}"/>`, { origin: [11, 11] })
-    + sparkLayers(box, ['M5.5 7.5l-2-1.3', 'M5 11.5H2.6']),
-  generic: box => base(box, '')
-    + [11, 20, 29].map((cx, i) => layerOf(box, 'sc-dot', `<circle class="sc-gold sc-fill" cx="${cx}" cy="10" r="2.4"/>`, { i })).join(''),
-};
-
-const FULL = {
-  quick: quickFull, code: codeFull, complex: complexFull, review: reviewFull, research: researchFull, browser: browserFull,
-  computer: computerFull, automation: automationFull, design: designFull, image_gen: imageFull, video_gen: videoFull, generic: genericFull,
-};
-
-/**
- * A scene's markup (decorative: aria-hidden): an HTML box with its still SVG
- * and one layer per moving part (see above). `mini` draws the tray's 40×20
- * version. `live` starts it moving (the stage and tray set data-live
- * themselves later; this is only the first state).
- */
+/** Decorative art only; status, step and progress remain in the owning stage. */
 export function sceneSvg(scene, { mini = false, live = false, className = '' } = {}) {
-  const id = Object.hasOwn(FULL, scene) ? scene : 'generic';
-  const box = mini ? SCENE_BOX.mini : SCENE_BOX.full;
-  const body = (mini ? MINI[id] : FULL[id])(box);
-  return `<span class="asst-scene${mini ? ' is-mini' : ''}${className ? ` ${className}` : ''}" data-scene="${id}"${live ? ' data-live=""' : ''} aria-hidden="true">${body}</span>`;
+  const id = SCENE_ASSET_KEYS.includes(scene) ? scene : 'generic';
+  const safeClass = String(className).replace(/[^a-zA-Z0-9_ -]/g, '');
+  return `<span class="asst-scene${mini ? ' is-mini' : ''}${safeClass ? ` ${safeClass}` : ''}" data-scene="${id}"${live ? ' data-live=""' : ''} aria-hidden="true"><img class="asst-scene-art" src="${sceneAsset(id)}" width="480" height="160" alt="" decoding="async"></span>`;
+}
+
+// One observer shares the existing data-live/offscreen lifecycle across rack,
+// run stages and tray. Static markup (including history) starts with a PNG.
+const sceneVisibility = new WeakMap();
+const observedScenes = new Set();
+let sceneIntersection = null;
+export function syncSceneArt(root = document) {
+  const reduced = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  for (const el of observedScenes) if (!el.isConnected) { sceneIntersection?.unobserve(el); observedScenes.delete(el); }
+  for (const el of root.querySelectorAll('.asst-scene')) {
+    if (sceneIntersection && !observedScenes.has(el)) { observedScenes.add(el); sceneIntersection.observe(el); }
+    const animated = el.hasAttribute('data-live') && !reduced && !document.hidden
+      && !el.closest('[data-offscreen], .ui-interacting, .app-hidden')
+      && sceneVisibility.get(el) !== false && el.getClientRects().length > 0;
+    const img = el.querySelector('.asst-scene-art');
+    const src = sceneAsset(el.dataset.scene, { animated });
+    if (img && img.getAttribute('src') !== src) img.setAttribute('src', src);
+  }
+}
+if (typeof document !== 'undefined' && typeof MutationObserver !== 'undefined') {
+  if (typeof IntersectionObserver !== 'undefined') sceneIntersection = new IntersectionObserver(entries => {
+    for (const entry of entries) sceneVisibility.set(entry.target, entry.isIntersecting);
+    syncSceneArt();
+  });
+  const observer = new MutationObserver(() => syncSceneArt());
+  observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true,
+    attributeFilter: ['data-live', 'data-offscreen', 'class'] });
+  document.addEventListener('visibilitychange', () => syncSceneArt());
+  globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').addEventListener('change', () => syncSceneArt());
 }

@@ -7,6 +7,7 @@ export const OVERFLOW_ORDER = [
   'invite-overlay',
   'topright-trash-btn',
   'topright-bookmarks-btn',
+  'topright-maritaca-panel-btn',
   'topright-antigravity-panel-btn',
   'topright-opencode-panel-btn',
   'topright-file-explorer-btn',

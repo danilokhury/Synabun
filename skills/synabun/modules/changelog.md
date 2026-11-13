@@ -154,6 +154,7 @@ Read the entire file, then determine the insertion point:
 
 - **Case B — Today's date section does NOT exist:**
   - Insert a new `## YYYY-MM-DD` section immediately after the first `# ` title line (and any blank line after it), before any existing `## ` date entries.
+  - **Raw worklog files** (the first line is `// FRESH CHANGELOG`, SynaBun's own convention): keep that marker as line 1 and insert the new section right after it. Never remove the marker and never delete or rewrite an older entry: the release pipeline archives the file verbatim (see "Release boundary" below).
   - Place all drafted entries under the new date header.
 
 Use the runtime's available file-editing tools for modifications to existing files.
@@ -182,6 +183,19 @@ Silently call `remember` with:
 - `related_files`: `["CHANGELOG.md"]`
 
 Do NOT use an interactive choice prompt here — auto-remember is mandatory per project rules.
+
+---
+
+## Release boundary (SynaBun's own repository)
+
+In the SynaBun repository the root `CHANGELOG.md` on the Dev branch is a **raw worklog**, not the published changelog: its first line is the marker `// FRESH CHANGELOG`, and it holds every dated entry since the last release, with run ids, paths and test names. Every release does two things with it, always, through `node scripts/release/archive-worklog.mjs` (`docs/release-pipeline.md` → After a release):
+
+1. **Archive the raw worklog verbatim** as `changelog/v.<version>-RAW.md`, byte for byte, next to the earlier archives in `changelog/`. A raw entry is never lost and an archive is never rewritten.
+2. **Produce the release entry** for that version: `changelog/v.<version>.md` on Dev and the top of Clean's `CHANGELOG.md`, grouped Keep a Changelog style (New / Fixed / Changed, Removed when something went away), written for users, with no commit ids, run ids, private paths, emails or names.
+
+Then the root `CHANGELOG.md` is the marker plus only what was written after the release. The next release is refused while the last one's `-RAW.md` archive is missing.
+
+What this means for **this skill**: write entries into the root `CHANGELOG.md` only, under the marker, newest date first; never write into `changelog/`, never delete, merge or reword an older entry, never remove the marker. The polished per-release entry is the release pipeline's job, not this skill's.
 
 ---
 

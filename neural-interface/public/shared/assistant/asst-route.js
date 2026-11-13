@@ -38,11 +38,28 @@ import {
   ROUTE_MODES,
   routeKindLabel,
   routeTargetLabel,
+  routeEffortWord,
+  ROUTE_EFFORT_OFF,
   OPTIONAL_PROVIDERS,
   UNPRICED_PROVIDERS,
 } from './asst-state.js';
 
 function str(v) { return v == null ? '' : String(v).trim(); }
+
+/**
+ * The route card's effort choices for a model (Auto is the card's own first item): Off (`none`, no
+ * thinking) first where the model can honor it, then its levels. Mirrors lib/effort-levels.js
+ * supportsEffortOff: Claude Code whenever the model thinks at all (the SDK disables thinking);
+ * Codex / OpenCode only when the model lists `none`; Antigravity never. → [{ id, label, off }].
+ */
+export function routeEffortChoices(provider, row) {
+  const levels = getEffortLevelsForModel(provider, row).filter(e => e.id !== 'off');
+  const offId = ROUTE_EFFORT_OFF;
+  const rest = levels.filter(e => String(e.id).toLowerCase() !== offId).map(e => ({ id: e.id, label: e.label || e.id, off: false }));
+  const listsOff = levels.some(e => String(e.id).toLowerCase() === offId);
+  const canOff = provider === 'claude-code' ? rest.length > 0 : provider === 'antigravity' ? false : listsOff;
+  return canOff ? [{ id: offId, label: 'Off', off: true }, ...rest] : rest;
+}
 function num(v) { const n = Number(v); return v != null && v !== '' && typeof v !== 'boolean' && Number.isFinite(n) ? n : null; }
 function obj(v) { return v && typeof v === 'object' && !Array.isArray(v) ? v : null; }
 function arr(v) { return Array.isArray(v) ? v : []; }
@@ -497,7 +514,7 @@ export function routeLineParts(route, phase = 'decided', { brainLabel = '', t = 
   const meta = [];
   const accountLabel = routeDisplayAccount(target, t);
   if (accountLabel) meta.push(accountLabel);
-  if (effort && effort !== 'off') meta.push(effort);
+  if (effort && effort !== 'off') meta.push(routeEffortWord(effort));
   if (confidence) meta.push(confidence);
   return {
     taskClass: cls,
@@ -877,7 +894,7 @@ export function renderRouteCard(container, input, hooks = {}) {
     row.setAttribute('aria-disabled', o.disabled ? 'true' : 'false');
     row.tabIndex = -1;
     const kindWord = o.kind && o.kind !== 'direct' ? routeKindWord(o.kind, hooks.t) : '';
-    const sub = [kindWord, routeDisplayAccount(o, hooks.t), o.effort && o.effort !== 'off' ? o.effort : '', o.price ? priceText(o.price) : '', o.vision ? tr('assistant.brain.vision', 'vision') : '', o.reason].filter(Boolean).join(' · ');
+    const sub = [kindWord, routeDisplayAccount(o, hooks.t), o.effort && o.effort !== 'off' ? routeEffortWord(o.effort) : '', o.price ? priceText(o.price) : '', o.vision ? tr('assistant.brain.vision', 'vision') : '', o.reason].filter(Boolean).join(' · ');
     row.innerHTML = `
       <span class="asst-route-num" aria-hidden="true">${esc(o.number)}</span>
       <span class="asst-route-opt-icon asst-icon" aria-hidden="true"${o.provider ? ` style="color:${esc(providerColor(o.provider))}"` : ''}>${providerIconHtml(o.provider, hooks)}</span>
@@ -996,12 +1013,12 @@ export function renderRouteCard(container, input, hooks = {}) {
     setFieldLabel(otherBtn, target ? routeTargetLabel(target) : tr('assistant.routes.other', 'Other model…'));
     otherBtn.setAttribute('aria-label', tr('assistant.brain.model', 'Model'));
     otherBtn.disabled = busy();
-    setFieldLabel(effortBtn, target?.effort || tr('assistant.routes.editorEffortAuto', 'Auto'));
+    setFieldLabel(effortBtn, !target?.effort ? tr('assistant.routes.editorEffortAuto', 'Auto')
+      : target.effort === ROUTE_EFFORT_OFF ? tr('assistant.routes.editorEffortOff', 'Off') : target.effort);
     effortBtn.setAttribute('aria-label', tr('assistant.brain.effort', 'Thinking effort'));
     setFieldLabel(accountBtn, routeDisplayAccount(target, hooks.t) || tr('assistant.routes.account.workersDefault', 'Workers default'));
     accountBtn.setAttribute('aria-label', tr('assistant.brain.account', 'Account profile'));
-    const levels = target ? getEffortLevelsForModel(target.provider, catalogModelRow(target.provider, target.model)) : [];
-    effortBtn.disabled = busy() || !target || !levels.some(e => e.id !== 'off');
+    effortBtn.disabled = busy() || !target || !routeEffortChoices(target.provider, catalogModelRow(target.provider, target.model)).length;
     // Here runs on this conversation's own account (another one is a worker): only a worker picks one.
     accountBtn.hidden = state.side === 'direct' || !['claude-code', 'codex'].includes(target?.provider);
     accountBtn.disabled = busy();
@@ -1009,10 +1026,10 @@ export function renderRouteCard(container, input, hooks = {}) {
   effortBtn.addEventListener('click', () => {
     const target = selected();
     if (!target) return;
-    const levels = getEffortLevelsForModel(target.provider, catalogModelRow(target.provider, target.model));
+    const choices = routeEffortChoices(target.provider, catalogModelRow(target.provider, target.model));
     openMenu(effortBtn, { title: tr('assistant.brain.effort', 'Thinking effort'), placement: 'auto', items: [
       { kind: 'radio', label: tr('assistant.routes.editorEffortAuto', 'Auto'), selected: !target.effort, onSelect: () => editTarget({ effort: null }) },
-      ...levels.filter(e => e.id !== 'off').map(e => ({ kind: 'radio', label: e.label || e.id, selected: target.effort === e.id, onSelect: () => editTarget({ effort: e.id }) })),
+      ...choices.map(e => ({ kind: 'radio', label: e.off ? tr('assistant.routes.editorEffortOff', 'Off') : e.label, selected: target.effort === e.id, onSelect: () => editTarget({ effort: e.id }) })),
     ] });
   });
   accountBtn.addEventListener('click', async () => {

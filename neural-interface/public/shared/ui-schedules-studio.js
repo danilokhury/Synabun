@@ -15,6 +15,9 @@ import { registerLaunchPrefetch } from './launch-prefetch.js';
 import { sendToPanel } from './ui-claude-panel.js';
 import { openAntigravityWithPrompt } from './ui-antigravity-panel.js';
 import { getProviderMeta } from './provider-icons.js';
+import { fetchAutomationApprovals, openApprovalDialog } from './ui-automation-approval.js';
+import { scheduleFlag } from './automation-approval-view.js';
+import { moreLoginFieldHTML, readMoreLoginField, wireMoreLoginFields, ensureMoreLoginProfiles, loadMoreLoginProfiles } from './morelogin-profile-field.js';
 import {
   getNativeLoopRouterClaimToken,
   getNativeLoopRouterWindowId,
@@ -26,6 +29,7 @@ import {
   fetchCodexAccounts,
   getCachedCodexAccounts,
   getCachedToolCatalog,
+  getEffortLevelsForModel,
   getEffortLevelsForProfile,
   getModelsForProfile,
   formatModelOptionLabel,
@@ -132,9 +136,15 @@ let _query = '';
 const _expanded = new Set();
 const _collapsed = new Set();
 let _scheduleEditor = null;   // the draft while the schedule editor is open
+// The "MoreLogin profile" row of the editors and the timer form is morelogin-profile-field.js. MoreLogin's profiles
+// change outside SynaBun: the list is asked again for every editor that opens (and by the row's Refresh).
+let _mlProfilesFor = null;    // the draft the list was last asked for
+let _qtMoreLogin = { moreloginEnvId: null, moreloginEnvName: null }; // the timer form's choice, kept while the window lives
 let _groupEditorId = null;    // the group being edited; null with a draft = a new group
 let _groupEditorDraft = null;
 let _confirm = null;          // { kind: 'schedule' | 'group', id, opener }
+// What an agent changed and the owner has not approved (GET /api/automation-approvals; finding 3 of 2026-11-11).
+let _approvals = { schedules: {}, templates: {} };
 let _draggingScheduleId = null;
 let _pollTimer = null;
 let _refreshTimer = null;
@@ -243,7 +253,7 @@ const presetLabel = (preset) => (preset.key ? t(`schedules.presets.${preset.key}
 // English for every window: the ones the Schedules window shows read in the page's language. A
 // word not listed (a level or a description a provider named) shows as it is.
 const LAUNCH_WORDS = {
-  Off: 'off', Default: 'default', Low: 'low', Med: 'medium', High: 'high', XHigh: 'xhigh', Max: 'max', Ultra: 'ultra',
+  Off: 'off', Auto: 'auto', Default: 'default', Low: 'low', Med: 'medium', High: 'high', XHigh: 'xhigh', Max: 'max', Ultra: 'ultra',
   'No thinking': 'noThinking', Minimal: 'minimal', Balanced: 'balanced', Deep: 'deep', 'Very deep': 'veryDeep',
   Maximum: 'maximum', 'Config default': 'configDefault', 'Model default': 'modelDefault', Light: 'light',
   'Maximum, with delegation': 'maximumDelegated',
@@ -541,6 +551,7 @@ function wirePanel() {
   _panel.addEventListener('keydown', handlePanelKeydown, { signal });
   // The popups (cc-dropdown.js): one set of listeners for every one the window draws.
   wireDropdowns(_panel, { signal });
+  wireMoreLoginFields(_panel, { signal });
   _panel.addEventListener('change', event => {
     if (!['sched-ge-browser', 'sched-ed-browser'].includes(event.target.id)) return;
     const group = event.target.id === 'sched-ge-browser';
@@ -582,10 +593,12 @@ async function loadData() {
   _launchTools = await migrateStoredTools(storage, 'as-launch-tools', 'as-launch-mcp-profile');
   const seq = ++_loadSeq;
   loadTimers();
-  const [schedules, templates, groups] = await Promise.allSettled([
+  const [schedules, templates, groups, approvals] = await Promise.allSettled([
     withDeadline(fetchSchedules()), withDeadline(fetchLoopTemplates()), withDeadline(fetchScheduleGroups()),
+    withDeadline(fetchAutomationApprovals()),
   ]);
   if (seq !== _loadSeq) return; // a newer load is under way: it finishes for both
+  _approvals = approvals.status === 'fulfilled' && approvals.value ? approvals.value : { schedules: {}, templates: {} };
   const failed = [];
   // A record still saved for the Gemini CLI reads as Antigravity's (migrateLaunchRecords).
   if (schedules.status === 'fulfilled' && Array.isArray(schedules.value)) {
@@ -851,6 +864,7 @@ function groupOverridesText(group) {
   if (group.tools) parts.push(t('schedules.overrides.mcp', { value: group.tools.join(', ') }));
   if (group.usesBrowser === true) parts.push(t('schedules.overrides.browserOn'));
   else if (group.usesBrowser === false) parts.push(t('schedules.overrides.browserOff'));
+  if (group.moreloginEnvId) parts.push(t('schedules.overrides.morelogin', { value: group.moreloginEnvName || group.moreloginEnvId }));
   return parts.join(' · ');
 }
 
@@ -1169,6 +1183,26 @@ function lastRunHTML(s, now, run = lastRunState(s), { ago: withAgo = true } = {}
     <span class="sched-last-word">${RESULT_ICON[run.kind] || ICONS.never}<span>${esc(run.label)}</span></span>${ago ? `<span class="sched-last-ago">${esc(ago)}</span>` : ''}</span>`;
 }
 
+// ── The flag of a schedule an agent changed (finding 3 of the re-review of 2026-11-11) ──
+/** The server's summary for a marked schedule, or one built from the records' own marks (an older server). */
+function approvalSummary(s) {
+  const summary = _approvals.schedules?.[s.id];
+  if (summary) return summary;
+  const template = getTemplate(s.templateId);
+  if (s.taskBy !== 'agent' && template?.editedBy !== 'agent') return null;
+  return { case: 'unknown', marks: { schedule: s.taskBy === 'agent', template: template?.editedBy === 'agent', scheduleFrom: s.unreviewedFrom || 'agent', templateFrom: template?.unreviewedFrom || 'agent' }, account: null };
+}
+function approvalRowBit(s) {
+  const flag = scheduleFlag(approvalSummary(s), t);
+  return flag ? `<span aria-hidden="true">·</span><span class="aap-flag" data-tone="${flag.tone}" data-tooltip="${esc(flag.text)}">${esc(flag.short)}</span>` : '';
+}
+function approvalNoteHTML(s) {
+  const flag = scheduleFlag(approvalSummary(s), t);
+  if (!flag) return '';
+  return `<div class="aap-flag-note" data-tone="${flag.tone}" role="note"><p>${esc(flag.text)}</p>
+    <button type="button" class="aap-btn" data-action="schedule-approve" data-id="${esc(s.id)}">${te('automationApproval.flag.review')}</button></div>`;
+}
+
 function rowHTML(s, { now = Date.now(), showGroup = false } = {}) {
   const run = lastRunState(s);
   const failing = run.kind === 'failed';
@@ -1187,7 +1221,7 @@ function rowHTML(s, { now = Date.now(), showGroup = false } = {}) {
       </span>
       <button type="button" class="sched-row-toggle" data-action="schedule-expand" data-id="${esc(s.id)}" aria-expanded="${open}"${open ? ` aria-controls="${detailId}"` : ''}>
         <span class="sched-row-name">${esc(s.name)}</span>
-        <span class="sched-row-sub">${groupBit}${groupBit ? '<span aria-hidden="true">·</span>' : ''}<span>${esc(describeCron(s.cron))}</span></span>
+        <span class="sched-row-sub">${groupBit}${groupBit ? '<span aria-hidden="true">·</span>' : ''}<span>${esc(describeCron(s.cron))}</span>${approvalRowBit(s)}</span>
         ${failing ? `<span class="sched-row-reason">${esc(oneLine(run.reason))}</span>` : ''}
       </button>
       ${nextRunHTML(s, now)}
@@ -1218,6 +1252,7 @@ function detailHTML(s, now, run) {
   ];
   const fact = (label, value, cls = '') => `<div class="sched-fact"><dt>${esc(label)}</dt><dd${cls ? ` class="${cls}"` : ''}>${value}</dd></div>`;
   return `
+    ${approvalNoteHTML(s)}
     <div class="sched-detail-grid">
       <section class="sched-facts-block">
       <h4 class="sched-facts-title">${te('schedules.detail.runs')}</h4>
@@ -1329,12 +1364,15 @@ function renderTimersView() {
   const profileOptions = CLI_PROFILES.map(p => opt(p.id, p.label, p.id === _launchProfile));
   const modelOptions = renderModelOptions(_launchProfile, _launchModel, { accountId: _launchAccount });
   const contextOptions = renderContextOptions(_launchProfile, _launchModel, _launchContextMode, { accountId: _launchAccount });
-  const effortOptions = renderEffortOptions(_launchProfile, _launchEffort);
+  const effortOptions = renderEffortOptions(_launchProfile, _launchEffort, { model: _launchModel, accountId: _launchAccount });
   const accountOptions = renderAccountOptions(_launchAccount, false);
   const showEffort = profileSupportsEffort(_launchProfile);
   const showMcp = strictToolHost(_launchProfile);
   const showAccount = _launchProfile === 'codex';
   const usesBrowser = _qtUsesBrowser !== null ? _qtUsesBrowser : !!getTemplate(selectedTemplate)?.usesBrowser;
+  // The form is drawn again on many changes: its MoreLogin choice is read first and put back.
+  _qtMoreLogin = readMoreLoginField('sched-qt-mlprofile') || _qtMoreLogin;
+  ensureMoreLoginProfiles();
   const qtPresetButtons = [5, 15, 30, 60, 120, 240]
     .map(min => `<button type="button" class="sched-chip" data-action="qt-select" data-minutes="${min}" aria-pressed="${_selectedQtMinutes === min}">${min >= 60 ? te('schedules.timers.presetHours', { n: min / 60 }) : te('schedules.timers.presetMinutes', { n: min })}</button>`)
     .join('');
@@ -1374,6 +1412,7 @@ function renderTimersView() {
             ${toolRow('sched-qt-mcp', _launchTools, { provider: _launchProfile, usesBrowser })}
             ${dropdownRow('sched-qt-account', t('schedules.form.account'), accountOptions, { hidden: !showAccount, rowId: 'sched-qt-account-field' })}
             ${formRow('sched-qt-browser', t('schedules.timers.usesBrowser'), toggleHTML('sched-qt-browser', usesBrowser), { toggle: true })}
+            ${moreLoginFieldHTML({ id: 'sched-qt-mlprofile', value: _qtMoreLogin.moreloginEnvId || '', savedName: _qtMoreLogin.moreloginEnvName || null, context: 'run' })}
             ${formRow('sched-qt-custom-min', t('schedules.timers.startIn'), `<span class="sched-chip-list" role="group" aria-label="${te('schedules.timers.delay')}">${qtPresetButtons}</span>
               <input class="sched-input" id="sched-qt-custom-min" type="number" min="1" max="1440" value="${esc(customMinutes)}" placeholder="${te('schedules.timers.minutesPlaceholder')}" aria-label="${te('schedules.timers.minutesFromNow')}">`, { top: true })}
           </div>
@@ -1419,6 +1458,8 @@ function renderTimersView() {
     storage.setItem('as-launch-context-mode', _launchContextMode);
     const contextPopup = $('sched-qt-context');
     if (contextPopup) setDropdownItems(contextPopup, renderContextOptions(_launchProfile, _launchModel, _launchContextMode, { accountId: _launchAccount }));
+    const effortPopup = $('sched-qt-effort');
+    if (effortPopup) setDropdownItems(effortPopup, renderEffortOptions(_launchProfile, _launchEffort, { model: _launchModel, accountId: _launchAccount }));
   });
   $('sched-qt-context')?.addEventListener('change', (e) => {
     _launchContextMode = e.target.value || 'default';
@@ -1519,10 +1560,19 @@ function modelChoiceAvailable(profile, model, accountId = 'default') {
   return !models.length || models.some((entry) => entry.id === model);
 }
 
-// `inheritLabel` adds the "no override" choice ('') of the editors, apart from an explicit 'off'
-// (Claude Code: no thinking), which is a value of its own: a run takes it over the group's level.
-function renderEffortOptions(profile, selected, { inheritLabel = null } = {}) {
-  const levels = getEffortLevelsForProfile(profile);
+// The model row a selector names in the profile's list (null: no model, or one the list lacks).
+function effortModelRow(profile, model, accountId = 'default') {
+  if (!model) return null;
+  return getModelsForProfile(profile, accountId).find(m => modelMatchesSelector(m, model) || m.id === model) || null;
+}
+
+// The effort choices of a profile, for the model when it is known (getEffortLevelsForModel): Auto
+// (`off`, the model's default), Off (`none`, thinking disabled) where the model can run it, then its
+// levels. `inheritLabel` adds the "no override" choice ('') of the editors, apart from an explicit
+// `off`, which is a value of its own: a run takes the model's default over the group's level.
+function renderEffortOptions(profile, selected, { inheritLabel = null, model = null, accountId = 'default' } = {}) {
+  const row = effortModelRow(profile, model, accountId);
+  const levels = row ? getEffortLevelsForModel(profile, row) : getEffortLevelsForProfile(profile);
   const value = selected || '';
   if (!inheritLabel && !levels.length) return [opt('off', t('schedules.launch.default'), true)];
   const known = !!value && levels.some(e => e.id === value);
@@ -1530,7 +1580,7 @@ function renderEffortOptions(profile, selected, { inheritLabel = null } = {}) {
   for (const e of levels) {
     opts.push(opt(e.id, e.desc ? t('schedules.launch.effortOption', { level: launchWord(e.label), desc: launchWord(e.desc) }) : launchWord(e.label), e.id === value));
   }
-  // A saved level this CLI does not list (set for another CLI, or by hand) stays selected,
+  // A saved level this model does not list (set for another CLI or model, or by hand) stays selected,
   // so saving the form cannot drop it (the model, MCP and account popups do the same).
   if (value && !known) opts.push(opt(value, t('schedules.launch.saved', { value }), true));
   return opts;
@@ -1592,6 +1642,7 @@ function renderActiveTimersInto() {
       timer.contextMode && timer.contextMode !== 'default' ? t('schedules.overrides.context', { value: timer.contextMode }) : '',
       timer.effort ? t('schedules.overrides.thinking', { value: timer.effort }) : '',
       timer.tools ? t('schedules.overrides.mcp', { value: timer.tools.join(', ') }) : '',
+      timer.moreloginEnvId ? t('schedules.overrides.morelogin', { value: timer.moreloginEnvName || timer.moreloginEnvId }) : '',
     ].filter(Boolean).join(' · ');
     return `
       <div class="sched-timer-row" data-timer-id="${esc(timer.id)}" data-timer-kind="quick">
@@ -1679,8 +1730,9 @@ function openGroupEditor(id) {
   // `_original` is the group as it was when the editor opened: a save sends only what the user
   // changed from it, so a change made elsewhere meanwhile (a sync update) is never undone.
   _groupEditorDraft = group
-    ? { name: group.name, color: group.color, mutualExclusion: !!group.mutualExclusion, profile: group.profile || null, model: group.model || null, contextMode: group.contextMode || null, effort: group.effort || null, tools: group.tools || null, codexAccountId: group.codexAccountId || null, usesBrowser: group.usesBrowser, _original: JSON.parse(JSON.stringify(group)) }
-    : { name: '', color: DEFAULT_GROUP_COLOR, mutualExclusion: false, profile: null, model: null, contextMode: null, effort: null, tools: null, codexAccountId: null, usesBrowser: undefined };
+    ? { name: group.name, color: group.color, mutualExclusion: !!group.mutualExclusion, profile: group.profile || null, model: group.model || null, contextMode: group.contextMode || null, effort: group.effort || null, tools: group.tools || null, codexAccountId: group.codexAccountId || null, usesBrowser: group.usesBrowser, moreloginEnvId: group.moreloginEnvId || null, moreloginEnvName: group.moreloginEnvName || null, _original: JSON.parse(JSON.stringify(group)) }
+    : { name: '', color: DEFAULT_GROUP_COLOR, mutualExclusion: false, profile: null, model: null, contextMode: null, effort: null, tools: null, codexAccountId: null, usesBrowser: undefined, moreloginEnvId: null, moreloginEnvName: null };
+  loadMoreLoginProfiles(); // asked again for every editor that opens
   ensureModelsForProfile(_groupEditorDraft.profile || 'claude-code', false, _groupEditorDraft.codexAccountId || 'default').then(() => {
     if (_panel && _groupEditorDraft) {
       collectGroupEditorDraft();
@@ -1704,6 +1756,9 @@ function collectGroupEditorDraft() {
     codexAccountId: $('sched-ge-account')?.value || null,
     usesBrowser: browserRaw === '' ? undefined : browserRaw === 'true',
   });
+  // Only from a row on screen: a hidden row (MoreLogin not in use) keeps what the draft holds.
+  const mlChoice = readMoreLoginField('sched-ge-mlprofile');
+  if (mlChoice) Object.assign(_groupEditorDraft, mlChoice);
 }
 
 function renderGroupEditor(group) {
@@ -1721,7 +1776,7 @@ function renderGroupEditor(group) {
   ];
   const modelOptions = renderModelOptions(profileForModels, d.model || '', { showService: true, accountId });
   const contextOptions = renderContextOptions(profileForModels, d.model, d.contextMode, { accountId, inherit: true });
-  const effortOptions = renderEffortOptions(profileForModels, d.effort || '', { inheritLabel: t('schedules.launch.noOverride') });
+  const effortOptions = renderEffortOptions(profileForModels, d.effort || '', { inheritLabel: t('schedules.launch.noOverride'), model: d.model, accountId });
   const accountOptions = renderAccountOptions(d.codexAccountId || '', true);
   const showEffort = profileSupportsEffort(profileForModels);
   const showMcp = strictToolHost(profileForModels);
@@ -1763,6 +1818,7 @@ function renderGroupEditor(group) {
                 opt('true', t('schedules.launch.alwaysOn'), browserValue === 'true'),
                 opt('false', t('schedules.launch.alwaysOff'), browserValue === 'false'),
               ])}
+              ${moreLoginFieldHTML({ id: 'sched-ge-mlprofile', value: d.moreloginEnvId || '', savedName: d.moreloginEnvName || null, context: 'group' })}
             </div>
           </section>
           ${!group ? '' : `
@@ -1818,6 +1874,8 @@ function wireGroupEditor() {
     _groupEditorDraft.contextMode = _groupEditorDraft.model ? 'default' : null;
     const contextPopup = $('sched-ge-context');
     if (contextPopup) setDropdownItems(contextPopup, renderContextOptions(_groupEditorDraft.profile || 'claude-code', _groupEditorDraft.model, _groupEditorDraft.contextMode, { accountId: _groupEditorDraft.codexAccountId || 'default', inherit: true }));
+    const effortPopup = $('sched-ge-effort');
+    if (effortPopup) setDropdownItems(effortPopup, renderEffortOptions(_groupEditorDraft.profile || 'claude-code', effortPopup.value || '', { inheritLabel: t('schedules.launch.noOverride'), model: _groupEditorDraft.model, accountId: _groupEditorDraft.codexAccountId || 'default' }));
   });
   $('sched-ge-context')?.addEventListener('change', (e) => { _groupEditorDraft.contextMode = e.target.value || null; });
   $('sched-ge-account')?.addEventListener('change', (e) => {
@@ -1866,7 +1924,7 @@ function renderScheduleEditor() {
   const effectiveModel = s.model || group?.model || template?.model || null;
   const modelOptions = renderModelOptions(profileForModels, s.model || '', { showService: true, accountId });
   const contextOptions = renderContextOptions(profileForModels, effectiveModel, s.contextMode, { accountId, inherit: true });
-  const effortOptions = renderEffortOptions(profileForModels, s.effort || '', { inheritLabel: t('schedules.launch.templateOrDefault') });
+  const effortOptions = renderEffortOptions(profileForModels, s.effort || '', { inheritLabel: t('schedules.launch.templateOrDefault'), model: effectiveModel, accountId });
   const accountOptions = renderAccountOptions(s.codexAccountId || '', true);
   const showEffort = profileSupportsEffort(profileForModels);
   const showMcp = strictToolHost(profileForModels);
@@ -1910,11 +1968,19 @@ function renderScheduleEditor() {
   if (showMcp && !getCachedToolCatalog()) {
     fetchToolCatalog().then(catalog => { if (catalog && _panel && _scheduleEditor) { collectScheduleEditorDraft(); renderScheduleEditor(); } });
   }
+  // MoreLogin's profiles are asked once per editor that opens (they change outside SynaBun); Refresh asks again.
+  if (_scheduleEditor && _mlProfilesFor !== _scheduleEditor) {
+    _mlProfilesFor = _scheduleEditor;
+    loadMoreLoginProfiles();
+  }
+  // A schedule without a profile of its own runs in its group's, when the group has one.
+  const groupProfileName = group?.moreloginEnvId ? (group.moreloginEnvName || String(group.moreloginEnvId)) : '';
 
   redrawEditor(main, `
     <div class="sched-editor">
       ${editorHead({ back: 'schedule-editor-close', title: t(isEdit ? 'schedules.detail.editSchedule' : 'schedules.head.newSchedule'), sub: isEdit ? s.name : t('schedules.scheduleEditor.newSub'), titleId: 'sched-view-title' })}
       <div class="sched-editor-body">
+        ${isEdit ? approvalNoteHTML(_schedules.find(x => x.id === s.id) || s) : ''}
         <div class="sched-form">
           <section class="sched-form-section" aria-labelledby="sched-ed-sec-basics">
             <h3 class="sched-form-title" id="sched-ed-sec-basics">${te('schedules.timers.schedule')}</h3>
@@ -1960,6 +2026,8 @@ function renderScheduleEditor() {
                 opt('true', t('schedules.launch.alwaysOn'), browserValue === 'true'),
                 opt('false', t('schedules.launch.alwaysOff'), browserValue === 'false'),
               ])}
+              ${moreLoginFieldHTML({ id: 'sched-ed-mlprofile', value: s.moreloginEnvId || '', savedName: s.moreloginEnvName || null, context: 'schedule',
+                inheritLabel: groupProfileName ? t('schedules.form.moreloginGroupProfile', { name: groupProfileName }) : '' })}
             </div>
           </section>
 
@@ -2008,6 +2076,8 @@ function renderScheduleEditor() {
     _scheduleEditor.contextMode = _scheduleEditor.model ? 'default' : null;
     const contextPopup = $('sched-ed-context');
     if (contextPopup) setDropdownItems(contextPopup, renderContextOptions(profileForModels, _scheduleEditor.model || group?.model || template?.model, _scheduleEditor.contextMode, { accountId, inherit: true }));
+    const effortPopup = $('sched-ed-effort');
+    if (effortPopup) setDropdownItems(effortPopup, renderEffortOptions(profileForModels, effortPopup.value || '', { inheritLabel: t('schedules.launch.templateOrDefault'), model: _scheduleEditor.model || group?.model || template?.model, accountId }));
   });
   $('sched-ed-context')?.addEventListener('change', (e) => { _scheduleEditor.contextMode = e.target.value || null; });
   $('sched-ed-account')?.addEventListener('change', (e) => {
@@ -2101,6 +2171,9 @@ function collectScheduleEditorDraft() {
     enabled: $('sched-ed-enabled')?.checked ?? _scheduleEditor.enabled,
     dayThemes,
   });
+  // Only from a row on screen: a hidden row (MoreLogin not in use) keeps what the draft holds.
+  const mlChoice = readMoreLoginField('sched-ed-mlprofile');
+  if (mlChoice) Object.assign(_scheduleEditor, mlChoice);
 }
 
 function markInvalid(id, message) {
@@ -2155,6 +2228,8 @@ async function saveScheduleFromEditor() {
 
   collectScheduleEditorDraft(); // the day themes as shown, without the ones removed
   const dayThemes = _scheduleEditor?.dayThemes || {};
+  const moreloginEnvId = _scheduleEditor?.moreloginEnvId ? String(_scheduleEditor.moreloginEnvId) : null;
+  const moreloginEnvName = moreloginEnvId ? (_scheduleEditor?.moreloginEnvName || null) : null;
   let payload;
   if (original) {
     payload = {};
@@ -2166,6 +2241,13 @@ async function saveScheduleFromEditor() {
     if (timezone !== shownZone) payload.timezone = timezone;
     if (stableJson(dayThemes) !== stableJson(original.dayThemes || {})) payload.dayThemes = dayThemes;
     for (const key of LAUNCH_FIELDS) if (!sameValue(launch[key], original[key])) payload[key] = launch[key];
+    // The MoreLogin profile: sent when it changed (null goes back to the default of Settings → Browser).
+    if (!sameValue(moreloginEnvId, original.moreloginEnvId)) {
+      payload.moreloginEnvId = moreloginEnvId;
+      payload.moreloginEnvName = moreloginEnvName;
+    }
+    // A save never approves what an agent changed (finding 3 of the re-review of 2026-11-11): it sends only what
+    // changed, and the server keeps `taskBy` whatever it carries. The owner approves with the flag's Review button.
     if (!Object.keys(payload).length) {
       _scheduleEditor = null;
       render({ frame: true });
@@ -2176,6 +2258,7 @@ async function saveScheduleFromEditor() {
   } else {
     payload = { name, templateId, cron, timezone, groupId, enabled, dayThemes };
     for (const key of LAUNCH_FIELDS) if (launch[key] !== null) payload[key] = launch[key];
+    if (moreloginEnvId) Object.assign(payload, { moreloginEnvId, moreloginEnvName });
   }
 
   // The save belongs to this editor: once answered, it closes only this one (an editor or a view
@@ -2224,6 +2307,14 @@ async function handleClick(e) {
       break;
     case 'schedule-expand':
       toggleExpanded(id, el);
+      break;
+    case 'schedule-approve':
+      // The owner's review of what an agent changed: the schedule and its template in one dialog (ui-automation-approval.js).
+      openApprovalDialog({
+        kind: 'schedule', id, opener: el,
+        onApproved: () => { showToast(t('automationApproval.toast.approved')); loadData(); },
+        onError: (message) => showToast(message),
+      });
       break;
     case 'group-collapse': {
       const key = el.dataset.key;
@@ -2726,10 +2817,15 @@ async function saveGroupFromEditor(id) {
   const panel = _panel;
   const stillHere = () => !!draft && _panel === panel && _groupEditorDraft === draft;
 
+  // The group's MoreLogin profile: read at launch by its schedules that have none of their own, never copied onto them.
+  const moreloginEnvId = _groupEditorDraft?.moreloginEnvId ? String(_groupEditorDraft.moreloginEnvId) : null;
+  const moreloginEnvName = moreloginEnvId ? (_groupEditorDraft?.moreloginEnvName || null) : null;
+
   if (!id) {
     try {
       const payload = { name, color, mutualExclusion };
       for (const key of LAUNCH_FIELDS) if (launch[key] !== null) payload[key] = launch[key];
+      if (moreloginEnvId) Object.assign(payload, { moreloginEnvId, moreloginEnvName });
       const group = await createScheduleGroup(payload);
       if (!_groups.some(g => g.id === group.id)) _groups.push(group);
       showToast(t('schedules.toast.groupCreated'));
@@ -2758,6 +2854,7 @@ async function saveGroupFromEditor(id) {
   // A new CLI: what the old one decided goes, explicitly (also what the group never set itself).
   const cliChanged = !sameValue(launch.profile, existing.profile);
   if (cliChanged) for (const key of CLI_DEPENDENT) payload[key] = launch[key];
+  if (!sameValue(moreloginEnvId, existing.moreloginEnvId)) Object.assign(payload, { moreloginEnvId, moreloginEnvName });
   if (!Object.keys(payload).length) {
     _groupEditorId = null;
     _groupEditorDraft = null;
@@ -3034,18 +3131,22 @@ async function createQuickTimerFromForm(runNow) {
   const tools = strictToolHost(profile) ? readToolPicker($('sched-qt-mcp')) : null;
   const codexAccountId = profile === 'codex' ? ($('sched-qt-account')?.value || _launchAccount || 'default') : undefined;
   const usesBrowser = _qtUsesBrowser !== null ? _qtUsesBrowser : !!template?.usesBrowser;
+  // The MoreLogin profile of this one run (none: the default of Settings → Browser).
+  _qtMoreLogin = readMoreLoginField('sched-qt-mlprofile') || _qtMoreLogin;
+  const moreloginEnvId = _qtMoreLogin.moreloginEnvId || undefined;
+  const moreloginEnvName = moreloginEnvId ? (_qtMoreLogin.moreloginEnvName || undefined) : undefined;
   try {
     if (runNow) {
       const result = await triggerQuickTimerNow(templateId, {
-        profile, model, contextMode, effort, tools, usesBrowser, codexAccountId,
+        profile, model, contextMode, effort, tools, usesBrowser, codexAccountId, moreloginEnvId, moreloginEnvName,
         sidepanelWindowId: getNativeLoopRouterWindowId(),
         sidepanelClaimToken: getNativeLoopRouterClaimToken(),
       });
       showToast(t('schedules.toast.runningNow', { name: result.templateName }));
     } else {
-      const result = await createQuickTimer(templateId, minutes, { profile, model, contextMode, effort, tools, usesBrowser, codexAccountId });
+      const result = await createQuickTimer(templateId, minutes, { profile, model, contextMode, effort, tools, usesBrowser, codexAccountId, moreloginEnvId, moreloginEnvName });
       if (!_quickTimers.some(t => t.id === result.timerId)) {
-        _quickTimers.push({ id: result.timerId, templateId, templateName: result.templateName, firesAt: result.firesAt, minutes: result.minutes, profile: result.profile, model: result.model, contextMode: result.contextMode, effort: result.effort, tools: result.tools, usesBrowser: result.usesBrowser });
+        _quickTimers.push({ id: result.timerId, templateId, templateName: result.templateName, firesAt: result.firesAt, minutes: result.minutes, profile: result.profile, model: result.model, contextMode: result.contextMode, effort: result.effort, tools: result.tools, usesBrowser: result.usesBrowser, moreloginEnvId: result.moreloginEnvId, moreloginEnvName: result.moreloginEnvName });
       }
       _selectedQtMinutes = null;
       _panel?.querySelectorAll('[data-action="qt-select"]').forEach(chip => chip.setAttribute('aria-pressed', 'false'));
@@ -3202,7 +3303,7 @@ function setupSync() {
   });
   on('sync:quick-timer:set', (data) => {
     if (data?.timerId && !_quickTimers.some(t => t.id === data.timerId)) {
-      _quickTimers.push({ id: data.timerId, templateName: data.templateName, firesAt: data.firesAt, minutes: data.minutes, profile: data.profile, model: data.model, contextMode: data.contextMode, effort: data.effort, tools: data.tools, usesBrowser: data.usesBrowser });
+      _quickTimers.push({ id: data.timerId, templateName: data.templateName, firesAt: data.firesAt, minutes: data.minutes, profile: data.profile, model: data.model, contextMode: data.contextMode, effort: data.effort, tools: data.tools, usesBrowser: data.usesBrowser, moreloginEnvId: data.moreloginEnvId, moreloginEnvName: data.moreloginEnvName });
       if (_panel) { renderRail(); renderActiveTimersInto(); }
     }
   });

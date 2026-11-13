@@ -1,14 +1,14 @@
 // Model routes: draft-only editor. All model data comes through asst-route-models.
 // The global default and saved preferences are written together only on Save.
-import { clampEffortId, getEffortLevelsForModel, modelEffortIds, fetchClaudeAccounts, fetchCodexAccounts, getCachedClaudeAccounts, getCachedCodexAccounts, getClaudeWorkerAccountId, getCodexWorkerAccountId } from '../agent-runtime-options.js';
+import { clampEffortId, modelEffortIds, fetchClaudeAccounts, fetchCodexAccounts, getCachedClaudeAccounts, getCachedCodexAccounts, getClaudeWorkerAccountId, getCodexWorkerAccountId } from '../agent-runtime-options.js';
 import { accountSummary, accountName, accountBadge, accountIdentity } from '../account-view.js';
 import { accountUsageText, autoAccountLabel } from '../account-usage.js';
-import { getRouting, putRouting } from './asst-api.js';
+import { putRouting } from './asst-api.js';
 import { catalogModelRow, hiddenModelFor, ICON_CARET, openModelMenu } from './asst-brain-picker.js';
 import { closeMenu, currentMenu } from './asst-menu.js';
-import { loadRouteModels, routeModelLabel, routeModelsStatus, watchRouteModels } from './asst-route-models.js';
-import { designRouteSight, openModelsManager, routeCatalogRow, routeModeLabel } from './asst-route.js';
-import { DEFAULT_ROUTE_MODE, normalizeRouteMode, PROVIDERS, providerMeta, ROUTE_MODES } from './asst-state.js';
+import { cachedRouteModels, cachedRouting, catalogSignature, loadRouteModels, loadRouting, rememberRouting, routeModelLabel, routeModelsStatus, watchRouteModels } from './asst-route-models.js';
+import { designRouteSight, openModelsManager, routeCatalogRow, routeEffortChoices, routeModeLabel } from './asst-route.js';
+import { DEFAULT_ROUTE_MODE, displayProvider, normalizeRouteMode, PROVIDERS, providerMeta, ROUTE_EFFORT_OFF, ROUTE_MODES } from './asst-state.js';
 
 const ICON_ROUTE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h15l-4-4M20 17H5l4 4"/></svg>';
 const ICON_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg>';
@@ -88,7 +88,7 @@ export function routePreferenceIssue(pref, task, catalog, { hidden = hiddenModel
   if (row.status === 'unavailable') return 'unavailable';
   if (task.requires && row.outputs?.[task.requires] !== true) return 'incapable';
   if ((task.id === 'computer' || task.id === 'vision') && row.vision === false) return 'blind';
-  if (pref.effort && !getEffortLevelsForModel(pref.provider, row).some(e => e.id === pref.effort)) return 'effort';
+  if (pref.effort && pref.effort !== 'off' && !routeEffortChoices(pref.provider, row).some(e => e.id === pref.effort)) return 'effort';
   return null;
 }
 
@@ -120,7 +120,10 @@ export async function openRoutesEditor(hooks = {}) {
   foot.append(resetAllBtn, draft, cancelBtn, saveBtn);
   modal.append(head, body, cue, confirmation, foot); overlay.append(modal);
 
-  const state = { data: null, catalog: null, version: null, mode: DEFAULT_ROUTE_MODE, initialMode: DEFAULT_ROUTE_MODE, prefs: {}, patch: {}, loading: true, modelsLoading: true, modelError: false, error: '', conflict: false, saving: false, confirm: null, suspended: false, offline: navigator.onLine === false, menuFocus: '', notice: '' };
+  // modelsLoading: no catalog to draw from yet (rows are drawn, their checks wait).
+  // catalogRefreshing: rows are drawn from the page's last catalog while a new build is read.
+  const state = { data: null, catalog: null, version: null, mode: DEFAULT_ROUTE_MODE, initialMode: DEFAULT_ROUTE_MODE, prefs: {}, patch: {}, loading: true, modelsLoading: true, catalogRefreshing: false, modelError: false, error: '', conflict: false, saving: false, confirm: null, suspended: false, offline: navigator.onLine === false, menuFocus: '', notice: '' };
+  state.expandedTask = null;
   const effectivePref = key => own(state.patch, key) ? state.patch[key] : state.prefs[key] || null;
   const changes = () => routeEditorPatch(state.mode, state.initialMode, state.prefs, state.patch);
   const dirty = () => Object.keys(changes()).length > 0;
@@ -195,6 +198,7 @@ export async function openRoutesEditor(hooks = {}) {
       e.preventDefault(); e.stopImmediatePropagation();
       if (menu) closeMenu({ restoreFocus: true });
       else if (state.confirm) confirmationOff();
+      else if (state.expandedTask) { const key = state.expandedTask; state.expandedTask = null; render(`${key}-toggle`); }
       else close();
       return;
     }
@@ -211,6 +215,8 @@ export async function openRoutesEditor(hooks = {}) {
   }
   function onFocus(e) {
     if (!state.suspended && !overlay.contains(e.target) && !currentMenu()?.contains(e.target)) (tabbables()[0] || closeBtn).focus();
+    // New lists arrived while a menu was open: drawn once focus is back in the dialog.
+    if (state.pendingRender && !state.suspended && !currentMenu() && overlay.contains(e.target)) render(e.target?.dataset?.focusKey);
   }
   function network() { state.offline = navigator.onLine === false; render(); }
   overlay.addEventListener('keydown', e => e.stopPropagation());
@@ -252,7 +258,16 @@ export async function openRoutesEditor(hooks = {}) {
     if (!list.some(t => t.id === 'vision')) list.push({ id: 'vision', label: tr('assistant.routes.visionRow', 'Screenshots & images'), description: tr('assistant.routes.visionDesc', 'Fallback when a task needs a model that can see.'), defaultKind: 'direct', visionOnly: false });
     return list;
   }
-  function setChoice(key, pref, focusKey) { state.patch[key] = pref; state.notice = ''; render(focusKey); }
+  // One choice redraws its own row and the footer; the rest of the table stands.
+  function setChoice(key, pref, focusKey) {
+    state.patch[key] = pref;
+    const noticeShown = !!state.notice; state.notice = '';
+    const current = body.querySelector(`.asst-routes-row[data-task-class="${CSS.escape(key)}"]`);
+    const task = current && !noticeShown && !state.confirm && !state.pendingRender ? tasks().find(t => t.id === key) : null;
+    if (!task) { render(focusKey); return; }
+    current.replaceWith(taskRow(task)); updateFoot();
+    if (focusKey && !state.suspended) focus(focusKey);
+  }
   function effortName(value) { return tr(`assistant.routes.efforts.${value}`, value); }
   function defaultEffort(row) { return row?.defaultEffort ? tr('assistant.routes.effortAutoDefault', 'Default · {effort}', { effort: effortName(row.defaultEffort) }) : tr('assistant.routes.effortDefaultUnknown', 'Default · unknown'); }
   function updateFoot() {
@@ -277,6 +292,7 @@ export async function openRoutesEditor(hooks = {}) {
     if (action) b.append(button('asst-btn asst-btn-secondary', actionLabel, action)); body.append(b);
   }
   function render(focusKey) {
+    state.pendingRender = false;
     const scroll = body.scrollTop;
     const active = focusKey || document.activeElement?.dataset?.focusKey;
     body.innerHTML = ''; body.setAttribute('aria-busy', state.loading ? 'true' : 'false');
@@ -285,9 +301,11 @@ export async function openRoutesEditor(hooks = {}) {
     if (state.notice) banner(state.notice);
     if (state.loading && !state.data) body.append(el('div', 'asst-modal-note', tr('assistant.routes.editorState.loadingRoutes', 'Loading routing settings and models…')));
     if (!state.data) { updateFoot(); return; }
-    const section = el('section', 'asst-routes-section');
+    const section = el('section', 'asst-routes-section asst-routes-ask');
+    // One slim row: the heading, the segmented control and the conversation's own mode; one line under it.
+    const askHead = el('div', 'asst-routes-section-head asst-routes-ask-head');
     const heading = el('h2', 'asst-routes-section-title', tr('assistant.routes.whenToAsk', 'When to ask')); heading.id = `${id}-modes`;
-    section.append(heading);
+    askHead.append(heading);
     const modes = el('div', 'asst-routes-modes'); modes.setAttribute('role', 'radiogroup'); modes.setAttribute('aria-labelledby', heading.id);
     const modeCopy = {
       'always-ask': 'Asks before every task. Routes saved in Never ask are offered first on the route card.',
@@ -303,12 +321,14 @@ export async function openRoutesEditor(hooks = {}) {
       input.addEventListener('change', () => { if (input.checked) { closeMenu(); state.mode = mode; state.notice = ''; body.scrollTop = 0; render(`mode-${mode}`); } }); modes.append(label);
     }
     const desc = el('p', 'asst-routes-mode-desc', tr(`assistant.routes.modeSummary.${state.mode}`, modeCopy[state.mode], { pct: threshold() })); desc.id = `${id}-mode-desc`;
-    section.append(modes, desc);
+    desc.title = desc.textContent;
+    askHead.append(modes);
     const current = hooks.getRouting?.();
     if (current?.mode != null) {
       const note = el('p', 'asst-routes-session-note', tr('assistant.routes.editorSessionOverride', 'This conversation overrides the default: {mode}.', { mode: routeModeLabel(current.effectiveMode || current.mode, hooks.t) }));
-      note.title = note.textContent; section.append(note);
+      note.title = note.textContent; askHead.append(note);
     }
+    section.append(askHead, desc);
     body.append(section);
     // The draft is independent of the rendered table: mode switches never clear
     // route edits, and updateFoot counts them while the table is absent.
@@ -327,19 +347,32 @@ export async function openRoutesEditor(hooks = {}) {
     taskHeading.title = tr('assistant.routes.brainLabel', 'Routing brain: {model}', { model: brainLabel }); taskTitle.append(taskHeading);
     top.append(taskTitle);
     const actions = el('div', 'asst-routes-list-actions');
-    const reload = button('asst-btn asst-btn-secondary asst-routes-reload-models', state.modelsLoading ? tr('assistant.routes.editorState.loadingModels', 'Loading models…') : tr('assistant.routes.reloadModels', 'Reload models'), reloadModels); reload.disabled = state.modelsLoading || state.saving || state.offline; reload.dataset.focusKey = 'reload-models';
+    // A new build in progress is said in place of the Reload action, never as a spinner over the rows.
+    const reloadText = state.modelsLoading ? tr('assistant.routes.editorState.loadingModels', 'Loading models…') : state.catalogRefreshing ? tr('assistant.routes.editorState.modelsUpdating', 'Updating models…') : tr('assistant.routes.reloadModels', 'Reload models');
+    const reload = button('asst-btn asst-btn-secondary asst-routes-reload-models', reloadText, reloadModels); reload.disabled = state.modelsLoading || state.catalogRefreshing || state.saving || state.offline; reload.dataset.focusKey = 'reload-models';
+    reload.dataset.state = state.modelsLoading ? 'loading' : state.catalogRefreshing ? 'refreshing' : 'idle';
     const manage = button('asst-btn asst-btn-secondary asst-routes-manage-models', tr('assistant.models.manage', 'Manage models…'), () => manageModels('manage-models')); manage.dataset.focusKey = 'manage-models';
     actions.append(manage, reload); top.append(actions); table.append(top);
-    if (state.modelsLoading) table.append(el('div', 'asst-modal-note', tr('assistant.routes.editorState.loadingModels', 'Loading models…')));
-    else if (state.modelError) {
+    if (!state.modelsLoading && state.modelError) {
       const note = el('div', 'asst-routes-catalog-note'); note.setAttribute('role', 'status'); note.append(el('span', '', tr('assistant.routes.editorState.modelsFailed', 'Could not refresh the model list. Showing provider lists where available. Reload models to verify your choices.'))); table.append(note);
     } else if (!rowsOf(state.catalog).length) table.append(el('div', 'asst-routes-catalog-note', tr('assistant.routes.editorState.modelsEmpty', 'No models are available. Check Models or connect a provider, then reload.')));
-    const columns = el('div', 'asst-routes-columns'); columns.setAttribute('aria-hidden', 'true');
-    for (const key of ['task', 'model', 'effort', 'run', 'account', 'reset']) columns.append(el('span', '', tr(`assistant.routes.columns.${key}`, key)));
-    table.append(columns);
-    const list = el('div', 'asst-routes-list');
+    const list = el('div', 'asst-routes-list'); list.setAttribute('aria-busy', state.modelsLoading || state.catalogRefreshing ? 'true' : 'false');
     const taskList = tasks();
-    for (const task of taskList) list.append(taskRow(task));
+    const groups = [
+      ['everyday', 'Everyday', ['quick', 'research', 'chat']],
+      ['engineering', 'Engineering', ['code', 'complex', 'review']],
+      ['desktop', 'Web & desktop', ['browser', 'computer', 'automation']],
+      ['media', 'Design & media', ['design', 'image_gen', 'video_gen', 'vision']],
+    ];
+    for (const [key, label, ids] of groups) {
+      const group = el('section', 'asst-routes-group');
+      const heading = el('h3', '', tr(`assistant.routes.groups.${key}`, label));
+      heading.id = `${id}-group-${key}`; group.setAttribute('aria-labelledby', heading.id); group.append(heading);
+      for (const task of taskList.filter(t => ids.includes(t.id))) group.append(taskRow(task));
+      list.append(group);
+    }
+    // Future server task classes retain their labels and remain editable.
+    for (const task of taskList.filter(t => !groups.some(g => g[2].includes(t.id)))) list.append(taskRow(task));
     if (!taskList.length) list.append(el('div', 'asst-modal-note', tr('assistant.routes.editorState.tasksEmpty', 'No task classes are available on this server.')));
     table.append(list); body.append(table);
     updateFoot(); body.scrollTop = scroll;
@@ -349,7 +382,8 @@ export async function openRoutesEditor(hooks = {}) {
   function taskRow(task) {
     const pref = effectivePref(task.id);
     const model = pref ? routeCatalogRow(pref, state.catalog) : null;
-    const issue = routePreferenceIssue(pref, task, state.catalog, { partial: state.modelError });
+    // Before the first catalog a choice is neither verified nor unverified: its check waits for the lists.
+    const issue = state.modelsLoading ? null : routePreferenceIssue(pref, task, state.catalog, { partial: state.modelError });
     const node = el('div', 'asst-routes-row'); node.dataset.taskClass = task.id;
     const nameId = `${id}-task-${task.id}`;
     node.setAttribute('role', 'group'); node.setAttribute('aria-labelledby', nameId);
@@ -390,8 +424,12 @@ export async function openRoutesEditor(hooks = {}) {
         onSelect: target => {
           if (target?.here) setChoice(task.id, null, modelBtn.dataset.focusKey);
           else if (target?.model) {
-            const levels = modelEffortIds(catalogModelRow(target.provider, target.model, state.catalog));
-            const effort = !pref?.effort ? null : levels ? clampEffortId(pref.effort, levels) : pref.provider === target.provider ? pref.effort : null;
+            const nextRow = catalogModelRow(target.provider, target.model, state.catalog);
+            const levels = modelEffortIds(nextRow);
+            // Off stays Off only on a model that can run without thinking; elsewhere it goes back to the default, never to a level.
+            const effort = !pref?.effort ? null
+              : pref.effort === ROUTE_EFFORT_OFF ? (routeEffortChoices(target.provider, nextRow).some(e => e.off) ? ROUTE_EFFORT_OFF : null)
+              : levels ? clampEffortId(pref.effort, levels) : pref.provider === target.provider ? pref.effort : null;
             setChoice(task.id, { kind: task.dispatchOnly ? 'dispatch' : pref?.kind || task.defaultKind || 'direct', provider: target.provider, model: target.model, effort, accountId: routeModelAccount(pref, target.provider), label: target.label || target.model }, modelBtn.dataset.focusKey);
           }
         },
@@ -401,7 +439,7 @@ export async function openRoutesEditor(hooks = {}) {
     // Keys are stable across translations; accessible names use the translated field.
     modelBtn.dataset.focusKey = `${task.id}-model`; caret(modelBtn); modelBtn.setAttribute('aria-haspopup', 'dialog');
     modelBtn.title = label;
-    if (pref?.provider) { const mark = el('span', 'asst-icon'); mark.setAttribute('aria-hidden', 'true'); mark.innerHTML = providerMeta(pref.provider).icon; mark.style.color = providerMeta(pref.provider).color; modelBtn.prepend(mark); }
+    if (pref?.provider) { const shown = providerMeta(displayProvider(pref)); const mark = el('span', 'asst-icon'); mark.setAttribute('aria-hidden', 'true'); mark.innerHTML = shown.icon; mark.style.color = shown.color; modelBtn.prepend(mark); }
     modelCell.append(modelBtn);
     const source = el('span', 'asst-routes-source');
     let sourceText = pref ? tr('assistant.routes.source.yours', 'Your choice') : tr('assistant.routes.source.default', 'Assistant chooses');
@@ -414,14 +452,14 @@ export async function openRoutesEditor(hooks = {}) {
     modelBtn.insertBefore(source, modelBtn.querySelector('.asst-dd-caret')); modelBtn.setAttribute('aria-describedby', source.id);
     node.append(modelCell);
 
-    const efforts = pref ? getEffortLevelsForModel(pref.provider, model) : [];
-    const hasEffort = efforts.some(e => e.id !== 'off');
+    const efforts = pref ? routeEffortChoices(pref.provider, model) : [];
+    const hasEffort = efforts.some(e => !e.off);
     const effortText = !pref ? tr('assistant.routes.brainDecides', 'Assistant chooses') : pref.effort ? effortName(pref.effort) : hasEffort ? defaultEffort(model) : tr('assistant.routes.effortNotSupported', 'Not supported');
     const effortBtn = fieldButton('asst-routes-effort', task, tr('assistant.routes.columns.effort', 'Effort'), effortText, () => {
       state.menuFocus = effortBtn.dataset.focusKey;
       const menu = openMenuFor(effortBtn, tr('assistant.brain.effort', 'Thinking effort'), [
         { kind: 'radio', id: '', label: defaultEffort(model), desc: tr('assistant.routes.effortNote', 'Default effort uses the model default when the brain does not propose a level.'), selected: !pref.effort, onSelect: () => setChoice(task.id, { ...pref, effort: null }, effortBtn.dataset.focusKey) },
-        ...efforts.filter(e => e.id !== 'off').map(e => ({ kind: 'radio', id: e.id, label: effortName(e.id), selected: e.id === pref.effort, onSelect: () => setChoice(task.id, { ...pref, effort: e.id }, effortBtn.dataset.focusKey) })),
+        ...efforts.map(e => ({ kind: 'radio', id: e.id, label: effortName(e.id), selected: e.id === pref.effort, onSelect: () => setChoice(task.id, { ...pref, effort: e.id }, effortBtn.dataset.focusKey) })),
       ]); return menu;
     });
     effortBtn.dataset.focusKey = `${task.id}-effort`; effortBtn.disabled = !pref || (!hasEffort && !pref.effort); if (!effortBtn.disabled) caret(effortBtn);
@@ -462,17 +500,46 @@ export async function openRoutesEditor(hooks = {}) {
     const resetCell = el('div', 'asst-routes-reset-cell');
     if (pref) { const reset = button('asst-iconbtn asst-routes-reset', tr('assistant.routes.reset', 'Reset {taskClass}', { taskClass: task.label }), () => setChoice(task.id, null, `${task.id}-model`)); reset.dataset.focusKey = `${task.id}-reset`; reset.title = reset.getAttribute('aria-label'); reset.innerHTML = ICON_RESET; resetCell.append(reset); }
     node.append(resetCell);
-    if (account.warning) { const note = el('div', 'asst-routes-row-warning', account.warning); note.id = `${nameId}-account-warning`; accountBtn.setAttribute('aria-describedby', note.id); node.append(note); }
-    if (capabilityNote) node.append(capabilityNote);
-    if (issue) { description.hidden = true; node.querySelector('.asst-routes-row-note')?.remove(); const note = el('div', 'asst-routes-row-warning', issueText(issue, task)); note.title = note.textContent; note.id = `${nameId}-issue`; modelBtn.setAttribute('aria-describedby', `${source.id} ${note.id}`); modelBtn.title = `${label} — ${note.textContent}`; node.append(note); }
+    // A note, a warning or a context line takes the description's own line under the task name
+    // (one line, cut with an ellipsis, whole in its title), so every row keeps the same height.
+    if (account.warning) { const note = el('div', 'asst-routes-row-warning', account.warning); note.title = account.warning; note.id = `${nameId}-account-warning`; accountBtn.setAttribute('aria-describedby', note.id); description.hidden = true; main.append(note); }
+    if (capabilityNote) main.append(capabilityNote);
+    if (issue) { description.hidden = true; main.querySelector('.asst-routes-row-note')?.remove(); const note = el('div', 'asst-routes-row-warning', issueText(issue, task)); note.title = note.textContent; note.id = `${nameId}-issue`; modelBtn.setAttribute('aria-describedby', `${source.id} ${note.id}`); modelBtn.title = `${label} — ${note.textContent}`; main.append(note); }
     if (task.id === 'chat' || task.id === 'vision') {
       description.hidden = true;
       const text = task.id === 'chat' ? tr('assistant.routes.chatInactive', 'Plain chat stays on the current brain. A stored Chat choice is not applied in any mode.') : tr('assistant.routes.visionFallback', 'Vision fallback, not a task class. Used when the chosen model cannot see image input.');
-      const context = el('div', 'asst-routes-row-context', text); context.title = text; context.id = `${nameId}-context`; node.append(context);
+      const context = el('div', 'asst-routes-row-context', text); context.title = text; context.id = `${nameId}-context`; main.append(context);
       context.hidden = !!issue;
       modelBtn.setAttribute('aria-describedby', `${modelBtn.getAttribute('aria-describedby')} ${context.id}`);
       if (task.id === 'chat') { node.dataset.inactive = 'true'; const inactive = el('span', 'asst-routes-inactive', tr('assistant.routes.notApplied', 'Not applied')); inactive.title = text; name.append(inactive); }
     }
+    const expanded = state.expandedTask === task.id;
+    const details = el('div', 'asst-routes-details'); details.id = `${nameId}-details`; details.hidden = !expanded;
+    // Move the existing controls, preserving their draft semantics and custom menus.
+    for (const child of [...node.children]) if (child !== main) details.append(child);
+    const summary = button('asst-routes-toggle', '', () => {
+      closeMenu(); state.expandedTask = expanded ? null : task.id; render(`${task.id}-toggle`);
+    });
+    summary.dataset.focusKey = `${task.id}-toggle`;
+    summary.setAttribute('aria-expanded', String(expanded)); summary.setAttribute('aria-controls', details.id);
+    const summaryName = el('span', 'asst-routes-summary-name', task.label);
+    const summaryValue = el('span', 'asst-routes-summary-value');
+    if (pref?.provider) {
+      const mark = el('span', 'asst-icon'); mark.setAttribute('aria-hidden', 'true');
+      const shown = providerMeta(displayProvider(pref)); mark.innerHTML = shown.icon; mark.style.color = shown.color; summaryValue.append(mark);
+    }
+    summaryValue.append(el('span', 'asst-routes-summary-model', label));
+    if (pref) summaryValue.append(el('span', 'asst-routes-summary-meta', [pref.effort ? effortName(pref.effort) : '', runValue].filter(Boolean).join(' · ')));
+    const status = el('span', 'asst-routes-summary-status', task.id === 'chat' ? tr('assistant.routes.notApplied', 'Not applied') : issue ? tr(`assistant.routes.issueLabel.${issue}`, 'Unverified') : pref ? tr('assistant.routes.source.yours', 'Your choice') : '');
+    const chevron = el('span', 'asst-routes-chevron'); chevron.innerHTML = ICON_CARET; chevron.setAttribute('aria-hidden', 'true');
+    summary.append(summaryName, summaryValue, status, chevron);
+    summary.title = [task.label, label, pref ? runLabel : '', issue ? issueText(issue, task) : ''].filter(Boolean).join(' · ');
+    summary.setAttribute('aria-label', [task.label, label, pref ? [pref.effort ? effortName(pref.effort) : '', runLabel].filter(Boolean).join(' · ') : '', status.textContent].filter(Boolean).join(' · '));
+    node.dataset.custom = String(!!pref); node.dataset.issue = String(!!issue);
+    // Warnings and Chat/vision exceptions stay visible even with the controls closed.
+    node.replaceChildren(summary, main, details);
+    main.querySelector('.asst-routes-row-label').hidden = true;
+    description.hidden = !expanded || description.hidden;
     return node;
   }
   async function manageModels(focusKey = 'reload-models') {
@@ -482,33 +549,81 @@ export async function openRoutesEditor(hooks = {}) {
     } catch { state.suspended = false; overlay.hidden = false; focus(focusKey); }
   }
   async function reloadModels() {
-    if (state.modelsLoading || state.offline) return;
+    if (state.modelsLoading || state.catalogRefreshing || state.offline) return;
     state.modelsLoading = true; closeMenu(); render();
     try { state.catalog = await loadRouteModels(); state.modelError = routeModelsStatus().partial; modelsWatch.seed(state.catalog); }
     catch { state.modelError = true; }
     if (!overlay.isConnected) return;
     state.modelsLoading = false; state.notice = state.modelError ? '' : tr('assistant.routes.editorState.modelsUpdated', 'Model list updated. Your unsaved changes are kept.'); render();
   }
+  function adoptRouting(data, pending) {
+    state.data = data; state.version = data.version ?? null; state.initialMode = normalizeRouteMode(data.routing?.defaultMode, DEFAULT_ROUTE_MODE);
+    state.mode = pending.defaultMode || state.initialMode; state.prefs = { ...(data.routing?.preferences || {}) }; state.patch = pending.preferences || {}; state.conflict = false;
+  }
+  // Rows are drawn from the page's last catalog; a new build replaces them only when it draws differently.
+  let catalogRefresh = 0;
+  async function refreshCatalog() {
+    const mine = ++catalogRefresh;
+    state.catalogRefreshing = true;
+    let next = null, failed = false;
+    try { next = await loadRouteModels(); } catch { failed = true; }
+    if (!overlay.isConnected || mine !== catalogRefresh) return;
+    state.catalogRefreshing = false;
+    const partial = failed || routeModelsStatus().partial;
+    // A build without the server's catalog (the window's lists standing in) never replaces a complete one
+    // the rows already show: they stay, marked unverified, and Reload models is offered again.
+    if (next && partial && state.catalog && !state.modelError) next = null;
+    const changed = next && catalogSignature(next) !== catalogSignature(state.catalog);
+    const checksChanged = state.modelsLoading || partial !== state.modelError;
+    if (next) { state.catalog = next; modelsWatch.seed(next); state.modelError = partial; } else state.modelError = true;
+    state.modelsLoading = false;
+    // The same lists: only the Reload action changes back. Otherwise the rows are drawn again where
+    // the user is (focus kept); an open menu is not taken away: the rows follow once it closes.
+    if (changed || checksChanged || !next) { if (!currentMenu()) render(document.activeElement?.dataset?.focusKey); else state.pendingRender = true; }
+    else { const reload = body.querySelector('.asst-routes-reload-models'); if (reload) { reload.textContent = tr('assistant.routes.reloadModels', 'Reload models'); reload.setAttribute('aria-label', reload.textContent); reload.disabled = state.saving || state.offline; reload.dataset.state = 'idle'; } body.querySelector('.asst-routes-list')?.setAttribute('aria-busy', 'false'); }
+  }
   async function load(preserve = false) {
     const pending = preserve ? changes() : {};
-    state.loading = true; state.error = ''; state.modelsLoading = true; render();
+    state.loading = true; state.error = '';
+    // First paint from what the page already has: the routing answer kept from the last open
+    // (or the panel's warm-up) and the last catalog loaded. Both are read again right after.
+    const kept = !preserve && cachedRouting();
+    const catalog = cachedRouteModels();
+    state.catalog = catalog; state.modelsLoading = !catalog; state.modelError = catalog ? routeModelsStatus().partial : false; modelsWatch.seed(catalog);
+    if (kept) { adoptRouting(kept, pending); state.loading = false; }
+    const catalogDone = refreshCatalog(); // starts now; the paint below already says "Updating models…"
+    render();
+    // Accounts: the cached lists draw the Account column now; the fresh ones redraw it if they differ.
+    const accountsBefore = JSON.stringify([getCachedClaudeAccounts(), getCachedCodexAccounts()]);
+    const accountsDone = Promise.allSettled([fetchClaudeAccounts(true), fetchCodexAccounts(true)]).then(() => {
+      if (overlay.isConnected && state.data && JSON.stringify([getCachedClaudeAccounts(), getCachedCodexAccounts()]) !== accountsBefore && !currentMenu()) render(document.activeElement?.dataset?.focusKey);
+    });
     try {
-      const [data, result] = await Promise.all([getRouting(), loadRouteModels().then(catalog => ({ catalog })).catch(() => ({ catalog: state.catalog, error: true })), Promise.allSettled([fetchClaudeAccounts(true), fetchCodexAccounts(true)])]);
+      const data = await loadRouting();
       if (!overlay.isConnected) return;
-      state.data = data; state.version = data.version ?? null; state.initialMode = normalizeRouteMode(data.routing?.defaultMode, DEFAULT_ROUTE_MODE);
-      state.mode = pending.defaultMode || state.initialMode; state.prefs = { ...(data.routing?.preferences || {}) }; state.patch = pending.preferences || {};
-      state.catalog = result.catalog; state.modelError = result.error || routeModelsStatus().partial; modelsWatch.seed(state.catalog); state.conflict = false;
-      if (preserve) state.notice = tr('assistant.routes.editorState.settingsReloaded', 'Latest settings loaded. Your edits are kept; review them before saving.');
+      const moved = state.data && (data.version ?? null) !== state.version;
+      // A later version while the user already edits: say so, as a Reload does; otherwise adopt it quietly.
+      if (!state.data || moved || preserve) {
+        adoptRouting(data, state.data ? changes() : pending);
+        if (preserve || (moved && dirty())) state.notice = tr('assistant.routes.editorState.settingsReloaded', 'Latest settings loaded. Your edits are kept; review them before saving.');
+      }
     } catch (err) {
+      if (!overlay.isConnected) return;
       state.error = err.status === 403 ? tr('assistant.routes.editorState.permission', 'You do not have permission to edit routing settings.') : err.status === 404 ? tr('assistant.routes.unavailable', 'Model routing is not available on this server yet.') : tr('assistant.routes.loadFailed', 'Could not load model routes');
     }
-    state.loading = false; state.modelsLoading = false; render(); if (!preserve) focus();
+    state.loading = false;
+    if (!kept || state.notice || state.error) render(document.activeElement?.dataset?.focusKey); else updateFoot();
+    if (!preserve && !kept) focus();
+    // The open is done at the first complete paint; the catalog and the accounts finish on their own.
+    catalogDone.catch(() => {}); accountsDone.catch(() => {});
   }
   async function save() {
     if (saveBtn.disabled) return;
     const patch = changes(); state.saving = true; state.error = ''; updateFoot(); closeMenu();
     try {
       const res = await putRouting(patch, state.version);
+      // The next open paints from what was just saved.
+      rememberRouting({ ...state.data, ...res, routing: res?.routing || state.data?.routing });
       try { hooks.onSaved?.(res?.routing || null, res); } catch { /* host callback */ }
       finishClose();
     } catch (err) {

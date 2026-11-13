@@ -81,6 +81,25 @@ export const BRAIN_CREDENTIAL_SHAPE_RE = /^sbb_[A-Za-z0-9_-]{43}$/;
 export const BRAIN_CREDENTIAL_HEADER = 'x-synabun-brain-token';
 /** How many ended runs stay refused (oldest first out). */
 export const REVOKED_KEPT_MAX = 10_000;
+/**
+ * How many closed MCP sessions stay refused, in a list of their own (oldest first out). Anybody on this computer can
+ * open and close MCP sessions, so they never share the ended runs' list: before 2026-11-10 (review b6631e9d, finding
+ * 7) 10,000 open-and-close cycles pushed every ended run out of it, and an ended run's id was sayable again.
+ */
+export const REVOKED_SESSIONS_KEPT_MAX = 10_000;
+
+/** The shape of the ids the MCP transport mints for its sessions (a random UUID): a bearer for that session. */
+export const MCP_SESSION_ID_SHAPE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * `id` as a log line or a refusal may show it (finding 4 of the re-review of 2026-11-11): an id shaped like an MCP
+ * session's (MCP_SESSION_ID_SHAPE_RE) or `isMcpSession` says is one, cut to its first 8 characters and "…" (as
+ * mcp-server/src/http.ts sessionLogId); anything else (a run's id, which is nothing without its token) up to 128
+ * characters, so a log still finds the run.
+ */
+export function logIdOf(id, isMcpSession = false) {
+  const text = String(id ?? '');
+  return isMcpSession === true || MCP_SESSION_ID_SHAPE_RE.test(text) ? `${text.slice(0, 8)}…` : text.slice(0, 128);
+}
 
 /** A new token. */
 export function mintTerminalToken(random = cryptoRandomBytes) {
@@ -123,7 +142,10 @@ const digestOf = (text) => createHash('sha256').update(String(text)).digest();
  * @param {string} id the run the request named
  */
 export function terminalRefusal(status, id) {
-  const run = String(id).slice(0, 128);
+  // Finding 4 (re-review of 2026-11-11): the id a request names may be a live Mcp-Session-Id, a bearer for that MCP
+  // session. A refusal goes back to the caller that sent it, but it can be copied into a log on its way (a route's
+  // catch, a proxy), so an id of that shape is said by its short form here too (logIdOf).
+  const run = logIdOf(id);
   if (status === 'missing') {
     return {
       status: 403, code: 'TERMINAL_TOKEN_REQUIRED',
@@ -150,6 +172,10 @@ export function terminalRefusal(status, id) {
  *   environment says (read at every check); `graceWindowMs` how long grace may last after the registry was made (the
  *   server's start), read at every check too; `now` the clock. `knownSecrets` is told every live proof and every one
  *   that stops proving anything (lib/terminal-token-redaction.js: the scrubbers then mask its base64 and hex too).
+ *   `maxRevokedSessions`: how many closed MCP sessions stay refused, apart from the ended runs. `onEnded(id, kind)` is
+ *   told every id whose owner ended (revoke() of a run, revokeSession() of an MCP session; never rotate() or retire(),
+ *   which are a new process or a pause of the same owner): the server forgets what that id held (its MoreLogin
+ *   profile pin and its saved choice, server.js forgetRunMoreLoginProfile), so nothing outlives its owner.
  */
 export function createTerminalTokenRegistry({
   random = cryptoRandomBytes,
@@ -161,9 +187,15 @@ export function createTerminalTokenRegistry({
   now = Date.now,
   logEveryMs = GRACE_LOG_EVERY_MS,
   knownSecrets = { add: registerKnownSecret, remove: forgetKnownSecret },
+  maxRevokedSessions = REVOKED_SESSIONS_KEPT_MAX,
+  onEnded = null,
 } = {}) {
-  const live = new Map(); // terminal id → { token, digest, kind: 'token' | 'credential' }
+  const live = new Map(); // terminal id → { token, digest, kind: 'token' | 'credential' | 'mcp-session' }
   const revoked = new Set(); // ids of ended runs, oldest first
+  const revokedSessions = new Set(); // ids of closed MCP sessions, oldest first: never in `revoked` (finding 7)
+  const sessionCap = Math.max(1, Number(maxRevokedSessions) || REVOKED_SESSIONS_KEPT_MAX);
+  /** Tell the host an id's owner ended (never a reason to fail a revoke). */
+  const ended = (id, kind) => { if (typeof onEnded === 'function') { try { onEnded(id, kind); } catch { /* the host's own failure */ } } };
   const graceLog = new Map(); // id → { at, more }: when a grace acceptance was last logged, and how many since
   const cap = Math.max(1, Number(maxRevoked) || REVOKED_KEPT_MAX);
   const startedAt = now();
@@ -203,7 +235,7 @@ export function createTerminalTokenRegistry({
     graceLog.set(id, { at, more: 0 });
     while (graceLog.size > cap) graceLog.delete(graceLog.keys().next().value);
     const ends = graceEndsAt();
-    say(`[terminal-tokens] grace: run ${id} was let through without its terminal token (${TERMINAL_TOKEN_MODE_ENV}=grace)${more ? `; ${more} more time${more === 1 ? '' : 's'} since the last line` : ''}${Number.isFinite(ends) ? `; grace ends at ${new Date(ends).toISOString()}` : ''}`);
+    say(`[terminal-tokens] grace: run ${logIdOf(id)} was let through without its terminal token (${TERMINAL_TOKEN_MODE_ENV}=grace)${more ? `; ${more} more time${more === 1 ? '' : 's'} since the last line` : ''}${Number.isFinite(ends) ? `; grace ends at ${new Date(ends).toISOString()}` : ''}`);
   }
 
   /** The scrubbers learn a live proof's value and forget a dead one's (never a reason to fail a check). */
@@ -218,6 +250,7 @@ export function createTerminalTokenRegistry({
   }
   function setLive(id, token, kind) {
     revoked.delete(id);
+    revokedSessions.delete(id);
     graceLog.delete(id);
     if (live.has(id)) dropLive(id);
     live.set(id, { token, digest: digestOf(token), kind });
@@ -259,6 +292,42 @@ export function createTerminalTokenRegistry({
     return true;
   }
 
+  /**
+   * A proof for a plain MCP session of SynaBun's own HTTP MCP endpoint (a CLI window's Claude Code or Codex that SynaBun
+   * did not start: its id is the Mcp-Session-Id the endpoint minted at its initialize). Kind 'mcp-session': it makes
+   * the session's id verified (nobody else can name it any more, and the browser and MoreLogin routes know it is
+   * that session), but it is not a run: moreLoginGate lets it work in a profile of its own (`use`) and never `start`
+   * or `use-default` (kindOf). Never replaces a proof an id already holds (a run's token, a brain's credential), and
+   * never reopens an ended id. Returns the token, or null.
+   */
+  function issueSession(sessionId) {
+    const id = idOf(sessionId);
+    if (!id || live.has(id) || revoked.has(id) || revokedSessions.has(id)) return null;
+    return setLive(id, mintTerminalToken(random), 'mcp-session');
+  }
+
+  /**
+   * The MCP session ended: its proof stops working and its id stays refused. Only a proof issueSession gave. The id
+   * goes to the closed sessions' own list (revokedSessions), never to the ended runs' (finding 7: see
+   * REVOKED_SESSIONS_KEPT_MAX), so no number of sessions opened and closed can make an ended run's id sayable again.
+   */
+  function revokeSession(sessionId) {
+    const id = idOf(sessionId);
+    if (!id || live.get(id)?.kind !== 'mcp-session') return false;
+    dropLive(id);
+    graceLog.delete(id);
+    revokedSessions.delete(id);
+    revokedSessions.add(id);
+    while (revokedSessions.size > sessionCap) revokedSessions.delete(revokedSessions.values().next().value);
+    ended(id, 'mcp-session');
+    return true;
+  }
+
+  /** What proves `terminalId`: 'token' (a run, a panel), 'credential' (a brain), 'mcp-session', or null. */
+  function kindOf(terminalId) {
+    return (typeof terminalId === 'string' && live.get(terminalId)?.kind) || null;
+  }
+
   /** The live token of `terminalId`, or null (none issued, or revoked). For a handoff to a process the run starts. */
   function tokenFor(terminalId) {
     const id = idOf(terminalId);
@@ -269,6 +338,8 @@ export function createTerminalTokenRegistry({
   function revoke(terminalId) {
     const id = idOf(terminalId);
     if (!id) return false;
+    // An MCP session's proof ends in its own list, whoever asks (revokeSession).
+    if (live.get(id)?.kind === 'mcp-session') return revokeSession(id);
     const had = dropLive(id);
     graceLog.delete(id);
     if (had || revoked.has(id)) {
@@ -276,6 +347,7 @@ export function createTerminalTokenRegistry({
       revoked.add(id);
       while (revoked.size > cap) revoked.delete(revoked.values().next().value);
     }
+    ended(id, 'run');
     return had;
   }
 
@@ -306,7 +378,7 @@ export function createTerminalTokenRegistry({
     const held = id ? live.get(id) : null;
     const absent = presented === undefined || presented === null || presented === '';
     if (!held) {
-      if (id && revoked.has(id)) return 'revoked';
+      if (id && (revoked.has(id) || revokedSessions.has(id))) return 'revoked';
       return 'unregistered';
     }
     if (absent) return 'missing';
@@ -335,6 +407,9 @@ export function createTerminalTokenRegistry({
     issue,
     rotate,
     bind,
+    issueSession,
+    revokeSession,
+    kindOf,
     tokenFor,
     revoke,
     retire,
@@ -345,7 +420,7 @@ export function createTerminalTokenRegistry({
     /** Whether `id` holds a live token (or a bound credential). */
     has: (terminalId) => live.has(terminalId),
     /** Whether `id` is an ended run's. */
-    isRevoked: (terminalId) => revoked.has(terminalId),
+    isRevoked: (terminalId) => revoked.has(terminalId) || revokedSessions.has(terminalId),
     /** The mode in force: 'grace' only while the environment asks for it and its window is open. */
     mode: () => currentMode(),
     /** For diagnostics: the mode in force, the one asked for, and when grace ends (an ISO time, or null for never). */
@@ -355,5 +430,7 @@ export function createTerminalTokenRegistry({
     },
     /** For tests and diagnostics: how many runs hold a token, how many ended ones are kept. */
     stats: () => ({ live: live.size, revoked: revoked.size }),
+    /** For tests and diagnostics: how many closed MCP sessions are kept refused (their own list, never the runs'). */
+    sessionStats: () => ({ revokedSessions: revokedSessions.size }),
   };
 }

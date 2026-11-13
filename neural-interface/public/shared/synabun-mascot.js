@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════
-// SynaBun mascot — pill eyes and a smile, rig v2
+// SynaBun mascot — generated block eyes and a smile, on the shared rig
 // ═══════════════════════════════════════════
 // The onboarding character (onboarding.html initEyesSVG / updateEyesSVG): the
 // same 280×140 geometry and blink timing, as a module any page can mount, now
@@ -7,7 +7,9 @@
 // function of time (poseFrame) over a few parameters per eye, the mouth and
 // the face, plus one prop drawn in the face's own pill geometry. Rigs draw
 // from the shared ticker (shared/synabun-ticker.js): 30 fps while a pose
-// loops, 60 fps for blends and reactions, no frames at all while still. One
+// loops, 60 fps for blends and reactions, no frames at all while still. The
+// task artwork plays from compact GIFs; PNGs serve stills and reduced motion.
+// The SVG geometry remains the gaze/reaction/pointing rig and asset encoder. One
 // loop, one pointermove listener and one IntersectionObserver serve every rig,
 // and every rig that is active and on screen plays its own pose: N rigs move
 // at once, each on its own clock. No rig waits for another; a host that wants
@@ -39,6 +41,7 @@
  *   one-shot (success, error, blocked) has played and held. The same pose with
  *   a new count or ticks keeps its loop running. `opts.unlimited` selects the
  *   budget pose's relaxed infinity variant; project peeks into a folder.
+ *   `idleVariant: 'hero'` selects the richer empty-page idle artwork.
  *   The card poses (`MASCOT_CARD_POSES`, the Assistant's follow-ups and
  *   question cards): `present` (a warm smile toward what it offers), `pick`
  *   (the plan's clipboard, one tick per picked item: `opts.ticks`) and `ask`
@@ -105,9 +108,10 @@
  */
 
 import {
-  isReducedMotion, lastInputAt, now as tickerNow, onKey, onPointer, onReducedMotionChange,
-  pointerPosition, requestFrames, subscribe,
+  clearTickerTimeout, isReducedMotion, lastInputAt, now as tickerNow, onKey, onPointer, onReducedMotionChange,
+  pointerPosition, requestFrames, subscribe, tickerPaused, tickerTimeout,
 } from './synabun-ticker.js';
+import { mascotAsset, mascotAssetUrl } from './synabun-mascot-assets.js';
 
 export const MASCOT_VIEWBOX = '0 0 280 140';
 
@@ -119,14 +123,51 @@ export const MASCOT_CARD_POSES = Object.freeze(['present', 'pick', 'ask']);
 export const MASCOT_POSES = Object.freeze([...MASCOT_KINDS, ...MASCOT_STATES, 'project', 'budget', 'skill', ...MASCOT_CARD_POSES]);
 export const MASCOT_REACTIONS = Object.freeze(['hop', 'wince', 'nod', 'pop', 'startle', 'pulse', 'click']);
 
-/** The character's SVG. Colour comes from `currentColor` (the mouth at 25 %). */
-export function mascotSvg({ width = 280, height = 140, className = '' } = {}) {
+/**
+ * GIF/PNG art (v3): each file is the whole drawn character (eyes, smile,
+ * props), one square image centred in the 280×140 box. It is never
+ * clipped into layers and nothing of the vector rig is drawn over it; the
+ * live rig moves it only as a whole (a small translate / tilt / scale).
+ */
+// v3 still alpha union (47,43)–(461,469), expanded for GIF cels
+// (10,9)–(469,469). Uniform fit centres the content with vertical clearance.
+export const ART_BOX = Object.freeze({ x: 68, y: -2, size: 144 });
+/** Approved v3 hover-attention.gif duration. */
+export const HOVER_ATTENTION_MS = 1740;
+const ART_GAZE_K = 0.35; // the drawn eyes cannot move: a gaze nudges the whole image a little
+const ART_GAZE_MAX = 6;  // viewBox units
+const clampTo = (v, m) => Math.max(-m, Math.min(m, v));
+
+/**
+ * The whole-image transform of the art for frame `f` over the pose's own
+ * frame `base`: the face's translate / tilt (blends, reactions), a small
+ * gaze nudge and a reaction's horizontal squash as a scale. Blinks (eye
+ * height) are never applied: the GIF draws its own eyes.
+ */
+export function artTransform(f, base) {
+  const r = (v) => Math.round(v * 100) / 100;
+  if (!f || !base) return 'translate(0,0) rotate(0 140 70) scale(1)';
+  const eyes = (k) => ((f.eyes?.[0]?.[k] ?? 0) - (base.eyes?.[0]?.[k] ?? 0) + (f.eyes?.[1]?.[k] ?? 0) - (base.eyes?.[1]?.[k] ?? 0)) / 2;
+  const dx = (f.face.dx - base.face.dx) + clampTo(eyes('dx') * ART_GAZE_K, ART_GAZE_MAX);
+  const dy = (f.face.dy - base.face.dy) + clampTo(eyes('dy') * ART_GAZE_K, ART_GAZE_MAX);
+  const rot = f.face.rot - base.face.rot;
+  const sx = (k) => (f.eyes?.[k]?.sx ?? 1) / ((base.eyes?.[k]?.sx) || 1);
+  const s = Math.max(0.9, Math.min(1.1, (sx(0) + sx(1)) / 2));
+  return `translate(${r(dx)},${r(dy)}) rotate(${r(rot)} 140 70) translate(140,70) scale(${r(s)}) translate(-140,-70)`;
+}
+function artworkSvg() {
+  return `<g class="syna-art-face"><image class="syna-art" x="${ART_BOX.x}" y="${ART_BOX.y}" width="${ART_BOX.size}" height="${ART_BOX.size}" preserveAspectRatio="xMidYMid meet" href="${mascotAsset('idle')}"/></g>`;
+}
+
+/** Keep the original geometry for bounds, pointing arms and the encoder. */
+export function mascotSvg({ width = 280, height = 140, className = '', artwork = true } = {}) {
   return `<svg${className ? ` class="${className}"` : ''} viewBox="${MASCOT_VIEWBOX}" width="${width}" height="${height}" style="overflow:visible" aria-hidden="true" focusable="false">`
+    + (artwork ? artworkSvg() : '')
     + '<g class="syna-face">'
-    + '<g class="syna-eye"><g class="syna-lid"><rect x="80" y="24" width="38" height="72" rx="19" fill="currentColor"/></g></g>'
-    + '<g class="syna-eye"><g class="syna-lid"><rect x="162" y="24" width="38" height="72" rx="19" fill="currentColor"/></g></g>'
-    + '<path class="syna-mouth" d="M118,116 Q140,130 162,116" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="2.5" stroke-linecap="round"/>'
-    + '<g class="syna-props"></g>'
+    + `<g class="syna-eye"${artwork ? ' visibility="hidden"' : ''}><g class="syna-lid"><rect x="80" y="24" width="38" height="72" rx="19" fill="currentColor"/></g></g>`
+    + `<g class="syna-eye"${artwork ? ' visibility="hidden"' : ''}><g class="syna-lid"><rect x="162" y="24" width="38" height="72" rx="19" fill="currentColor"/></g></g>`
+    + `<path class="syna-mouth"${artwork ? ' visibility="hidden"' : ''} d="M118,116 Q140,130 162,116" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="2.5" stroke-linecap="round"/>`
+    + `<g class="syna-props"${artwork ? ' visibility="hidden"' : ''}></g>`
     + '</g></svg>';
 }
 
@@ -728,6 +769,12 @@ export function poseFrame(name, t = 0, opts = {}) {
   const time = Number.isFinite(t) && t > 0 ? t : 0;
   const o = poseOptions(opts);
   const frame = def.frame(time, o);
+  // Nonenumerable provenance lets paintMascot(stillFrame(...)) select its
+  // PNG, without changing the public frame geometry or blend calculations.
+  Object.defineProperties(frame, {
+    pose: { value: POSES[name] ? name : 'idle' },
+    poseOptions: { value: o },
+  });
   return o.still ? markStill(frame) : frame; // the painter makes a still's prop legible at a glance
 }
 
@@ -1939,6 +1986,11 @@ export function paintMascot(svg, frame) {
   let painter = painters.get(svg);
   if (!painter) { painter = createPainter(svg, nextUid()); painters.set(svg, painter); }
   painter.paint(frame);
+  const art = svg.querySelector('.syna-art');
+  if (art) {
+    const url = mascotAsset(frame.pose || frame.prop?.name || 'idle', frame.poseOptions);
+    if (art.getAttribute('href') !== url) art.setAttribute('href', url);
+  }
 }
 
 // ── Shared runtime: one observer and one motion listener for every rig ──
@@ -1949,6 +2001,20 @@ const rigs = new Set();
 let stopMotionWatch = null;
 let io = null;
 const ioRigs = new WeakMap();
+let stopArtWatch = null;
+
+// GIFs do not obey animation-play-state. Replace their source with a PNG
+// while the shared ticker is paused, including hidden tabs and window drags.
+// One observer serves all rigs and is released with the last one.
+function watchArt() {
+  if (stopArtWatch || typeof document === 'undefined') return;
+  const update = () => { for (const rig of rigs) rig.artChanged(); };
+  const observer = typeof MutationObserver === 'function' && document.body
+    ? new MutationObserver(update) : null;
+  observer?.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+  document.addEventListener('visibilitychange', update);
+  stopArtWatch = () => { observer?.disconnect(); document.removeEventListener('visibilitychange', update); };
+}
 
 function observe(el, rig) {
   if (typeof IntersectionObserver !== 'function') return;
@@ -1968,6 +2034,7 @@ function unobserve(el) {
 
 function register(rig) {
   rigs.add(rig);
+  watchArt();
   stopMotionWatch ||= onReducedMotionChange(() => {
     for (const r of Array.from(rigs)) r.motionChanged();
   });
@@ -1976,6 +2043,7 @@ function register(rig) {
 function unregister(rig) {
   rigs.delete(rig);
   if (!rigs.size && stopMotionWatch) { stopMotionWatch(); stopMotionWatch = null; }
+  if (!rigs.size && stopArtWatch) { stopArtWatch(); stopArtWatch = null; }
 }
 
 const BLEND_MS = 160;
@@ -2003,6 +2071,7 @@ export function createMascot(container, options) {
   const {
     width = 128, height = 64, rangeX, rangeY, className = 'synabun-mascot',
     pose: firstPose = 'idle', poseOptions: firstOptions, active: startActive, arms: armsOption,
+    idleVariant = 'default',
   } = opts || {};
   const markup = mascotSvg({ width, height, className });
   let svg;
@@ -2016,6 +2085,20 @@ export function createMascot(container, options) {
     svg.remove();
   }
   const painter = createPainter(svg, nextUid());
+  const art = svg.querySelector('.syna-art');
+  const artFace = svg.querySelector('.syna-art-face');
+  let artSource = '';
+  // The empty page's hero: hovering it (or attention()) plays hover-attention
+  // once over idle-hero, then idle-hero again. Never under reduced motion.
+  const hero = idleVariant === 'hero';
+  let attentionUntil = -Infinity;
+  let attentionTimer = 0;
+  let stopHover = null;
+  if (hero && art && typeof svg.addEventListener === 'function') {
+    const onEnter = () => attention();
+    svg.addEventListener('pointerenter', onEnter);
+    stopHover = () => svg.removeEventListener('pointerenter', onEnter);
+  }
   painters.set(svg, painter); // paintMascot() on a live rig's SVG reuses its props
   const range = { x: Math.max(RANGE.x, Number(rangeX) || 0), y: Math.max(RANGE.y, Number(rangeY) || 0) };
 
@@ -2273,7 +2356,40 @@ export function createMascot(container, options) {
   /** Paint a face frame; while an arm is out its eyes keep to MASCOT_ARM.gaze (never toward an arm). */
   function paintFace(f) {
     if (arms) arms.sim.prop(f?.prop?.name || null); // an arm whose shoulder this prop covers roots under it
-    painter.paint(arms ? armGaze(f, arms.sim.presence()) : f);
+    const shown = arms ? armGaze(f, arms.sim.presence()) : f;
+    painter.paint(shown);
+    paintArt(shown);
+  }
+
+  function paintArt(f = lastFrame || stillFrameNow()) {
+    if (!art) return;
+    const animated = animating() && !tickerPaused() && !destroyed;
+    const attending = animated && hero && pose.name === 'idle' && tickerNow() < attentionUntil;
+    const url = attending
+      ? mascotAssetUrl('hover-attention', { animated: true })
+      : mascotAsset(pose.name, { ...pose.raw, ticks }, { animated, hero });
+    // Never rewrite a running GIF's href every frame: that restarts playback.
+    if (artSource !== url) {
+      artSource = url;
+      // Separate playback identities let two panels acknowledge completion
+      // independently, and a later turn can replay the same one-shot.
+      art.setAttribute('href', animated ? `${url}&play=${nextUid()}` : url);
+    }
+    if (artFace) {
+      const value = artTransform(f, poseFrame(pose.name, poseTime(), { ...pose.raw, ticks, still: !playing() }));
+      if (artFace.getAttribute('transform') !== value) artFace.setAttribute('transform', value);
+    }
+  }
+
+  /** Play hover-attention once over the hero's idle (no-op elsewhere or under reduced motion). */
+  function attention() {
+    if (destroyed || !hero || !art || !animating() || pose.name !== 'idle') return api;
+    if (tickerNow() < attentionUntil) return api; // already playing: never restart mid-way
+    attentionUntil = tickerNow() + HOVER_ATTENTION_MS;
+    clearTickerTimeout(attentionTimer);
+    attentionTimer = tickerTimeout(() => { attentionTimer = 0; if (!destroyed) paintArt(); }, HOVER_ATTENTION_MS + 20);
+    paintArt();
+    return api;
   }
 
   function compose() {
@@ -2642,12 +2758,17 @@ export function createMascot(container, options) {
   function destroy() {
     if (destroyed) return;
     destroyed = true;
+    paintArt();
     setRate(0);
     clearWake();
     stopPointer?.();
     stopPointer = null;
     stopKey?.();
     stopKey = null;
+    stopHover?.();
+    stopHover = null;
+    clearTickerTimeout(attentionTimer);
+    attentionTimer = 0;
     unobserve(svg);
     stopArmWatch();
     svg.removeEventListener('animationend', onAnimationEnd);
@@ -2657,6 +2778,7 @@ export function createMascot(container, options) {
   }
 
   const rig = {
+    artChanged() { paintArt(); },
     visibilityChanged(inView) {
       if (destroyed) return;
       if (svg.isConnected) seenConnected = true;
@@ -2680,6 +2802,8 @@ export function createMascot(container, options) {
     blink,
     setPose,
     react,
+    /** The empty page hero only: play hover-attention once, then idle-hero again. */
+    attention,
     setActive,
     point,
     /** Two quick pokes toward what the arm points at (the beat landed). */
@@ -2746,7 +2870,7 @@ export function createMascot(container, options) {
   register(rig);
   svg.addEventListener('animationend', onAnimationEnd);
   lastFrame = stillFrameNow();
-  painter.paint(lastFrame);
+  paintFace(lastFrame);
   observe(svg, rig);
   if (animating()) {
     scheduleIdle();

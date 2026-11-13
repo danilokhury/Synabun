@@ -488,7 +488,7 @@ export function injectAssistantStyles() {
     .asst-working { display: flex; align-items: center; gap: 10px; min-height: 28px; color: var(--asst-text-2); font-size: 12.5px; }
     .asst-working-face { display: inline-flex; flex-shrink: 0; color: var(--asst-text); line-height: 0; }
     .asst-working-face:empty { display: none; }
-    .asst-working-face svg { display: block; width: 56px; height: 28px; }
+    .asst-working-face svg { display: block; width: 112px; height: 56px; }
     /* The hero's hand-off (asst-render.js settleHero): the face flies in from the empty state, over the prompt. */
     .asst-working.is-flip .asst-working-face { position: relative; z-index: 3; }
 
@@ -1266,7 +1266,7 @@ export function injectAssistantStyles() {
     .asst-control.resolved { --tone: var(--asst-text-3); --tone-line: var(--asst-line); opacity: .8; }
     .asst-control-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .asst-control-face { display: inline-flex; flex-shrink: 0; color: var(--asst-text-2); line-height: 0; }
-    .asst-control-face svg { display: block; width: 28px; height: 14px; }
+    .asst-control-face svg { display: block; width: 56px; height: 28px; }
     .asst-control-kind {
       display: inline-flex;
       align-items: center;
@@ -1818,23 +1818,28 @@ export function injectAssistantStyles() {
     /* Model routes editor: Settings density on a desktop pointer. Scoped here
        so route cards, the model manager and other Assistant menus keep their UI. */
     .asst-routes-overlay { font-family: var(--stg-font, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Inter, sans-serif); }
-    .asst-routes-overlay .asst-routes-modal { width: min(1040px, 100%); max-height: calc(100dvh - 32px); border-radius: var(--asst-r-card); line-height: 1.4; }
+    .asst-routes-overlay .asst-routes-modal { width: min(960px, 100%); max-height: calc(100dvh - 24px); border-radius: var(--asst-r-card); line-height: 1.4; }
     .asst-routes-modal :is(.asst-btn, .asst-dd, .asst-iconbtn) { --cap-h: var(--asst-pill-h-sm); --cap-r: var(--asst-pill-r-xs); --cap-px: var(--asst-pill-px-sm); --cap-icon: 12px; --cap-gap: 4px; }
-    .asst-routes-modal .asst-modal-head { min-height: 40px; padding: 8px 14px 8px 22px; font-size: 13px; }
+    .asst-routes-modal .asst-modal-head { min-height: 36px; padding: 6px 12px 6px 18px; font-size: 13px; }
     .asst-routes-modal .asst-modal-head .asst-icon { color: var(--asst-text-2); }
     .asst-routes-modal .asst-modal-close { width: var(--cap-h); height: var(--cap-h); }
-    .asst-routes-modal .asst-modal-body { gap: 12px; padding: 12px 22px; scroll-padding: 28px 0; }
-    .asst-routes-modal .asst-modal-foot { padding: 10px 22px; }
+    .asst-routes-modal .asst-modal-body { gap: 10px; padding: 10px 18px; scroll-padding: 24px 0; }
+    .asst-routes-modal .asst-modal-foot { padding: 8px 18px; }
     .asst-routes-modal .asst-btn { height: var(--cap-h); min-height: var(--cap-h); padding: 0 10px; }
-    .asst-routes-modal .asst-routes-section { flex-shrink: 0; gap: 6px; margin: 0; min-width: 0; }
+    .asst-routes-modal .asst-routes-section { flex-shrink: 0; gap: 5px; margin: 0; min-width: 0; }
     .asst-routes-modal .asst-routes-section-title { margin: 0; color: var(--asst-text); font-size: 13px; font-weight: 600; }
+    /* When to ask: heading, segmented control and the conversation's own mode share one slim row. */
+    .asst-routes-modal .asst-routes-ask-head { flex-wrap: wrap; justify-content: flex-start; gap: 4px 12px; }
+    .asst-routes-modal .asst-routes-ask-head .asst-routes-section-title { flex: 0 0 auto; }
+    .asst-routes-modal .asst-routes-ask-head .asst-routes-modes { flex: 1 1 330px; max-width: 480px; }
+    .asst-routes-modal .asst-routes-ask-head .asst-routes-session-note { flex: 1 1 160px; text-align: end; }
     .asst-routes-modal .asst-routes-modes { gap: 0; padding: 0; border-radius: var(--asst-pill-r-xs); background: var(--asst-fill-1); }
     .asst-routes-modal .asst-routes-mode { position: relative; flex-direction: row; align-items: center; justify-content: center; height: var(--asst-pill-h-sm); padding: 0 8px; gap: 0; min-width: 0; border-radius: var(--asst-pill-r-xs); box-shadow: none; color: var(--asst-text-2); }
     .asst-routes-mode input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
     .asst-routes-modal .asst-routes-mode:has(input:checked) { background: var(--asst-fill-3); color: var(--asst-text); box-shadow: inset 0 0 0 1px var(--asst-line-2); }
     .asst-routes-modal .asst-routes-mode-label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; font-weight: 500; }
-    .asst-routes-modal .asst-routes-mode-desc, .asst-routes-session-note { margin: 0; color: var(--asst-text-2); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
-    .asst-routes-session-note { color: var(--asst-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .asst-routes-modal .asst-routes-mode-desc, .asst-routes-session-note { margin: 0; color: var(--asst-text-2); font-size: 12px; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .asst-routes-session-note { color: var(--asst-text-3); }
     .asst-routes-mode:has(:focus-visible) { outline: 2px solid var(--asst-focus); outline-offset: 2px; z-index: 1; }
     .asst-routes-section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
     .asst-routes-list-actions { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -1842,17 +1847,17 @@ export function injectAssistantStyles() {
     .asst-routes-modal .asst-routes-list-actions .asst-btn:hover:not(:disabled) { color: var(--asst-text); background: var(--asst-fill-1); }
     /* Reserve the widths the current model names, effort words and destinations
        need; give all remaining space to task descriptions instead of a share. */
-    .asst-routes-modal .asst-routes-columns, .asst-routes-modal .asst-routes-row { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(120px, 200px) 70px 116px minmax(120px, 190px) var(--asst-pill-h-sm); column-gap: 6px; }
-    .asst-routes-columns { position: sticky; top: -14px; z-index: 1; padding: 4px 8px; color: var(--asst-text-3); font-size: 11.5px; background: var(--asst-popover); }
+    .asst-routes-modal .asst-routes-columns, .asst-routes-modal .asst-routes-row { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(120px, 188px) 70px 116px minmax(120px, 176px) var(--asst-pill-h-sm); column-gap: 6px; }
+    .asst-routes-columns { position: sticky; top: -10px; z-index: 1; padding: 2px 8px; color: var(--asst-text-3); font-size: 11.5px; background: var(--asst-popover); }
     .asst-routes-columns span:last-child { visibility: hidden; }
     .asst-routes-modal .asst-routes-list { padding: 0 8px; border: 1px solid var(--asst-line); border-radius: var(--radius-group, 9px); background: var(--asst-field); }
     .asst-routes-modal .asst-routes-row { align-items: center; row-gap: 0; padding: 2px 0; border-top: 1px solid var(--asst-line); }
     .asst-routes-modal .asst-routes-row:first-child { border-top: 0; }
     .asst-routes-modal .asst-routes-row-main { min-width: 0; }
-    .asst-routes-modal .asst-routes-row-label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; font-weight: 400; line-height: 1.3; }
-    .asst-routes-modal :is(.asst-routes-row-desc, .asst-routes-row-note, .asst-routes-row-warning, .asst-routes-row-context) { margin: 0; padding: 0; border: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--asst-text-3); font-size: 11.5px; line-height: 1.3; }
+    .asst-routes-modal .asst-routes-row-label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; font-weight: 400; line-height: 1.25; }
+    /* Under the name: the description, or the one-line note, warning or context that stands in for it (whole in its title). */
+    .asst-routes-modal :is(.asst-routes-row-desc, .asst-routes-row-note, .asst-routes-row-warning, .asst-routes-row-context) { margin: 0; padding: 0; border: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--asst-text-3); font-size: 11.5px; line-height: 1.25; }
     .asst-routes-modal :is(.asst-routes-row-note, .asst-routes-row-warning) { color: var(--asst-warn); }
-    .asst-routes-modal .asst-routes-row > :is(.asst-routes-row-note, .asst-routes-row-warning, .asst-routes-row-context) { grid-column: 1 / -1; white-space: normal; overflow: visible; overflow-wrap: anywhere; }
     .asst-routes-inactive { margin-inline-start: 6px; color: var(--asst-text-3); font-size: 11px; }
     .asst-routes-cell { display: flex; min-width: 0; }
     .asst-routes-cell-label { display: none; }
@@ -1907,6 +1912,9 @@ export function injectAssistantStyles() {
       .asst-routes-modal .asst-modal-body { padding: 14px; gap: 16px; }
       .asst-routes-modal .asst-modal-head { padding-inline: 14px 8px; }
       .asst-routes-modal .asst-routes-modes { grid-template-columns: 1fr; }
+      .asst-routes-modal .asst-routes-ask-head .asst-routes-modes { flex-basis: 100%; max-width: none; }
+      .asst-routes-modal .asst-routes-ask-head .asst-routes-session-note { text-align: start; }
+      .asst-routes-modal :is(.asst-routes-mode-desc, .asst-routes-session-note, .asst-routes-row-note, .asst-routes-row-warning, .asst-routes-row-context) { white-space: normal; overflow-wrap: anywhere; }
       .asst-routes-modal .asst-routes-columns { display: none; }
       .asst-routes-modal .asst-routes-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px; gap: 8px; padding: 12px 0; }
       .asst-routes-modal .asst-routes-row-main, .asst-routes-modal .asst-routes-model-cell, .asst-routes-modal .asst-routes-account-cell { grid-column: 1 / -1; }
@@ -1921,6 +1929,40 @@ export function injectAssistantStyles() {
       .asst-routes-save { grid-column: 3; grid-row: 2; }
       .asst-routes-scroll-cue { display: block; }
       .asst-routes-confirm { padding: 10px 14px; }
+    }
+
+    /* Model routes: grouped summaries with a single task editor. */
+    .asst-routes-modal .asst-routes-list { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 24px; padding: 0; border: 0; background: transparent; }
+    .asst-routes-group { min-width: 0; }
+    .asst-routes-group > h3 { margin: 8px 0 4px; color: var(--asst-text-2); font-size: 12px; font-weight: 600; }
+    .asst-routes-modal .asst-routes-row { display: block; padding: 0; border-top: 1px solid var(--asst-line); }
+    .asst-routes-toggle { display: grid; grid-template-columns: minmax(90px, .8fr) minmax(0, 1.3fr) auto 12px; align-items: center; gap: 8px; width: 100%; min-height: 48px; padding: 8px 4px; border: 0; background: transparent; color: var(--asst-text); text-align: start; font: inherit; cursor: pointer; border-radius: var(--asst-pill-r-xs); }
+    .asst-routes-toggle:hover, .asst-routes-toggle[aria-expanded="true"] { background: var(--asst-fill-1); }
+    .asst-routes-toggle:focus-visible { outline: 2px solid var(--asst-focus); outline-offset: -2px; }
+    .asst-routes-summary-name { font-size: 13px; overflow-wrap: anywhere; }
+    .asst-routes-summary-value { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 2px 6px; font-size: 12px; }
+    .asst-routes-summary-model { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .asst-routes-summary-value:not(:has(.asst-icon)) .asst-routes-summary-model { grid-column: 1 / -1; color: var(--asst-text-2); }
+    .asst-routes-summary-meta { grid-column: 2; color: var(--asst-text-2); font-size: 11.5px; overflow-wrap: anywhere; }
+    .asst-routes-summary-status { font-size: 11px; color: var(--asst-text-2); max-width: 64px; }
+    .asst-routes-row[data-issue="true"] .asst-routes-summary-status { color: var(--asst-warn); }
+    .asst-routes-chevron svg { width: 12px; height: 12px; }
+    .asst-routes-toggle[aria-expanded="true"] .asst-routes-chevron { transform: rotate(180deg); }
+    .asst-routes-modal .asst-routes-row-main { padding: 0 4px; }
+    .asst-routes-modal .asst-routes-row-main > :not([hidden]) { white-space: normal; margin: 0 0 8px; line-height: 1.45; }
+    .asst-routes-details { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 24px; gap: 12px 8px; padding: 8px; margin-bottom: 8px; border-radius: var(--asst-r-field); background: var(--asst-fill-1); }
+    .asst-routes-details[hidden] { display: none; }
+    .asst-routes-details .asst-routes-cell { flex-direction: column; gap: 4px; min-width: 0; }
+    .asst-routes-details .asst-routes-cell-label { display: block; color: var(--asst-text-2); font-size: 12px; }
+    .asst-routes-details .asst-routes-model-cell, .asst-routes-details .asst-routes-account-cell { grid-column: 1 / -1; }
+    .asst-routes-details .asst-routes-reset-cell { align-self: end; }
+    .asst-routes-modal .asst-routes-mode-desc, .asst-routes-modal .asst-routes-session-note { white-space: normal; }
+    .asst-routes-modal .asst-routes-ask-head .asst-routes-session-note { flex-basis: 100%; text-align: start; }
+    @media (max-width: 700px) {
+      .asst-routes-modal .asst-routes-list { grid-template-columns: 1fr; gap: 12px; }
+      .asst-routes-modal .asst-routes-details { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px; }
+      .asst-routes-modal .asst-routes-details :is(.asst-routes-effort-cell, .asst-routes-run-cell) { grid-column: auto; }
+      .asst-routes-modal .asst-routes-summary-status { max-width: 54px; }
     }
 
     /* ── Frame lightbox ─────────────────────────────────────────────── */
@@ -1978,6 +2020,8 @@ export function injectAssistantStyles() {
        A send hands it over to the "Thinking" row at once; with no such row it
        fades out where it stood (.asst-hero-dock, positioned by asst-render.js). */
     .asst-empty-mascot { display: flex; justify-content: center; margin-bottom: 2px; color: var(--asst-text); pointer-events: none; user-select: none; }
+    /* Only the drawn hero itself takes a hover: it plays hover-attention once. */
+    .asst-empty-mascot > svg { pointer-events: auto; }
     :is(.asst-empty-mascot, .asst-hero-dock) svg { display: block; }
     .asst-hero-dock { position: absolute; z-index: 4; display: flex; align-items: center; justify-content: center; color: var(--asst-text); pointer-events: none; user-select: none; }
 

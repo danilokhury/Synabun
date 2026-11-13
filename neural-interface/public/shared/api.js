@@ -1460,10 +1460,10 @@ export async function fetchScheduleTimers() {
 
 // ── Quick Timers ──
 
-export async function createQuickTimer(templateId, minutes, { profile, model, contextMode, effort, tools, usesBrowser, codexAccountId } = {}) {
+export async function createQuickTimer(templateId, minutes, { profile, model, contextMode, effort, tools, usesBrowser, codexAccountId, moreloginEnvId, moreloginEnvName } = {}) {
   return jsonFetch('/api/quick-timer', {
     method: 'POST',
-    ...jsonBody({ templateId, minutes, profile, model, contextMode, effort, tools, usesBrowser, codexAccountId }),
+    ...jsonBody({ templateId, minutes, profile, model, contextMode, effort, tools, usesBrowser, codexAccountId, moreloginEnvId, moreloginEnvName }),
   });
 }
 
@@ -1478,13 +1478,13 @@ export async function cancelQuickTimer(id) {
 }
 
 export async function triggerQuickTimerNow(templateId, {
-  profile, model, contextMode, effort, tools, usesBrowser, codexAccountId,
+  profile, model, contextMode, effort, tools, usesBrowser, codexAccountId, moreloginEnvId, moreloginEnvName,
   sidepanelWindowId, sidepanelClaimToken,
 } = {}) {
   return jsonFetch('/api/quick-timer/now', {
     method: 'POST',
     ...jsonBody({
-      templateId, profile, model, contextMode, effort, tools, usesBrowser, codexAccountId,
+      templateId, profile, model, contextMode, effort, tools, usesBrowser, codexAccountId, moreloginEnvId, moreloginEnvName,
       sidepanelWindowId, sidepanelClaimToken,
     }),
   });

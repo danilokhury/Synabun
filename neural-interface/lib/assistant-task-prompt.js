@@ -74,6 +74,11 @@ export function browserEnforcementBlock(state = {}) {
     'This automation REQUIRES the SynaBun internal browser.',
     state.browserSessionId ? `YOUR BROWSER SESSION: ${state.browserSessionId}` : '',
     state.browserTabId ? `YOUR BROWSER TAB: ${state.browserTabId}` : '',
+    // A run started in a MoreLogin profile of its own (a schedule's, a dispatch's morelogin_profile): said, so the
+    // worker neither looks for the account in the default profile nor tries to switch to where it already is.
+    state.moreloginEnvId
+      ? `YOUR BROWSER PROFILE: MoreLogin profile ${state.moreloginEnvName ? `"${state.moreloginEnvName}" (${state.moreloginEnvId})` : state.moreloginEnvId}. This run was started in it: your browser tools already work there, not in the default profile. Stay in it unless the task names another one. If a browser call is refused because this profile is not on the owner's list of profiles agents may choose, the owner took it off: stop and report that; never continue in another profile.`
+      : '',
     state.browserSessionId
       ? `Pass sessionId: "${state.browserSessionId}"${state.browserTabId ? ` and tabId: "${state.browserTabId}"` : ''} to EVERY browser tool call. Omitting them can hijack another run's browser.`
       : '',

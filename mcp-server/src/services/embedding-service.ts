@@ -52,7 +52,8 @@ function pump() {
   const interactive = queue.findIndex(t => !t.background);
   active = queue.splice(interactive < 0 ? 0 : interactive, 1)[0];
   worker.ref(); worker.channel?.ref();
-  timer = setTimeout(() => fail(new Error('Local embedding deadline exceeded')), 30_000);
+  // Explicit installation may download the model; ordinary offline requests stay bounded.
+  timer = setTimeout(() => fail(new Error('Local embedding deadline exceeded')), active.op === 'install' ? 300_000 : 30_000);
   worker.send({ id: active.id, op: active.op, text: active.text },error=>{if(error)fail(error);});
 }
 

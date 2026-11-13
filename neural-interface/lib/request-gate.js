@@ -99,6 +99,8 @@ export const ADMIN_ONLY_PREFIXES = Object.freeze([
   // Antigravity's own conversations and models: each uncached answer starts the owner's `agy` (its side panel
   // socket is refused to guests too).
   '/api/antigravity',
+  // Maritaca's key, defaults and conversations (its side panel socket is refused to guests too).
+  '/api/maritaca',
   '/api/sidepanel',
   '/api/sidepanel-runs',
   '/api/loop',

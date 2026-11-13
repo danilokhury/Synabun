@@ -34,9 +34,15 @@ if (hostedSidepanelId && host) {
       end = panel.endHostedAntigravitySessions;
       // The active tab's project (the picker's hidden input holds '' until the project list has loaded).
       defaults = panel.antigravityPanelDefaults;
+    } else if (provider === 'maritaca') {
+      const panel = await import('./ui-maritaca-panel.js');
+      await panel.toggleMaritacaPanel();
+      receivePath = () => false; // Maritaca takes no files: it is a chat API
+      end = panel.endHostedMaritacaSessions;
+      defaults = panel.maritacaPanelDefaults;
     } else throw new Error('Unknown session provider');
-    const focus = () => document.querySelector('#cp-input, #cxp-input, .ocpv2-compose textarea, .agy-input')?.focus();
-    const title = document.querySelector('.cp-session-label, .cxp-session-label, .ocpv2-session-label, .agy-session-btn span');
+    const focus = () => document.querySelector('#cp-input, #cxp-input, .ocpv2-compose textarea, .agy-input, .mtc-input')?.focus();
+    const title = document.querySelector('.cp-session-label, .cxp-session-label, .ocpv2-session-label, .agy-session-btn span, .mtc-session-label');
     const syncTitle = () => host.title(hostedSidepanelId, title?.textContent?.trim());
     if (title) new MutationObserver(syncTitle).observe(title, { childList: true, subtree: true, characterData: true });
     syncTitle();

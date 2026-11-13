@@ -20,26 +20,29 @@ export function getEditorPanelHTML() {
     <button class="fe-editor-back" id="fe-editor-back" data-tooltip="${t('editor.header.close')}" aria-label="${t('editor.header.close')}">
       <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
     </button>
-    <span class="fe-editor-dot" id="fe-editor-dot"></span>
-    <span class="fe-editor-filepath" id="fe-editor-filepath"></span>
-    <div style="flex:1"></div>
-    <button class="fe-editor-action" id="fe-editor-find-btn" data-tooltip="${t('editor.header.find')}" aria-label="${t('editor.header.find')}">
-      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    </button>
-    <button class="fe-editor-action" id="fe-editor-word-wrap" data-tooltip="${t('editor.header.wordWrap')}" aria-label="${t('editor.header.wordWrap')}" aria-pressed="true">
-      <svg viewBox="0 0 24 24"><path d="M3 6h18M3 12h15a3 3 0 1 1 0 6h-4"/><polyline points="16 16 14 18 16 20"/><path d="M3 18h7"/></svg>
-    </button>
-    <button class="fe-editor-action" id="fe-editor-view-btn" data-tooltip="${t('editor.header.view')}" aria-label="${t('editor.header.view')}" aria-haspopup="menu" aria-expanded="false">
-      <svg viewBox="0 0 24 24"><path d="M4 7h2.5M11.5 7H20M4 17h8.5M17.5 17H20"/><circle cx="9" cy="7" r="2.5"/><circle cx="15" cy="17" r="2.5"/></svg>
-    </button>
-    <button class="fe-editor-action" id="fe-editor-diff-btn" data-tooltip="${t('editor.header.diff')}" aria-label="${t('editor.header.diff')}" aria-pressed="false" hidden>
-      <svg viewBox="0 0 24 24"><path d="M12 3v10M7 8h10M7 19h10"/></svg>
-    </button>
-    <div class="fe-editor-help-wrap">
-      <button class="fe-editor-action fe-editor-help-btn" id="fe-editor-help-btn" data-tooltip="${t('editor.header.shortcuts')}" aria-label="${t('editor.header.shortcuts')}" aria-expanded="false" aria-controls="fe-editor-keybinds">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    <div class="fe-editor-title">
+      <span class="fe-editor-dot" id="fe-editor-dot"></span>
+      <span class="fe-editor-filepath" id="fe-editor-filepath"></span>
+    </div>
+    <div class="fe-editor-tools">
+      <button class="fe-editor-action" id="fe-editor-find-btn" data-tooltip="${t('editor.header.find')}" aria-label="${t('editor.header.find')}">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       </button>
-      <div class="fe-editor-keybinds" id="fe-editor-keybinds"></div>
+      <button class="fe-editor-action" id="fe-editor-word-wrap" data-tooltip="${t('editor.header.wordWrap')}" aria-label="${t('editor.header.wordWrap')}" aria-pressed="true">
+        <svg viewBox="0 0 24 24"><path d="M3 6h18M3 12h15a3 3 0 1 1 0 6h-4"/><polyline points="16 16 14 18 16 20"/><path d="M3 18h7"/></svg>
+      </button>
+      <button class="fe-editor-action" id="fe-editor-view-btn" data-tooltip="${t('editor.header.view')}" aria-label="${t('editor.header.view')}" aria-haspopup="menu" aria-expanded="false">
+        <svg viewBox="0 0 24 24"><path d="M4 7h2.5M11.5 7H20M4 17h8.5M17.5 17H20"/><circle cx="9" cy="7" r="2.5"/><circle cx="15" cy="17" r="2.5"/></svg>
+      </button>
+      <button class="fe-editor-action" id="fe-editor-diff-btn" data-tooltip="${t('editor.header.diff')}" aria-label="${t('editor.header.diff')}" aria-pressed="false" hidden>
+        <svg viewBox="0 0 24 24"><path d="M12 3v10M7 8h10M7 19h10"/></svg>
+      </button>
+      <div class="fe-editor-help-wrap">
+        <button class="fe-editor-action fe-editor-help-btn" id="fe-editor-help-btn" data-tooltip="${t('editor.header.shortcuts')}" aria-label="${t('editor.header.shortcuts')}" aria-expanded="false" aria-controls="fe-editor-keybinds">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        </button>
+        <div class="fe-editor-keybinds" id="fe-editor-keybinds"></div>
+      </div>
     </div>
     <div class="fe-editor-sep"></div>
     <div class="fe-editor-view-toggle" id="fe-editor-view-toggle" style="display:none">
@@ -47,9 +50,11 @@ export function getEditorPanelHTML() {
       <button class="fe-editor-toggle-btn" data-mode="preview" aria-pressed="false">${t('editor.header.preview')}</button>
     </div>
     <div class="fe-editor-sep" id="fe-editor-sep-preview" style="display:none"></div>
-    <button class="fe-editor-btn" id="fe-editor-discard" disabled>${t('editor.header.discard')}</button>
-    <button class="fe-editor-btn fe-editor-save" id="fe-editor-save" disabled>${t('editor.header.save')}</button>
-    <button class="fe-editor-btn" id="fe-editor-close">${t('editor.header.closeButton')}</button>
+    <div class="fe-editor-actions">
+      <button class="fe-editor-btn" id="fe-editor-discard" disabled>${t('editor.header.discard')}</button>
+      <button class="fe-editor-btn fe-editor-save" id="fe-editor-save" disabled>${t('editor.header.save')}</button>
+      <button class="fe-editor-btn" id="fe-editor-close">${t('editor.header.closeButton')}</button>
+    </div>
   </div>
   <div class="fe-editor-tabs" id="fe-editor-tabs" role="tablist" aria-label="${t('editor.tabs.label')}" hidden></div>
   <div class="fe-editor-bars" id="fe-editor-bars"></div>
@@ -596,6 +601,9 @@ ${is3D ? '' : `
   <button id="topright-antigravity-panel-btn" class="topright-icon-btn" data-tooltip="${t('antigravityPanel.toolbar')}">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 20 12 4l7.5 16"/><path d="M8.2 20a3.8 3.8 0 0 1 7.6 0"/></svg>
     <span class="count-badge count-badge--green" id="antigravity-update-badge"></span>
+  </button>
+  <button id="topright-maritaca-panel-btn" class="topright-icon-btn" data-tooltip="${t('maritacaPanel.toolbar')}">
+    <svg viewBox="0 0 12.48 13.73" fill="currentColor"><path d="M10.11 11.01h1.9S7.21 5.97 5.72 4.4a.62.62 0 0 0-.93.04c-.48.59-.76 1.33-.81 2.1-.06 1.04.32 2.06 1.04 2.8l4.35 4.4h3.1l-2.37-2.72Z"/><path d="M5.69 11 4.52 9.82c-.86-.89-1.31-2.1-1.24-3.33s.67-2.38 1.62-3.16c.35.06.71-.02 1.01-.24-.07-.24-.16-.55-.22-.75-.02-.07.06-.13.12-.09l1.16.77c.3-.61.22-1.37-.26-1.9.1-.18.06-.44-.15-.57C6.07.26 5.36 0 4.41 0 2.76 0 0 1.5 0 5.18c0 2.12 1.36 4.57 3.86 5.47l-1.43 3.08h1.05L4.8 10.9c.29.05.58.09.89.1l-1.27 2.73h1.05l.94-2.01L5.7 11ZM4.84.67c.23 0 .42.19.42.42s-.19.42-.42.42-.42-.19-.42-.42.19-.42.42-.42"/></svg>
   </button>
   </div>
   <div id="term-minimized-tray"></div>

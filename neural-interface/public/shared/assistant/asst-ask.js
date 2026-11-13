@@ -34,7 +34,7 @@ import { injectAskStyles } from './asst-ask-styles.js';
 export { injectAskStyles };
 
 /** The presenter's SVG, before the sheet's container queries shrink it. */
-export const PRESENTER_SIZE = Object.freeze({ width: 64, height: 32 });
+export const PRESENTER_SIZE = Object.freeze({ width: 120, height: 60 });
 const HOP_MS = 320; // the hop (300 ms) and a frame to land on
 const WATCH_IDLE_MS = 1500; // a field nobody typed in for this long: back to the card's own pose
 const WATCH_EVERY_MS = 120; // the caret is looked at no more often than this

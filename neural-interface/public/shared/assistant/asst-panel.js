@@ -59,12 +59,13 @@ import { activityOf } from './asst-scenes.js';
 import { createUsageGauge } from './asst-usage.js';
 import { closeMenu, currentMenuAnchor, isMenuOpen, openMenu } from './asst-menu.js';
 import { createRouteModeControl, openModelsManager, openRoutesEditor, refreshModelsManager, renderRouteCard, routeModeLabel } from './asst-route.js';
+import { prewarmRoutesEditor } from './asst-route-models.js';
 import { budgetChipText, budgetSpendText, budgetTone, closeBudgetEditor, createBudgetController, mountBudgetChip, openBudgetEditor } from './asst-budget.js';
 import { computerRemoteView, createComputerPanel, createComputerToggle, normalizeComputerRemote, openFrameLightbox, closeFrameLightbox, requestDesktopStatus, requestDesktopStop } from './asst-computer.js';
 import {
   applyLimit, applyLimitPacket, applyUsagePacket, BRAIN_PROVIDERS, brainLabel, createRenameWriter, createTabState, DEFAULT_ROUTE_MODE, deserializeTabState, fmtCost, fmtRunLine, limitExpiresIn, limitNoticeText, modelShortName,
   brainModePatch, isBrainProvider, normalizeBrain, normalizeComputerMode, permissionModeLabel, normalizeRouteMode, normalizeTestDensity, projectLabel, providerMeta, providerShortLabel, readStoredBrain, runFromPayload,
-  serializeTabState, sessionStatus, tabStorageKey, userSessionTitle,
+  serializeTabState, sessionStatus, slashBrainEffort, tabStorageKey, userSessionTitle,
 } from './asst-state.js';
 import {
   closeAssistantSession, dispatchAssistantRun, escalateAssistantRun, focusAssistantRun, getAssistantRun,
@@ -1046,6 +1047,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     }
     if (meta.features && typeof meta.features === 'object') {
       if (typeof meta.features.routing === 'boolean') st.features.routing = meta.features.routing;
+      // The Model routes editor paints from these at once: read them now, in idle time, not at its first open.
+      if (st.features.routing === true) prewarmRoutesEditor();
       if (typeof meta.features.computer === 'boolean') st.features.computer = meta.features.computer;
       if (typeof meta.features.testDensity === 'boolean') st.features.testDensity = meta.features.testDensity;
       if (typeof meta.features.rename === 'boolean') st.features.rename = meta.features.rename;
@@ -1518,7 +1521,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
         let requiresSwitch = false;
         if (parsed.provider && parsed.provider !== st.brain.provider) { next.provider = parsed.provider; next.model = ''; next.effort = null; next.agent = null; next.accountId = null; requiresSwitch = true; }
         if (parsed.model) next.model = parsed.model;
-        if (parsed.effort) next.effort = parsed.effort === 'off' ? null : parsed.effort;
+        // Claude Code: `off` is Off (no thinking, `none`), as the picker's Off; auto / default is the model's default.
+        if (parsed.effort) next.effort = slashBrainEffort(next.provider, parsed.effort);
         applyBrain(normalizeBrain(next), { requiresSwitch, field: 'model' });
         picker.refresh().catch(() => {});
         return true;

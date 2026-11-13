@@ -16,6 +16,7 @@ import { toggleClaudePanel, isClaudePanelOpen } from './ui-claude-panel.js';
 import { toggleCodexPanel, isCodexPanelOpen } from './ui-codex-panel.js';
 import { toggleOpencodePanel, isOpencodePanelOpen } from './ui-opencode-panel-v2.js';
 import { toggleAntigravityPanel, isAntigravityPanelOpen } from './ui-antigravity-panel.js';
+import { toggleMaritacaPanel, isMaritacaPanelOpen } from './ui-maritaca-panel.js';
 import { toggleAssistantPanel, isAssistantPanelOpen, initAssistantPanel } from './ui-assistant-panel.js';
 import { initAssistant } from './ui-assistant.js';
 import { toggleSessionMonitor, fetchLoopsForBadge, fetchNotificationsForBadge } from './ui-sessions.js';
@@ -40,6 +41,7 @@ export function initNavbar() {
   const codexPanelBtn = $('topright-codex-panel-btn');
   const opencodePanelBtn = $('topright-opencode-panel-btn');
   const antigravityPanelBtn = $('topright-antigravity-panel-btn');
+  const maritacaPanelBtn = $('topright-maritaca-panel-btn');
   initSidepanelTrayPlaceholders();
   // The Assistant: shared host wiring (terminal tab + sidepanel), then the
   // sidepanel host, which restores its saved tabs as tray pills.
@@ -71,6 +73,11 @@ export function initNavbar() {
       isOpen: isAntigravityPanelOpen,
       toggle: toggleAntigravityPanel,
       button: antigravityPanelBtn,
+    },
+    maritaca: {
+      isOpen: isMaritacaPanelOpen,
+      toggle: toggleMaritacaPanel,
+      button: maritacaPanelBtn,
     },
   };
 
@@ -130,6 +137,16 @@ export function initNavbar() {
     });
     on('antigravity-panel:visibility', (visible) => {
       antigravityPanelBtn.classList.toggle('active', !!visible);
+      syncAgentPanelButtons();
+    });
+  }
+  if (maritacaPanelBtn) {
+    maritacaPanelBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      await toggleAgentPanel('maritaca');
+    });
+    on('maritaca-panel:visibility', (visible) => {
+      maritacaPanelBtn.classList.toggle('active', !!visible);
       syncAgentPanelButtons();
     });
   }

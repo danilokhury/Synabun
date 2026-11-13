@@ -196,8 +196,8 @@ const DEFINITIONS: readonly ToolGroupDefinition[] = [
   {
     id: 'morelogin', label: 'MoreLogin', section: 'browser', browser: false, gate: null,
     purpose: 'Manage MoreLogin anti-detect browser profiles and pick the browser the browser tools drive',
-    instructions: '- MoreLogin (anti-detect browser): morelogin (action: status/list/create/start/stop/use_default). Set a profile as the default AI browser with use_default — afterwards all browser_* tools drive that MoreLogin profile. Needs the MoreLogin desktop app running.',
-    deferredGuidance: '- MoreLogin: profile management; use_default selects the browser for browser_* tools. Requires the desktop app.',
+    instructions: '- MoreLogin (anti-detect browser): morelogin (action: status/list/create/start/stop/use/use_default). To work in a profile other than the default, call action "use" with its envId or name: your own browser_* tools then drive that profile in a tab of your own, while other sessions keep theirs (several profiles can be driven at once). Only a profile the owner allowed agents to choose can be used ("list" says which; none until the owner switches one on in Settings → Connected tools → MoreLogin): when "use" or "start" is refused for that, tell the user and stop. use_default is always refused: the default profile is the owner\'s choice in Settings → Browser. Needs the MoreLogin desktop app running.',
+    deferredGuidance: '- MoreLogin: profile management; action "use" picks the profile your own browser_* tools drive, among the profiles the owner allowed agents to choose (other sessions unaffected). Requires the desktop app.',
     tools: ['morelogin'],
   },
   {

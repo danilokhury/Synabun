@@ -26,7 +26,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { externalToolsInLock, pruneExternalTools, stripExternalToolsFromLock } from '../../lib/external-tools.js';
-import { mcpDistMissing } from '../../lib/mcp-dist.js';
+import { MCP_RUNTIME_ENTRIES, mcpDistMissing } from '../../lib/mcp-dist.js';
+import { writeBuildStamp } from '../../lib/mcp-build.js';
 import { compilePty, crossNpmEnv, fetchEmbeddingModel, linksIn, verifySelection, writeWindowsShims } from './cross.mjs';
 import { readLocks } from './preflight.mjs';
 import { hostRuntimeFor, nodeRuntimeFor, PACKAGING_ROOT } from './targets.mjs';
@@ -209,9 +210,12 @@ export async function installDependencies(ctx) {
   for (const file of ['dist/index.js', 'dist/preload.js', 'dist/scripts/setup-embeddings.js']) {
     if (!existsSync(join(mcp, file))) throw new BuildError(`The MCP server build did not produce ${file}`);
   }
-  // Every module dist/index.js imports, transitively (lib/mcp-dist.js), not the entry file alone.
-  const dist = mcpDistMissing(ctx.app);
+  // Every module the runtime entries import, transitively (lib/mcp-dist.js), not the entry files alone.
+  const dist = mcpDistMissing(ctx.app, { entries: MCP_RUNTIME_ENTRIES });
   if (!dist.complete) throw new BuildError(`The MCP server build did not produce what dist/index.js imports: ${dist.missing.slice(0, 5).join(', ')}${dist.missing.length > 5 ? ` and ${dist.missing.length - 5} more` : ''}`);
+  // The same build record lib/mcp-build.js writes: the application's dist is current, never "unstamped", to every
+  // check that reads it (setup.js, the server's build and restore routes), and no route ever tries to rebuild it.
+  if (!writeBuildStamp(ctx.app)) throw new BuildError('The MCP server build could not be stamped: mcp-server/src is missing from the staged package');
   npm(ctx, ['prune', '--omit=dev', '--ignore-scripts'], mcp, 'npm prune (mcp-server)');
 
   step('Neural Interface: production dependencies');

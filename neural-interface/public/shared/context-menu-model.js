@@ -91,6 +91,8 @@ export const OPEN_ENTRIES = [
   { id: 'open-codex-panel', key: 'codexPanel', press: 'topright-codex-panel-btn', active: 'topright-codex-panel-btn', appIcon: 'menu-terminal-codex', icon: 'panel' },
   { id: 'open-opencode-panel', key: 'opencodePanel', press: 'topright-opencode-panel-btn', active: 'topright-opencode-panel-btn', appIcon: 'menu-terminal-opencode', icon: 'panel' },
   { id: 'open-antigravity-panel', key: 'antigravityPanel', press: 'topright-antigravity-panel-btn', active: 'topright-antigravity-panel-btn', appIcon: 'menu-terminal-antigravity', icon: 'panel' },
+  // Maritaca has no terminal CLI, so no Apps-menu icon: the row wears the generic panel icon.
+  { id: 'open-maritaca-panel', key: 'maritacaPanel', press: 'topright-maritaca-panel-btn', active: 'topright-maritaca-panel-btn', icon: 'panel' },
   null,
   { id: 'open-terminal', key: 'terminal', event: ['terminal:open', { profile: 'shell' }], perm: 'terminal', appIcon: 'menu-terminal-shell', icon: 'terminal' },
   { id: 'open-claude-terminal', key: 'claudeTerminal', action: 'launch-claude', perm: 'terminal', icon: 'terminal' },

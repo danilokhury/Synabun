@@ -7,9 +7,9 @@ import { normalizeSessionWindowStatus } from './sidepanel-session-status.js';
 import { savedTabsStatus } from './ui-sidepanel-tray.js';
 
 let manifestKey;
-const PROVIDERS = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode', antigravity: 'Antigravity' };
+const PROVIDERS = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode', antigravity: 'Antigravity', maritaca: 'Maritaca' };
 // provider-icons.js ids: the window's pill wears its provider's icon and colour.
-const PROVIDER_IDS = { claude: 'claude-code', codex: 'codex', opencode: 'opencode', antigravity: 'antigravity' };
+const PROVIDER_IDS = { claude: 'claude-code', codex: 'codex', opencode: 'opencode', antigravity: 'antigravity', maritaca: 'maritaca' };
 const STATUS_WORDS = { working: 'working', action: 'needs you' };
 const entries = new Map();
 const editorOwners = new Map();
@@ -22,7 +22,7 @@ function save() {
 function storageFor(id) {
   // Session lists/registries share one live cache. Unscoped defaults and legacy
   // session pointers belong to the individual document, never another session.
-  const scoped = key => /^(synabun-(claude|codex|antigravity)-panel-(session|thread|title|project|model|effort|autoaccept|default-model|permission-mode)|opencode-v2-project)$/.test(key);
+  const scoped = key => /^(synabun-(claude|codex|antigravity|maritaca)-panel-(session|thread|title|project|model|effort|autoaccept|default-model|permission-mode)|opencode-v2-project)$/.test(key);
   const keyFor = key => scoped(key) ? `synabun-session-pref-${id}:${key}` : key;
   return {
     getItem(key) {

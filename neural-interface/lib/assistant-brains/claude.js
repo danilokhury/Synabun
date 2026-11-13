@@ -190,6 +190,11 @@ export function createClaudeBrain({ session, sink, deps = {}, persona = '', hook
       if (providerSessionId) query.sessionId = providerSessionId;
       if (cwd) query.cwd = cwd;
       if (effort) query.effort = effort;
+      // A turn with no effort of its own (the picker's Auto, or after a routed "here" turn) runs on the
+      // model's default. The process may still hold a level or Off (`none`) from before: 'off' (Auto
+      // outside the panel) takes it back, live for a level (applyFlagSettings, effortLevel null) and by
+      // a resumed restart from Off (thinking is a start-up option). The conversation continues either way.
+      else if (inner.effort && inner.effort !== 'off') query.effort = 'off';
       if ((mode && PERMISSION_MODES.has(mode)) || typeof plan === 'boolean') query.permissionMode = applyModes(mode, plan);
       await handle(query);
       return true;

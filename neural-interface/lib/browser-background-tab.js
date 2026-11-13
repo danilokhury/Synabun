@@ -28,6 +28,17 @@ const closeTarget = (session, targetId) => within(Promise.resolve().then(() => s
 // How long the browser session stays attached for a tab asked for and not yet answered, to close it when it comes.
 const LATE_TARGET_MS = 60_000;
 
+// The Browser that can open a browser-level CDP session: the one given, else the context's own (a persistent
+// context is passed where a browser is expected and has none of its own methods for it).
+function browserOf(browser, context) {
+  if (typeof browser?.newBrowserCDPSession === 'function') return browser;
+  try {
+    const owner = context?.browser?.();
+    if (typeof owner?.newBrowserCDPSession === 'function') return owner;
+  } catch { /* no owner */ }
+  return null;
+}
+
 // The pages this module opened behind the selected tab.
 const backgroundPages = new WeakSet();
 
@@ -54,8 +65,9 @@ async function targetIdOf(context, page, until) {
  * the answer, so the caller is not kept waiting, and also when the browser only
  * creates it after the wait was given up — and the caller opens a normal one.
  */
-export async function openBackgroundPage(browser, context, { timeoutMs = 5000 } = {}) {
-  if (typeof browser?.newBrowserCDPSession !== 'function') return null;
+export async function openBackgroundPage(browser, context, { timeoutMs = 5000, browserContextId = null } = {}) {
+  browser = browserOf(browser, context);
+  if (!browser) return null;
   const until = Date.now() + timeoutMs;
   const left = () => Math.max(1, until - Date.now());
   const appeared = [];
@@ -70,7 +82,7 @@ export async function openBackgroundPage(browser, context, { timeoutMs = 5000 } 
     cdp = await within(Promise.resolve().then(() => browser.newBrowserCDPSession()), left(), 'opening a browser CDP session', (late) => late?.detach?.());
     const session = cdp;
     let answered = false;
-    const creating = Promise.resolve().then(() => session.send('Target.createTarget', { url: 'about:blank', background: true }));
+    const creating = Promise.resolve().then(() => session.send('Target.createTarget', { url: 'about:blank', background: true, ...(browserContextId && { browserContextId }) }));
     creating.then(() => { answered = true; }, () => { answered = true; });
     try {
       ({ targetId } = await within(creating, left(), 'creating the tab'));
@@ -131,4 +143,61 @@ export function selectedTabReading(page) {
   } catch {
     return { reading: 'unknown', basis: 'unreadable' };
   }
+}
+
+/**
+ * Whether tabs open in the background: on unless browser-config.json says
+ * `openTabsInBackground: false` (only the boolean false turns it off; not set,
+ * or anything else, is on). Default on since 2026-11-08 so an automation on
+ * macOS never brings its window forward or switches the user's Space.
+ */
+export function backgroundTabsEnabled(config) {
+  return config?.openTabsInBackground !== false;
+}
+
+/** The error of a tab that could not be opened in the background: never replaced by a foreground tab. */
+export class BackgroundTabError extends Error {
+  constructor(attempts) {
+    super(`Could not open the browser tab in the background (${attempts} attempts). SynaBun does not open it in the foreground, which would bring the browser window forward; set openTabsInBackground to false in browser-config.json to allow that`);
+    this.name = 'BackgroundTabError';
+    this.code = 'BACKGROUND_TAB_FAILED';
+  }
+}
+
+/**
+ * openBackgroundPage, strictly: one retry, then BackgroundTabError. It never
+ * falls back to context.newPage(), which selects the tab and brings the
+ * window (and on macOS its Space) to the front. `timeoutMs` is per attempt.
+ */
+export async function openBackgroundPageStrict(browser, context, { timeoutMs = 5000, attempts = 2, browserContextId = null, open = openBackgroundPage } = {}) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const page = await Promise.resolve().then(() => open(browser, context, { timeoutMs, browserContextId })).catch(() => null);
+    if (page) return page;
+    if (attempt < attempts) console.warn(`[browser] background tab attempt ${attempt} failed; trying again in the background`);
+  }
+  throw new BackgroundTabError(attempts);
+}
+
+/**
+ * browser.newContext(options) plus the CDP id of the context it made, so a
+ * background tab can be created in it (Target.createTarget without an id
+ * opens in the default context). The id is the one that was not there before;
+ * null when that cannot be told (no CDP, or more than one new context).
+ */
+export async function newContextWithId(browser, options) {
+  const ids = async () => {
+    const session = await browser.newBrowserCDPSession();
+    try { return (await session.send('Target.getBrowserContexts')).browserContextIds || []; } finally { detach(session); }
+  };
+  let before = null;
+  try { before = new Set(await ids()); } catch { /* unknown */ }
+  const context = await browser.newContext(options);
+  let browserContextId = null;
+  if (before) {
+    try {
+      const added = (await ids()).filter((id) => !before.has(id));
+      if (added.length === 1) [browserContextId] = added;
+    } catch { /* unknown */ }
+  }
+  return { context, browserContextId };
 }

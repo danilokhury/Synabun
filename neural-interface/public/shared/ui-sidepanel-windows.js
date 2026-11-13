@@ -7,7 +7,7 @@ import { FRAMED_CLASS, frameRect } from './app-frame.js';
 
 const STORAGE_PREFIX = 'synabun-sidepanel-layout-';
 const surfaces = new Map();
-const LABELS = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode', antigravity: 'Antigravity', assistant: 'SynaBun Assistant' };
+const LABELS = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode', antigravity: 'Antigravity', maritaca: 'Maritaca', assistant: 'SynaBun Assistant' };
 const DETACH_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="7" width="14" height="14" rx="2"/><path d="M13 3h8v8M21 3l-9 9"/></svg>';
 const DOCK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16M6 12h6m-3-3 3 3-3 3"/></svg>';
 const MOVE_ICON = '<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="5" cy="4" r="1"/><circle cx="11" cy="4" r="1"/><circle cx="5" cy="8" r="1"/><circle cx="11" cy="8" r="1"/><circle cx="5" cy="12" r="1"/><circle cx="11" cy="12" r="1"/></svg>';

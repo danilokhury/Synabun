@@ -223,7 +223,7 @@ function renderPlaceholder(kind) {
   if (kind === 'starting') {
     node.setAttribute('role', 'status');
     node.innerHTML = `<div class="asst-empty-mascot" aria-hidden="true"></div><span class="asp-placeholder-text">${esc(tr('assistant.panel.starting', 'Starting SynaBun…'))}</span><span class="asp-placeholder-track" aria-hidden="true"></span>`;
-    try { _placeholderMascot = createMascot(node.querySelector('.asst-empty-mascot'), { width: 120, height: 60 }); } catch { _placeholderMascot = null; }
+    try { _placeholderMascot = createMascot(node.querySelector('.asst-empty-mascot'), { width: 280, height: 140, idleVariant: 'hero' }); } catch { _placeholderMascot = null; }
     return;
   }
   node.removeAttribute('role');
@@ -652,7 +652,7 @@ export function beginAssistantTour({ onPreviewSend = () => {} } = {}) {
   const wasVisible = _visible;
   const previousPanel = state.lastActivePanel;
   const previousSidepanel = state.lastActiveSidepanel;
-  const peers = ['#topright-claude-panel-btn', '#topright-codex-panel-btn', '#topright-opencode-panel-btn', '#topright-antigravity-panel-btn']
+  const peers = ['#topright-claude-panel-btn', '#topright-codex-panel-btn', '#topright-opencode-panel-btn', '#topright-antigravity-panel-btn', '#topright-maritaca-panel-btn']
     .map(s => document.querySelector(s)).filter(b => b?.classList.contains('active'));
   _tourPresenting = true;
   const tab = activeTab();

@@ -489,6 +489,8 @@ interface PagedOpts extends PagedArgs {
 
 interface PagedResult {
   items: Array<Record<string, unknown>>;
+  /** The distinct `type` of the returned items, read before `fields` projected them (null: no string type). */
+  types?: Array<string | null>;
   raw: number;
   scrollsUsed: number;
   truncated: boolean;
@@ -571,6 +573,7 @@ async function runPagedExtractor(
 
   const all = [...collected.values()];
   const items: Array<Record<string, unknown>> = [];
+  const types = new Set<string | null>();
   let chars = 2;
   let budgetReason: string | undefined;
   for (const item of all) {
@@ -579,9 +582,21 @@ async function runPagedExtractor(
     const size = JSON.stringify(value).length + (items.length ? 1 : 0);
     if (opts.maxChars !== undefined && chars + size > opts.maxChars) { budgetReason = 'max_chars'; break; }
     items.push(value); chars += size;
+    types.add(typeof item.type === 'string' ? item.type : null);
   }
   if (items.length === 0 && budgetReason === 'max_chars') return { error: 'maxChars is too small for the first complete item. Increase maxChars or select fewer fields.' };
-  return { items, raw, scrollsUsed, truncated: items.length < all.length, partial: !!failureReason, stopReason: budgetReason || stopReason, failureReason, budgetReason };
+  return { items, types: [...types], raw, scrollsUsed, truncated: items.length < all.length, partial: !!failureReason, stopReason: budgetReason || stopReason, failureReason, budgetReason };
+}
+
+/**
+ * Whether every returned item is of `type`, decided on the items before `fields` projected them
+ * (`types`, from the server or the local loop). A server from before `types` answers from the
+ * projected items, where a projection without `type` reads as untyped.
+ */
+function extractedTypesAre(res: PagedResult, type: string): boolean {
+  if (res.items.length === 0) return false;
+  if (Array.isArray(res.types)) return res.types.length > 0 && res.types.every(t => t === type);
+  return res.items.every(item => item.type === type);
 }
 
 /**
@@ -614,23 +629,49 @@ const SCROLLABLE_ANCESTOR = (innerSelector: string) =>
 
 // ── browser_extract_tweets ──
 
-const TWEET_EXTRACTOR_SCRIPT = `
-Array.from(document.querySelectorAll('[data-testid="tweet"]')).map(el => {
-  const userNameEl = el.querySelector('[data-testid="User-Name"]');
-  const lines = userNameEl ? userNameEl.innerText.split('\\n').filter(Boolean) : [];
-  const statusLink = el.querySelector('a[href*="/status/"]');
-  return {
-    author:  lines[0] || null,
-    handle:  lines.find(l => l.startsWith('@')) || null,
-    text:    el.querySelector('[data-testid="tweetText"]')?.innerText || null,
-    time:    el.querySelector('time')?.getAttribute('datetime') || null,
-    url:     statusLink ? statusLink.href : null,
-    replies: el.querySelector('[data-testid="reply"] span[data-testid="app-text-transition-container"]')?.innerText || null,
-    reposts: el.querySelector('[data-testid="retweet"] span[data-testid="app-text-transition-container"]')?.innerText || null,
-    likes:   el.querySelector('[data-testid="like"] span[data-testid="app-text-transition-container"]')?.innerText || null,
-    views:   el.querySelector('a[href*="/analytics"] span')?.innerText || null,
-  };
-})
+// One expression, DOM queries only (no eval, innerHTML or script insertion): the server embeds
+// it in the page functions of the paged extraction, which x.com's CSP ('script-src' without
+// 'unsafe-eval') must not be able to refuse. Exported for the fixture test
+// (neural-interface/tests/x-extractor.browser.mjs) that runs it against X-shaped pages.
+export const TWEET_EXTRACTOR_SCRIPT = `
+(() => {
+  const tweets = Array.from(document.querySelectorAll('[data-testid="tweet"]')).map(el => {
+    const userNameEl = el.querySelector('[data-testid="User-Name"]');
+    const lines = userNameEl ? userNameEl.innerText.split('\\n').filter(Boolean) : [];
+    const statusLink = el.querySelector('a[href*="/status/"]');
+    return {
+      author:  lines[0] || null,
+      handle:  lines.find(l => l.startsWith('@')) || null,
+      text:    el.querySelector('[data-testid="tweetText"]')?.innerText || null,
+      time:    el.querySelector('time')?.getAttribute('datetime') || null,
+      url:     statusLink ? statusLink.href : null,
+      replies: el.querySelector('[data-testid="reply"] span[data-testid="app-text-transition-container"]')?.innerText || null,
+      reposts: el.querySelector('[data-testid="retweet"] span[data-testid="app-text-transition-container"]')?.innerText || null,
+      likes:   el.querySelector('[data-testid="like"] span[data-testid="app-text-transition-container"]')?.innerText || null,
+      views:   el.querySelector('a[href*="/analytics"] span')?.innerText || null,
+    };
+  });
+  // Explore's tabs (trending, for-you, news, ...) list trends, not posts: say what is there.
+  if (tweets.length || !/^\\/(explore|i\\/trends)(\\/|$)/.test(location.pathname)) return tweets;
+  const rowText = row => (row?.innerText || '').split('\\n').map(s => s.trim()).filter(s => s && s !== '·');
+  // The page's own column only: the sidebar's "What's happening" trends are never the answer.
+  const column = document.querySelector('[data-testid="primaryColumn"]');
+  return Array.from(column ? column.querySelectorAll('[data-testid="trend"]') : []).map((el, i) => {
+    // A cell is rows: context (rank · category), name, an optional post count; the caret button is not one.
+    const rows = Array.from(el.firstElementChild?.children || []).filter(row => !row.querySelector('button'));
+    const context = rowText(rows[0]);
+    const rank = /^\\d+$/.test(context[0] || '') ? Number(context[0]) : null;
+    const name = rowText(rows[1]).join(' ') || null;
+    return {
+      type: 'trend',
+      rank: rank ?? i + 1,
+      category: (rank === null ? context : context.slice(1)).join(' ') || null,
+      text: name,
+      posts: rowText(rows[2]).join(' ') || null,
+      url: name ? 'https://x.com/search?q=' + encodeURIComponent(name) + '&src=typed_query&f=live' : null,
+    };
+  });
+})()
 `.trim();
 
 export const browserExtractTweetsSchema = {
@@ -640,7 +681,8 @@ export const browserExtractTweetsSchema = {
 };
 
 export const browserExtractTweetsDescription =
-  'Extract visible tweets as structured JSON (author, handle, text, time, url, replies, reposts, likes, views). Pass scrolls/minItems to auto-scroll, extract, and dedupe in ONE call (e.g. scrolls:3 minItems:30). Much faster than browser_snapshot for data harvesting. Navigate to x.com/search?q=%23hashtag&f=live first for latest-first hashtag results.';
+  'Extract visible tweets as structured JSON (author, handle, text, time, url, replies, reposts, likes, views). Pass scrolls/minItems to auto-scroll, extract, and dedupe in ONE call (e.g. scrolls:3 minItems:30). Much faster than browser_snapshot for data harvesting. Navigate to x.com/search?q=%23hashtag&f=live first for latest-first hashtag results. ' +
+  'An Explore tab (x.com/explore/tabs/trending, for-you, news) lists trends, not posts: there it returns the trends instead, {type:"trend", rank, category, text, posts, url} with url a latest-first search for the trend.';
 
 export async function handleBrowserExtractTweets(args: PagedArgs & { sessionId?: string; tabId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
@@ -652,7 +694,7 @@ export async function handleBrowserExtractTweets(args: PagedArgs & { sessionId?:
   if ('error' in res) return text(`Extract failed: ${res.error}`);
   if (res.items.length === 0) return emptyExtraction(resolved, 'browser_extract_tweets', 'an X/Twitter timeline, profile or search results page', 'No tweets found. Try browser_scroll (or pass scrolls:2) then retry.');
 
-  return text(formatExtraction('tweet', res));
+  return text(formatExtraction(extractedTypesAre(res, 'trend') ? 'trend' : 'tweet', res));
 }
 
 // ── browser_x_compose_state ──

@@ -407,26 +407,58 @@ App-wide, every WebSocket upgrade (`/ws/*`) must carry no `Origin` or this serve
 
 Base path `/api/whatsapp`. Errors are `{ ok: false, code, error, field? }` with the status shown; `429` adds `retryAfterMs` and `Retry-After`, `409 VERSION_CONFLICT` adds `version`.
 
-| Route | Body | Answer |
-|---|---|---|
-| `GET /status` | — | The state machine and masked data: `state` (`unavailable` +`reason` (`env`: `SYNABUN_WHATSAPP=off`; `starting`: the server is still starting the Assistant; `error`: the WhatsApp Link failed to load), `not_installed`, `installing` +`stage`, `install_failed` +`code`, `ready`, `linking` +`method` `phase` (`starting`/`waiting`/`scanned`), `link_expired`, `confirm_owner` +`kind` (`self`/`code`), `connected`, `reconnecting`, `paused`, `logged_out` +`reason` (`removed`/`inactive`/`banned`/`invalid_session`), `error` +`code`), `warning` (`replaced` (440) / `forbidden` (403) while the link retries one of them, until 10 minutes connected; else `null`), `mode`, `level`, `levelExpiresAt` (always `null`: Autonomous has no time limit; kept for older readers), `paused`, `pausedBy`, `computerUse` (the [Computer use](#computer-use) switch), `connector {installed, version, pinned, outdated, stage, errorCode}`, `account {masked, name}`, `owner {masked, boundAt}`, `confirm {kind, expiresAt, attemptsLeft}`, `session {id, title}`, `brainLimit {provider, label, text}` (the conversation's brain makes it read-only), `brainChoice {choice, source: 'assistant'\|'choice', effective {provider, providerLabel, model, modelLabel, effort}, fallback {reason: 'disabled'\|'unknown', provider, model}, readOnly {provider, label}, checked}` (the model selector), `connection {attempt, nextRetryAt}` (the next reconnect, or the next connector start while it is down), `host {state, restarts, retryInMs}`, `transcription {enabled, available, missing, invalid, language, home}` ([Voice notes](#voice-notes)), `counters`, `config`, `version`, `escalation`, `manualCommand`, `paths`. The `whatsapp:status` broadcast carries states, counters, `warning`, `brain` (the stored choice: ids only) and `transcription {enabled, available}` |
-| `POST /setup` | `{ mode: 'self'\|'dedicated', method: 'qr'\|'code', phone? }` | Records the intent (never the number), installs if needed. `{ ok, next: 'install'\|'link'\|'none', status }` — the tab then opens `/link` |
-| `POST /connector/install` | `{ update?, reinstall? }` | Starts an install (`409 INSTALL_BUSY`); progress in `/status` |
-| `DELETE /connector/install` | `{}` | Cancels a running install |
-| `DELETE /connector` | `{}` | Removes the connector (`409 STILL_LINKED` while linked) |
-| `GET /connector/log` | `?limit=` | `{ lines }` (redacted) |
-| `POST /link` | `{ method, phone? }` | **NDJSON** to this client only: `{type:'state', state:'linking', phase, method}`, `{type:'qr', svg, expiresAt}`, `{type:'pairing_code', code, expiresAt}`, `{type:'linked', mode}`, `{type:'error', code}`, `{type:'state', state:'link_expired'}`. Closing it cancels linking. One at a time (`409 LINK_BUSY`); `400 BAD_PHONE` with `field:'phone'`; `409 ALREADY_LINKED`, `NOT_INSTALLED` |
-| `POST /owner/confirm` | `{ accept: boolean }` | Self mode: confirm the linked account, or log it out |
-| `POST /owner/claim` | `{}` | **NDJSON**: `{type:'claim', code, sendTo (masked), waMeUrl, qrSvg, expiresAt, attemptsLeft}`, then `{type:'claim', attemptsLeft}` updates, `{type:'bound', masked}` or `{type:'expired'}`. Closing it cancels the claim |
-| `DELETE /owner` | `{}` | Second-number mode: forget the owner, then claim again (`409 WRONG_MODE` in Message yourself) |
-| `POST /test` | `{}` | Sends "SynaBun test message. If you can read this, WhatsApp is working." (`429 RATE_LIMITED`, `409 NOT_CONNECTED`) |
-| `POST /pause` | `{}` | Pause (agents allowed: JSON body required, no Origin/UI header) |
-| `POST /resume`, `/reconnect`, `/unlink` | `{}` | |
-| `POST /remove` | `{ deleteConversation? }` | Unlink, uninstall, clear the log and every setting |
-| `GET /config` · `PUT /config` | `{ config: {…}, expectedVersion, confirmEscalation? }` | User fields: `enabled`, `level`, `progress`, `forwardBackground`, `replyLabel`, `maxMessages`, `rotation`, `selfTrigger`, `activityText`, `strictWorkerApprovals`, `computerUse` (a boolean, off by default: [Computer use](#computer-use)), `brain` (`null` = same as the Assistant, or `{ provider, model, effort }`: checked against the Assistant's catalog, `400 CONFIG_INVALID {field:'brain'}` for an unknown or disabled model or an effort it does not run, `503 CATALOG_UNAVAILABLE` when it cannot be checked), `transcriptionEnabled`, `transcriptionLanguage`, `transcriptionEnginePath`, `transcriptionModelPath`, `transcriptionFfmpegPath` ([Voice notes](#settings-and-api): a path is checked on disk, a change re-configures the connector at once). `400 CONFIG_INVALID {field}` (service-owned fields included), `409 VERSION_CONFLICT`, `400 CONFIRM_REQUIRED`, `409 PHONE_REQUIRED`; raising to Autonomous answers `pending: { code, expiresAt, attemptsLeft }` |
-| `GET /activity` · `DELETE /activity` | `?limit=` | The latest rows (`{at, kind, detail, text?}`) and counters; clear |
-| `POST /session/new` | `{}` | A fresh WhatsApp conversation |
-| `POST /__fake` | `{ action, … }` | Only with `SYNABUN_WHATSAPP_FAKE=1` (404 otherwise) |
+- **`GET /status`**
+  - Answer: The state machine and masked data: `state` (`unavailable` +`reason` (`env`: `SYNABUN_WHATSAPP=off`; `starting`: the server is still starting the Assistant; `error`: the WhatsApp Link failed to load), `not_installed`, `installing` +`stage`, `install_failed` +`code`, `ready`, `linking` +`method` `phase` (`starting`/`waiting`/`scanned`), `link_expired`, `confirm_owner` +`kind` (`self`/`code`), `connected`, `reconnecting`, `paused`, `logged_out` +`reason` (`removed`/`inactive`/`banned`/`invalid_session`), `error` +`code`), `warning` (`replaced` (440) / `forbidden` (403) while the link retries one of them, until 10 minutes connected; else `null`), `mode`, `level`, `levelExpiresAt` (always `null`: Autonomous has no time limit; kept for older readers), `paused`, `pausedBy`, `computerUse` (the [Computer use](#computer-use) switch), `connector {installed, version, pinned, outdated, stage, errorCode}`, `account {masked, name}`, `owner {masked, boundAt}`, `confirm {kind, expiresAt, attemptsLeft}`, `session {id, title}`, `brainLimit {provider, label, text}` (the conversation's brain makes it read-only), `brainChoice {choice, source: 'assistant'|'choice', effective {provider, providerLabel, model, modelLabel, effort}, fallback {reason: 'disabled'|'unknown', provider, model}, readOnly {provider, label}, checked}` (the model selector), `connection {attempt, nextRetryAt}` (the next reconnect, or the next connector start while it is down), `host {state, restarts, retryInMs}`, `transcription {enabled, available, missing, invalid, language, home}` ([Voice notes](#voice-notes)), `counters`, `config`, `version`, `escalation`, `manualCommand`, `paths`. The `whatsapp:status` broadcast carries states, counters, `warning`, `brain` (the stored choice: ids only) and `transcription {enabled, available}`
+- **`POST /setup`**
+  - Body: `{ mode: 'self'|'dedicated', method: 'qr'|'code', phone? }`
+  - Answer: Records the intent (never the number), installs if needed. `{ ok, next: 'install'|'link'|'none', status }` — the tab then opens `/link`
+- **`POST /connector/install`**
+  - Body: `{ update?, reinstall? }`
+  - Answer: Starts an install (`409 INSTALL_BUSY`); progress in `/status`
+- **`DELETE /connector/install`**
+  - Body: `{}`
+  - Answer: Cancels a running install
+- **`DELETE /connector`**
+  - Body: `{}`
+  - Answer: Removes the connector (`409 STILL_LINKED` while linked)
+- **`GET /connector/log`**
+  - Body: `?limit=`
+  - Answer: `{ lines }` (redacted)
+- **`POST /link`**
+  - Body: `{ method, phone? }`
+  - Answer: **NDJSON** to this client only: `{type:'state', state:'linking', phase, method}`, `{type:'qr', svg, expiresAt}`, `{type:'pairing_code', code, expiresAt}`, `{type:'linked', mode}`, `{type:'error', code}`, `{type:'state', state:'link_expired'}`. Closing it cancels linking. One at a time (`409 LINK_BUSY`); `400 BAD_PHONE` with `field:'phone'`; `409 ALREADY_LINKED`, `NOT_INSTALLED`
+- **`POST /owner/confirm`**
+  - Body: `{ accept: boolean }`
+  - Answer: Self mode: confirm the linked account, or log it out
+- **`POST /owner/claim`**
+  - Body: `{}`
+  - Answer: **NDJSON**: `{type:'claim', code, sendTo (masked), waMeUrl, qrSvg, expiresAt, attemptsLeft}`, then `{type:'claim', attemptsLeft}` updates, `{type:'bound', masked}` or `{type:'expired'}`. Closing it cancels the claim
+- **`DELETE /owner`**
+  - Body: `{}`
+  - Answer: Second-number mode: forget the owner, then claim again (`409 WRONG_MODE` in Message yourself)
+- **`POST /test`**
+  - Body: `{}`
+  - Answer: Sends "SynaBun test message. If you can read this, WhatsApp is working." (`429 RATE_LIMITED`, `409 NOT_CONNECTED`)
+- **`POST /pause`**
+  - Body: `{}`
+  - Answer: Pause (agents allowed: JSON body required, no Origin/UI header)
+- **`POST /resume`, `/reconnect`, `/unlink`**
+  - Body: `{}`
+- **`POST /remove`**
+  - Body: `{ deleteConversation? }`
+  - Answer: Unlink, uninstall, clear the log and every setting
+- **`GET /config` · `PUT /config`**
+  - Body: `{ config: {…}, expectedVersion, confirmEscalation? }`
+  - Answer: User fields: `enabled`, `level`, `progress`, `forwardBackground`, `replyLabel`, `maxMessages`, `rotation`, `selfTrigger`, `activityText`, `strictWorkerApprovals`, `computerUse` (a boolean, off by default: [Computer use](#computer-use)), `brain` (`null` = same as the Assistant, or `{ provider, model, effort }`: checked against the Assistant's catalog, `400 CONFIG_INVALID {field:'brain'}` for an unknown or disabled model or an effort it does not run, `503 CATALOG_UNAVAILABLE` when it cannot be checked), `transcriptionEnabled`, `transcriptionLanguage`, `transcriptionEnginePath`, `transcriptionModelPath`, `transcriptionFfmpegPath` ([Voice notes](#settings-and-api): a path is checked on disk, a change re-configures the connector at once). `400 CONFIG_INVALID {field}` (service-owned fields included), `409 VERSION_CONFLICT`, `400 CONFIRM_REQUIRED`, `409 PHONE_REQUIRED`; raising to Autonomous answers `pending: { code, expiresAt, attemptsLeft }`
+- **`GET /activity` · `DELETE /activity`**
+  - Body: `?limit=`
+  - Answer: The latest rows (`{at, kind, detail, text?}`) and counters; clear
+- **`POST /session/new`**
+  - Body: `{}`
+  - Answer: A fresh WhatsApp conversation
+- **`POST /__fake`**
+  - Body: `{ action, … }`
+  - Answer: Only with `SYNABUN_WHATSAPP_FAKE=1` (404 otherwise)
 
 ## Fake mode (testing)
 

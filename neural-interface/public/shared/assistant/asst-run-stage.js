@@ -23,7 +23,7 @@
 
 import * as mascotLib from '../synabun-mascot.js';
 import { isTerminalRunStatus } from './asst-state.js';
-import { SCENE_SPECS, compactActivity, finalFrame, isLivePhase, phaseLine, sceneFor, sceneSvg, stageLabel, stagePhase, stepLine } from './asst-scenes.js';
+import { ACTIVITY_SCENE_SPECS, SCENE_SPECS, compactActivity, finalFrame, isLivePhase, phaseLine, sceneFor, sceneSvg, stageLabel, stagePhase, stepLine } from './asst-scenes.js';
 
 export const STAGE_TIMING = Object.freeze({
   settleHoldMs: 1400, // the final frame shows this long before the stage folds
@@ -77,7 +77,7 @@ export function createWorkerStage(card, { t = (_key, fallback) => fallback, calm
 
   function ensureRig() {
     if (rig || destroyed) return;
-    rig = safe(() => mascot.createMascot(face, { width: 56, height: 28, rangeX: 10, rangeY: 7, pose: 'idle' })) || null;
+    rig = safe(() => mascot.createMascot(face, { width: 112, height: 56, rangeX: 10, rangeY: 7, pose: 'idle' })) || null;
     pose = '';
   }
 
@@ -120,7 +120,7 @@ export function createWorkerStage(card, { t = (_key, fallback) => fallback, calm
     stage.toggleAttribute('data-live', live);
     if (final) stage.dataset.final = final; else delete stage.dataset.final;
     sceneHost.firstElementChild?.toggleAttribute('data-live', live);
-    if (rig && !final) setPose(phase === 'waiting' ? 'blocked' : (SCENE_SPECS[scene] || SCENE_SPECS.generic).pose);
+    if (rig && !final) setPose(phase === 'waiting' ? 'blocked' : (SCENE_SPECS[scene] || ACTIVITY_SCENE_SPECS[scene] || SCENE_SPECS.generic).pose);
     const text = final ? phaseLine(phase, run, scene, t)
       : phase === 'working' ? (stepLine(activity, t, at) || phaseLine(phase, run, scene, t))
         : phaseLine(phase, run, scene, t);

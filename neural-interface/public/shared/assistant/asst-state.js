@@ -138,6 +138,15 @@ export function providerLabel(provider) {
 }
 
 /**
+ * The picker group a runnable spec is shown under: OpenCode's `maritaca/<id>` rows are the Maritaca group
+ * (they run through OpenCode, the spec stays { provider: 'opencode', model: 'maritaca/<id>' }); any other spec is its provider.
+ */
+export function displayProvider(pref) {
+  const provider = pref?.provider || '';
+  return provider === 'opencode' && String(pref?.model || '').toLowerCase().startsWith('maritaca/') ? 'maritaca' : provider;
+}
+
+/**
  * The icon, colour and name of a provider (provider-icons.js). A provider that file does not know
  * yet keeps its own name and shows no icon, never another provider's (getProviderMeta falls back to
  * Claude Code's for an unknown id).
@@ -233,7 +242,8 @@ export function resolveBrainDefaults(brain, catalog = {}) {
     ?? (effortSource ? effortSource.map(e => (typeof e === 'string' ? e : e?.id)).filter(id => id && id !== 'off') : null);
   if (ids) {
     if (!ids.length) b.effort = null;
-    else if (b.effort && !ids.includes(b.effort)) {
+    // Off (`none`, no thinking) is kept wherever the model can run it, though Claude lists no `none`.
+    else if (b.effort && !ids.includes(b.effort) && !(b.effort === ROUTE_EFFORT_OFF && supportsBrainEffortOff(b.provider, ids))) {
       const fallback = row?.defaultEffort || row?.defaultReasoningEffort || pickDefault(effortSource)?.id || null;
       b.effort = fallback && ids.includes(fallback) ? fallback : null;
     }
@@ -624,7 +634,67 @@ export function routeTargetLabel(target, { effort = false } = {}) {
   const label = str(target.label) || modelShortName(target.model) || providerShortLabel(provider);
   if (!effort) return label;
   const level = str(target.effort);
-  return level && level !== 'off' ? `${label} · ${level}` : label;
+  return level && level !== 'off' ? `${label} · ${routeEffortWord(level)}` : label;
+}
+
+/** Off for a route is the effort id `none` (no thinking); shown as "off". Other ids as they are. */
+export const ROUTE_EFFORT_OFF = 'none';
+export function routeEffortWord(level) {
+  const value = str(level);
+  return value.toLowerCase() === ROUTE_EFFORT_OFF ? 'off' : value;
+}
+
+// ── The brain's own thinking effort (the brain picker) ────────────────────
+// The picker's Auto row keeps the id `off` and stores no effort (the model's default); a server
+// that reset a level it could not run stores `off` with the same meaning. Off (no thinking) is the
+// effort id `none`, the same as a route's Off (lib/effort-levels.js EFFORT_OFF): the Claude brain is
+// started with thinking disabled and keeps it on every turn until another level is picked.
+export const BRAIN_EFFORT_AUTO = 'off';
+const AUTO_BRAIN_EFFORTS = new Set(['', 'off', 'auto', 'default']);
+
+/** No effort of its own: the model's default (null, '', off, auto, default). */
+export function isAutoBrainEffort(effort) {
+  return AUTO_BRAIN_EFFORTS.has(str(effort).toLowerCase());
+}
+
+/**
+ * Can this brain run with thinking off, given the model's effort ids? Mirrors lib/effort-levels.js
+ * supportsEffortOff: Claude Code whenever the model thinks at all (Haiku lists none: no), Codex and
+ * OpenCode only when the model lists `none`, Antigravity never.
+ */
+export function supportsBrainEffortOff(provider, ids) {
+  if (!Array.isArray(ids)) return provider === 'claude-code';
+  const list = ids.map((id) => str(typeof id === 'string' ? id : id?.id).toLowerCase()).filter((id) => id && id !== BRAIN_EFFORT_AUTO);
+  if (provider === 'claude-code') return list.some((id) => id !== ROUTE_EFFORT_OFF);
+  if (provider === 'antigravity') return false;
+  return list.includes(ROUTE_EFFORT_OFF);
+}
+
+/**
+ * The brain picker's effort rows, from the model's list (getEffortLevelsForModel: led by `off`).
+ * Claude Code: Auto (`off`, the model's default, stored as no effort), Off (`none`, no thinking) when
+ * the model thinks at all, then its levels. `key` names the row's words (assistant.brain.effortAuto /
+ * effortNone). Every other provider: its list as it is.
+ */
+export function brainEffortChoices(provider, levels) {
+  const list = Array.isArray(levels) ? levels.filter((e) => e && str(e.id)) : [];
+  if (provider !== 'claude-code') return list;
+  const rest = list.filter((e) => e.id !== BRAIN_EFFORT_AUTO && str(e.id).toLowerCase() !== ROUTE_EFFORT_OFF);
+  const auto = { id: BRAIN_EFFORT_AUTO, label: 'Auto', desc: 'Model default', key: 'auto' };
+  return rest.length ? [auto, { id: ROUTE_EFFORT_OFF, label: 'Off', desc: 'No thinking', key: 'none' }, ...rest] : [auto];
+}
+
+/**
+ * The effort a typed `/model <model> <effort>` stores. Claude Code: off / none / no / disabled is Off
+ * (`none`: no thinking, as the picker's Off) and auto / default is the model's default (null); a level
+ * the model lacks is the server's to correct. Other providers: off / auto / default is the default.
+ */
+export function slashBrainEffort(provider, word) {
+  const value = str(word);
+  if (!value) return null;
+  const lower = value.toLowerCase();
+  if (provider === 'claude-code' && ['off', 'none', 'no', 'disabled'].includes(lower)) return ROUTE_EFFORT_OFF;
+  return isAutoBrainEffort(lower) ? null : value;
 }
 
 export const ROUTE_KIND_LABELS = { direct: 'here', dispatch: 'dispatch', computer: 'computer' };

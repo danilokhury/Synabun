@@ -228,10 +228,24 @@ function createConsistentSqliteSnapshot(sourcePath, snapshotPath) {
 // they belonged to, and that file is snapshotted consistently or not at all.
 const SQLITE_JOURNAL_RE = /\.(?:db|bak)-journal$/i;
 
+/**
+ * True for what lies inside a local browser profile's folder (data/local-profiles/<id>/…, lib/local-profiles.js): a
+ * whole Chrome profile, which Chrome locks and rewrites while it runs, as large as a browser gets, and holding the
+ * profile's cookies and logins. No archive of any kind holds it (a copy taken under a running Chrome would not be a
+ * profile anyway). The profiles' definitions, data/local-profiles/profiles.json, are a plain file of that folder and
+ * stay in every backup and upgrade snapshot, so a rollback brings the list back; that file holds the proxy passwords
+ * as typed (docs/browser-v2.md).
+ */
+export function isLocalProfileFolderPath(relativePath) {
+  const parts = String(relativePath).replace(/\\/g, '/').split('/');
+  return parts[0] === 'local-profiles' && parts.length > 2;
+}
+
 function shouldSkipDataPath(relativePath) {
   const normalized = relativePath.replace(/\\/g, '/');
   const parts = normalized.split('/');
   const name = parts.at(-1);
+  if (isLocalProfileFolderPath(normalized)) return true;
   if (parts[0] === 'updater') return true;
   if (parts[0] === 'logs') return true;
   if (parts.length > 1 && EXCLUDED_DATA_DIRS.has(parts[0])) return true;
@@ -930,7 +944,8 @@ export function sameBackupFile(path, stamp) {
 // and transcript captures, the MCP tool counters; the caches the server rebuilds from the memories (the map's layout,
 // the links); and the automation browser's Chromium profiles, which Chromium locks and rewrites while it runs (the
 // "attach" one even when SynaBun does not), and which no SynaBun update touches. Upgrade snapshots leave them out;
-// the full backups keep everything.
+// the full backups keep everything. (The folders of the local browser profiles, data/local-profiles/<id>/, are in no
+// archive at all: shouldSkipDataPath. Their definitions, data/local-profiles/profiles.json, are in every one.)
 const UPGRADE_RUNTIME_FILES = Object.freeze({
   data: new Set(['supervisor.json', 'start-launcher.lock', 'update-handoff.json', 'last-session.json', 'memory-map.json', 'links-cache.json']),
   'mcp-data': new Set(['tool-usage.json']),

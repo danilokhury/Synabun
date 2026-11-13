@@ -14,6 +14,7 @@
  * look successful).
  */
 
+import { statSync } from 'node:fs';
 import { z } from 'zod/v3';
 import { v4 as uuidv4 } from 'uuid';
 import * as ni from '../../services/neural-interface.js';
@@ -25,7 +26,7 @@ import type { MemoryPayload } from '../../types.js';
 import { text } from '../response.js';
 import {
   STUDIO_BASE, resolve, ensureAuth, wait, pollFor, safeNavigate,
-  clickStudio, fillStudio, resolveLatestUploadedVideoId, type Resolved,
+  clickStudio, fillStudio, type Resolved,
 } from './helpers.js';
 import { TRAILER_CATEGORY, ledgerTags } from './dedup.js';
 
@@ -52,7 +53,9 @@ export const youtubeUploadSchema = {
 export const youtubeUploadDescription =
   'Upload a local video file to YouTube Studio, publish it, and record it to the youtube-videos dedup ledger. ' +
   'Opens Create → Upload, sets the file, fills title/description/tags, advances the wizard, sets visibility, clicks Done, then verifies the wizard closed and resolves the new video id. [mutating — publishes to the channel]. ' +
-  'Pass game/igdbId/appid/sourceTrailerId so the upload is remembered and never re-posted. Default visibility=private so you can schedule afterwards with youtube_schedule.';
+  'Pass game/igdbId/appid/sourceTrailerId so the upload is remembered and never re-posted. Default visibility=private so you can schedule afterwards with youtube_schedule. ' +
+  'Result JSON: state = "published" (the tool clicked Publish/Save and Studio confirmed it; visibility is then the one applied), "draft" (a video row exists but is NOT published: see draftReason, e.g. processing/checks still running or the publish step not reached; finish it in Studio with Edit draft → Visibility → Publish once processing ends, never re-upload) or "upload_not_confirmed" (no evidence a row exists; check Studio → Content before any retry). ' +
+  'videoId is read only from this upload\'s own dialog; idConfirmed=false with videoId null means no trustworthy id was found (never a guess). videoRowExists tells you whether a duplicate upload would be created by retrying.';
 
 async function ensureOnStudio(r: Resolved): Promise<string | null> {
   const res = await ni.evaluate(r.sessionId, `location.href`, r.tabId);
@@ -117,6 +120,86 @@ async function recordTrailerLedger(idy: {
   }
 }
 
+/**
+ * Read the upload dialog's own state. Everything is scoped to
+ * ytcp-uploads-dialog (and the share dialog Studio shows after Publish/Save),
+ * never the page: the old reader matched the first youtu.be link anywhere in
+ * document.body, which picked up other videos of the channel.
+ */
+const DIALOG_PROBE = `(() => {
+  const ID = /(?:youtu\\.be\\/|\\/shorts\\/|watch\\?v=|\\/video\\/)([A-Za-z0-9_-]{11})(?![A-Za-z0-9_-])/;
+  const deepAll = (root, sel, out) => {
+    if (!root) return out;
+    root.querySelectorAll(sel).forEach((el) => out.push(el));
+    root.querySelectorAll('*').forEach((el) => { if (el.shadowRoot) deepAll(el.shadowRoot, sel, out); });
+    return out;
+  };
+  const visible = (el) => !!el && !el.hidden && el.getAttribute('aria-hidden') !== 'true' && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+  const idIn = (root) => {
+    if (!root) return null;
+    for (const a of deepAll(root, 'a[href]', [])) { const m = (a.getAttribute('href') || '').match(ID); if (m) return m[1]; }
+    for (const el of deepAll(root, '[video-id],[data-video-id]', [])) {
+      const v = el.getAttribute('video-id') || el.getAttribute('data-video-id');
+      if (v && /^[A-Za-z0-9_-]{11}$/.test(v)) return v;
+    }
+    return null;
+  };
+  const dialog = deepAll(document, 'ytcp-uploads-dialog', []).find(visible) || null;
+  const share = deepAll(document, 'ytcp-video-share-dialog', []).find(visible) || null;
+  const prechecks = deepAll(document, 'ytcp-prechecks-warning-dialog', []).find(visible) || null;
+  const progress = dialog ? (deepAll(dialog, 'ytcp-video-upload-progress', [])[0] || null) : null;
+  const progressText = progress ? (progress.innerText || progress.textContent || '').replace(/\\s+/g, ' ').trim() : '';
+  const pm = progressText.match(/(\\d{1,3})\\s?%/);
+  const done = dialog ? (deepAll(dialog, '#done-button', [])[0] || null) : null;
+  const doneDisabled = done ? (done.hasAttribute('disabled') || done.getAttribute('aria-disabled') === 'true') : null;
+  const uploadingAttr = progress ? (progress.hasAttribute('uploading') || progress.getAttribute('upload-status') === 'UPLOADING') : false;
+  const uploadingWord = /upload|envi|carreg/i.test(progressText) && !!pm;
+  return {
+    dialogOpen: !!dialog,
+    shareOpen: !!share,
+    prechecksOpen: !!prechecks,
+    id: idIn(share) || idIn(dialog),
+    percent: pm ? Number(pm[1]) : null,
+    uploading: uploadingAttr || uploadingWord,
+    progressText: progressText.slice(0, 160),
+    doneDisabled,
+    formVisible: !!dialog && deepAll(dialog, '#title-textarea', []).some(visible),
+  };
+})()`;
+
+type DialogState = {
+  dialogOpen: boolean; shareOpen: boolean; prechecksOpen: boolean; id: string | null;
+  percent: number | null; uploading: boolean; progressText: string; doneDisabled: boolean | null; formVisible: boolean;
+};
+
+async function probe(r: Resolved): Promise<DialogState | null> {
+  const res = await ni.evaluate(r.sessionId, DIALOG_PROBE, r.tabId);
+  if (res.error || !res.result || typeof res.result !== 'object') return null;
+  return res.result as DialogState;
+}
+
+/** Wait until the file transfer itself is over (no longer "uploading"), bounded by a size-aware limit. */
+async function waitForTransfer(r: Resolved, limitMs: number): Promise<{ finished: boolean; last: DialogState | null }> {
+  const start = Date.now();
+  let last: DialogState | null = null;
+  while (Date.now() - start < limitMs) {
+    last = await probe(r);
+    if (last && last.dialogOpen && last.formVisible && !last.uploading) return { finished: true, last };
+    if (last && !last.dialogOpen) return { finished: false, last };
+    await wait(2000);
+  }
+  return { finished: false, last };
+}
+
+function sizeAwareLimitMs(filePath: string): number {
+  let bytes = 0;
+  try { bytes = statSync(filePath).size; } catch { /* unknown size */ }
+  // Assume a slow 0.25 MB/s upstream, plus 2 minutes; cap at 45 minutes.
+  return Math.min(45 * 60_000, 120_000 + Math.ceil(bytes / (0.25 * 1024 * 1024)) * 1000);
+}
+
+type UploadState = 'published' | 'draft' | 'upload_not_confirmed';
+
 export async function handleYoutubeUpload(args: {
   filePath: string;
   title: string;
@@ -138,53 +221,57 @@ export async function handleYoutubeUpload(args: {
   const onErr = await ensureOnStudio(r);
   if (onErr) return text(onErr);
 
+  const requested = args.visibility || 'private';
+  const title = args.title.slice(0, 100);
+  const limitMs = sizeAwareLimitMs(args.filePath);
+  let videoId: string | null = null;
+  const notes: string[] = [];
+  const noteId = (s: DialogState | null) => { if (!videoId && s?.id) videoId = s.id; };
+
   // 1) Open the Create menu → Upload videos.
-  // #create-icon is locale-independent in most builds; fall back to aria-label
-  // and class-based selectors for PT-BR and other locales where the id is absent.
   let create = await clickStudio(r, '#create-icon', 'Create');
-  if (!create.ok) {
-    create = await clickStudio(r, 'button[aria-label="Criar"]', 'Criar');
-  }
-  if (!create.ok) {
-    create = await clickStudio(r, 'ytcp-button[class*="CreateIcon"]', 'Criar');
-  }
+  if (!create.ok) create = await clickStudio(r, 'button[aria-label="Criar"]', 'Criar');
+  if (!create.ok) create = await clickStudio(r, 'ytcp-button[class*="CreateIcon"]', 'Criar');
   if (!create.ok) return text(`Could not open the Create menu: ${create.error}`);
   await wait(700);
-  // The first item in the create menu is "Upload videos" (PT-BR: "Enviar vídeos").
   const uploadItem = await clickStudio(r, 'tp-yt-paper-item#text-item-0', 'Upload videos');
   if (!uploadItem.ok) {
-    // Fallback 1: some Studio builds expose a direct upload button id.
     const alt = await clickStudio(r, '#upload-button', 'Upload videos');
     if (!alt.ok) {
-      // Fallback 2: PT-BR locale — click first menuitem by role.
       const altPt = await clickStudio(r, '[role="menuitem"]:first-of-type', 'Enviar vídeos');
       if (!altPt.ok) return text(`Could not find the "Upload videos" menu item: ${uploadItem.error}`);
     }
   }
 
-  // 2) Set the file on the dialog's hidden file input.
+  // 2) Set the file. A timeout here does not mean the upload failed: YouTube
+  // often has the file already, so look at the dialog before giving up.
   const waitInput = await ni.waitFor(r.sessionId, { selector: 'input[type="file"]', state: 'attached', timeout: 15000 }, r.tabId);
   if (waitInput.error) return text(`Upload dialog did not open: ${waitInput.error}`);
   const up = await ni.upload(r.sessionId, 'input[type="file"]', [args.filePath], undefined, r.tabId);
-  if (up.error) return text(`File upload failed: ${up.error}. Check the path exists and is a video file.`);
+  if (up.error) notes.push(`File input step reported: ${up.error}. Checked the dialog to see whether the upload started anyway.`);
 
-  // 3) Wait for the details form (title box) to render.
-  const formReady = await ni.waitFor(r.sessionId, { selector: '#title-textarea', state: 'visible', timeout: 30000 }, r.tabId);
-  if (formReady.error) return text(`Upload details form did not appear: ${formReady.error}`);
-  await wait(800);
-
-  // 4) Title (clear the auto-filled filename first via fill).
-  const titleOk = await fillStudio(r, '#title-textarea #textbox', args.title.slice(0, 100), 'Add a title that describes your video');
-  if (!titleOk.ok) return text(`Could not set the title: ${titleOk.error}`);
-
-  // 5) Description (optional).
-  if (args.description) {
-    await fillStudio(r, '#description-textarea #textbox', args.description, 'Tell viewers about your video');
+  // 3) Wait for the details form of THIS upload.
+  const formReady = await ni.waitFor(r.sessionId, { selector: '#title-textarea', state: 'visible', timeout: up.error ? 90000 : 30000 }, r.tabId);
+  if (formReady.error) {
+    const s = await probe(r);
+    noteId(s);
+    const started = !!(s && s.dialogOpen && (s.formVisible || s.percent != null || s.id));
+    return result({
+      state: started ? 'draft' : 'upload_not_confirmed',
+      draftReason: started ? 'details form did not finish loading; the upload dialog is still open' : null,
+      videoRowExists: started ? true : 'unknown',
+      notes: [...notes, `Details form did not appear: ${formReady.error}.`, started
+        ? 'The upload started: do NOT upload again. Leave the tab on Studio and finish the draft there.'
+        : 'No sign of the upload in the dialog. Check Studio → Content before any retry.'],
+    });
   }
+  await wait(800);
+  noteId(await probe(r));
 
-  // 6) Tags (optional) — revealed under "Show more". Studio tokenizes a tag on
-  // each comma/Enter, so type them one at a time (a single comma-joined blob only
-  // commits the last token — the bug that left most tags unset).
+  // 4–6) Metadata.
+  const titleOk = await fillStudio(r, '#title-textarea #textbox', title, 'Add a title that describes your video');
+  if (!titleOk.ok) notes.push(`Could not set the title: ${titleOk.error}.`);
+  if (args.description) await fillStudio(r, '#description-textarea #textbox', args.description, 'Tell viewers about your video');
   if (args.tags && args.tags.length) {
     await clickStudio(r, '#toggle-button', 'Show more');
     await wait(700);
@@ -192,97 +279,129 @@ export async function handleYoutubeUpload(args: {
       const t = tag.trim();
       if (!t) continue;
       const typed = await ni.type(r.sessionId, '#tags-container #text-input', `${t},`, undefined, r.tabId, 'Tags', 'insert');
-      if (typed.error) break; // tags are optional — never fail the upload over them
+      if (typed.error) break;
       await wait(150);
     }
     await ni.pressKey(r.sessionId, 'Enter', r.tabId);
     await wait(300);
   }
 
-  // 7) Audience (made-for-kids). Default: Not made for kids.
+  // 7) Audience.
   const kidsName = args.madeForKids ? 'VIDEO_MADE_FOR_KIDS_MFK' : 'VIDEO_MADE_FOR_KIDS_NOT_MFK';
   await clickStudio(r, `tp-yt-paper-radio-button[name="${kidsName}"]`, args.madeForKids ? 'Yes, it\'s made for kids' : 'No, it\'s not made for kids');
   await wait(400);
 
-  // 8) Advance the wizard: Details → Video elements → Checks → Visibility.
+  // 8) Let the transfer itself finish before anything can close the dialog.
+  const transfer = await waitForTransfer(r, limitMs);
+  noteId(transfer.last);
+  if (!transfer.finished) {
+    const open = !!transfer.last?.dialogOpen;
+    return result({
+      state: open ? 'draft' : 'upload_not_confirmed',
+      draftReason: open ? `file transfer still running after ${Math.round(limitMs / 60000)} min (${transfer.last?.progressText || 'no progress text'})` : null,
+      videoRowExists: open ? true : 'unknown',
+      notes: [...notes, open
+        ? 'The upload is in progress: do NOT upload again and do not leave the Studio tab until it reaches 100%.'
+        : 'The upload dialog closed before the transfer was confirmed. Check Studio → Content before any retry.'],
+    });
+  }
+
+  // 9) Advance the wizard to Visibility.
   for (let step = 0; step < 3; step++) {
     const next = await clickStudio(r, '#next-button', 'Next');
     if (!next.ok) break;
     await wait(900);
   }
-
-  // 9) Visibility radio. Wait for the radio group itself (locale-independent
-  // name= attribute, shadow-DOM-pierced by Playwright) rather than localized text.
-  const vis = (args.visibility || 'private').toUpperCase();
+  const vis = requested.toUpperCase();
   const visReady = await ni.waitFor(r.sessionId, { selector: `tp-yt-paper-radio-button[name="${vis}"]`, state: 'visible', timeout: 12000 }, r.tabId);
-  if (visReady.error) {
-    return text(`Reached the wizard but the visibility step did not render (${visReady.error}). The upload may be incomplete — open Studio → Content and finish/verify before retrying to avoid a duplicate.`);
-  }
-  const visClick = await clickStudio(r, `tp-yt-paper-radio-button[name="${vis}"]`, vis.charAt(0) + vis.slice(1).toLowerCase());
-  if (!visClick.ok) return text(`Could not select visibility ${vis}: ${visClick.error}.`);
-  await wait(500);
-
-  // 10) Publish / Done.
-  const done = await clickStudio(r, '#done-button', args.visibility === 'public' ? 'Publish' : 'Save');
-  if (!done.ok) return text(`Set metadata but could not click Done/Publish: ${done.error}. Finish manually in the browser panel.`);
-
-  // 11) Resolve the new video id from the share dialog (freshest source).
-  let videoId = await pollFor<string>(
-    r,
-    `(() => {
-      const m = (document.body.innerText || '').match(/youtu\\.be\\/([A-Za-z0-9_-]{6,})/);
-      if (m) return m[1];
-      const a = Array.from(document.querySelectorAll('a[href*="youtu"]')).map(x => x.href).join(' ');
-      const m2 = a.match(/youtu\\.be\\/([A-Za-z0-9_-]{6,})|watch\\?v=([A-Za-z0-9_-]{6,})/);
-      return m2 ? (m2[1] || m2[2]) : null;
-    })()`,
-    9000,
-    600,
-  );
-
-  // 12) Confirm the wizard actually finished (dialog closed) — the honest
-  // success signal. Don't claim a post that didn't complete.
-  const closed = await ni.waitFor(r.sessionId, { selector: '#title-textarea', state: 'hidden', timeout: 12000 }, r.tabId);
-  const publishConfirmed = !closed.error;
-
-  // 13) Fallback id resolution from the content grid (navigates away — only once
-  // publishing is confirmed, so the just-uploaded video is the newest row).
-  if (!videoId && publishConfirmed) {
-    videoId = await resolveLatestUploadedVideoId(r);
-  }
-
-  const uploaded = publishConfirmed || !!videoId;
-
-  // 14) Record the dedup ledger (only on a confirmed upload with an identity —
-  // never poison the ledger with a non-upload).
-  const hasIdentity = !!(args.game || args.igdbId != null || args.appid != null || args.sourceTrailerId);
-  let recordedMemoryId: string | null = null;
-  if (uploaded && hasIdentity) {
-    recordedMemoryId = await recordTrailerLedger({
-      game: args.game,
-      igdbId: args.igdbId,
-      appid: args.appid,
-      sourceTrailerId: args.sourceTrailerId,
-      source: args.source,
-      videoId: videoId || null,
-      title: args.title.slice(0, 100),
-      visibility: args.visibility || 'private',
+  const visClick = visReady.error ? { ok: false, error: visReady.error } : await clickStudio(r, `tp-yt-paper-radio-button[name="${vis}"]`, vis.charAt(0) + vis.slice(1).toLowerCase());
+  noteId(await probe(r));
+  if (!visClick.ok) {
+    return result({
+      state: 'draft',
+      draftReason: `publish step not reached: visibility ${vis} could not be selected (${visClick.error})`,
+      videoRowExists: true,
+      notes,
     });
   }
+  await wait(500);
 
-  return text(JSON.stringify({
-    uploaded,
-    videoId: videoId || null,
-    visibility: args.visibility || 'private',
-    title: args.title.slice(0, 100),
-    recordedMemoryId,
-    ledger: recordedMemoryId
-      ? 'Recorded to youtube-videos (dedup ledger) — youtube_source will skip this trailer from now on.'
-      : (hasIdentity
-        ? 'Upload not confirmed — ledger NOT recorded.'
-        : 'No game/igdbId/appid/sourceTrailerId passed — ledger NOT recorded; a future run could re-post this. Pass identity from the youtube_source candidate to enable dedup.'),
-    note: !uploaded
-      ? 'Could not confirm the upload completed (the publish dialog did not close and no video id appeared). Open Studio → Content and verify before retrying to avoid a duplicate.'
-      : (videoId ? `Published. Video id ${videoId}.` : 'Published, but could not auto-detect the video id — verify in Studio → Content. Ledger recorded by game id.'),
-  }, null, 2));
+  // 10) Publish / Save, only when Studio enables the button (it stays
+  // disabled while processing or checks run). Wait a bounded time for that.
+  const enableDeadline = Date.now() + Math.min(limitMs, 10 * 60_000);
+  let s = await probe(r);
+  while (s && s.doneDisabled && Date.now() < enableDeadline) { await wait(3000); s = await probe(r); }
+  noteId(s);
+  if (!s || s.doneDisabled) {
+    return result({
+      state: 'draft',
+      draftReason: 'processing or checks still running: the Publish/Save button stayed disabled',
+      videoRowExists: true,
+      notes,
+    });
+  }
+  const done = await clickStudio(r, '#done-button', requested === 'public' ? 'Publish' : 'Save');
+  if (!done.ok) {
+    return result({ state: 'draft', draftReason: `publish step not completed: could not click Publish/Save (${done.error})`, videoRowExists: true, notes });
+  }
+
+  // 11) Confirmation: Studio's share dialog ("Video published" / "saved").
+  let confirmed = false;
+  let prechecks = false;
+  const confirmDeadline = Date.now() + 30000;
+  while (Date.now() < confirmDeadline) {
+    await wait(1000);
+    const c = await probe(r);
+    if (!c) continue;
+    noteId(c);
+    if (c.shareOpen) { confirmed = true; if (c.id) videoId = c.id; break; }
+    if (c.prechecksOpen) { prechecks = true; break; }
+  }
+  if (!confirmed) {
+    return result({
+      state: 'draft',
+      draftReason: prechecks
+        ? 'checks still running: Studio asked for confirmation before publishing; nothing was confirmed'
+        : 'Publish/Save was clicked but Studio showed no confirmation (dialog closed or still saving)',
+      videoRowExists: true,
+      notes,
+    });
+  }
+  return result({ state: 'published', draftReason: null, videoRowExists: true, notes });
+
+  async function result(o: { state: UploadState; draftReason: string | null; videoRowExists: boolean | 'unknown'; notes: string[] }) {
+    const idConfirmed = !!videoId;
+    const hasIdentity = !!(args.game || args.igdbId != null || args.appid != null || args.sourceTrailerId);
+    let recordedMemoryId: string | null = null;
+    // A row exists (published or draft): record it so the trailer is not re-posted.
+    if (o.videoRowExists === true && hasIdentity) {
+      recordedMemoryId = await recordTrailerLedger({
+        game: args.game, igdbId: args.igdbId, appid: args.appid, sourceTrailerId: args.sourceTrailerId,
+        source: args.source, videoId, title,
+        visibility: o.state === 'published' ? requested : 'draft',
+      });
+    }
+    const summary = o.state === 'published'
+      ? `Published as ${requested} and confirmed by Studio.`
+      : o.state === 'draft'
+        ? `Uploaded but NOT published (draft): ${o.draftReason}. Finish it in Studio (Edit draft → Visibility → Publish) once processing ends; do not upload again.`
+        : 'Upload not confirmed. Check Studio → Content before any retry to avoid a duplicate.';
+    return text(JSON.stringify({
+      state: o.state,
+      uploaded: o.videoRowExists === true,
+      published: o.state === 'published',
+      videoRowExists: o.videoRowExists,
+      videoId,
+      idConfirmed,
+      visibility: o.state === 'published' ? requested : null,
+      requestedVisibility: requested,
+      draftReason: o.draftReason,
+      title,
+      recordedMemoryId,
+      ledger: recordedMemoryId
+        ? 'Recorded to youtube-videos (dedup ledger).'
+        : (hasIdentity ? 'No confirmed video row — ledger NOT recorded.' : 'No game/igdbId/appid/sourceTrailerId passed — ledger NOT recorded.'),
+      note: [summary, idConfirmed ? `Video id ${videoId} (read from this upload's dialog).` : 'No trustworthy video id could be read from this upload\'s dialog: videoId is null. Find it in Studio → Content (the draft\'s edit URL).', ...o.notes].join(' '),
+    }, null, 2));
+  }
 }

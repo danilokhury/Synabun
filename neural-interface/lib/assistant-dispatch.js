@@ -424,6 +424,13 @@ export function createAssistantDispatcher({
   localPortRange = null,
   toolListOptions = () => ({}),
   acquireLoopBrowserAndTab = null,
+  // A run's own MoreLogin profile (agent_dispatch morelogin_profile). resolveBrowserProfile(ref) → { envId, name } for
+  // an id or a name MoreLogin lists (it throws with status / code for an unknown, ambiguous or Firefox-type one);
+  // pinBrowserProfile(runId, envId, name) makes it the run's pin before its tab is acquired (server.js
+  // pinRunMoreLoginProfile: the pin a schedule's run is launched with). Without them a dispatch that names a
+  // profile is refused, never started in the default browser.
+  resolveBrowserProfile = null,
+  pinBrowserProfile = null,
   releaseSharedBrowserTab = async () => {},
   reconcileKeepAwake = () => {},
   memory = null,
@@ -919,6 +926,11 @@ export function createAssistantDispatcher({
     const usesBrowser = spec.usesBrowser === true || selection.groups.some(isBrowserGroup);
     const usesComputer = spec.usesComputer === true || spec.usesComputer === 'true';
     const tags = Array.isArray(spec.tags) ? spec.tags.map((tag) => String(tag).trim()).filter(Boolean).slice(0, 10) : [];
+    // The worker's own MoreLogin profile (resolved in dispatch(): withBrowserProfile) is for its browser tab.
+    const moreloginEnvId = spec.moreloginEnvId ? String(spec.moreloginEnvId) : null;
+    if (moreloginEnvId && !usesBrowser) {
+      throw new DispatchError('BROWSER_PROFILE_WITHOUT_BROWSER', 'morelogin_profile names the MoreLogin profile of the worker\'s browser tab: pass uses_browser: true with it, or leave it out.', { status: 400 });
+    }
     if ((usesBrowser || usesComputer) && capability === 'full' && !tags.includes('user-authorized-full')) {
       throw new DispatchError('QUARANTINE_VIOLATION', `${usesComputer ? 'Computer-use' : 'Browser-reading'} runs must use capability "read-only" or "workspace" unless tagged "user-authorized-full" by explicit user request.`);
     }
@@ -1033,6 +1045,7 @@ export function createAssistantDispatcher({
       idempotencyKey: spec.idempotencyKey || spec.idempotency_key ? String(spec.idempotencyKey || spec.idempotency_key).slice(0, 200) : null,
       queueIfBusy: spec.queueIfBusy !== false,
       requestedBrowserSessionId: spec.browserSessionId || null,
+      moreloginEnvId, moreloginEnvName: moreloginEnvId && spec.moreloginEnvName ? String(spec.moreloginEnvName) : null,
     };
   }
 
@@ -1311,6 +1324,7 @@ export function createAssistantDispatcher({
       maxMinutes: spec.maxMinutes, budgetUsd: spec.budgetUsd ?? null, freeModel: spec.freeModel === true, idleTimeoutMs: spec.idleTimeoutMs, maxTurns: spec.maxTurns,
       outputSchema: spec.outputSchema, focus: spec.focus, workflowId: spec.workflowId, parentRunId: spec.parentRunId,
       idempotencyKey: spec.idempotencyKey, requestedBrowserSessionId: spec.requestedBrowserSessionId,
+      moreloginEnvId: spec.moreloginEnvId || null, moreloginEnvName: spec.moreloginEnvName || null,
       modelInfo: spec.modelInfo || null, modelContextWindow: spec.modelContextWindow || null, pricingModel: spec.pricingModel || spec.model || null,
     };
   }
@@ -1378,6 +1392,54 @@ export function createAssistantDispatcher({
    * `brief`: a brief carried over from an earlier run (escalation, retry); never from a request body.
    * `notes`: what the caller changed in the spec (a planning brain's read-only clamp), for the run's notes.
    */
+  /**
+   * `rawSpec` with the MoreLogin profile it names resolved: `moreloginProfile` / `morelogin_profile` (an id or a name)
+   * or `moreloginEnvId` become `moreloginEnvId` + `moreloginEnvName` of a Chrome-type profile MoreLogin lists. A spec
+   * that names none is returned as it is. An unknown, ambiguous or Firefox-type profile is refused (the resolver's own
+   * message and code), as is any profile on a server that cannot pin one.
+   */
+  async function withBrowserProfile(rawSpec) {
+    const named = rawSpec.moreloginProfile ?? rawSpec.morelogin_profile ?? null;
+    const id = rawSpec.moreloginEnvId ?? rawSpec.morelogin_env_id ?? null;
+    const has = (value) => value !== null && value !== undefined && String(value).trim() !== '';
+    const { moreloginProfile: _a, morelogin_profile: _b, morelogin_env_id: _c, moreloginEnvId: _d, moreloginEnvName: _e, ...rest } = rawSpec;
+    if (!has(named) && !has(id)) return rest;
+    if (typeof resolveBrowserProfile !== 'function' || typeof pinBrowserProfile !== 'function') {
+      throw new DispatchError('BROWSER_PROFILE_UNSUPPORTED', 'This server cannot give a worker a MoreLogin profile of its own; the run was not started in the default browser instead.', { status: 400 });
+    }
+    let found;
+    try {
+      found = await resolveBrowserProfile(has(id) ? { envId: String(id).trim(), ...(has(named) ? { name: String(named).trim() } : {}) } : { profile: String(named).trim() });
+    } catch (error) {
+      throw new DispatchError(error?.code || 'BROWSER_PROFILE_UNAVAILABLE', `${error?.message || error} The run was not started (never in another profile or browser).`, { status: error?.status || 400 });
+    }
+    return { ...rest, moreloginEnvId: found.envId, moreloginEnvName: found.name || null };
+  }
+
+  /** The run's own MoreLogin profile becomes its pin, before its browser tab is acquired (a start, a resume). */
+  function pinEntryBrowserProfile(entry) {
+    if (!entry?.usesBrowser || !entry.moreloginEnvId || typeof pinBrowserProfile !== 'function') return;
+    pinBrowserProfile(entry.runId, entry.moreloginEnvId, entry.moreloginEnvName || null);
+  }
+
+  /**
+   * A worker chose a MoreLogin profile for itself mid-run (the morelogin tool's "use", server.js
+   * chooseSessionMoreLoginProfile): its record follows, so a resume after a restart pins the same one. `profile`:
+   * { envId, name }, or null for the default browser. Returns false for an unknown or browser-less run.
+   */
+  function noteBrowserProfile(runId, profile) {
+    const entry = entries.get(runId);
+    if (!entry || !entry.usesBrowser) return false;
+    const envId = profile?.envId ? String(profile.envId) : null;
+    if ((entry.moreloginEnvId || null) === envId) return true;
+    entry.moreloginEnvId = envId;
+    entry.moreloginEnvName = envId && profile?.name ? String(profile.name) : null;
+    if (!Array.isArray(entry.notes)) entry.notes = [];
+    entry.notes.push(`browser profile chosen by the worker: ${envId ? `MoreLogin profile ${entry.moreloginEnvName ? `"${entry.moreloginEnvName}" (${envId})` : envId}` : 'the default browser'}`);
+    persist();
+    return true;
+  }
+
   async function dispatch(rawSpec = {}, { assistantSessionId = null, origin = 'assistant', brief: carried = null, notes: callerNotes = null } = {}) {
     const sessionId = assistantSessionId ? String(assistantSessionId) : null;
     const idempotencyKey = rawSpec.idempotencyKey || rawSpec.idempotency_key ? String(rawSpec.idempotencyKey || rawSpec.idempotency_key).slice(0, 200) : null;
@@ -1392,6 +1454,9 @@ export function createAssistantDispatcher({
     refuseSessionOver(sessionId);
     // "true" (a string) is computer use too: normalizeSpec reads it so, and so must the gate.
     rawSpec = { ...rawSpec, usesComputer: rawSpec.usesComputer === true || rawSpec.usesComputer === 'true' };
+    // The MoreLogin profile it names for the worker's browser tab, as MoreLogin lists it (refused here when it cannot
+    // be used, before a route card or a queue slot).
+    rawSpec = await withBrowserProfile(rawSpec);
     // A design dispatch's defaults fill what it leaves out, before any clamp; any dispatch's own browser
     // settings must agree before a route card is shown (normalizeSpec re-checks the final target, provider included).
     rawSpec = withClassDefaults(rawSpec, knownClass(rawSpec.taskClass));
@@ -1687,6 +1752,7 @@ export function createAssistantDispatcher({
       tools: entry.tools?.some(item => item.startsWith('mcp:')) ? retainExternalRefs(entry.toolsRequested ?? dispatchTools({}).items, entry.tools) : entry.toolsRequested ?? undefined, capability: entry.capability,
       permissionPolicy: entry.permissionPolicy,
       usesBrowser: entry.usesBrowser, usesComputer: entry.usesComputer, maxMinutes: entry.maxMinutes, budgetUsd: entry.budgetUsd,
+      ...(entry.moreloginEnvId ? { moreloginEnvId: entry.moreloginEnvId, moreloginEnvName: entry.moreloginEnvName || null } : {}),
       outputSchema: entry.outputSchema, taskClass: entry.taskClass || null,
     }, { assistantSessionId: entry.assistantSessionId, origin: 'ui', brief: entry.brief || null });
     const child = entries.get(result?.run?.runId);
@@ -1865,6 +1931,7 @@ export function createAssistantDispatcher({
     let browserSessionId = null;
     let browserTabId = null;
     if (entry.usesBrowser && typeof acquireLoopBrowserAndTab === 'function') {
+      pinEntryBrowserProfile(entry);
       const acq = await acquireLoopBrowserAndTab({ requestedBrowserSessionId: entry.requestedBrowserSessionId, terminalSessionId: entry.runId, logTag: 'assistant:browser' });
       if (acq?.error) {
         entry.state = 'failed'; entry.completionReason = 'browser_unavailable'; entry.finishedAt = iso(now()); entry.notes.push(acq.error);
@@ -1957,6 +2024,8 @@ export function createAssistantDispatcher({
       active: true, task: entry.task, context: entry.context, totalIterations: 1, currentIteration: 0,
       maxMinutes: entry.maxMinutes, startedAt, lastIterationAt: null, retries: 0, pending: false,
       terminalSessionId: entry.runId, usesBrowser: entry.usesBrowser, usesComputer: !!entry.usesComputer, browserSessionId, browserTabId,
+      // The run's own MoreLogin profile (server.js runMoreLoginPin reads it back from the state file).
+      ...(entry.usesBrowser && entry.moreloginEnvId ? { moreloginEnvId: entry.moreloginEnvId, moreloginEnvName: entry.moreloginEnvName || null } : {}),
       profile: entry.provider, provider: entry.provider, agent: entry.agent || null,
       model: entry.model, modelContextWindow: entry.modelContextWindow || null, effort: entry.effort, tools: entry.tools,
       codexAccountId: entry.codexAccountId, codexHome: entry.provider === 'codex' ? (entryCodexHome(entry)) : null,
@@ -3357,6 +3426,7 @@ export function createAssistantDispatcher({
     let browserSessionId = null;
     let browserTabId = null;
     if (entry.usesBrowser && typeof acquireLoopBrowserAndTab === 'function') {
+      pinEntryBrowserProfile(entry);
       const acq = await acquireLoopBrowserAndTab({ requestedBrowserSessionId: entry.requestedBrowserSessionId, terminalSessionId: entry.runId, logTag: 'assistant:browser' }).catch((error) => ({ error: error?.message || String(error) }));
       if (acq?.error) return notResumed(entry, `no browser tab: ${acq.error}`);
       browserSessionId = acq.browserSessionId || null;
@@ -3996,7 +4066,7 @@ export function createAssistantDispatcher({
     respondPermission, subscribe, shutdown, limits, suspendForShutdown,
     sessionBudget, checkSession, refreshLimits, providerSpend, coverFollowUp, budget,
     resolveRoute, declineRoute, heldRouteRefusal, escalate,
-    markDelivered, deliveryState, noteBrowserRoute,
+    markDelivered, deliveryState, noteBrowserRoute, noteBrowserProfile,
     remove, removeFinished,
     mediaFile,
     accountInUse: (provider, accountId) => activeEntries((e) => e.provider === provider && e.accountId === accountId).length > 0,

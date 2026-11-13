@@ -73,6 +73,7 @@ export const SCHEDULES_VIEW_COPY = Object.freeze({
   factMcp: 'Tools and MCP servers',
   factAccount: 'OpenAI account',
   factBrowser: 'Browser',
+  factMoreLogin: 'MoreLogin profile',
   valueDefault: 'Default',
   valueOn: 'On',
   valueOff: 'Off',
@@ -448,5 +449,11 @@ export function launchFacts(schedule, { group = null, template = null, profiles 
   }
   const browser = pick('usesBrowser');
   facts.push({ key: 'usesBrowser', label: scheduleWord('factBrowser'), value: scheduleWord(browser.value === true ? 'valueOn' : 'valueOff'), source: browser.source });
+  // The MoreLogin profile the run opens: the schedule's own, else its group's (none: the default of Settings →
+  // Browser, which the list does not repeat). An automation has none.
+  const moreLoginOwner = schedule?.moreloginEnvId ? schedule : (group?.moreloginEnvId ? group : null);
+  if (moreLoginOwner) {
+    facts.push({ key: 'moreloginEnvId', label: scheduleWord('factMoreLogin'), value: moreLoginOwner.moreloginEnvName || String(moreLoginOwner.moreloginEnvId), source: moreLoginOwner === schedule ? 'schedule' : 'group' });
+  }
   return facts;
 }

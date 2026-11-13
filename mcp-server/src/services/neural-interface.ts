@@ -508,6 +508,12 @@ async function acquireInteractive(id: CallerIdentity, url?: string): Promise<Rou
 function adoptCreatedSession(id: CallerIdentity, created: NiResponse, tabId?: string): { sessionId: string; tabId?: string } {
   const sessionId = created.sessionId as string;
   id.state.affinitySessionId = sessionId;
+  // A tab of its own in a shared browser (a caller with a MoreLogin profile of its own): released when it leaves.
+  if (created.shared === true && typeof created.tabId === 'string') {
+    id.state.interactiveSessionId = sessionId;
+    id.state.interactiveTabId = created.tabId;
+    tabId = tabId || created.tabId;
+  }
   if (id.state.lostRoute) {
     announceReplacement(id, { sessionId, tabId: tabId || (typeof created.tabId === 'string' ? created.tabId : null) });
   }
@@ -791,12 +797,18 @@ async function resolveSessionUncached(
     namedListing = listed;
     const named = ((listed.sessions || []) as BrowserSessionInfo[]).find(s => s.id === sessionId);
     if (named && !servesDefault(named)) {
-      if (!wantsDefaultBrowser) {
-        return { error: `Browser session ${sessionId} is not the default browser (${describeSession(named)}; the default is ${describeDefault(listed)}), so SynaBun's browser tools do not act on it. Leave sessionId out: browser_navigate opens the page in the default browser.` };
+      // Ids of the browser this caller left when it chose another MoreLogin profile (useSessionProfile): the call
+      // goes to its own tab in the profile it works in now, and its answer names that tab.
+      const replaced = tabId ? id.state.replacedTabs.get(tabId) : undefined;
+      const left = id.state.lostRoute?.sessionId === sessionId || !!replaced;
+      if (!wantsDefaultBrowser && !left) {
+        const own = listed.yourProfile ? 'this session\'s browser' : 'the default browser';
+        return { error: `Browser session ${sessionId} is not ${own} (${describeSession(named)}; ${listed.yourProfile ? 'this session works in' : 'the default is'} ${describeDefault(listed)}), so SynaBun's browser tools do not act on it. Leave sessionId out: browser_navigate opens the page in ${own}.${named.profileMode === 'morelogin' ? ' To work in another MoreLogin profile, call morelogin with action "use" first.' : ''}` };
       }
       console.error(`[MCP] not using session ${sessionId} (${describeSession(named)}) — resolving ${describeDefault(listed)}`);
       sessionId = undefined;
-      tabId = undefined;
+      // A tab that was replaced keeps its name: the call goes to its replacement (below).
+      if (!replaced) tabId = undefined;
     }
   }
 
@@ -890,6 +902,16 @@ async function resolveSessionUncached(
     const active = listed.find(s => s.id === pinnedSession);
     // A run's pinned browser must be the default one. Hard-fail rather than work
     // in the wrong browser.
+    if (active && !servesDefault(active) && check.profileChosen === true) {
+      // The run chose another MoreLogin profile for itself (morelogin "use"): its launch tab is in the browser it
+      // left. It gets a tab of its own in the profile it works in now, and the server records that as its route.
+      const recovered = await recoverRunBrowser(id, { sessionId: pinnedSession, tabId: resolvedTabId });
+      if (isBrowserStarting(recovered)) return { error: String(recovered.error), starting: true };
+      if (!recovered.error && recovered.sessionId) {
+        return { sessionId: recovered.sessionId as string, tabId: (recovered.tabId as string) || undefined };
+      }
+      return { error: `No browser tab in ${describeDefault(check)}, the profile this run chose: ${recovered.error || 'no tab returned'}\nThe run was not moved to another profile or browser. Pick a profile that can start (morelogin "use"), or go back with morelogin "use" and envId "default".` };
+    }
     if (active && !servesDefault(active)) {
       return { error: `Pinned browser session ${pinnedSession} is not the default browser (${describeSession(active)}; the default is ${describeDefault(check)}), so this run will not use it. Start the run again so it acquires the default browser.` };
     }
@@ -1171,6 +1193,8 @@ export interface BrowserRouteStatus {
   movedFromPin: boolean;
   /** The tab it moved from, when known. */
   movedFrom?: { sessionId: string; tabId: string | null } | null;
+  /** The MoreLogin profile this caller works in when it is not the default (its launch's, or its own choice). */
+  profile?: { envId: string; name: string | null } | null;
 }
 
 /**
@@ -1234,7 +1258,10 @@ export async function browserRouteStatus(): Promise<BrowserRouteStatus> {
   const fromHere = !!here && !!moved && moved.to.sessionId === here.sessionId && (!moved.to.tabId || moved.to.tabId === here.tabId);
   const movedFromPin = fromPin || fromHere;
   const movedFrom = fromHere ? moved!.from : fromPin ? { sessionId: pinnedSession!, tabId: pinnedTab } : null;
-  return { sessions, current, replacedTabs, lost: id.state.lostRoute, movedFromPin, movedFrom };
+  const yourProfile = listing.yourProfile as { envId?: unknown; name?: unknown } | undefined;
+  const profile = yourProfile && typeof yourProfile.envId === 'string'
+    ? { envId: yourProfile.envId, name: typeof yourProfile.name === 'string' ? yourProfile.name : null } : null;
+  return { sessions, current, replacedTabs, lost: id.state.lostRoute, movedFromPin, movedFrom, profile };
 }
 
 /**
@@ -1276,6 +1303,10 @@ export async function createSession(url?: string): Promise<NiResponse> {
       else if (created.error || typeof created.sessionId !== 'string') return created;
       else {
         id.state.affinitySessionId = created.sessionId as string;
+        if (created.shared === true && typeof created.tabId === 'string') {
+          id.state.interactiveSessionId = created.sessionId as string;
+          id.state.interactiveTabId = created.tabId;
+        }
         resolvedRoutes.delete(id);
         // A start handed over from an earlier create may not be at this URL yet.
         opened = !created.handedOver;
@@ -1887,6 +1918,46 @@ export async function moreloginStop(envId: string): Promise<NiResponse> {
   return request('POST', '/api/morelogin/stop', { envId }, LONG_TIMEOUT);
 }
 
+/**
+ * This caller works in a MoreLogin profile of its own from now on (POST /api/morelogin/use): `envId`, `name` or
+ * `profile` (either) of a profile MoreLogin lists, or `default: true` for the default of Settings → Browser. Only this
+ * caller moves: the default AI browser and every other session stay where they are. The server releases what the
+ * caller owned in the browser it leaves; here every route this process knew is forgotten, so its next browser call
+ * resolves again and gets a tab of its own in the new profile (started then). The route it left is kept as its lost
+ * route: a call that still names those ids goes to the new tab and says so.
+ */
+export async function useSessionProfile(ref: { envId?: string; name?: string; profile?: string; default?: boolean }): Promise<NiResponse> {
+  const id = getIdentity();
+  const pins = effectivePins(id);
+  if (!pins.browserSessionId && !pins.browserTabId) await resolveFromAncestors(id);
+  const result = await request('POST', '/api/morelogin/use', { ...ref }, LONG_TIMEOUT);
+  // A Neural Interface from before per-session profiles has no such route and answers it as the owner's.
+  if (result.code === 'OWNER_ROUTE') {
+    return { ...result, error: 'This SynaBun server is older than per-session MoreLogin profiles (it was started before the update): it needs a restart before a session can pick a profile of its own.' };
+  }
+  if (result.error || result.ok !== true || result.changed !== true) return result;
+  const left = knownRoute(id) || (id.state.interactiveSessionId
+    ? { sessionId: id.state.interactiveSessionId, tabId: id.state.interactiveTabId }
+    : null);
+  id.state.interactiveSessionId = null;
+  id.state.interactiveTabId = null;
+  id.state.affinitySessionId = null;
+  id.state.recoveredSessionId = null;
+  id.state.recoveredTabId = null;
+  id.state.servedRoute = null;
+  id.state.routeMoved = null;
+  id.state.replacedTabs.clear();
+  // Only a route the server released is a lost one (a profile that is the default too keeps its tab). The server
+  // names the tab it closed; this process may have known its route by the session alone (a tab-less route).
+  const released = (Array.isArray(result.released) ? result.released : []) as Array<{ sessionId?: unknown; tabId?: unknown }>;
+  const gone = released.find(r => r && r.sessionId === left?.sessionId) || released[0];
+  id.state.lostRoute = gone && typeof gone.sessionId === 'string'
+    ? { sessionId: gone.sessionId, tabId: typeof gone.tabId === 'string' ? gone.tabId : left?.sessionId === gone.sessionId ? left.tabId : null }
+    : null;
+  resolvedRoutes.delete(id);
+  return result;
+}
+
 export async function moreloginUseDefault(envId: string | null): Promise<NiResponse> {
   return request('POST', '/api/morelogin/use-default', envId ? { envId } : { clear: true });
 }
@@ -1933,6 +2004,8 @@ export type AssistantDispatchBody = {
   maxMinutes?: number;
   budgetUsd?: number;
   usesBrowser?: boolean;
+  /** The MoreLogin profile (id or name) of the worker's browser tab; none = the default browser. */
+  moreloginProfile?: string;
   focus?: boolean;
   title?: string;
   context?: string;

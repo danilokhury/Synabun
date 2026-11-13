@@ -1,5 +1,5 @@
 import { migrateStoredTools } from './tool-list-storage.js';
-import { wireDropdowns } from './cc-dropdown.js';
+import { dropdownHTML, setDropdownItems, setDropdownValue, wireDropdowns } from './cc-dropdown.js';
 import { configureToolPickerTranslation, toolPickerHTML, readToolPicker, updateToolPicker, taskToolHost as strictToolHost, toolWord } from './tool-list-picker.js';
 // ═══════════════════════════════════════════
 // SynaBun Neural Interface — Automation Studio
@@ -26,6 +26,7 @@ import {
   fetchCodexAccounts,
   getCachedCodexAccounts,
   getEffortLevelsForProfile,
+  getEffortLevelsKeeping,
   getModelsForProfile,
   isDynamicModelProfile,
   migrateLaunchRecords,
@@ -77,8 +78,14 @@ import {
 } from './api.js';
 import { centeredInFrame, placementArea } from './app-frame.js';
 import { noAccessHTML, refusalOfError } from './ui-owner-access.js';
+import { openApprovalDialog } from './ui-automation-approval.js';
+import { templateFlag } from './automation-approval-view.js';
+import { moreLoginFieldHTML, readMoreLoginField, wireMoreLoginFields, ensureMoreLoginProfiles } from './morelogin-profile-field.js';
 
 const $ = (id) => document.getElementById(id);
+
+// A styled dropdown's choice (cc-dropdown.js entries): escaping is cc-dropdown's own.
+const opt = (value, label, selected = false) => ({ value: value ?? '', label: String(label ?? ''), selected: !!selected });
 
 // ── Module-local state ──
 let _panel = null;
@@ -515,8 +522,8 @@ const PRESET_TEMPLATES = [
                 <input type="checkbox" data-key="useProjectStyleGuide" ${state.useProjectStyleGuide ? 'checked' : ''}>
                 ${esc(t('styleguide.automationToggle'))}
               </label>
-              <label for="awiz-style-project" style="font-size:13px">${esc(t('styleguide.automationProject'))}</label>
-              <select id="awiz-style-project" data-key="styleGuideProject" aria-label="${esc(t('styleguide.automationProject'))}" style="font-size:13px;max-width:100%"></select>
+              <label id="awiz-style-project-label" style="font-size:13px">${esc(t('styleguide.automationProject'))}</label>
+              ${dropdownHTML('awiz-style-project', [], { labelledBy: 'awiz-style-project-label', inputAttrs: 'data-key="styleGuideProject"', attrs: 'style="font-size:13px;max-width:100%"' })}
               <span class="awiz-hint" style="font-size:12px">${esc(t('styleguide.automationHelp'))}</span>
             </div>
             <div class="awiz-field">
@@ -929,6 +936,9 @@ function showLaunchInline(params) {
 
   const iterCount = params.iterations || 10;
   const timeCount = params.maxMinutes || 30;
+  // The MoreLogin profile of this one launch (morelogin-profile-field.js). Every dialog opens on the default of
+  // Settings → Browser: a profile is never carried over from the launch before.
+  ensureMoreLoginProfiles();
 
   contentEl.innerHTML = `
     <div class="as-launch-inline">
@@ -970,7 +980,7 @@ function showLaunchInline(params) {
           </div>
         </div>
         <div class="as-launch-section" id="as-launch-context-section">
-          <label class="as-launch-label">Context</label>
+          <label class="as-launch-label" id="as-launch-context-label">Context</label>
           ${renderAutomationContextSelect(profile, currentModel, _launchContextMode, 'as-launch-context')}
         </div>
         <div class="as-launch-section" id="as-launch-effort-section" style="${profileSupportsEffort(profile) ? '' : 'display:none'}">
@@ -989,6 +999,7 @@ function showLaunchInline(params) {
             ${renderAccountChips(_launchAccount)}
           </div>
         </div>
+        ${moreLoginFieldHTML({ id: 'as-launch-mlprofile', value: '', context: 'run', variant: 'as', wrapClass: 'as-launch-section', dropdownClasses: 'as-select' })}
         <div class="as-launch-section as-launch-summary">
           <div class="as-launch-summary-row">
             <span class="as-launch-summary-key">Task</span>
@@ -1141,18 +1152,18 @@ function automationModels(profileId, selectedModel = null, accountId = _launchAc
     automationModelOptions(profileId, getModelsForProfile(profileId, accountId)), selectedModel);
 }
 
-function automationContextOptionHtml(profileId, model, mode, accountId = _launchAccount) {
+function automationContextEntries(profileId, model, mode, accountId = _launchAccount) {
   const choices = automationContextOptions(profileId, model, getModelsForProfile(profileId, accountId));
   const selected = mode || 'default';
-  const options = choices.map((choice) => `<option value="${_escLaunch(choice.id)}"${selected === choice.id ? ' selected' : ''}>${_escLaunch(choice.label)}</option>`);
+  const entries = choices.map((choice) => opt(choice.id, choice.label, selected === choice.id));
   if (!choices.some((choice) => choice.id === selected)) {
-    options.push(`<option value="${_escLaunch(selected)}" selected>${_escLaunch(selected)} (unavailable — choose another)</option>`);
+    entries.push(opt(selected, `${selected} (unavailable — choose another)`, true));
   }
-  return options.join('');
+  return entries;
 }
 
 function renderAutomationContextSelect(profileId, model, mode, id, accountId = _launchAccount) {
-  return `<select class="as-input as-select" id="${id}">${automationContextOptionHtml(profileId, model, mode, accountId)}</select>`;
+  return dropdownHTML(id, automationContextEntries(profileId, model, mode, accountId), { classes: 'as-select', labelledBy: `${id}-label` });
 }
 
 function automationContextAvailable(profileId, model, mode, accountId = _launchAccount) {
@@ -1189,8 +1200,8 @@ function renderModelChips(profileId, selectedModel) {
 function refreshManualContext(root) {
   const field = root?.querySelector('#as-launch-context-section');
   if (!field) return;
-  field.innerHTML = `<label class="as-launch-label">Context</label>${renderAutomationContextSelect(_launchProfile, _launchModel, _launchContextMode, 'as-launch-context')}`;
-  field.querySelector('select')?.addEventListener('change', (event) => setLaunchContextMode(event.target.value));
+  field.innerHTML = `<label class="as-launch-label" id="as-launch-context-label">Context</label>${renderAutomationContextSelect(_launchProfile, _launchModel, _launchContextMode, 'as-launch-context')}`;
+  field.querySelector('input')?.addEventListener('change', (event) => setLaunchContextMode(event.target.value));
 }
 
 function _escLaunch(s) {
@@ -1498,8 +1509,14 @@ async function confirmLaunch() {
   const effort = normalizeEffortForProfile(_launchProfile, _launchEffort) || undefined;
   const tools = strictToolHost(_launchProfile) ? _launchTools : undefined;
   const codexAccountId = _launchProfile === 'codex' ? (_launchAccount || 'default') : undefined;
+  // Read before the panel closes. None chosen (or the field not shown): the default of Settings → Browser.
+  const moreLoginChoice = readMoreLoginField('as-launch-mlprofile');
+  const moreloginEnvId = moreLoginChoice?.moreloginEnvId || undefined;
+  const moreloginEnvName = moreloginEnvId ? (moreLoginChoice.moreloginEnvName || undefined) : undefined;
   const params = {
     ..._pendingLaunchParams,
+    moreloginEnvId,
+    moreloginEnvName,
     profile: _launchProfile,
     model: _launchModel,
     contextMode: _launchContextMode,
@@ -1535,6 +1552,8 @@ async function confirmLaunch() {
         withSynabun,
         tools: tools ?? (withSynabun ? getCachedToolCatalog()?.defaultTools ?? ['mcp:*'] : []),
         browserProfile: (withSynabun && params.usesBrowser) ? true : undefined,
+        moreloginEnvId: withSynabun ? moreloginEnvId : undefined,
+        moreloginEnvName: withSynabun ? moreloginEnvName : undefined,
         mode: agentSubmode,
         iterations: agentSubmode === 'loop' ? agentIterations : 1,
         maxMinutes: agentSubmode === 'loop' ? agentMaxMinutes : 30,
@@ -1563,7 +1582,9 @@ async function confirmLaunch() {
         streamDisabled = cfgData.config?.screencast?.disabled !== false;
       } catch {}
 
-      if (!streamDisabled) {
+      // A launch with a MoreLogin profile of its own never opens the default browser first: the server starts that
+      // profile (a session opened here would be the default's, which the run may not use, and would stay open).
+      if (!streamDisabled && !moreloginEnvId) {
         showToast('Opening browser...');
         const browserReady = new Promise((resolve) => {
           const unsub = on('sync:browser:created', (data) => { unsub(); resolve(data?.sessionId || null); });
@@ -1575,7 +1596,7 @@ async function confirmLaunch() {
           console.log('[AS] confirmLaunch: created dedicated browser session', dedicatedBrowserSessionId);
         }
       } else {
-        console.log('[AS] confirmLaunch: stream disabled — server will create headful browser');
+        console.log('[AS] confirmLaunch: no client-side browser (stream disabled or a MoreLogin profile chosen): the server creates it');
       }
     }
 
@@ -1724,6 +1745,7 @@ async function openPanel(opts = {}) {
   _dropdownAbort?.abort();
   _dropdownAbort = new AbortController();
   wireDropdowns(_panel, { signal: _dropdownAbort.signal });
+  wireMoreLoginFields(_panel, { signal: _dropdownAbort.signal });
   _panel.addEventListener('change', event => {
     if (event.target.id === 'as-qt-tools') {
       _launchTools = readToolPicker(event.target);
@@ -2430,6 +2452,18 @@ function renderView() {
 
 // ── Sidebar ──
 
+// ── The flag of a template an agent changed or an import brought (finding 3 of the re-review of 2026-11-11) ──
+function templateFlagBit(tpl) {
+  const flag = templateFlag(tpl, null, t);
+  return flag ? ` \u00B7 <span class="aap-flag" data-tone="${flag.tone}" data-tooltip="${esc(flag.text)}">${esc(flag.short)}</span>` : '';
+}
+function templateApprovalNote(tpl) {
+  const flag = templateFlag(tpl, null, t);
+  if (!flag) return '';
+  return `<div class="aap-flag-note" data-tone="${flag.tone}" role="note"><p>${esc(flag.text)}</p>
+    <button type="button" class="aap-btn" data-action="template-approve" data-id="${esc(tpl.id)}">${esc(t('automationApproval.flag.review'))}</button></div>`;
+}
+
 function renderSidebarItem(t, opts = {}) {
   const active = _selected?.id === t.id ? ' active' : '';
   const isPreset = t.id.startsWith('__preset_');
@@ -2439,7 +2473,7 @@ function renderSidebarItem(t, opts = {}) {
     <div class="as-sidebar-icon">${icon(t.icon)}</div>
     <div class="as-sidebar-info">
       <div class="as-sidebar-name">${dot}${esc(t.name)}</div>
-      <div class="as-sidebar-desc">${t.iterations}x \u00B7 ${t.maxMinutes}m${t.usesBrowser ? ' \u00B7 <span class="as-browser-dot"></span>' : ''}</div>
+      <div class="as-sidebar-desc">${t.iterations}x \u00B7 ${t.maxMinutes}m${t.usesBrowser ? ' \u00B7 <span class="as-browser-dot"></span>' : ''}${templateFlagBit(t)}</div>
     </div>
   </div>`;
 }
@@ -2652,6 +2686,7 @@ function renderDetailMain() {
     </div>
 
     <div class="as-detail-body">
+      ${isPreset ? '' : templateApprovalNote(t)}
       <div class="as-detail-meta" id="as-detail-meta">
         ${buildDetailMeta(t, isPreset)}
       </div>
@@ -2697,6 +2732,14 @@ function renderDetailMain() {
   `;
 
   wireDetailView(isPreset);
+}
+
+function folderEntries(folderId) {
+  return [
+    opt('', 'Unsorted', !folderId),
+    ...[..._folders].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).map(f => opt(f.id, f.name, f.id === folderId)),
+    opt('__new__', '+ New folder…'),
+  ];
 }
 
 function buildDetailMeta(t, isPreset) {
@@ -2755,16 +2798,9 @@ function buildDetailMeta(t, isPreset) {
       </div>
       ${isPreset ? '' : `
         <div class="as-field">
-          <label>Folder</label>
+          <label id="as-f-folder-label">Folder</label>
           <div class="as-folder-picker" id="as-folder-picker">
-            <input type="hidden" id="as-f-folder" value="${esc(t.folderId || '')}">
-            <select class="as-input" id="as-f-folder-select">
-              <option value=""${!t.folderId ? ' selected' : ''}>Unsorted</option>
-              ${[..._folders].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).map(f =>
-                `<option value="${esc(f.id)}"${f.id === t.folderId ? ' selected' : ''}>${esc(f.name)}</option>`
-              ).join('')}
-              <option value="__new__">+ New folder\u2026</option>
-            </select>
+            ${dropdownHTML('as-f-folder', folderEntries(t.folderId), { labelledBy: 'as-f-folder-label' })}
           </div>
         </div>
       `}
@@ -2802,28 +2838,22 @@ function buildDetailMeta(t, isPreset) {
         </div>
         <div class="as-runtime-row">
           <div class="as-runtime-field">
-            <label>CLI</label>
-            <select class="as-input as-select" id="as-f-profile">
-              ${CLI_PROFILES.map(p => `<option value="${esc(p.id)}"${p.id === tProfile ? ' selected' : ''}>${esc(p.label)} \u00B7 ${esc(p.desc)}</option>`).join('')}
-            </select>
+            <label id="as-f-profile-label">CLI</label>
+            ${dropdownHTML('as-f-profile', CLI_PROFILES.map(p => opt(p.id, `${p.label} \u00B7 ${p.desc}`, p.id === tProfile)), { classes: 'as-select', labelledBy: 'as-f-profile-label' })}
           </div>
           <div class="as-runtime-field">
-            <label>Model</label>
-            <select class="as-input as-select" id="as-f-model">
-              ${tModelsList.length
-                ? tModelsList.map(m => `<option value="${esc(modelSelectorValue(m))}"${modelMatchesSelector(m, tModel) ? ' selected' : ''}>${esc(m.label)}${m.desc ? ' \u2014 ' + esc(m.desc) : ''}</option>`).join('')
-                : `<option value="">${esc(dynamicModelEmptyText(tProfile))}</option>`}
-            </select>
+            <label id="as-f-model-label">Model</label>
+            ${dropdownHTML('as-f-model', tModelsList.length
+                ? tModelsList.map(m => opt(modelSelectorValue(m), m.desc ? `${m.label} \u2014 ${m.desc}` : m.label, modelMatchesSelector(m, tModel)))
+                : [opt('', dynamicModelEmptyText(tProfile), true)], { classes: 'as-select', labelledBy: 'as-f-model-label' })}
           </div>
           <div class="as-runtime-field">
-            <label>Context</label>
+            <label id="as-f-context-label">Context</label>
             ${renderAutomationContextSelect(tProfile, tModel, tContextMode, 'as-f-context', templateAccountId)}
           </div>
           <div class="as-runtime-field" id="as-f-effort-field" style="${profileSupportsEffort(tProfile) ? '' : 'display:none'}">
-            <label>Think</label>
-            <select class="as-input as-select" id="as-f-effort">
-              ${getEffortLevelsForProfile(tProfile).map(e => `<option value="${esc(e.id)}"${e.id === tEffort ? ' selected' : ''}>${esc(e.label)} \u2014 ${esc(e.desc)}</option>`).join('')}
-            </select>
+            <label id="as-f-effort-label">Think</label>
+            ${dropdownHTML('as-f-effort', getEffortLevelsKeeping(tProfile, tEffort).map(e => opt(e.id, `${e.label} \u2014 ${e.desc}`, e.id === tEffort)), { classes: 'as-select', labelledBy: 'as-f-effort-label' })}
           </div>
           <div class="as-runtime-field" id="as-f-mcp-field">
             <label>${toolWord('label')}</label>
@@ -3000,32 +3030,22 @@ function wireCategoryPicker(isPreset) {
 
 function wireFolderPicker(isPreset) {
   if (isPreset) return;
-  const sel = $('as-f-folder-select');
   const hidden = $('as-f-folder');
-  if (!sel || !hidden) return;
-  sel.addEventListener('change', async () => {
-    if (sel.value === '__new__') {
-      // Temporarily revert selection while the popover is up
-      sel.value = hidden.value || '';
+  if (!hidden) return;
+  hidden.dataset.confirmed = hidden.value || '';
+  hidden.addEventListener('change', async () => {
+    if (hidden.value === '__new__') {
+      // Revert to the last confirmed choice while the popover is up.
+      setDropdownValue(hidden, hidden.dataset.confirmed || '');
       const created = await promptCreateFolder();
       if (created) {
-        // Rebuild the option list and select the new folder
-        const existingIds = new Set(Array.from(sel.options).map(o => o.value));
-        if (!existingIds.has(created.id)) {
-          const opt = document.createElement('option');
-          opt.value = created.id;
-          opt.textContent = created.name;
-          // Insert before the "__new__" option
-          const newOpt = Array.from(sel.options).find(o => o.value === '__new__');
-          sel.insertBefore(opt, newOpt);
-        }
-        sel.value = created.id;
-        hidden.value = created.id;
+        setDropdownItems(hidden, folderEntries(created.id));
+        hidden.dataset.confirmed = created.id;
         markDirty();
       }
       return;
     }
-    hidden.value = sel.value;
+    hidden.dataset.confirmed = hidden.value;
     markDirty();
   });
 }
@@ -3058,24 +3078,20 @@ function wireLaunchDefaults(isPreset) {
     const models = automationModels(profileId, preferredId, templateAccountId);
     const def = models.find(m => m.tier === 'default') || models[0];
     const selectedId = preferredId && models.some(m => modelMatchesSelector(m, preferredId)) ? preferredId : modelSelectorValue(def);
-    modelSel.innerHTML = models.length
-      ? models.map(m =>
-          `<option value="${esc(modelSelectorValue(m))}"${modelMatchesSelector(m, selectedId) ? ' selected' : ''}>${esc(m.label)}${m.desc ? ' \u2014 ' + esc(m.desc) : ''}</option>`
-        ).join('')
-      : `<option value="">${esc(dynamicModelEmptyText(profileId))}</option>`;
+    setDropdownItems(modelSel, models.length
+      ? models.map(m => opt(modelSelectorValue(m), m.desc ? `${m.label} \u2014 ${m.desc}` : m.label, modelMatchesSelector(m, selectedId)))
+      : [opt('', dynamicModelEmptyText(profileId), true)]);
   };
 
   const renderContextOptions = (mode = contextSel?.value || 'default') => {
-    if (contextSel) contextSel.innerHTML = automationContextOptionHtml(profileSel.value, modelSel?.value, mode, templateAccountId);
+    if (contextSel) setDropdownItems(contextSel, automationContextEntries(profileSel.value, modelSel?.value, mode, templateAccountId));
   };
 
   const renderEffortOptions = (profileId, preferredId) => {
     if (!effortSel) return;
-    const levels = getEffortLevelsForProfile(profileId);
+    const levels = getEffortLevelsKeeping(profileId, preferredId);
     const selectedId = preferredId && levels.some(e => e.id === preferredId) ? preferredId : 'off';
-    effortSel.innerHTML = levels.map(e =>
-      `<option value="${esc(e.id)}"${e.id === selectedId ? ' selected' : ''}>${esc(e.label)} \u2014 ${esc(e.desc)}</option>`
-    ).join('');
+    setDropdownItems(effortSel, levels.map(e => opt(e.id, `${e.label} \u2014 ${e.desc}`, e.id === selectedId)));
   };
 
   const refreshDynamicModelOptionsIfNeeded = (profileId, preferredId) => {
@@ -3590,9 +3606,9 @@ function wireWizardStyleGuide(container) {
   const state = _wizardState;
   fetchStyleGuideProjects().then(projects => {
     if (_wizardState !== state || !project.isConnected) return;
-    project.innerHTML = projects.map(p => `<option value="${esc(p.path)}">${esc(p.label || p.path)}</option>`).join('');
     const selected = projects.some(p => p.path === state.styleGuideProject) ? state.styleGuideProject : projects[0]?.path || '';
-    project.value = selected; state.styleGuideProject = selected;
+    setDropdownItems(project, projects.map(p => opt(p.path, p.label || p.path, p.path === selected)));
+    state.styleGuideProject = selected;
     if(state.useProjectStyleGuide) refreshWizardStyleGuide(state).then(updateWizardPreview).catch(err=>showToast(err.message));
   }).catch(err=>showToast(err.message));
   const update = () => { state.styleGuideProject = project.value; refreshWizardStyleGuide(state).then(updateWizardPreview).catch(err=>showToast(err.message)); };
@@ -3607,7 +3623,7 @@ function updateWizardPreview() {
 
 function collectInputValues() {
   if (!_panel) return;
-  _panel.querySelectorAll('.awiz-step-content input[data-key], .awiz-step-content textarea[data-key], .awiz-step-content select[data-key]').forEach(input => {
+  _panel.querySelectorAll('.awiz-step-content input[data-key], .awiz-step-content textarea[data-key]').forEach(input => {
     _wizardState[input.dataset.key] = input.type === 'checkbox' ? input.checked : input.type === 'number' ? Number(input.value) : input.value;
   });
   _panel.querySelectorAll('.awiz-chips').forEach(group => {
@@ -3935,7 +3951,7 @@ function setupScheduleWebSocket() {
   // Quick timer events
   on('sync:quick-timer:set', (data) => {
     if (data?.timerId && !_quickTimers.some(t => t.id === data.timerId)) {
-      _quickTimers.push({ id: data.timerId, templateName: data.templateName, firesAt: data.firesAt, minutes: data.minutes, profile: data.profile, model: data.model, contextMode: data.contextMode, effort: data.effort, tools: data.tools, usesBrowser: data.usesBrowser });
+      _quickTimers.push({ id: data.timerId, templateName: data.templateName, firesAt: data.firesAt, minutes: data.minutes, profile: data.profile, model: data.model, contextMode: data.contextMode, effort: data.effort, tools: data.tools, usesBrowser: data.usesBrowser, moreloginEnvId: data.moreloginEnvId, moreloginEnvName: data.moreloginEnvName });
       if (_view === 'schedules') renderSchedulesMain();
     }
   });
@@ -4141,6 +4157,24 @@ async function handlePanelClick(e) {
       break;
     }
 
+    case 'template-approve': {
+      // The owner's review of instructions an agent wrote or an import brought (ui-automation-approval.js).
+      openApprovalDialog({
+        kind: 'template', id, opener: btn,
+        onApproved: async () => {
+          showToast(t('automationApproval.toast.approved'));
+          try {
+            _templates = migrateLaunchRecords(await fetchLoopTemplates());
+            const updated = _templates.find(x => x.id === id);
+            if (updated && _selected?.id === id) _selected = updated;
+          } catch { /* the next load shows it */ }
+          renderView();
+        },
+        onError: (message) => showToast(message),
+      });
+      break;
+    }
+
     case 'export-one': {
       const tpl = _templates.find(t => t.id === id);
       if (tpl) downloadJson({ version: 1, type: 'synabun-loop-template', template: tpl }, `loop-${tpl.name.toLowerCase().replace(/\s+/g, '-')}.json`);
@@ -4338,7 +4372,7 @@ async function handlePanelClick(e) {
       storage.setItem('as-launch-model', _launchModel);
       setLaunchContextMode('default');
       const contextSelect = $('as-qt-context');
-      if (contextSelect) contextSelect.innerHTML = automationContextOptionHtml(_launchProfile, _launchModel, _launchContextMode);
+      if (contextSelect) setDropdownItems(contextSelect, automationContextEntries(_launchProfile, _launchModel, _launchContextMode));
       // Update visual selection inline (avoid full re-render)
       $('as-qt-models')?.querySelectorAll('.as-launch-model').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
@@ -4396,11 +4430,13 @@ async function handlePanelClick(e) {
       const qtEffort = normalizeEffortForProfile(qtProfile, _launchEffort) || undefined;
       const qtTools = strictToolHost(qtProfile) ? readToolPicker($('as-qt-tools')) : undefined;
       const qtAccount = qtProfile === 'codex' ? (_launchAccount || 'default') : undefined;
+      const qtMoreLogin = readMoreLoginField('as-qt-mlprofile');
+      const qtMoreLoginId = qtMoreLogin?.moreloginEnvId || undefined;
       try {
-        const result = await createQuickTimer(templateId, mins, { profile: qtProfile, model: qtModel, contextMode: qtContextMode, usesBrowser: qtBrowser, effort: qtEffort, tools: qtTools, codexAccountId: qtAccount });
+        const result = await createQuickTimer(templateId, mins, { profile: qtProfile, model: qtModel, contextMode: qtContextMode, usesBrowser: qtBrowser, effort: qtEffort, tools: qtTools, codexAccountId: qtAccount, moreloginEnvId: qtMoreLoginId, moreloginEnvName: qtMoreLoginId ? (qtMoreLogin.moreloginEnvName || undefined) : undefined });
         // Guard: WebSocket sync:quick-timer:set may arrive before this HTTP response
         if (!_quickTimers.some(t => t.id === result.timerId)) {
-          _quickTimers.push({ id: result.timerId, templateId, templateName: result.templateName, firesAt: result.firesAt, minutes: result.minutes, profile: result.profile, model: result.model, contextMode: result.contextMode, effort: result.effort, tools: result.tools, usesBrowser: result.usesBrowser });
+          _quickTimers.push({ id: result.timerId, templateId, templateName: result.templateName, firesAt: result.firesAt, minutes: result.minutes, profile: result.profile, model: result.model, contextMode: result.contextMode, effort: result.effort, tools: result.tools, usesBrowser: result.usesBrowser, moreloginEnvId: result.moreloginEnvId, moreloginEnvName: result.moreloginEnvName });
         }
         _selectedQtMinutes = null;
         _qtUsesBrowser = null;
@@ -4423,8 +4459,12 @@ async function handlePanelClick(e) {
       const qtEffort = normalizeEffortForProfile(qtProfile, _launchEffort) || undefined;
       const qtTools = strictToolHost(qtProfile) ? readToolPicker($('as-qt-tools')) : undefined;
       const qtAccount = qtProfile === 'codex' ? (_launchAccount || 'default') : undefined;
+      const qtMoreLogin = readMoreLoginField('as-qt-mlprofile');
+      const qtMoreLoginId = qtMoreLogin?.moreloginEnvId || undefined;
       try {
         const result = await triggerQuickTimerNow(templateId, {
+          moreloginEnvId: qtMoreLoginId,
+          moreloginEnvName: qtMoreLoginId ? (qtMoreLogin.moreloginEnvName || undefined) : undefined,
           profile: qtProfile,
           model: qtModel,
           contextMode: qtContextMode,
@@ -4577,7 +4617,7 @@ function wireChipEvents(container) {
 }
 
 function wireInputSync(container) {
-  container.querySelectorAll('.awiz-step-content input[data-key], .awiz-step-content textarea[data-key], .awiz-step-content select[data-key]').forEach(input => {
+  container.querySelectorAll('.awiz-step-content input[data-key], .awiz-step-content textarea[data-key]').forEach(input => {
     input.addEventListener('input', () => {
       _wizardState[input.dataset.key] = input.type === 'checkbox' ? input.checked : input.type === 'number' ? Number(input.value) : input.value;
     });
@@ -4703,7 +4743,7 @@ function renderSchedulesMain() {
       const profileLabel = CLI_PROFILES.find(p => p.id === qt.profile)?.label || qt.profile || 'Claude Code';
       const modelObj = qt.model ? getModelsForProfile(qt.profile || 'claude-code').find(m => modelMatchesSelector(m, qt.model)) : null;
       const modelLabel = modelObj?.label || (qt.profile === 'opencode' ? qt.model : '');
-      const metaParts = [profileLabel, modelLabel, qt.contextMode && qt.contextMode !== 'default' ? `context:${qt.contextMode}` : '', qt.effort ? `think:${qt.effort}` : '', qt.tools ? `${toolWord('label')}: ${qt.tools.join(', ')}` : '', qt.usesBrowser ? 'Browser' : ''].filter(Boolean);
+      const metaParts = [profileLabel, modelLabel, qt.contextMode && qt.contextMode !== 'default' ? `context:${qt.contextMode}` : '', qt.effort ? `think:${qt.effort}` : '', qt.tools ? `${toolWord('label')}: ${qt.tools.join(', ')}` : '', qt.usesBrowser ? 'Browser' : '', qt.moreloginEnvId ? t('schedules.overrides.morelogin', { value: qt.moreloginEnvName || qt.moreloginEnvId }) : ''].filter(Boolean);
       timerCards += `
         <div class="as-qt-active-card">
           <div class="as-qt-active-pulse"></div>
@@ -4721,9 +4761,10 @@ function renderSchedulesMain() {
   // ── Quick Timer Creator ──
   const selectedTpl = $('as-qt-template')?.value || '';
   const customMinutes = $('as-qt-custom-min')?.value || '';
-  const templateOptions = allTemplates.map(t =>
-    `<option value="${t.id}"${selectedTpl === t.id ? ' selected' : ''}>${esc(t.name)}</option>`
-  ).join('');
+  const templateEntries = [
+    opt('', 'Select template...', !selectedTpl),
+    ...allTemplates.map(t => opt(t.id, t.name, selectedTpl === t.id)),
+  ];
 
   const qtPresetButtons = [
     { minutes: 5, label: '5m' }, { minutes: 15, label: '15m' }, { minutes: 30, label: '30m' },
@@ -4787,12 +4828,12 @@ function renderSchedulesMain() {
   const selectedTemplate = selectedTpl ? allTemplates.find(t => t.id === selectedTpl) : null;
   const qtBrowserDefault = _qtUsesBrowser !== null ? _qtUsesBrowser : (selectedTemplate ? !!selectedTemplate.usesBrowser : false);
 
+  // The timer's MoreLogin profile: the field keeps what it shows when the form is drawn again (value left out).
+  ensureMoreLoginProfiles();
+
   const qtCreatorHTML = `
     <div class="as-qt-creator">
-      <select class="as-qt-select" id="as-qt-template">
-        <option value="">Select template...</option>
-        ${templateOptions}
-      </select>
+      ${dropdownHTML('as-qt-template', templateEntries, { classes: 'as-qt-select', label: 'Select template' })}
       <div class="as-qt-group">
         <span class="as-launch-label">CLI</span>
         <div class="as-launch-profiles" id="as-qt-profiles">${qtProfileChips}</div>
@@ -4802,7 +4843,7 @@ function renderSchedulesMain() {
         <div class="as-launch-models" id="as-qt-models">${qtModelChips}</div>
       </div>
       <div class="as-qt-group">
-        <span class="as-launch-label">Context</span>
+        <span class="as-launch-label" id="as-qt-context-label">Context</span>
         ${renderAutomationContextSelect(qtProfile, qtCurrentModel, _launchContextMode, 'as-qt-context')}
       </div>
       <div class="as-qt-group" id="as-qt-effort-section" style="${profileSupportsEffort(qtProfile) ? '' : 'display:none'}">
@@ -4822,6 +4863,7 @@ function renderSchedulesMain() {
           <span class="as-qt-browser-label">Uses browser</span>
         </label>
       </div>
+      ${moreLoginFieldHTML({ id: 'as-qt-mlprofile', context: 'run', variant: 'as', wrapClass: 'as-qt-group', dropdownClasses: 'as-qt-select' })}
       <div class="as-qt-group">
         <span class="as-launch-label">Timer</span>
         <div class="as-qt-presets">${qtPresetButtons}
@@ -4935,7 +4977,7 @@ function renderSchedulesMain() {
       storage.setItem('as-launch-model', _launchModel);
       setLaunchContextMode('default');
       const contextSelect = $('as-qt-context');
-      if (contextSelect) contextSelect.innerHTML = automationContextOptionHtml(_launchProfile, _launchModel, _launchContextMode);
+      if (contextSelect) setDropdownItems(contextSelect, automationContextEntries(_launchProfile, _launchModel, _launchContextMode));
     });
   }
   $('as-qt-context')?.addEventListener('change', (event) => setLaunchContextMode(event.target.value));
@@ -4957,9 +4999,7 @@ function renderScheduleEditorMain() {
       </div>
     </div>`).join('');
 
-  const templateOptions = allTemplates.map(t =>
-    `<option value="${esc(t.id)}"${(s?.templateId === t.id) ? ' selected' : ''}>${esc(t.name)} (${esc(t.category)})</option>`
-  ).join('');
+  const templateEntries = allTemplates.map(t => opt(t.id, `${t.name} (${t.category})`, s?.templateId === t.id));
 
   // Reorder: Mon(1)–Sat(6) then Sun(0) so 2-column grid pairs weekdays nicely
   const dayOrder = [1, 2, 3, 4, 5, 6, 0];
@@ -4989,8 +5029,8 @@ function renderScheduleEditorMain() {
             <input type="text" id="as-sched-name" placeholder="e.g. Morning Social Post" value="${esc(s?.name || '')}" />
           </div>
           <div class="as-sched-field as-sched-field--flex">
-            <label>Template</label>
-            <select id="as-sched-template">${templateOptions}</select>
+            <label id="as-sched-template-label">Template</label>
+            ${dropdownHTML('as-sched-template', templateEntries, { labelledBy: 'as-sched-template-label' })}
           </div>
         </div>
 

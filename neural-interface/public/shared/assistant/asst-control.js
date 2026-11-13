@@ -967,7 +967,7 @@ export function decorateControlHead(head, kindEl) {
   const face = el('span', 'asst-control-face');
   face.setAttribute('aria-hidden', 'true');
   try {
-    face.innerHTML = mascotSvg({ width: 28, height: 14, className: 'synabun-mascot asst-still' });
+    face.innerHTML = mascotSvg({ width: 56, height: 28, className: 'synabun-mascot asst-still' });
     if (face.firstElementChild) paintMascot(face.firstElementChild, stillFrame('blocked'));
   } catch { /* no SVG here (a test DOM): the capsule says it */ }
   if (typeof head.insertBefore === 'function') head.insertBefore(face, kindEl);

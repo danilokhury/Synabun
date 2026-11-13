@@ -1,0 +1,173 @@
+{
+  "quick": {
+    "source": "gifs/quick.gif",
+    "duration": 1840,
+    "once": false,
+    "width": 480,
+    "height": 160,
+    "frames": 8,
+    "bytes": 10215
+  },
+  "code": {
+    "source": "gifs/code.gif",
+    "duration": 1840,
+    "once": false,
+    "width": 480,
+    "height": 160,
+    "frames": 8,
+    "bytes": 10604
+  },
+  "complex": {
+    "source": "gifs/complex.gif",
+    "duration": 1760,
+    "once": false,
+    "width": 480,
+    "height": 160,
+    "frames": 8,
+    "bytes": 10262
+  },
+  "review": {
+    "source": "gifs/review.gif",
+    "duration": 1840,
+    "once": false,
+    "width": 480,
+    "height": 160,
+    "frames": 8,
+    "bytes": 12833
+  },
+  "research": {
+    "source": "gifs/research.gif",
+    "duration": 1840,
+    "once": false,
+    "width": 480,
+    "height": 160,
+    "frames": 8,
+    "bytes": 10893
+  },
+  "browser": {
+    "source": "gifs/browser.gif",
+    "duration": 1840,
+    "once": false,
+    "width": 480,
+    "height": 160,
+    "frames": 8,
+    "bytes": 11099
+  },
+  "computer": {
+    "source": "gifs/computer.gif",
+    "duration": 1840,
+    "once": false,
+    "width": 480,
+    "height": 160,
+    "frames": 8,
+    "bytes": 11587
+  },
+  "automation": {
+    "source": "gifs/automation.gif",
+    "duration": 1840,
+    "once": false,
+    "width": 480,
+    "height": 160,
+    "frames": 8,
+    "bytes": 13028
+  },
+  "design": {
+    "source": "gifs/design.gif",
+    "duration": 1840,
+    "once": false,
+    "width": 480,
+    "height": 160,
+    "frames": 8,
+    "bytes": 15431
+  },
+  "image_gen": {
+    "source": "gifs/image_gen.gif",
+    "duration": 1840,
+    "once": false,
+    "width": 480,
+    "height": 160,
+    "frames": 8,
+    "bytes": 9147
+  },
+  "video_gen": {
+    "source": "gifs/video_gen.gif",
+    "duration": 1840,
+    "once": false,
+    "width": 480,
+    "height": 160,
+    "frames": 8,
+    "bytes": 13219
+  },
+  "generic": {
+    "source": "gifs/generic.gif",
+    "duration": 1840,
+    "once": false,
+    "width": 480,
+    "height": 160,
+    "frames": 8,
+    "bytes": 8307
+  },
+  "edit": {
+    "source": "gifs/edit.gif",
+    "duration": 1840,
+    "once": false,
+    "width": 480,
+    "height": 160,
+    "frames": 8,
+    "bytes": 15431
+  },
+  "shell": {
+    "source": "gifs/shell.gif",
+    "duration": 1840,
+    "once": false,
+    "width": 480,
+    "height": 160,
+    "frames": 8,
+    "bytes": 10604
+  },
+  "read": {
+    "source": "gifs/read.gif",
+    "duration": 1840,
+    "once": false,
+    "width": 480,
+    "height": 160,
+    "frames": 8,
+    "bytes": 15835
+  },
+  "search": {
+    "source": "gifs/search.gif",
+    "duration": 1840,
+    "once": false,
+    "width": 480,
+    "height": 160,
+    "frames": 8,
+    "bytes": 10893
+  },
+  "web": {
+    "source": "gifs/web.gif",
+    "duration": 1840,
+    "once": false,
+    "width": 480,
+    "height": 160,
+    "frames": 8,
+    "bytes": 11099
+  },
+  "memory": {
+    "source": "gifs/memory.gif",
+    "duration": 1840,
+    "once": false,
+    "width": 480,
+    "height": 160,
+    "frames": 8,
+    "bytes": 9068
+  },
+  "thinking": {
+    "source": "gifs/thinking.gif",
+    "duration": 1840,
+    "once": false,
+    "width": 480,
+    "height": 160,
+    "frames": 8,
+    "bytes": 12777
+  }
+}

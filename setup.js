@@ -56,7 +56,7 @@ import { packagedRuntime } from './lib/packaged-runtime.js';
 import {
   OPTIONAL_AT_ROOT, checkRuntimeDependencies, findInstalled, installAtPackageRoot, installKind, mcpCompiler,
 } from './lib/runtime-dependencies.js';
-import { mcpDistBuilt } from './lib/mcp-dist.js';
+import { buildMcpServerSafely, mcpBuildNeeded, mcpDistWhole } from './lib/mcp-build.js';
 import { superviseServer } from './lib/server-supervisor.js';
 import { MCP_COMMAND, nodeArgs, runNode } from './bin/synabun.js';
 
@@ -400,42 +400,43 @@ function installPlaywrightChromium() {
 
 // ── Phase 4: MCP server build ──
 
-// Built means dist/index.js and every module it imports (lib/mcp-dist.js): a checkout can hold a tracked
-// dist/index.js whose newer imports git ignores.
+// Built and current: every runtime entry of dist and every module it imports are there (lib/mcp-dist.js), and its
+// stamp names this version and this source (lib/mcp-build.js). A `git pull` changes the source, so the next start
+// (and the next start of the server by the supervisor) builds it again. A packaged app has no compiler and is
+// replaced whole: it only asks whether its dist is complete.
 function needsBuild() {
-  return !mcpDistBuilt(PACKAGE_ROOT);
+  return mcpBuildNeeded(PACKAGE_ROOT, { packaged: !!packagedRuntime() }).needed;
 }
 
+// Into a temp folder, swapped in only when it succeeded: a failed build keeps the previous dist. Another SynaBun
+// process building at the same time (postinstall of an update, the server's own build route) is waited for.
+// Returns the builder's result; never throws.
 function buildMcpServer() {
   if (!needsBuild()) {
-    ok('MCP server already built');
-    return;
+    ok('MCP server build matches the installed source');
+    return { status: 'current' };
   }
-
-  info('Building MCP server from source...');
   startPhase('build');
-  const tsc = mcpCompiler(PACKAGE_ROOT);
-  if (!tsc) {
-    fail('MCP server build failed: TypeScript is not installed (npm install at the package root installs it)');
-    return;
-  }
-  try {
-    execFileSync(process.execPath, [tsc, '-p', resolve(PACKAGE_ROOT, 'mcp-server')], {
-      cwd: resolve(PACKAGE_ROOT, 'mcp-server'),
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: !!packagedRuntime(),
-      timeout: 120_000,
-    });
-    ok('MCP server built');
-  } catch (err) {
-    fail('MCP server build failed:');
-    const stdout = err.stdout?.toString().trim();
-    const stderr = err.stderr?.toString().trim();
-    if (stdout) console.error(stdout);
-    if (stderr) console.error(stderr);
-    if (!stdout && !stderr) console.error(err.message);
-    console.error('\n  Report this at: https://github.com/danilokhury/Synabun/issues');
-  }
+  const result = buildMcpServerSafely(PACKAGE_ROOT, {
+    packaged: !!packagedRuntime(),
+    waitMs: 180_000,
+    windowsHide: !!packagedRuntime(),
+    log: { ok, info, warn, fail, error: (text) => console.error(text) },
+  });
+  if (result.status === 'failed' && result.reason !== 'busy') console.error('\n  Report this at: https://github.com/danilokhury/Synabun/issues');
+  return result;
+}
+
+// At launch: a server started over a dist that is not whole dies on a missing module, so when the build failed and
+// no whole dist is there the start stops here, with the compiler's output above and the way to a working copy.
+function ensureMcpServerBuilt() {
+  const result = buildMcpServer();
+  if (result.status !== 'failed' || mcpDistWhole(PACKAGE_ROOT).complete) return;
+  console.log('');
+  fail('The MCP server is not built, and SynaBun cannot start without it.');
+  info(`To repair: ${npmRepairCommand()} (a packaged application: reinstall it from https://synabun.ai).`);
+  startFailed('MCP_BUILD_FAILED', 'the MCP server could not be built: see the compiler output in the terminal');
+  process.exit(1);
 }
 
 // ── Phase 5: Setup state detection ──
@@ -513,6 +514,7 @@ function startServer() {
       },
     },
     resolvePort: () => resolvePort({ dataHome: DATA_HOME }),
+    beforeRestart: buildMcpServer,
   });
   process.on('SIGINT', () => supervision.stop('SIGINT'));
   process.on('SIGTERM', () => supervision.stop('SIGTERM'));
@@ -662,7 +664,7 @@ async function main() {
   console.log('');
 
   // Build
-  buildMcpServer();
+  ensureMcpServerBuilt();
   startPhase('checking');
   console.log('');
 

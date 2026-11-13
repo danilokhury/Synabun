@@ -73,6 +73,7 @@ function browserToolNames(tools) {
     screenshot: map.browserScreenshot || `${prefix}browser_screenshot`,
     console: map.browserConsole || `${prefix}browser_console`,
     session: map.browserSession || `${prefix}browser_session`,
+    morelogin: map.morelogin || `${prefix}morelogin`,
   };
 }
 
@@ -102,6 +103,7 @@ export function browserPolicyText({ tools = '', host = null } = {}) {
   const web = WEB_TOOL_WORDS[hostKey(host)] || 'WebSearch / WebFetch (OpenCode webfetch / websearch, Codex web_search)';
   return [
     `- Every page, public or localhost, goes through SynaBun's browser tools (${t.navigate}, ${t.snapshot}, ${t.screenshot}, ${t.console} and the other browser_* tools); they open the browser configured in SynaBun (MoreLogin). Nothing else opens a page.`,
+    `- MoreLogin profiles: the browser tools work in your own profile (the default of Settings → Browser, or the one your run was started with). To work in another profile (a second account), call ${t.morelogin} with action "use" (envId or name): only your own browser tools move there, in a tab of your own, while other automations keep working in theirs. You can choose only a profile the owner allowed agents to choose (the tool's "list" and "status" say which; none until the owner switches one on in SynaBun's Settings → Connected tools → MoreLogin). When a profile is refused as not on the owner's list, nothing was opened: tell the user which profile to switch on there and stop; never work in another profile or browser instead. Never try to change the default for that (the default profile is the owner's choice in Settings → Browser: use_default is refused for every agent; "start" takes only a profile on the owner's list too), and never say a second profile cannot be driven: a refused one is not on the owner's list, which is what you say.`,
     '- Never run Playwright, Puppeteer or Selenium code of your own to look at a page (a script, node -e, python -c, a heredoc), and never `npx playwright` except to run automated tests (npx playwright test).',
     `- ${TEST_RUN_RULE}`,
     '- Never launch Chrome, Chromium, Edge, chrome-headless-shell or any other browser binary, and never take headless screenshots (--headless, --screenshot).',

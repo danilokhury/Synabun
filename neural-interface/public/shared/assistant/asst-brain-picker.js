@@ -43,7 +43,9 @@ import { modelChipForms, modelChipName, modelChipTag } from './asst-model-chip.j
 import {
   ACCOUNT_PROVIDERS,
   BRAIN_PROVIDERS,
+  brainEffortChoices,
   brainRequiresSwitch,
+  isAutoBrainEffort,
   emptyProjectView,
   modelShortName,
   normalizeBrain,
@@ -157,7 +159,9 @@ export function fmtModelPrice(price) {
   const a = trimNumber(price.input);
   const b = trimNumber(price.output);
   if (!a && !b) return '';
-  return b ? `$${a || '?'}/$${b}` : `$${a}`;
+  // Maritaca's rows are priced in BRL (per million tokens), never converted.
+  const c = price.unit === 'brl_per_mtok' ? 'R$' : '$';
+  return b ? `${c}${a || '?'}/${c}${b}` : `${c}${a}`;
 }
 
 function normalizeCatalogModel(m, extra = {}) {
@@ -297,6 +301,57 @@ function catalogSaysNone(remote, provider, local) {
   return !(source === 'fallback' && local.length > 0 && !local.some(m => m.catalogSource === 'fallback'));
 }
 
+/** The OpenCode provider id Maritaca is registered under: its OpenCode rows are `maritaca/<id>`. */
+export const MARITACA_PREFIX = 'maritaca/';
+export function isMaritacaOpenCodeId(id) { return String(id || '').toLowerCase().startsWith(MARITACA_PREFIX); }
+
+/**
+ * Picker groups that list another provider's rows: the Maritaca group shows OpenCode's `maritaca/<id>` rows
+ * (`via: 'opencode'`), so a pick, a saved route and a dispatch keep the runnable spec
+ * { provider: 'opencode', model: 'maritaca/<id>' }. The menus place a group right after the provider it runs on.
+ */
+export const VIA_GROUPS = Object.freeze({ maritaca: 'opencode' });
+
+/** The provider a row of `group` runs on (`maritaca` → `opencode`; a plain provider is itself). */
+export function runnableProvider(group, row = null) { return row?.via || VIA_GROUPS[group] || group; }
+
+/**
+ * The Maritaca group's rows: OpenCode's `maritaca/<id>` rows as this window merged them (hidden ones already out),
+ * ordered and labelled by the server's group (`remoteGroup`: catalog.routeGroups.maritaca, the Maritaca panel's
+ * order, BRL prices). While OpenCode lists no Maritaca model, the group's own rows come back `status: 'unavailable'`
+ * with their hint, so the group never vanishes. An older server (no group) gets the OpenCode rows as they are.
+ */
+export function maritacaGroupRows(opencodeRows, remoteGroup = null) {
+  const own = (Array.isArray(opencodeRows) ? opencodeRows : []).filter(m => isMaritacaOpenCodeId(m?.id));
+  const remote = Array.isArray(remoteGroup?.models) ? remoteGroup.models : [];
+  const deco = (m, r) => ({
+    ...m, via: 'opencode', group: 'maritaca',
+    label: r?.label || m.label, tier: r?.tier || m.tier || null, price: r?.price || m.price || null,
+    isDefault: r ? r.isDefault === true : m.isDefault === true,
+  });
+  if (!own.length) {
+    if (remoteGroup && remoteGroup.available === false) {
+      return remote.map(r => ({
+        id: String(r.id), label: String(r.label || r.model || r.id), desc: '', tier: r.tier || null, price: r.price || null,
+        efforts: Array.isArray(r.efforts) ? r.efforts : null, contextWindow: r.contextWindow ?? null, vision: false,
+        outputs: { image: false, video: false }, via: 'opencode', group: 'maritaca', status: 'unavailable',
+        hint: r.hint || remoteGroup.hint || null, selector: String(r.id),
+      }));
+    }
+    return [];
+  }
+  const byId = new Map(own.map(m => [String(m.id).toLowerCase(), m]));
+  const out = [];
+  for (const r of remote) {
+    const m = byId.get(String(r?.id || '').toLowerCase());
+    if (!m) continue;
+    byId.delete(String(r.id).toLowerCase());
+    out.push(deco(m, r));
+  }
+  for (const m of own) if (byId.has(String(m.id).toLowerCase())) out.push(deco(m, null));
+  return out;
+}
+
 /**
  * { 'claude-code': [...], codex: [...], opencode: [...], antigravity: [...] }: the models of every
  * Assistant model menu and of the Routes editor, from GET /api/assistant/catalog
@@ -326,6 +381,13 @@ export async function loadModelCatalog({ force = false } = {}) {
       out[provider] = catalogSaysNone(remote, provider, local)
         ? []
         : mergeProviderModels(provider, remote?.models?.[provider], local, { sets, remoteSource: remote?.sources?.[provider] || null });
+    }
+    // The Maritaca group (its rows stay in `opencode` too, for every lookup by the runnable spec; menus list them once).
+    out.maritaca = maritacaGroupRows(out.opencode, remote?.routeGroups?.maritaca || null);
+    // A lookup by the runnable spec (a saved route's label) reads the same row the group shows.
+    if (out.maritaca.length && out.maritaca[0].status !== 'unavailable') {
+      const shown = new Map(out.maritaca.map(m => [m.id, m]));
+      out.opencode = out.opencode.map(m => shown.get(m.id) || m);
     }
     _catalog = out;
     // Not kept when built without the server's catalog, or when the lists changed
@@ -580,17 +642,28 @@ export async function openModelMenu(anchor, opts = {}) {
     }
     // Without `providers` the menu is a brain's (the toolbar's model field, the WhatsApp brain): every provider the
     // Assistant can run on (BRAIN_PROVIDERS, Antigravity included); a route or a dispatch names its own providers.
-    const list = Array.isArray(providers) && providers.length ? PROVIDERS.filter(p => providers.includes(p)) : BRAIN_PROVIDERS;
+    const list = withViaGroups(Array.isArray(providers) && providers.length ? PROVIDERS.filter(p => providers.includes(p)) : BRAIN_PROVIDERS);
     let listed = 0;
     for (const provider of list) {
-      const models = (catalog[provider] || []).filter(m => typeof accept !== 'function' || accept(provider, m));
+      const run = runnableProvider(provider);
+      // A row listed in a group (Maritaca) is shown there only, never twice.
+      const rows = (catalog[provider] || []).filter(m => !(provider === 'opencode' && Array.isArray(catalog.maritaca) && isMaritacaOpenCodeId(m?.id)));
+      const models = rows.filter(m => m.status === 'unavailable' || typeof accept !== 'function' || accept(run, m));
+      if (provider !== run && !models.length) continue;
       if (!models.length && !opts.routingEditor) continue;
       listed += models.length;
       const meta = providerMeta(provider);
       const hiddenCount = metadata.hiddenCounts[provider] || 0;
-      const note = opts.routingEditor ? tr('assistant.routes.menu.hiddenCount', '{count} hidden in Models', { count: hiddenCount }) : warnSwitch && provider !== b.provider ? tr('assistant.brain.newConversation', 'starts a new conversation') : '';
+      const note = opts.routingEditor && provider === run ? tr('assistant.routes.menu.hiddenCount', '{count} hidden in Models', { count: hiddenCount }) : warnSwitch && run !== b.provider ? tr('assistant.brain.newConversation', 'starts a new conversation') : '';
       items.push({ kind: 'header', label: meta.label, icon: meta.icon, color: meta.color, note });
+      const unavailable = models.filter(m => m.status === 'unavailable');
+      if (unavailable.length) items.push({ kind: 'info', label: tr('assistant.routes.menu.maritacaUnavailable', 'Register Maritaca under Settings → OpenCode → Providers') });
       for (const m of models) {
+        if (m.status === 'unavailable') {
+          items.push({ id: `${provider}:${m.id}`, label: m.label, desc: modelDesc(m, tr, false), tag: tierTag(m, tr), keywords: `${meta.label} ${m.id}`, disabled: true, title: m.hint || '' });
+          continue;
+        }
+        const target = runnableProvider(provider, m);
         items.push({
           kind: 'radio',
           id: `${provider}:${m.id}`,
@@ -599,8 +672,8 @@ export async function openModelMenu(anchor, opts = {}) {
           title: `${m.label || m.id} · ${m.id}`,
           tag: tierTag(m, tr),
           keywords: `${meta.label} ${m.id}`,
-          selected: !!current && current.provider === provider && sameModel(current.model, m),
-          onSelect: () => onSelect?.({ provider, model: m.id, label: m.label, tier: m.tier || null, vision: m.vision ?? null, outputs: m.outputs || null, efforts: m.efforts || null, price: m.price || null }),
+          selected: !!current && current.provider === target && sameModel(current.model, m),
+          onSelect: () => onSelect?.({ provider: target, model: m.id, label: m.label, tier: m.tier || null, vision: m.vision ?? null, outputs: m.outputs || null, efforts: m.efforts || null, price: m.price || null }),
         });
       }
       if (opts.routingEditor && !models.length) items.push({ kind: 'info', label: typeof accept === 'function' ? tr('assistant.routes.menu.noCompatible', 'No compatible models shown for this provider.') : tr('assistant.routes.menu.providerEmpty', 'No models shown for this provider.') });
@@ -661,6 +734,16 @@ export async function openModelMenu(anchor, opts = {}) {
     }
     menu.el.append(footer); menu.reposition();
   }
+}
+
+/** `list` with each via-group placed right after the provider it runs on (opencode → opencode, maritaca). */
+export function withViaGroups(list) {
+  const out = [];
+  for (const p of list) {
+    out.push(p);
+    for (const [group, via] of Object.entries(VIA_GROUPS)) if (via === p && !list.includes(group)) out.push(group);
+  }
+  return out;
 }
 
 /** What a model menu lists, for telling a fresher read from the one on screen. */
@@ -770,9 +853,13 @@ export function createBrainPicker(host, hooks = {}) {
 
   // Per model, from the catalog row (which also covers "[1m]" / "[extended]" ids);
   // the provider list only for a model nothing is known about. OpenCode: variants.
+  // Claude Code: Auto (the model's default) and Off (`none`, no thinking) where the model thinks, then
+  // its levels (asst-state.js brainEffortChoices); their words here.
   function effortsFor(brain) {
     const model = catalogModelRow(brain.provider, brain.model) || modelOf(brain);
-    return getEffortLevelsForModel(brain.provider, model);
+    return brainEffortChoices(brain.provider, getEffortLevelsForModel(brain.provider, model)).map((e) => (e.key === 'auto'
+      ? { ...e, label: t('assistant.brain.effortAuto', e.label), desc: t('assistant.brain.effortAutoDesc', e.desc) }
+      : e.key === 'none' ? { ...e, label: t('assistant.brain.effortNone', e.label), desc: t('assistant.brain.effortNoneDesc', e.desc) } : e));
   }
 
   function accountOf(brain) {
@@ -831,7 +918,9 @@ export function createBrainPicker(host, hooks = {}) {
   function values(brain = currentBrain()) {
     const meta = getProviderMeta(brain.provider);
     const efforts = effortsFor(brain);
-    const level = efforts.find(e => e.id === brain.effort);
+    // Claude's Auto row stands for no effort and for the `off` a server writes when it resets a level.
+    const level = efforts.find(e => e.id === brain.effort)
+      || (brain.provider === 'claude-code' && isAutoBrainEffort(brain.effort) ? efforts.find(e => e.key === 'auto') : null);
     const hasEfforts = efforts.some(e => e.id !== 'off');
     const toolCatalog = getCachedToolCatalog();
     return {
@@ -1246,7 +1335,8 @@ export function createBrainPicker(host, hooks = {}) {
       const efforts = effortsFor(brain);
       menu(t('assistant.brain.effort', 'Thinking effort'), efforts.map((e) => ({
         kind: 'radio', id: e.id, label: e.label, desc: e.desc || '',
-        selected: (e.id === 'off' ? !brain.effort : e.id === brain.effort),
+        // Auto (`off`) is stored as no effort; Off is `none` and is kept on every turn.
+        selected: (e.id === 'off' ? isAutoBrainEffort(brain.effort) : e.id === brain.effort),
         onSelect: () => commit({ effort: e.id === 'off' ? null : e.id }, 'effort'),
       })));
       return;

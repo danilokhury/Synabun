@@ -6393,8 +6393,8 @@
   /* ── Fit: one row in any band, nothing out of reach, nothing over a left panel ──
      --topright-row is the row at its widest without the workspace name: the dock (the switcher with its save button,
      50px; seven tools of 30px and the update button; two dividers; the dock's gaps and edges: 298px in all, 266px
-     while the update button is hidden), then --topright-buttons, the tools toggle and the four agent buttons with
-     the gaps before them (222px: six 32px buttons, five 6px gaps). Below row + 45px of band the workspace name goes into the switcher's tooltip
+     while the update button is hidden), then --topright-buttons, the tools toggle and the six agent buttons with
+     the gaps before them (260px: seven 32px buttons, six 6px gaps). Below row + 45px of band the workspace name goes into the switcher's tooltip
      (--topright-compact; it shows from 40px on, up to 120px, and takes what the band leaves it). Below the row itself
      nothing wraps: the buttons that do not fit leave the row for the ⋯ menu, lowest priority first
      (ui-topright-overflow.js OVERFLOW_ORDER, measured live). --topright-compact is
@@ -6407,7 +6407,7 @@
   }
   :root {
     --topright-band: calc(100vw - var(--sidebar-total-width, 0px) - var(--right-panel-width, var(--claude-panel-width, 0px)) - 40px);
-    --topright-buttons: 222px;
+    --topright-buttons: 260px;
     --topright-row: calc(298px + var(--topright-buttons));
     --topright-compact: clamp(0, tan(atan2(calc(var(--topright-row) + 45px - var(--topright-band)), 0.01px)), 1);
   }
@@ -6587,7 +6587,8 @@
   #topright-claude-panel-btn,
   #topright-codex-panel-btn,
   #topright-opencode-panel-btn,
-  #topright-antigravity-panel-btn {
+  #topright-antigravity-panel-btn,
+  #topright-maritaca-panel-btn {
     background: rgba(18, 18, 22, 0.65);
     backdrop-filter: blur(var(--blur-heavy)) saturate(1.3);
     -webkit-backdrop-filter: blur(var(--blur-heavy)) saturate(1.3);
@@ -6603,7 +6604,8 @@
   #topright-claude-panel-btn:hover,
   #topright-codex-panel-btn:hover,
   #topright-opencode-panel-btn:hover,
-  #topright-antigravity-panel-btn:hover {
+  #topright-antigravity-panel-btn:hover,
+  #topright-maritaca-panel-btn:hover {
     background: rgba(24, 24, 30, 0.8);
     border-color: rgba(255, 255, 255, 0.1);
   }
@@ -7865,9 +7867,10 @@
     .cxp-session-pill, .ocpv2-session-pill, .agy-session-pill,
     .ocp-session-pill, .term-minimized-pill-label)::after { animation-play-state: paused !important; }
 
-  /* Hidden tab: freeze the 30+ infinite glow/pulse animations so a background
-     tab consumes zero compositor time; they resume where they left off */
-  body.app-hidden * { animation-play-state: paused !important; }
+  /* Hidden tab: no universal rule under body.app-hidden. A hidden tab draws no frames, so its
+     animations already cost nothing; the rule itself cost 7-10 ms of whole-page style
+     recalculation each time the class changed (14.5k elements, 2026-11-06), paid on the
+     first frame after returning to the tab. The class stays: synabun-ticker.js reads it. */
 
   /* Offset top resize handles below the drag handle area per panel */
   #category-sidebar > .resize-handle-t,
@@ -13704,7 +13707,9 @@
   .settings-panel,
   .command-runner-panel,
   .schedules-studio-panel,
-  .styleguide-panel {
+  .styleguide-panel,
+  .aap-modal,
+  .aap-flag-note {
     /* Text roles for the dark panel. Each clears WCAG AA (4.5:1) on the panel and inside a group. */
     --stg-text: rgba(255,255,255,0.92);
     --stg-body: rgba(255,255,255,0.84);
@@ -14596,6 +14601,11 @@
   .settings-panel .settings-content .cc-dropdown-item:hover,
   .settings-panel :is(.stg-dropdown, .bc-dropdown) .cc-dropdown-item:hover { background: var(--stg-accent-fill); color: #fff; }
   .settings-panel .cc-dropdown.disabled .cc-dropdown-trigger { opacity: 0.5; }
+  /* A choice that is listed and cannot be picked (a Firefox-type MoreLogin profile): the Schedules window's look of one. */
+  .settings-panel .settings-content .cc-dropdown-item[aria-disabled="true"],
+  .settings-panel .settings-content .cc-dropdown-item[aria-disabled="true"]:hover,
+  .settings-panel :is(.stg-dropdown, .bc-dropdown) .cc-dropdown-item[aria-disabled="true"],
+  .settings-panel :is(.stg-dropdown, .bc-dropdown) .cc-dropdown-item[aria-disabled="true"]:hover { opacity: .45; cursor: default; background: none; color: var(--stg-text); }
 
   /* ── The older custom switch (.cc-toggle) gets the same capsule as .recall-toggle ── */
   .settings-panel .cc-toggle { width: 32px; height: 18px; border: 0; border-radius: 999px; background: rgba(255,255,255,0.16); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.22); transition: background-color 0.15s ease; }
@@ -14841,8 +14851,9 @@
   .settings-panel .settings-content .stg-provider-card:hover {
     min-height: 36px; margin: 0; padding: 10px 0; background: none; border: 0; border-radius: 0;
   }
-  .settings-panel .settings-content :is(.stg-provider-card, .stg-ollama-card) + .stg-provider-card,
-  .settings-panel .settings-content .stg-ollama-card + .stg-provider-card { border-top: 1px solid var(--stg-sep); }
+  .settings-panel .settings-content :is(.stg-provider-card, .stg-ollama-card, .stg-maritaca-card) + .stg-provider-card,
+  .settings-panel .settings-content :is(.stg-ollama-card, .stg-maritaca-card) + .stg-provider-card,
+  .settings-panel .settings-content .stg-ollama-card + .stg-maritaca-card { border-top: 1px solid var(--stg-sep); }
   .settings-panel .settings-content .stg-provider-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 22px; }
   .settings-panel .settings-content .stg-provider-ident { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; flex: 1 1 auto; min-width: 0; }
   .settings-panel .settings-content .stg-provider-name { font-size: 13px; font-weight: 500; line-height: 1.35; letter-spacing: 0; color: var(--stg-text); overflow-wrap: anywhere; }
@@ -17768,6 +17779,9 @@
     --ed-menu-hover: var(--s-hover);
     --ed-menu-radius: 8px;
     --ed-menu-shadow: 0 12px 32px rgba(0,0,0,0.4);
+    /* The header's and the bars' type: the editor's mono for names and queries, the app's body font for buttons */
+    --ed-font-mono: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
+    --ed-font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
     /* Fills the app frame (flush, so the frame's 16px corners are its own) beside a docked right sidepanel */
     position: fixed;
     top: var(--frame-top);
@@ -17913,63 +17927,92 @@
   /* The strip clips: the focus ring is drawn inside the tab */
   body .fe-editor-panel .fe-editor-tabs .fe-editor-tab.fe-editor-tab:focus-visible { outline-offset: -2px; }
 
-  /* Header */
+  /* Header: the file's name, the tools as one cluster, and the three actions. The floating-window family rules
+     further down (--fw-*) give every window header its height and its focus ring; what they also set (padding,
+     control sizes, colours) is set again for this header in the block after them ("The code editor's header"). */
   .fe-editor-header {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 8px 12px 6px;
-    border-bottom: 1px solid rgba(255,255,255,0.04);
+    gap: 8px;
+    padding: 4px 10px 4px 8px;
+    border-bottom: 1px solid var(--b-light);
     flex-shrink: 0;
-    background: linear-gradient(to bottom, rgba(255,255,255,0.025), transparent);
+    background: linear-gradient(180deg, var(--s-light), var(--s-subtle));
+    box-shadow: inset 0 1px 0 var(--b-subtle);
     position: relative;
     overflow: visible;
   }
 
   .fe-editor-back {
     background: none; border: none; cursor: pointer;
-    padding: 4px; border-radius: 4px; display: flex;
-    flex-shrink: 0;
+    padding: 4px; border-radius: var(--r-small); display: flex;
+    align-items: center; justify-content: center;
+    flex-shrink: 0; color: var(--t-secondary);
   }
   .fe-editor-back svg {
     width: 15px; height: 15px; fill: none;
-    stroke: rgba(255,255,255,0.35); stroke-width: 2;
+    stroke: currentColor; stroke-width: 2;
     stroke-linecap: round; stroke-linejoin: round;
   }
-  .fe-editor-back:hover { background: rgba(255,255,255,0.05); }
-  .fe-editor-back:hover svg { stroke: var(--t-bright); }
-  .fe-editor-dot {
-    width: 7px; height: 7px; border-radius: 50%;
-    background: transparent; flex-shrink: 0;
-    transition: background 0.2s;
+  .fe-editor-back:hover { background: var(--s-hover); color: var(--t-bright); }
+  /* The title: a lamp for the unsaved state, then the path with the file's name in the brighter colour */
+  .fe-editor-title {
+    display: flex; align-items: center; gap: 8px;
+    flex: 1 1 140px; min-width: 0;
   }
-  .fe-editor-dot.dirty { background: #ffca28; }
+  .fe-editor-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: transparent; flex-shrink: 0;
+    box-shadow: inset 0 0 0 1px var(--b-visible);
+    transition: background-color 150ms ease, box-shadow 150ms ease;
+  }
+  .fe-editor-dot.dirty {
+    background: var(--ed-warn);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ed-warn) 18%, transparent);
+  }
   .fe-editor-filepath {
-    font-size: 11px; font-family: var(--ff-mono);
-    color: var(--t-secondary); overflow: hidden;
+    font-family: var(--ed-font-mono);
+    font-size: var(--fs-xs); line-height: 1.3;
+    color: var(--t-secondary); min-width: 0; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap;
+    /* clipped from its start: the folders give way, the file's name stays */
     direction: rtl; text-align: left;
+  }
+  .fe-editor-pathtext { direction: ltr; unicode-bidi: isolate; }
+  .fe-editor-filedir { color: var(--t-secondary); }
+  .fe-editor-filename { color: var(--t-bright); font-weight: 500; }
+  /* The tools, as one cluster on a soft inset surface */
+  .fe-editor-tools {
+    display: flex; align-items: center; gap: 2px;
+    padding: 2px; border-radius: var(--r-card);
+    background: rgba(0,0,0,0.22);
+    box-shadow: inset 0 0 0 1px var(--b-subtle), inset 0 1px 2px rgba(0,0,0,0.25);
+    flex-shrink: 0;
   }
   .fe-editor-action {
     background: none; border: none; cursor: pointer;
-    padding: 4px; border-radius: 4px; display: flex;
-    flex-shrink: 0;
+    padding: 4px; border-radius: var(--r-small); display: flex;
+    align-items: center; justify-content: center;
+    flex-shrink: 0; color: var(--t-secondary);
+    transition: color 150ms ease, background-color 150ms ease, box-shadow 150ms ease;
   }
   .fe-editor-action svg {
     width: 14px; height: 14px; fill: none;
-    stroke: rgba(255,255,255,0.3); stroke-width: 2;
+    stroke: currentColor; stroke-width: 2;
     stroke-linecap: round; stroke-linejoin: round;
   }
-  .fe-editor-action:hover { background: rgba(255,255,255,0.05); }
-  .fe-editor-action:hover svg { stroke: var(--t-bright); }
-  .fe-editor-action.active svg { stroke: var(--accent-blue, #6366f1); }
+  .fe-editor-action:hover { background: var(--s-hover); color: var(--t-bright); }
+  .fe-editor-action.active {
+    background: var(--s-hover); color: var(--fw-focus);
+    box-shadow: inset 0 0 0 1px var(--b-light);
+  }
   .fe-editor-action[hidden] { display: none; }
   .fe-editor-help-wrap { position: relative; display: flex; }
   .fe-editor-help-btn svg circle,
   .fe-editor-help-btn svg path,
   .fe-editor-help-btn svg line {
     fill: none;
-    stroke: rgba(255,255,255,0.35);
+    stroke: currentColor;
     stroke-width: 2;
     stroke-linecap: round;
     stroke-linejoin: round;
@@ -17981,8 +18024,8 @@
     right: 0;
     margin-top: 6px;
     background: var(--bg-panel, rgba(18,18,24,0.97));
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 8px;
+    border: 1px solid var(--b-light);
+    border-radius: var(--r-card);
     padding: 10px 14px;
     min-width: 200px;
     max-height: min(60vh, 440px);
@@ -18027,10 +18070,26 @@
     white-space: nowrap;
   }
   .fe-editor-sep {
-    width: 1px; height: 14px;
-    background: rgba(255,255,255,0.06);
+    width: 1px; height: 16px;
+    background: var(--b-light);
     flex-shrink: 0;
   }
+  /* The actions: Save is the one primary action (the guide's accent, only while it can save); Discard and Close
+     stay quiet until pointed at, Close in the danger colour then */
+  .fe-editor-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; flex-shrink: 0; }
+  .fe-editor-header .fe-editor-btn {
+    font-family: var(--ed-font-ui); font-size: 12px; font-weight: 500; line-height: 1;
+    height: 24px; padding: 0 10px; border-radius: var(--r-small);
+    border: 1px solid transparent; background: none; color: var(--t-secondary);
+    white-space: nowrap;
+    transition: color 150ms ease, background-color 150ms ease, border-color 150ms ease;
+  }
+  .fe-editor-header .fe-editor-btn:hover:not(:disabled) { color: var(--t-bright); background: var(--s-hover); }
+  .fe-editor-header .fe-editor-btn:disabled { opacity: 0.35; cursor: default; }
+  .fe-editor-header .fe-editor-save { border-color: var(--b-light); background: var(--s-subtle); }
+  .fe-editor-header .fe-editor-save:not(:disabled) { background: var(--accent-gold); border-color: transparent; color: var(--fw-on-accent); font-weight: 600; }
+  .fe-editor-header .fe-editor-save:not(:disabled):hover { background: color-mix(in srgb, var(--accent-gold) 86%, white); color: var(--fw-on-accent); }
+  .fe-editor-header #fe-editor-close:hover:not(:disabled) { color: var(--accent-red); background: var(--accent-red-bg); }
   .fe-editor-btn {
     font-size: 10px; padding: 4px 10px; border-radius: 4px;
     border: 1px solid rgba(255,255,255,0.06);
@@ -18040,10 +18099,6 @@
   }
   .fe-editor-btn:hover:not(:disabled) { border-color: rgba(255,255,255,0.14); color: var(--t-secondary); background: rgba(255,255,255,0.03); }
   .fe-editor-btn:disabled { opacity: 0.3; cursor: default; }
-  .fe-editor-save.dirty { background: rgba(99,102,241,0.12); border-color: rgba(99,102,241,0.35); color: #a5b4fc; }
-  .fe-editor-save.dirty:hover { background: rgba(99,102,241,0.2); border-color: rgba(99,102,241,0.5); }
-  #fe-editor-close { border-color: rgba(255,82,82,0.35); color: var(--accent-red); }
-  #fe-editor-close:hover:not(:disabled) { border-color: rgba(255,82,82,0.55); color: var(--accent-red); background: var(--accent-red-bg); }
 
   /* Editor body — CodeMirror, the Markdown preview, or a message in their place */
   .fe-editor-body {
@@ -18290,21 +18345,24 @@
   /* View toggle (Raw/Preview) */
   .fe-editor-view-toggle {
     display: flex;
-    gap: 0;
-    border: 1px solid rgba(255,255,255,0.06);
-    border-radius: 4px;
-    overflow: hidden;
+    gap: 2px;
+    padding: 2px;
+    border-radius: var(--r-card);
+    background: rgba(0,0,0,0.22);
+    box-shadow: inset 0 0 0 1px var(--b-subtle);
+    flex-shrink: 0;
   }
   .fe-editor-toggle-btn {
-    font-size: 10px; padding: 3px 10px;
+    font-family: var(--ed-font-ui); font-size: 11px; font-weight: 500; line-height: 1;
+    height: 20px; padding: 0 9px; border-radius: var(--r-small);
     background: none; border: none;
-    color: var(--t-muted); cursor: pointer;
-    font-family: var(--ff-mono);
-    transition: all 0.12s;
+    color: var(--t-secondary); cursor: pointer;
+    transition: color 150ms ease, background-color 150ms ease;
   }
-  .fe-editor-toggle-btn:hover { color: var(--t-secondary); }
+  .fe-editor-toggle-btn:hover { color: var(--t-bright); background: var(--s-hover); }
   .fe-editor-toggle-btn.active {
-    background: rgba(255,255,255,0.06); color: var(--t-bright);
+    background: var(--s-hover); color: var(--t-bright);
+    box-shadow: inset 0 0 0 1px var(--b-light);
   }
 
   /* Markdown preview pane */
@@ -18353,14 +18411,17 @@
   .fe-editor-preview th { background: rgba(0,0,0,0.15); font-weight: 600; color: var(--t-bright); }
   .fe-editor-preview img { max-width: 100%; border-radius: var(--r-small); }
 
-  /* Find & Replace bar */
+  /* Find & Replace bar: a recessed strip under the header, the query in the editor's mono, the three switches as
+     chips, and the guide's focus ring on the fields (a border in the focus colour and a soft halo; the family's
+     outline is turned off for them in the block after the family rules) */
   .fe-editor-find {
     display: none;
     flex-direction: column;
-    gap: 2px;
-    padding: 4px 12px;
-    border-bottom: 1px solid rgba(255,255,255,0.06);
-    background: rgba(0,0,0,0.15);
+    gap: 4px;
+    padding: 6px 10px 6px 12px;
+    border-bottom: 1px solid var(--b-subtle);
+    background: rgba(0,0,0,0.16);
+    box-shadow: inset 0 1px 0 rgba(0,0,0,0.3);
     flex-shrink: 0;
   }
   .fe-editor-find.open {
@@ -18369,99 +18430,123 @@
   .fe-editor-find-row {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
   }
   .fe-editor-find-input {
-    flex: 1;
-    max-width: 260px;
-    background: rgba(0,0,0,0.2);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 4px;
-    padding: 4px 8px;
-    font-family: var(--ff-mono);
-    font-size: 11px;
+    flex: 1 1 160px;
+    max-width: 300px;
+    min-width: 0;
+    height: 24px;
+    background: rgba(0,0,0,0.28);
+    border: 1px solid var(--b-light);
+    border-radius: var(--r-small);
+    padding: 0 8px;
+    font-family: var(--ed-font-mono);
+    font-size: 12px;
     color: var(--t-bright);
     outline: none;
+    transition: border-color 150ms ease, box-shadow 150ms ease;
   }
-  .fe-editor-find-input:focus {
-    border-color: rgba(99,102,241,0.4);
+  .fe-editor-find-input::placeholder,
+  .fe-editor-replace-input::placeholder,
+  .fe-editor-goto-input::placeholder { color: var(--t-secondary); }
+  .fe-editor-find-input:focus,
+  .fe-editor-replace-input:focus,
+  .fe-editor-goto-input:focus {
+    border-color: var(--stg-focus, #93c5fd);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--stg-focus, #93c5fd) 28%, transparent);
   }
   .fe-editor-find-input.invalid,
-  .fe-editor-goto-input.invalid { border-color: var(--ed-error); }
+  .fe-editor-goto-input.invalid { border-color: var(--ed-error); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ed-error) 22%, transparent); }
   .fe-editor-find-toggle {
-    background: none; border: 1px solid transparent; cursor: pointer;
-    min-width: 22px; padding: 2px 4px; border-radius: 3px;
-    font-family: var(--ff-mono); font-size: 10px; line-height: 14px;
+    height: 20px; min-width: 28px; padding: 0 7px; border-radius: 999px;
+    border: 1px solid var(--b-light); background: var(--s-subtle); cursor: pointer;
+    font-family: var(--ed-font-mono); font-size: 10.5px; line-height: 18px; font-weight: 500;
     color: var(--t-secondary);
-    transition: color 0.12s, background-color 0.12s, border-color 0.12s;
+    transition: color 150ms ease, background-color 150ms ease, border-color 150ms ease;
   }
-  .fe-editor-find-toggle:hover { background: rgba(255,255,255,0.05); color: var(--t-bright); }
+  .fe-editor-find-toggle:hover { background: var(--s-hover); border-color: var(--b-hover); color: var(--t-bright); }
   .fe-editor-find-toggle[aria-pressed="true"] {
-    background: rgba(99,102,241,0.12); border-color: rgba(99,102,241,0.35); color: #a5b4fc;
+    background: var(--accent-blue-bg); border-color: color-mix(in srgb, var(--fw-focus) 55%, transparent); color: var(--fw-focus); font-weight: 600;
   }
   .fe-editor-find-count {
-    font-size: 10px;
-    font-family: var(--ff-mono);
+    font-size: 11px;
+    font-family: var(--ed-font-mono);
+    font-variant-numeric: tabular-nums;
     color: var(--t-secondary);
-    min-width: 50px;
+    min-width: 54px;
+    padding: 0 2px;
     text-align: center;
+    white-space: nowrap;
   }
   .fe-editor-find-nav {
-    background: none; border: none; cursor: pointer;
-    padding: 3px; border-radius: 3px; display: flex;
+    width: 24px; height: 24px; padding: 0; position: relative;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--s-subtle); border: 1px solid var(--b-light); border-radius: var(--r-small);
+    color: var(--t-secondary); cursor: pointer;
+    transition: color 150ms ease, background-color 150ms ease, border-color 150ms ease;
   }
   .fe-editor-find-nav svg {
-    width: 14px; height: 14px; fill: none;
-    stroke: rgba(255,255,255,0.35); stroke-width: 2;
+    width: 13px; height: 13px; fill: none;
+    stroke: currentColor; stroke-width: 2;
     stroke-linecap: round; stroke-linejoin: round;
   }
-  .fe-editor-find-nav:hover { background: rgba(255,255,255,0.05); }
-  .fe-editor-find-nav:hover svg { stroke: var(--t-bright); }
+  .fe-editor-find-nav:hover { background: var(--s-hover); border-color: var(--b-hover); color: var(--t-bright); z-index: 1; }
+  /* previous and next as one pair; close beside them, quiet until pointed at */
+  #fe-editor-find-prev { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  #fe-editor-find-next { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -7px; }
+  #fe-editor-find-close { margin-left: 2px; background: none; border-color: transparent; }
+  #fe-editor-find-close:hover { background: var(--s-hover); border-color: transparent; }
   .fe-editor-replace-row {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
   }
   .fe-editor-replace-input {
-    flex: 1;
-    max-width: 260px;
-    background: rgba(0,0,0,0.2);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 4px;
-    padding: 4px 8px;
-    font-family: var(--ff-mono);
-    font-size: 11px;
+    flex: 1 1 160px;
+    max-width: 300px;
+    min-width: 0;
+    height: 24px;
+    background: rgba(0,0,0,0.28);
+    border: 1px solid var(--b-light);
+    border-radius: var(--r-small);
+    padding: 0 8px;
+    font-family: var(--ed-font-mono);
+    font-size: 12px;
     color: var(--t-bright);
     outline: none;
-  }
-  .fe-editor-replace-input:focus {
-    border-color: rgba(99,102,241,0.4);
+    transition: border-color 150ms ease, box-shadow 150ms ease;
   }
   .fe-editor-replace-btn {
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 4px;
-    padding: 3px 10px;
-    font-family: var(--ff-mono);
-    font-size: 10px;
-    color: var(--t-muted);
+    height: 22px;
+    padding: 0 10px;
+    background: var(--s-subtle);
+    border: 1px solid var(--b-light);
+    border-radius: var(--r-small);
+    font-family: var(--ed-font-ui);
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1;
+    color: var(--t-secondary);
     cursor: pointer;
-    transition: all 0.12s;
+    white-space: nowrap;
+    transition: color 150ms ease, background-color 150ms ease, border-color 150ms ease;
   }
   .fe-editor-replace-btn:hover {
-    background: rgba(255,255,255,0.08);
-    color: var(--t-secondary);
-    border-color: rgba(255,255,255,0.14);
+    background: var(--s-hover);
+    color: var(--t-bright);
+    border-color: var(--b-hover);
   }
 
-  /* Go to Line bar */
+  /* Go to Line bar: the find bar's strip and field */
   .fe-editor-goto {
     display: none;
     align-items: center;
     gap: 8px;
-    padding: 4px 12px;
-    border-bottom: 1px solid rgba(255,255,255,0.06);
-    background: rgba(0,0,0,0.15);
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--b-subtle);
+    background: rgba(0,0,0,0.16);
+    box-shadow: inset 0 1px 0 rgba(0,0,0,0.3);
     flex-shrink: 0;
   }
   .fe-editor-goto.open {
@@ -18470,29 +18555,28 @@
   .fe-editor-goto-label,
   .fe-editor-goto-hint {
     font-size: 11px;
-    font-family: var(--ff-mono);
-    color: var(--t-muted);
+    font-family: var(--ed-font-mono);
+    color: var(--t-secondary);
   }
   .fe-editor-goto-hint { font-size: 10px; }
   .fe-editor-goto-input {
     width: 80px;
-    background: rgba(0,0,0,0.2);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 4px;
-    padding: 4px 8px;
-    font-family: var(--ff-mono);
-    font-size: 11px;
+    height: 24px;
+    background: rgba(0,0,0,0.28);
+    border: 1px solid var(--b-light);
+    border-radius: var(--r-small);
+    padding: 0 8px;
+    font-family: var(--ed-font-mono);
+    font-size: 12px;
     color: var(--t-bright);
     outline: none;
     -moz-appearance: textfield;
+    transition: border-color 150ms ease, box-shadow 150ms ease;
   }
   .fe-editor-goto-input::-webkit-inner-spin-button,
   .fe-editor-goto-input::-webkit-outer-spin-button {
     -webkit-appearance: none;
     margin: 0;
-  }
-  .fe-editor-goto-input:focus {
-    border-color: rgba(99,102,241,0.4);
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -19357,6 +19441,8 @@
     --ed-menu-hover: var(--s-hover);
     --ed-menu-radius: 8px;
     --ed-menu-shadow: 0 12px 32px rgba(0,0,0,0.4);
+    --ed-font-mono: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
+    --ed-font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
     position: fixed; z-index: 300000;
     width: min(1180px, 94vw); height: min(760px, 86vh);
     min-width: 380px; min-height: 320px; max-width: 100vw;
@@ -21368,6 +21454,10 @@
     padding: 5px 7px;
     font-size: var(--fs-xs);
   }
+  .as-runtime-field > .cc-dropdown.as-select > .cc-dropdown-trigger {
+    padding: 5px 7px;
+    font-size: var(--fs-xs);
+  }
   .as-input, .as-textarea {
     width: 100%; padding: 7px 8px;
     background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.08);
@@ -21384,24 +21474,14 @@
   }
   .as-textarea { resize: vertical; min-height: 48px; }
 
-  /* Native <select> styled to match .as-input */
-  select.as-select {
-    appearance: none; -webkit-appearance: none; -moz-appearance: none;
-    padding-right: 28px;
-    cursor: pointer;
-    background-image:
-      linear-gradient(45deg, transparent 50%, rgba(203,213,225,0.75) 50%),
-      linear-gradient(135deg, rgba(203,213,225,0.75) 50%, transparent 50%);
-    background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
-    background-size: 5px 5px, 5px 5px;
-    background-repeat: no-repeat;
-    text-overflow: ellipsis; white-space: nowrap; overflow: hidden;
+  /* Styled dropdown (cc-dropdown.js) sized to fill a field like .as-input did */
+  .cc-dropdown.as-select { width: 100%; }
+  .cc-dropdown.as-select > .cc-dropdown-trigger {
+    width: 100%;
+    justify-content: space-between;
   }
-  select.as-select:hover { border-color: rgba(148,163,184,0.25); }
-  select.as-select option {
-    background: #1a1f2a; color: var(--t-bright);
-    padding: 6px 8px;
-  }
+  .as-folder-picker > .cc-dropdown { width: 100%; }
+  .as-folder-picker > .cc-dropdown > .cc-dropdown-trigger { width: 100%; justify-content: space-between; }
 
   /* ── Icon Picker ── */
   .as-icon-picker { position: relative; width: fit-content; }
@@ -23102,26 +23182,44 @@
     display: flex; flex-direction: column; gap: 12px;
   }
 
-  /* Template select — matches app input fields */
-  .as-qt-select {
+  /* Template picker (cc-dropdown.js) — matches app input fields */
+  .cc-dropdown.as-qt-select { width: 100%; }
+  .cc-dropdown.as-qt-select > .cc-dropdown-trigger {
     width: 100%;
     background: rgba(255,255,255,0.03);
     border: 1px solid rgba(255,255,255,0.07);
     border-radius: 9px;
     color: var(--t-bright);
     font-size: 12px; padding: 8px 12px;
-    appearance: none; cursor: pointer;
     backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
     transition: all 0.18s ease;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='rgba(255,255,255,0.25)' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
-    background-repeat: no-repeat; background-position: right 10px center;
+    justify-content: space-between;
   }
-  .as-qt-select:hover { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.12); }
-  .as-qt-select:focus { border-color: rgba(255,255,255,0.18); outline: none; }
-  .as-qt-select option { background: #1a1c24; color: #fff; }
+  .cc-dropdown.as-qt-select > .cc-dropdown-trigger:hover { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.12); }
+  .cc-dropdown.as-qt-select.open > .cc-dropdown-trigger { border-color: rgba(255,255,255,0.18); }
 
   /* Groups — no overrides on launch chips, they inherit native styling */
   .as-qt-group { display: flex; flex-direction: column; gap: 6px; }
+
+  /* The "MoreLogin profile" field (morelogin-profile-field.js) in the launch panel and the timer form */
+  .as-ml-field { --as-ml-warn: #fbbf24; }
+  .as-ml-field:has(.cc-dropdown.open) { position: relative; z-index: 1000; }
+  .as-ml-control { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .as-ml-control > .cc-dropdown { flex: 1 1 auto; min-width: 0; }
+  .as-ml-refresh {
+    display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+    background: none; border: none; padding: 4px; line-height: 0;
+    color: var(--t-muted); cursor: pointer;
+    border-radius: var(--r-small); transition: all 0.15s;
+  }
+  .as-ml-refresh:hover:not(:disabled) { color: var(--t-secondary); background: var(--s-hover); }
+  .as-ml-refresh:disabled { opacity: 0.45; cursor: default; }
+  .as-ml-help { margin: 6px 0 0; color: var(--t-muted); font-size: 11px; line-height: 1.45; }
+  .as-qt-group > .as-ml-help { margin-top: 0; }
+  .as-ml-help--warn { color: var(--as-ml-warn); }
+  /* A profile that is listed and cannot be picked (a Firefox-type one): the Schedules window's look of a disabled choice. */
+  .as-ml-field .cc-dropdown-item[aria-disabled="true"],
+  .as-ml-field .cc-dropdown-item[aria-disabled="true"]:hover { opacity: .45; cursor: default; background: none; color: inherit; }
 
   /* Browser toggle — monochromatic switch */
   .as-qt-browser-toggle {
@@ -23279,13 +23377,15 @@
     font-size: var(--fs-xs); font-weight: 600; color: var(--t-secondary);
   }
   .as-sched-field input[type="text"],
-  .as-sched-field select {
+  .as-sched-field .cc-dropdown-trigger {
     background: var(--bg-deep, rgba(0,0,0,0.3)); border: 1px solid var(--s-border);
     border-radius: 6px; padding: 8px 10px; font-size: var(--fs-sm); color: var(--t-bright);
     font-family: inherit; outline: none; transition: border-color 0.15s;
   }
   .as-sched-field input:focus,
-  .as-sched-field select:focus { border-color: rgba(79,195,247,0.4); }
+  .as-sched-field .cc-dropdown.open .cc-dropdown-trigger { border-color: rgba(79,195,247,0.4); }
+  .as-sched-field > .cc-dropdown { width: 100%; }
+  .as-sched-field .cc-dropdown-trigger { width: 100%; justify-content: space-between; }
   .as-sched-hint { font-weight: 400; opacity: 0.6; font-size: 10px; }
 
   /* Field row — side-by-side fields */
@@ -23784,6 +23884,7 @@
   .sched-form-control--start { justify-content: flex-start; }
   .sched-form-stack { display: flex; flex-direction: column; align-items: stretch; gap: 4px; min-width: 0; }
   .sched-help { margin: 0; color: var(--stg-help); font-size: var(--fs-xs); line-height: 1.45; }
+  .sched-help--warn { color: var(--stg-warn); }
   details.sched-form-section > summary { list-style: none; cursor: pointer; border-radius: var(--sched-control-radius); }
   details.sched-form-section > summary::-webkit-details-marker { display: none; }
   details.sched-form-section > summary::before {
@@ -23849,6 +23950,61 @@
   .sched-dialog-name { margin: 0 0 6px; font-size: var(--fs-sm); line-height: 1.4; overflow-wrap: anywhere; }
   .sched-dialog-body .sched-help { max-width: 52ch; }
   .sched-dialog-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; padding: 14px 18px 16px; }
+
+  /* ── Approval of what an agent changed (ui-automation-approval.js; re-review of 2026-11-11, finding 3) ──
+     One dialog for the Schedules window and Automation Studio, in the panels' own roles (--stg-*, --fw-*). */
+  .aap-modal {
+    position: fixed; inset: 0; z-index: 300012; display: flex; align-items: center; justify-content: center;
+    padding: 16px; background: rgba(0,0,0,0.45); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+  }
+  .aap-dialog {
+    width: 560px; max-width: 100%; max-height: calc(100vh - 32px); display: flex; flex-direction: column;
+    color: var(--stg-text); background: var(--s-panel); border: 1px solid var(--b-visible);
+    border-radius: 10px; box-shadow: var(--shadow-xl); font-family: var(--stg-font);
+  }
+  .aap-dialog h4 { margin: 0; padding: 14px 18px 0; font-size: var(--fs-sm); font-weight: 600; line-height: 1.4; }
+  .aap-body { padding: 8px 18px 4px; overflow-y: auto; min-height: 0; }
+  .aap-name { margin: 0 0 6px; font-size: var(--fs-sm); line-height: 1.4; overflow-wrap: anywhere; }
+  .aap-help, .aap-muted { margin: 4px 0 8px; font-size: var(--fs-xs); line-height: 1.45; color: var(--stg-help); max-width: 64ch; }
+  .aap-help { color: var(--stg-body); }
+  .aap-notice { margin: 6px 0 8px; font-size: var(--fs-xs); line-height: 1.45; }
+  .aap-warn { color: var(--stg-warn); }
+  .aap-section { margin: 14px 0 2px; font-size: var(--fs-xs); font-weight: 600; color: var(--stg-text); }
+  .aap-block { margin: 8px 0; padding: 8px 10px; border: 1px solid var(--stg-line); border-radius: 9px; background: var(--stg-group); }
+  .aap-block h5 { margin: 0 0 4px; font-size: var(--fs-xs); font-weight: 600; color: var(--stg-help); }
+  .aap-text {
+    margin: 0; max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+    font-family: "JetBrains Mono", ui-monospace, monospace; font-size: var(--fs-xs); line-height: 1.45; color: var(--stg-body);
+  }
+  .aap-theme + .aap-theme { margin-top: 6px; }
+  .aap-line { margin: 4px 0; font-size: var(--fs-xs); line-height: 1.45; color: var(--stg-body); overflow-wrap: anywhere; }
+  .aap-strong { color: var(--stg-text); font-weight: 500; }
+  .aap-key { color: var(--stg-help); margin-right: 4px; }
+  .aap-chip { display: inline-block; padding: 0 6px; border: 1px solid var(--stg-line); border-radius: 0; font-size: var(--fs-xs); color: var(--stg-warn); }
+  .aap-list { margin: 0; padding-left: 16px; font-size: var(--fs-xs); line-height: 1.5; color: var(--stg-body); }
+  .aap-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; padding: 12px 18px 16px; border-top: 1px solid var(--stg-sep); }
+  .aap-btn {
+    display: inline-flex; align-items: center; justify-content: center; min-height: 26px; padding: 2px 12px;
+    border: 1px solid var(--stg-field-line); border-radius: 5px; background: var(--stg-control); color: var(--stg-text);
+    cursor: pointer; font-family: var(--stg-font); font-size: var(--fs-xs); font-weight: 500; line-height: 1.2;
+  }
+  .aap-btn:hover:not(:disabled) { background: var(--stg-control-hover); }
+  .aap-btn:focus-visible { outline: 2px solid var(--stg-focus); outline-offset: 1px; }
+  .aap-btn:disabled { opacity: 0.55; cursor: default; }
+  .aap-btn--primary { color: #fff; background: var(--stg-accent-fill); border-color: transparent; }
+  .aap-btn--primary:hover:not(:disabled) { background: var(--stg-accent-fill-hover); }
+  /* The flag in a list row and the notice in an editor or a detail. */
+  .aap-flag { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; font-size: var(--fs-xs); line-height: 1.3; color: var(--stg-help, var(--t-secondary)); }
+  .aap-flag[data-tone="warn"] { color: var(--stg-warn, #fbbf24); } /* the DESIGN.md warning status, where a panel has no --stg-* */
+  .aap-flag::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+  .aap-flag-note {
+    display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; padding: 8px 10px;
+    border: 1px solid var(--stg-line); border-radius: 9px; background: var(--stg-group);
+    font-size: var(--fs-xs); line-height: 1.45; color: var(--stg-body);
+  }
+  .aap-flag-note[data-tone="warn"] { border-color: color-mix(in srgb, var(--stg-warn) 35%, transparent); }
+  .aap-flag-note p { margin: 0; flex: 1 1 260px; min-width: 0; }
+  .aap-flag-note .aap-btn { flex-shrink: 0; }
 
   /* ── Narrow windows ── */
   @container sched (max-width: 780px) {
@@ -26801,7 +26957,7 @@
     .sp-sidepanel.sp-floating, .fe-editor-panel, .sched-prompt-modal, .term-picker-modal)
     > :is(.settings-panel-header, .ss-header, .as-header, .sched-header,
       .sm-header, .cr-header, .sg-header, .ig-header, .detail-header, .tw-header,
-      .term-float-tab-header, .cp-header, .cxp-header, .ocpv2-header, .asp-header,
+      .term-float-tab-header, .cp-header, .cxp-header, .ocpv2-header, .asp-header, .mtc-header,
       .fe-editor-header, .sched-prompt-head, .term-picker-header) {
     min-height: var(--fw-header-min-height);
     height: auto;
@@ -26829,7 +26985,7 @@
     .sp-sidepanel.sp-floating, .fe-editor-panel)
     > :is(.settings-panel-header, .ss-header, .as-header, .sched-header,
       .sm-header, .cr-header, .ig-header, .detail-header, .tw-header,
-      .term-float-tab-header, .cp-header, .cxp-header, .ocpv2-header, .asp-header, .fe-editor-header)
+      .term-float-tab-header, .cp-header, .cxp-header, .ocpv2-header, .asp-header, .mtc-header, .fe-editor-header)
     :is(h3, .ig-title, .detail-header-name, .term-float-tab-title) {
     font-family: var(--ff-heading);
     font-size: var(--fs-sm);
@@ -26848,13 +27004,13 @@
     .sp-sidepanel.sp-floating, .fe-editor-panel)
     > :is(.settings-panel-header, .ss-header, .as-header, .sched-header,
       .sm-header, .cr-header, .ig-header, .detail-header, .tw-header,
-      .term-float-tab-header, .cp-header, .cxp-header, .ocpv2-header, .asp-header, .fe-editor-header)
+      .term-float-tab-header, .cp-header, .cxp-header, .ocpv2-header, .asp-header, .mtc-header, .fe-editor-header)
     :is(.settings-panel-close, .backdrop-toggle-btn, .pin-btn, .ss-close,
       .ss-header-btn, .as-close, .as-header-btn, .sched-close, .sched-header-btn,
       .sm-close, .sm-header-btn, .cr-close, .ig-btn, .detail-action-btn, .tw-close,
       .tw-header-btn, .term-float-tab-btn, .cp-header-btn, .cxp-header-btn,
       .ocpv2-header-btn, .asp-header-btn, .cp-session-btn, .cp-header-rename-btn,
-      .cxp-btn, .cxp-session-btn, .cxp-header-rename, .ocpv2-btn, .ocpv2-session-btn,
+      .cxp-btn, .cxp-session-btn, .cxp-header-rename, .mtc-btn, .mtc-session-btn, .mtc-header-rename, .ocpv2-btn, .ocpv2-session-btn,
       .ocpv2-header-rename, .asp-btn, .asp-tabs-btn, .sp-window-toggle, .sp-window-move,
       .fe-editor-back, .fe-editor-action, .fe-editor-btn) {
     min-width: var(--fw-header-control-size);
@@ -26872,13 +27028,13 @@
     .sp-sidepanel.sp-floating, .fe-editor-panel)
     > :is(.settings-panel-header, .ss-header, .as-header, .sched-header,
       .sm-header, .cr-header, .ig-header, .detail-header, .tw-header,
-      .term-float-tab-header, .cp-header, .cxp-header, .ocpv2-header, .asp-header, .fe-editor-header)
+      .term-float-tab-header, .cp-header, .cxp-header, .ocpv2-header, .asp-header, .mtc-header, .fe-editor-header)
     :is(.settings-panel-close, .backdrop-toggle-btn, .pin-btn, .ss-close,
       .ss-header-btn, .as-close, .as-header-btn, .sched-close, .sched-header-btn,
       .sm-close, .sm-header-btn, .cr-close, .ig-btn, .detail-action-btn, .tw-close,
       .tw-header-btn, .term-float-tab-btn, .cp-header-btn, .cxp-header-btn,
       .ocpv2-header-btn, .asp-header-btn, .cp-session-btn, .cp-header-rename-btn,
-      .cxp-btn, .cxp-session-btn, .cxp-header-rename, .ocpv2-btn, .ocpv2-session-btn,
+      .cxp-btn, .cxp-session-btn, .cxp-header-rename, .mtc-btn, .mtc-session-btn, .mtc-header-rename, .ocpv2-btn, .ocpv2-session-btn,
       .ocpv2-header-rename, .asp-btn, .asp-tabs-btn, .sp-window-toggle, .sp-window-move,
       .fe-editor-back, .fe-editor-action, .fe-editor-btn):hover:not(:disabled) {
     background-color: var(--s-hover);
@@ -26897,9 +27053,9 @@
     .image-gallery-panel, .detail-card, .tw, .term-float-tab, .sp-sidepanel.sp-floating)
     > :is(.settings-panel-header, .ss-header, .as-header, .sched-header,
       .sm-header, .cr-header, .ig-header, .detail-header, .tw-header,
-      .term-float-tab-header, .cp-header, .cxp-header, .ocpv2-header, .asp-header)
+      .term-float-tab-header, .cp-header, .cxp-header, .ocpv2-header, .asp-header, .mtc-header)
     :is(.settings-panel-close, .ss-close, .as-close, .sched-close, .sm-close,
-      .cr-close, .tw-close, .close-btn, .cp-close-btn, .cxp-btn-danger,
+      .cr-close, .tw-close, .close-btn, .cp-close-btn, .cxp-btn-danger, .mtc-btn-danger,
       .ocpv2-btn-danger, .asp-close, .detail-action-btn--danger):hover:not(:disabled) {
     color: var(--accent-red);
     background-color: var(--accent-red-bg);
@@ -26956,6 +27112,49 @@
   body :is(.settings-panel, .tw) > :is(.resize-handle-t, .resize-handle-tl, .resize-handle-tr) {
     top: calc(var(--fw-header-min-height) + 1px);
   }
+
+  /* The code editor's header (styles.css "Header", in the editor's block): the family's height and its focus
+     ring stay; its padding, its control sizes, radii and colours are set again here for this header. The doubled
+     class outweighs the family rules above, whose :is() lists count as their heaviest entry. */
+  body .fe-editor-panel.fe-editor-panel > .fe-editor-header {
+    gap: 8px;
+    row-gap: 4px;
+    padding: 4px 10px 4px 8px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--b-light);
+    background: linear-gradient(180deg, var(--s-light), var(--s-subtle));
+    box-shadow: inset 0 1px 0 var(--b-subtle);
+  }
+  /* at the top of the panel its corners are the panel's (a plan's banner above it makes it square) */
+  body .fe-editor-panel.fe-editor-panel > .fe-editor-header:first-child {
+    border-top-left-radius: inherit;
+    border-top-right-radius: inherit;
+  }
+  body .fe-editor-panel.fe-editor-panel > .fe-editor-header .fe-editor-back {
+    min-width: 26px; min-height: 26px; padding: 4px;
+    border-radius: var(--r-small); color: var(--t-secondary);
+  }
+  body .fe-editor-panel.fe-editor-panel > .fe-editor-header .fe-editor-back:hover:not(:disabled) { background-color: var(--s-hover); color: var(--t-bright); }
+  body .fe-editor-panel.fe-editor-panel > .fe-editor-header .fe-editor-tools .fe-editor-action {
+    min-width: 24px; min-height: 24px; height: 24px; padding: 0;
+    border-radius: var(--r-small); color: var(--t-secondary);
+  }
+  body .fe-editor-panel.fe-editor-panel > .fe-editor-header .fe-editor-tools .fe-editor-action:hover:not(:disabled) { background-color: var(--s-hover); color: var(--t-bright); }
+  body .fe-editor-panel.fe-editor-panel > .fe-editor-header .fe-editor-tools .fe-editor-action.active {
+    background-color: var(--s-hover); color: var(--fw-focus);
+    box-shadow: inset 0 0 0 1px var(--b-light);
+  }
+  body .fe-editor-panel.fe-editor-panel > .fe-editor-header .fe-editor-btn {
+    min-width: 0; min-height: 24px; height: 24px; padding: 0 10px;
+    border-radius: var(--r-small); color: var(--t-secondary);
+    max-width: none; white-space: nowrap; overflow-wrap: normal;
+  }
+  body .fe-editor-panel.fe-editor-panel > .fe-editor-header .fe-editor-btn:hover:not(:disabled) { background-color: var(--s-hover); color: var(--t-bright); }
+  body .fe-editor-panel.fe-editor-panel > .fe-editor-header #fe-editor-save:not(:disabled) { background-color: var(--accent-gold); color: var(--fw-on-accent); }
+  body .fe-editor-panel.fe-editor-panel > .fe-editor-header #fe-editor-save:not(:disabled):hover { background-color: color-mix(in srgb, var(--accent-gold) 86%, white); color: var(--fw-on-accent); }
+  body .fe-editor-panel.fe-editor-panel > .fe-editor-header #fe-editor-close:hover:not(:disabled) { color: var(--accent-red); background-color: var(--accent-red-bg); }
+  /* the find, replace and go-to-line fields show the guide's focus ring (their own rules), not the family's outline */
+  body .fe-editor-panel.fe-editor-panel :is(.fe-editor-find-input, .fe-editor-replace-input, .fe-editor-goto-input):focus-visible { outline: none; }
 
   /* Inner editor/dialog title rows, never ordinary section or content headings.
      Override the older narrow-container padding without fixing their height. */
@@ -29425,7 +29624,7 @@ body .styleguide-panel {
    duration. This eliminates their continuous compositor/paint cost on idle
    foreground tabs without changing anything for users who haven't opted in.
    (Interaction-time and hidden-tab freezing are handled separately via the
-   body.ui-interacting / body.app-hidden play-state rules.)
+   body.ui-interacting play-state rules and the ticker's stop on body.app-hidden.)
    ═══════════════════════════════════════════════════════════════════════════ */
 @media (prefers-reduced-motion: reduce) {
   *,

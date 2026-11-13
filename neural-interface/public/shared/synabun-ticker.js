@@ -84,6 +84,9 @@ function cafFn() {
 }
 const later = (fn, ms) => (env?.setTimeout || globalThis.setTimeout)(fn, ms);
 const unlater = id => (env?.clearTimeout || globalThis.clearTimeout)(id);
+/** A timer on the ticker's clock (the injected one under test). */
+export const tickerTimeout = (fn, ms) => later(fn, ms);
+export const clearTickerTimeout = (id) => { if (id) unlater(id); };
 
 function report(err) {
   try { console.error('[synabun-ticker]', err); } catch { /* no console */ }

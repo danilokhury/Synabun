@@ -312,7 +312,9 @@ export function initPanelSystem() {
   // An explorer opening or closing, or the bar changing height, moves the frame without a window resize.
   onFrameChange(() => clampPanelsToViewport());
 
-  // Pause all CSS animations while the tab is hidden (body.app-hidden rule)
+  // Mark a hidden tab for the shared ticker (synabun-ticker.js tickerPaused). No stylesheet
+  // keys on body.app-hidden: a universal rule under it was a full style
+  // recalculation of the page on every return to the tab (css-has-performance.test.mjs).
   document.addEventListener('visibilitychange', () => {
     document.body.classList.toggle('app-hidden', document.hidden);
   });

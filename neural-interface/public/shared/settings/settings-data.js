@@ -40,6 +40,7 @@ export const SETTINGS_READS = Object.freeze({
   typesafe: { url: '/api/typesafe/config', accept: (body) => body?.ok === true },
   userContext: { url: '/api/assistant/user-context', raw: true },
   workerGuard: { url: '/api/assistant/worker-guard', raw: true },
+  browserOwnerAccess: { url: '/api/assistant/automation-browser-owner-access', raw: true },
 });
 
 const caches = Object.fromEntries(Object.entries(SETTINGS_READS).map(([name, spec]) => [name, createDataCache(`settings:${name}`, {

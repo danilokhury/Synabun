@@ -1437,6 +1437,7 @@
 </script>
 
 <script type="module">
+import { waitForServerBack } from './shared/server-back.js';
 
 // The rules step is the installer of Settings → AI connections: the same client calls and the same reading
 // of the status (see STEP 6). Both modules are import-free, so the wizard still loads nothing of the app.
@@ -2392,7 +2393,19 @@ document.getElementById('buildBtn').addEventListener('click', async () => {
             $out.textContent += payload.output || '';
           }
         } else if (event === 'complete') {
-          if (payload.ok) {
+          if (payload.ok && payload.restart) {
+            // The server built a new MCP server and restarts itself to load it (the same restart as Apps → Restart
+            // Server): the next step waits until a new server answers, else its requests would fail meanwhile.
+            ibSetStatus('build', 'checking', 'Restarting SynaBun to load the new build...');
+            $btn.innerHTML = '<div class="spinner"></div> Restarting...';
+            waitForServerBack(payload.bootId).then((back) => {
+              wizardState.buildReady = true;
+              ibSetStatus('build', 'ok', back ? 'Build successful' : 'Build successful (the server did not come back yet: reload this page if the next step fails)');
+              $btn.textContent = 'Done';
+              $btn.classList.add('success');
+              resizeViewport(currentStep);
+            });
+          } else if (payload.ok) {
             wizardState.buildReady = true;
             $btn.textContent = 'Done';
             $btn.classList.add('success');

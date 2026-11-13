@@ -30,6 +30,12 @@ import { sortEfforts, variantNames } from './effort-levels.js';
 import { listPrice } from './assistant-pricing.js';
 
 export const CATALOG_PROVIDERS = ['claude-code', 'codex', 'opencode', 'antigravity'];
+/**
+ * Chat-only providers: a side panel of their own and a `chat` section of the catalog, never a worker or a brain
+ * (nothing dispatches to them, the router never picks them). Maritaca AI (lib/maritaca/*) is a plain chat API:
+ * its rows carry prices in BRL (`price.unit` 'brl_per_mtok') and are listed for the record, `chat: true`.
+ */
+export const CHAT_PROVIDERS = Object.freeze(['maritaca']);
 /** The providers an Assistant brain can run on (every provider of the catalog: each is a worker too). */
 export const BRAIN_PROVIDERS = Object.freeze(['claude-code', 'codex', 'opencode', 'antigravity']);
 export const TIERS = ['small', 'medium', 'large'];
@@ -367,6 +373,93 @@ export function normalizeAntigravityRows(rows, { via = null } = {}) {
   return out;
 }
 
+/**
+ * Maritaca's model list (GET /api/maritaca/models: lib/maritaca/models.js rows, the API's list merged over the table)
+ * → catalog rows of the `chat` section. Prices stay in BRL (never converted into the USD sheet); `vision` is false
+ * (text only), `outputs` none, `toolcall` what the table says. A row the API lists and the table does not know keeps
+ * what the API said and `tier` null.
+ */
+export function normalizeMaritacaRows(rows) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of arr(rows)) {
+    const m = typeof raw === 'string' ? { id: raw } : raw;
+    const id = typeof m?.id === 'string' ? m.id.trim() : '';
+    if (!id || seen.has(id.toLowerCase())) continue;
+    seen.add(id.toLowerCase());
+    const price = m.price && typeof m.price === 'object' && (num(m.price.input) !== null || num(m.price.output) !== null)
+      ? { input: num(m.price.input) ?? 0, output: num(m.price.output) ?? 0, cacheRead: num(m.price.cacheRead), unit: 'brl_per_mtok', basis: m.free === true ? 'free' : 'list' }
+      : null;
+    out.push({
+      provider: 'maritaca', id, upstream: id, label: String(m.label || id), family: m.family || null,
+      tier: ['small', 'medium', 'large'].includes(m.tier) ? m.tier : null, tierSource: m.tier ? 'table' : 'unknown',
+      vision: false, visionSource: 'table', outputs: { image: false, video: false }, outputsSource: 'table',
+      reasoning: typeof m.reasoning === 'boolean' ? m.reasoning : null, toolcall: typeof m.toolcall === 'boolean' ? m.toolcall : null,
+      contextWindow: num(m.contextWindow), maxOutput: num(m.maxOutput), price,
+      efforts: arr(m.efforts).map(String), defaultEffort: m.defaultEffort || null,
+      isDefault: m.isDefault === true, status: m.listed === false ? 'unlisted' : 'active', chat: true, region: m.region || null,
+      description: m.description ? String(m.description) : null,
+    });
+  }
+  return out;
+}
+
+/** The OpenCode provider id Maritaca is registered under (lib/maritaca/opencode.js): its rows are `maritaca/<id>`. */
+export const MARITACA_OPENCODE_PREFIX = 'maritaca/';
+export const MARITACA_UNAVAILABLE_HINT = 'Register Maritaca under Settings → OpenCode → Providers';
+
+/** True for an OpenCode row (or id) that is one of Maritaca's models run through OpenCode. */
+export function isMaritacaOpenCodeId(id) { return String(id || '').toLowerCase().startsWith(MARITACA_OPENCODE_PREFIX); }
+
+/**
+ * The Maritaca group of every Assistant model picker. Maritaca is chat-only by itself (CHAT_PROVIDERS); what runs is
+ * the OpenCode rows `maritaca/<id>`. The group shows those rows under their own heading: each one names the runnable
+ * spec it stands for (`target: { provider: 'opencode', model: 'maritaca/<id>' }`, `via: 'opencode'`), so a pick, a
+ * saved route and a dispatch keep the OpenCode spec unchanged. Order and labels / tier / BRL price are the Maritaca
+ * panel's (`chatRows`); efforts and context are OpenCode's (what a run can use). Rows the user hid in OpenCode stay
+ * out (`hiddenRows`: counted). While OpenCode lists no Maritaca model at all, the group keeps Maritaca's models
+ * marked `status: 'unavailable'` with a hint, never an empty or missing group.
+ */
+export function maritacaRouteGroup({ chatRows = [], opencodeRows = [], hiddenRows = [] } = {}) {
+  const visible = arr(opencodeRows).filter((row) => isMaritacaOpenCodeId(row?.id));
+  const hidden = arr(hiddenRows).filter((row) => isMaritacaOpenCodeId(row?.id));
+  const available = visible.length + hidden.length > 0;
+  const bare = (id) => String(id).slice(MARITACA_OPENCODE_PREFIX.length);
+  const byBare = new Map(visible.map((row) => [bare(row.id).toLowerCase(), row]));
+  const hiddenBare = new Set(hidden.map((row) => bare(row.id).toLowerCase()));
+  const models = [];
+  const taken = new Set();
+  const make = (chat, oc) => {
+    const model = chat?.id || bare(oc.id);
+    const id = `${MARITACA_OPENCODE_PREFIX}${oc ? bare(oc.id) : model}`;
+    return {
+      provider: 'maritaca', via: 'opencode', id, model, target: { provider: 'opencode', model: id },
+      label: chat?.label || oc?.label || model, family: chat?.family || oc?.family || null,
+      tier: chat?.tier || oc?.tier || null, vision: false, outputs: { image: false, video: false },
+      contextWindow: oc?.contextWindow ?? chat?.contextWindow ?? null,
+      // BRL, the Maritaca panel's price (never converted into the USD sheet).
+      price: chat?.price || null,
+      efforts: oc ? arr(oc.efforts) : arr(chat?.efforts), defaultEffort: oc ? oc.defaultEffort || null : chat?.defaultEffort || null,
+      isDefault: chat?.isDefault === true,
+      status: oc ? (oc.status || 'active') : 'unavailable',
+      ...(oc ? {} : { hint: MARITACA_UNAVAILABLE_HINT }),
+    };
+  };
+  for (const chat of arr(chatRows)) {
+    const key = String(chat?.id || '').toLowerCase();
+    if (!key || taken.has(key)) continue;
+    taken.add(key);
+    if (hiddenBare.has(key)) continue;
+    const oc = byBare.get(key) || null;
+    // OpenCode lists Maritaca but not this model: it cannot run, so it is not offered.
+    if (available && !oc) continue;
+    models.push(make(chat, oc));
+  }
+  // OpenCode rows the Maritaca table does not know (a model added upstream) are listed after, as OpenCode names them.
+  for (const oc of visible) if (!taken.has(bare(oc.id).toLowerCase())) { taken.add(bare(oc.id).toLowerCase()); models.push(make(null, oc)); }
+  return { id: 'maritaca', label: 'Maritaca', via: 'opencode', available, hint: available ? null : MARITACA_UNAVAILABLE_HINT, hiddenCount: hidden.length, currency: 'BRL', models };
+}
+
 /** The ids the user hid for `provider` (catalog.hidden, else the older opencodeHidden). */
 function hiddenList(catalog, provider) {
   const map = catalog?.hidden;
@@ -429,6 +522,8 @@ export function hiddenModelId(catalog, provider, id, { row = null } = {}) {
  * anything when the user hid every model of a provider that listed some.
  */
 export function findModel(catalog, provider, id) {
+  // A chat-only provider is never a dispatch target: nothing resolves there (the router never asks, the brain cannot route to it).
+  if (CHAT_PROVIDERS.includes(provider)) return null;
   if (!id) return null;
   if (hiddenModelId(catalog, provider, id)) return null;
   const rows = arr(catalog?.models?.[provider]);
@@ -736,11 +831,13 @@ export function createAssistantCatalog({
   async function build({ deep = false } = {}) {
     // `deep` also drops the providers' own discovery caches (a CLI or app-server round trip).
     const fresh = deep ? '?refresh=1' : '';
-    const [claudeModels, codexModels, opencodeProviders, antigravityModels, projects] = await Promise.all([
+    const [claudeModels, codexModels, opencodeProviders, antigravityModels, projects, maritacaModels] = await Promise.all([
       fetchJson(`/api/claude/models${fresh}`), fetchJson(`/api/codex/models${fresh}`), fetchJson('/api/opencode/providers/full'),
       // A provider that does not answer is unavailable for this build, never a failed build.
       Promise.resolve().then(() => fetchJson(`/api/antigravity/models${fresh}`)).catch(() => null),
       fetchJson('/api/projects'),
+      // The chat-only provider (its own section): a server from before it answers nothing, and the section is empty.
+      Promise.resolve().then(() => fetchJson('/api/maritaca/models')).catch(() => null),
     ]);
     const filter = (() => { try { return readFilter() || {}; } catch { return {}; } })();
     let accounts = {};
@@ -763,7 +860,10 @@ export function createAssistantCatalog({
       codex: codex.state,
       opencode: opencodeProviders && opencodeProviders.ok !== false ? 'live' : 'unavailable',
       antigravity: antigravity.state,
+      // Maritaca: 'live' when its API listed the models, 'table' when the shipped table answered, else unavailable.
+      maritaca: maritacaModels && maritacaModels.ok !== false ? (maritacaModels.source === 'live' ? 'live' : 'fallback') : 'unavailable',
     };
+    const chat = { maritaca: maritacaModels && maritacaModels.ok !== false ? normalizeMaritacaRows(pickArray(maritacaModels, ['models'])) : [] };
     for (const p of ['claude-code', 'codex']) if (sources[p] !== 'live') log('catalog:source', `${p}: ${sources[p]}`);
     const all = {
       'claude-code': withClaudeContextVariants(normalizeClaudeRows(claude.list, { pricing: claudePricing })),
@@ -799,6 +899,10 @@ export function createAssistantCatalog({
     const changed = lastListed ? CATALOG_PROVIDERS.filter((p) => listedNow[p] !== lastListed[p]) : [];
     lastListed = listedNow;
     const external = externalServersReport(pickArray(projects, ['projects']));
+    // Maritaca's models run through OpenCode: its rows are marked with their picker group, and the group itself is
+    // built for the pickers and the routing sheet (routeGroups.maritaca).
+    for (const row of [...models.opencode, ...hiddenRows.opencode]) if (isMaritacaOpenCodeId(row.id)) row.group = 'maritaca';
+    const maritacaGroup = maritacaRouteGroup({ chatRows: chat.maritaca, opencodeRows: models.opencode, hiddenRows: hiddenRows.opencode });
     return {
       generatedAt: new Date(now()).toISOString(),
       // Providers whose MCP server list could not be checked: { provider, code, reason, errno? }, no paths.
@@ -806,6 +910,10 @@ export function createAssistantCatalog({
       // Providers whose listed models differ from the build before (not part of the value's meaning: full() reports it).
       changedProviders: changed,
       models,
+      // Chat-only providers (CHAT_PROVIDERS): listed, never routed to. `chat.maritaca` rows carry BRL prices.
+      chat,
+      // Picker groups that run through another provider: { maritaca: maritacaRouteGroup(...) }.
+      routeGroups: { maritaca: maritacaGroup },
       hidden,
       // provider → { hidden id (lower-case) → { model, variant, label, at, … } }: the entries that hide one row only.
       hiddenPins,
@@ -829,6 +937,11 @@ export function createAssistantCatalog({
         // A brain and a worker. No accounts (Antigravity signs in with Google in its own CLI: `signedIn` and `tier`
         // say what its last model listing found) and unpriced (tokens, not prices).
         { id: 'antigravity', brain: true, efforts: providerEfforts(models.antigravity), permissionPolicies: ['auto', 'ask'], accounts: false, priced: false, signedIn: antigravity.signedIn, tier: antigravity.tier },
+        // Chat only: a side panel, no worker, no brain, no dispatch. Prices in BRL on its rows; the key is one per SynaBun
+        // (`configured` says whether it is saved).
+        { id: 'maritaca', brain: false, worker: false, chat: true, efforts: providerEfforts(chat.maritaca), permissionPolicies: [], accounts: false, priced: true, currency: 'BRL', configured: maritacaModels?.configured === true,
+          // Its OpenCode-backed rows run (provider opencode, model maritaca/<id>); a direct chat pick never does.
+          via: 'opencode', runnable: maritacaGroup.available },
       ],
     };
   }

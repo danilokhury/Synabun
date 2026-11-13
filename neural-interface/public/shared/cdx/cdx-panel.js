@@ -16,7 +16,7 @@ import { wireFileLinks } from '../ui-file-links.js';
 import { frameRect } from '../app-frame.js';
 import { trackWorkerEnd } from '../ui-worker-end.js';
 import { isDispatchedRun } from '../worker-end.js';
-import { runAwaitsAnswer } from '../sidepanel-session-status.js';
+import { runAwaitsAnswer, runTurnLive } from '../sidepanel-session-status.js';
 import { injectStyles } from './cdx-styles.js';
 import { mountContextMenu } from './cdx-context-menu.js';
 import { teardownMcpApps } from './cdx-mcp-app-host.js';
@@ -1156,7 +1156,7 @@ export async function attachCodexAutomation(run, {
   if (!tab) return { ok: false, reason: 'tab_limit' };
   // A task-mode worker between turns (waiting for a follow-up) is alive, not working; one whose turn ended
   // on a question needs you, like one with an approval card up (setRunning and renderPills repaint).
-  const working = running && run.turnState !== 'idle' && run.turnState !== 'terminal';
+  const working = runTurnLive(run);
   tab.automationRunId = run.runId;
   tab.automationActive = restart.active;
   tab.automationAwaits = runAwaitsAnswer(run);

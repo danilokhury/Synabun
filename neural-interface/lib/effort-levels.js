@@ -73,7 +73,27 @@ export function modelEfforts(row) {
   return source ? sortEfforts(source) : null;
 }
 
-/** `effort` clamped into `levels`: kept, else the highest level below it, else the lowest. */
+/**
+ * Off: thinking / reasoning disabled. One id across providers (Codex
+ * `model_reasoning_effort=none`, the OpenCode variant `none`, Claude Code
+ * `thinking: { type: 'disabled' }`). Only ever chosen, never reached by a
+ * correction: a level a model lacks never lands on Off.
+ */
+export const EFFORT_OFF = 'none';
+
+/**
+ * Can this provider/row run with thinking off? Codex and OpenCode only when the
+ * model lists `none`; Claude Code whenever the model thinks at all (the SDK
+ * disables thinking for any of them). Antigravity takes no such level.
+ */
+export function supportsEffortOff(provider, row) {
+  const levels = modelEfforts(row);
+  if (provider === 'claude-code') return levels ? levels.some((id) => id.toLowerCase() !== EFFORT_OFF) : !!row;
+  if (provider === 'antigravity') return false;
+  return !!levels?.some((id) => id.toLowerCase() === EFFORT_OFF);
+}
+
+/** `effort` clamped into `levels`: kept, else the highest level below it, else the lowest (never Off). */
 export function clampEffort(effort, levels, { fallback = null } = {}) {
   const want = clean(effort);
   if (!want || !levels?.length) return null;
@@ -81,7 +101,9 @@ export function clampEffort(effort, levels, { fallback = null } = {}) {
   if (same) return same;
   const rank = effortRank(want);
   if (rank < 0) return fallback && levels.includes(fallback) ? fallback : null;
-  const ranked = levels.filter((id) => effortRank(id) >= 0);
+  // Off is a choice, not a level to fall back on.
+  const ranked = levels.filter((id) => effortRank(id) >= 0 && id.toLowerCase() !== EFFORT_OFF);
+  if (!ranked.length) return levels.find((id) => id.toLowerCase() !== EFFORT_OFF) || null;
   const below = ranked.filter((id) => effortRank(id) < rank);
   if (below.length) return below[below.length - 1];
   return ranked[0] || levels[0];
@@ -97,6 +119,8 @@ function rowFor(catalog, provider, model) {
 /**
  * Check `effort` against the model's levels. → { effort, corrected: {from, to} | null }.
  * off/default/auto/empty → null (the model's own default). Supported → kept.
+ * `none` (Off: no thinking) is kept wherever supportsEffortOff says the model
+ * can run it, Claude Code's thinking models included.
  * Unsupported → the highest supported level below it, else the lowest
  * (minimal → low, ultra on a max-only model → max). A model with no levels →
  * null. Unknown model or unverified catalog → passed through unchanged: a value
@@ -109,6 +133,8 @@ export function normalizeEffort({ provider = null, model = null, effort = null, 
   const row = rowFor(catalog, provider, model)?.row || null;
   const levels = modelEfforts(row);
   if (!levels) return { effort: raw, corrected: null };
+  // Off on a model that can switch its thinking off stays Off (Claude Code lists no `none`: see supportsEffortOff).
+  if (raw.toLowerCase() === EFFORT_OFF && supportsEffortOff(provider, row)) return { effort: EFFORT_OFF, corrected: null };
   const next = clampEffort(raw, levels, { fallback: row?.defaultEffort || null });
   return next === raw ? { effort: raw, corrected: null } : { effort: next, corrected: { from: raw, to: next } };
 }

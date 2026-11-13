@@ -74,7 +74,7 @@ const NETWORK = /ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENETUNREA
  * equal) and `test`, the end-to-end test's switch. Anything else reads as `unknown`.
  */
 export const BUSY_KINDS = Object.freeze([
-  'assistant', 'claude-panel', 'codex-panel', 'opencode-panel', 'antigravity-panel', 'claude-cli', 'loop', 'schedule', 'backup', 'maintenance', 'unknown', 'test',
+  'assistant', 'claude-panel', 'codex-panel', 'opencode-panel', 'antigravity-panel', 'maritaca-panel', 'claude-cli', 'loop', 'schedule', 'backup', 'maintenance', 'unknown', 'test',
 ]);
 
 /** The sentence for an error, by what kind of error it is. */

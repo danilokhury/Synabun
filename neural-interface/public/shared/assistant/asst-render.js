@@ -1840,7 +1840,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
       rack.row.classList.add('is-staged');
       watchStageWidth(rack, true);
       if (!rack.rig) {
-        try { rack.rig = mascotLib.createMascot(rack.stage.face, { width: 72, height: 36, rangeX: 10, rangeY: 7, pose: 'idle' }); } catch { rack.rig = null; }
+        try { rack.rig = mascotLib.createMascot(rack.stage.face, { width: 144, height: 72, rangeX: 10, rangeY: 7, pose: 'idle' }); } catch { rack.rig = null; }
         rack.pose = null;
         rack.target = rack.rig ? stageTarget(rack) : null;
         if (hero?.parked) dropHero(); // the stage is the character now: a hero still on its way out goes at once
@@ -2335,7 +2335,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
    * and observes nothing. Without poses: the plain mascot (receipt) or the
    * kind's glyph (rows). Returns the SVG to repaint, or null.
    */
-  function mountStill(host, pose, glyph, { staticGlyph = false, width = 28, height = 14 } = {}) {
+  function mountStill(host, pose, glyph, { staticGlyph = false, width = 56, height = 28 } = {}) {
     host.textContent = '';
     if (typeof mascotLib.paintMascot === 'function' && typeof mascotLib.stillFrame === 'function') {
       try {
@@ -2573,7 +2573,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     if (!r.faceBuilt && !rack.staged && !(rack.nested && live)) {
       r.faceBuilt = true;
       r.pose = pose;
-      r.svg = mountStill(r.face, pose, '✓', { width: 32, height: 16 });
+      r.svg = mountStill(r.face, pose, '✓', { width: 64, height: 32 });
     } else if (r.faceBuilt && r.pose !== pose) {
       r.pose = pose;
       repaintStill(r.svg, pose);
@@ -3148,11 +3148,11 @@ export function createRenderer(transcriptEl, hooks = {}) {
     if (workingFace && workingFace.still === calm()) return;
     dropWorkingFace();
     if (calm()) {
-      workingFace = { still: true, el: mountStill(host, 'think', '…', { width: 56, height: 28 }) };
+      workingFace = { still: true, el: mountStill(host, 'think', '…', { width: 112, height: 56 }) };
       return;
     }
     try {
-      const rig = mascotLib.createMascot(host, { width: 56, height: 28, pose: 'think' });
+      const rig = mascotLib.createMascot(host, { width: 112, height: 56, pose: 'think' });
       const face = { still: false, rig, el: rig.el, held: false };
       face.target = { kind: 'working', rig, el: rig.el, hold(on) { face.held = !!on; }, restore() { if (workingFace === face) rig.setPose('think'); } };
       workingFace = face;
@@ -3613,7 +3613,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
       <div class="asst-empty-project" role="group" aria-label="${esc(t('assistant.empty.context', 'Context'))}" hidden></div>`;
     const box = emptyEl.querySelector('.asst-empty-mascot');
     try {
-      const rig = mascotLib.createMascot(box, { width: 120, height: 60 });
+      const rig = mascotLib.createMascot(box, { width: 280, height: 140, idleVariant: 'hero' });
       hero = { rig, el: rig.el, box, parked: false, leaving: false, held: false, dock: null, egg: false, leaveTimer: 0 };
       hero.target = heroTarget(hero);
       wireEgg(hero);

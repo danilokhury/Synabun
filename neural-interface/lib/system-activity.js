@@ -14,7 +14,7 @@
 
 /** The kinds an answer may name, in the order the interface lists them. */
 export const ACTIVITY_KINDS = Object.freeze([
-  'assistant', 'claude-panel', 'codex-panel', 'opencode-panel', 'antigravity-panel', 'claude-cli', 'loop', 'schedule', 'backup', 'maintenance', 'unknown',
+  'assistant', 'claude-panel', 'codex-panel', 'opencode-panel', 'antigravity-panel', 'maritaca-panel', 'claude-cli', 'loop', 'schedule', 'backup', 'maintenance', 'unknown',
 ]);
 
 /** A Claude Code session that took a prompt this recently may still be working on it. */

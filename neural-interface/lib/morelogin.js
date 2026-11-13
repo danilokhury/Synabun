@@ -71,7 +71,7 @@ export function launchMoreLoginApp() {
   if (!installed) return { launched: false, path: null, error: 'MoreLogin is not installed' };
   try {
     const child = process.platform === 'darwin'
-      ? spawn('open', [path], { detached: true, stdio: 'ignore' })
+      ? spawn('open', ['-g', path], { detached: true, stdio: 'ignore' }) // -g: launch without bringing it forward
       : spawn(path, [], { detached: true, stdio: 'ignore', windowsHide: false });
     child.unref();
     return { launched: true, path, error: null };
@@ -314,7 +314,21 @@ export async function probeMoreLoginApi(opts = {}) {
  * `running: false` result FAILS the session in createBrowserSession(); nothing
  * falls back to Chrome.
  */
-export async function ensureMoreLoginRunning(opts = {}) {
+export function ensureMoreLoginRunning(opts = {}) {
+  // One start for everybody who asks at once: browser sessions of different profiles start side by side, and each
+  // would otherwise launch the app while it is not running yet. The first caller's wait is the one that counts.
+  const key = String(opts.port ?? getMoreLoginPort(opts.savedCfg));
+  let start = _appStarts.get(key);
+  if (!start) {
+    start = startMoreLoginAppIfNeeded(opts).finally(() => { if (_appStarts.get(key) === start) _appStarts.delete(key); });
+    _appStarts.set(key, start);
+  }
+  return start;
+}
+
+const _appStarts = new Map(); // local API port → the start under way
+
+async function startMoreLoginAppIfNeeded(opts = {}) {
   const timeoutMs = opts.timeoutMs ?? 25000;
   const intervalMs = opts.intervalMs ?? 1000;
 
@@ -372,11 +386,221 @@ export async function profileStatus(envId, opts = {}) {
   }
 }
 
+/** MoreLogin's `browserTypeId` (profile detail, create): 1 is its Chrome-based browser, 2 its Firefox-based one. */
+const BROWSER_TYPE_KERNEL = { 1: 'chromium', 2: 'firefox' };
+
 /**
- * Start (launch) a profile and return { debugPort, webdriver, raw }.
+ * Which browser a profile runs, from whatever MoreLogin said about it: 'chromium', 'firefox' or null (not said).
+ * Read from the profile detail's `browserTypeId` (then its user agent), or from the `webdriver` path a start or a
+ * status answers with (`…/Core/chrome_64_154.0/webdriver_154`, `…/Core/firefox_64_148.1/webdriver_148`).
+ * SynaBun drives a profile over the Chrome DevTools protocol, which only the Chrome-based browser speaks: the
+ * Firefox one opens `--remote-debugging-port` too, but as Firefox's own remote agent (WebDriver BiDi), which
+ * answers 404 to `/json/version`.
+ */
+export function profileKernel(data) {
+  if (!data || typeof data !== 'object') return null;
+  const byType = BROWSER_TYPE_KERNEL[Number(data.browserTypeId)];
+  if (byType) return byType;
+  const path = typeof data.webdriver === 'string' ? data.webdriver : '';
+  const core = /(?:^|[\\/])(firefox|chrome|chromium)[_-][^\\/]*[\\/]/i.exec(path);
+  if (core) return core[1].toLowerCase() === 'firefox' ? 'firefox' : 'chromium';
+  const ua = data.advancedSetting && typeof data.advancedSetting.ua === 'string' ? data.advancedSetting.ua : '';
+  if (/\bFirefox\/\d/.test(ua)) return 'firefox';
+  if (/\bChrome\/\d/.test(ua)) return 'chromium';
+  return null;
+}
+
+/** The error of a profile SynaBun cannot drive. `started` says whether this start may have opened its browser. */
+export function notChromiumError(envId, { started = false, evidence = '' } = {}) {
+  const e = new Error(
+    `MoreLogin profile ${envId} runs MoreLogin's Firefox browser, which has no Chrome DevTools (CDP) endpoint${evidence ? ` (${evidence})` : ''}. `
+    + 'SynaBun drives a MoreLogin profile over CDP, so only a Chrome-type profile can be used: '
+    + 'pick a Chrome-type profile, or create one in MoreLogin (New profile → Browser: Chrome)'
+    + (started ? '. The profile\'s Firefox window was left open in MoreLogin' : ''),
+  );
+  e.code = 'MORELOGIN_NOT_CHROMIUM';
+  e.kernel = 'firefox';
+  e.started = !!started;
+  return e;
+}
+
+/** One profile's full record (`/api/env/detail`). Large: it carries the profile's whole cookie jar. */
+export async function profileDetail(envId, opts = {}) {
+  return request('/api/env/detail', { envId: String(envId) }, { ...opts, idempotent: true });
+}
+
+// Profiles already seen to be Chrome-type. A profile's browser is chosen when it is created, and the detail call
+// that says it is megabytes (the cookie jar), so a Chrome verdict is asked for once. A Firefox verdict is never
+// kept: it is asked again each time, and a wrong Chrome one is caught by the start's own answer.
+const _chromiumProfiles = new Set();
+export function _resetMoreLoginKernelsForTests() { _chromiumProfiles.clear(); _listedKernels.clear(); _kernelLookups.clear(); }
+
+function statusRow(st) {
+  return Array.isArray(st?.dataList) ? st.dataList[0] : (Array.isArray(st) ? st[0] : st);
+}
+
+/**
+ * Which browser a profile runs, asked without starting it: the status of a running profile says it (small), else
+ * the profile's detail. Best effort: null when MoreLogin does not say; never throws.
+ */
+export async function profileKernelOf(envId, opts = {}) {
+  const id = String(envId);
+  if (_chromiumProfiles.has(id)) return 'chromium';
+  let kernel = null;
+  try { kernel = profileKernel(statusRow(await profileStatus(id, opts))); }
+  catch { /* unreachable: the start says so itself */ }
+  if (!kernel) {
+    try { kernel = profileKernel(await profileDetail(id, opts)); } catch { /* a MoreLogin without the call */ }
+  }
+  if (kernel === 'chromium') _chromiumProfiles.add(id);
+  return kernel;
+}
+
+// ── Which browser each listed profile runs (the profile pickers, and the routes that save a choice) ──
+// MoreLogin's list call does not say a profile's browser; only the megabyte detail does. So the verdicts are kept
+// per profile: a Chrome one for the life of the process (above), a Firefox one for ten minutes, "MoreLogin did not
+// say" for half a minute (then asked again, never taken for an answer). One lookup per profile at a time, a few at
+// once, and a list never waits for them longer than its budget: what is not known yet is `null` in that answer and
+// arrives in a later one. null always means "not known", and a profile of unknown browser stays usable everywhere:
+// the start of a run still refuses a Firefox one (startProfile, requireCdp).
+const FIREFOX_VERDICT_MS = 10 * 60_000;
+const UNKNOWN_VERDICT_MS = 30_000;
+const MAX_LISTED_VERDICTS = 5000;
+const _listedKernels = new Map(); // id → { kernel: 'firefox' | null, at }
+const _kernelLookups = new Map(); // id → the lookup under way
+
+/** The verdict already held for a profile: { known: true, kernel } or { known: false }. Never asks MoreLogin. */
+export function heldProfileKernel(envId, now = Date.now()) {
+  const id = String(envId);
+  if (_chromiumProfiles.has(id)) return { known: true, kernel: 'chromium' };
+  const held = _listedKernels.get(id);
+  if (!held) return { known: false, kernel: null };
+  if (now - held.at > (held.kernel === 'firefox' ? FIREFOX_VERDICT_MS : UNKNOWN_VERDICT_MS)) {
+    _listedKernels.delete(id);
+    return { known: false, kernel: null };
+  }
+  return { known: true, kernel: held.kernel };
+}
+
+/** A profile's browser, from what is held or one shared lookup: 'chromium', 'firefox' or null. Never throws. */
+export function lookupProfileKernel(envId, opts = {}) {
+  const id = String(envId);
+  const held = heldProfileKernel(id);
+  if (held.known) return Promise.resolve(held.kernel);
+  let lookup = _kernelLookups.get(id);
+  if (!lookup) {
+    lookup = (opts.kernelOf || profileKernelOf)(id, opts)
+      .then((kernel) => (kernel === 'chromium' || kernel === 'firefox' ? kernel : null), () => null)
+      .then((kernel) => {
+        if (kernel !== 'chromium') {
+          _listedKernels.delete(id); // newest last
+          _listedKernels.set(id, { kernel, at: Date.now() });
+          while (_listedKernels.size > MAX_LISTED_VERDICTS) _listedKernels.delete(_listedKernels.keys().next().value);
+        } else _chromiumProfiles.add(id);
+        return kernel;
+      })
+      .finally(() => { if (_kernelLookups.get(id) === lookup) _kernelLookups.delete(id); });
+    _kernelLookups.set(id, lookup);
+  }
+  return lookup;
+}
+
+/**
+ * The browsers of many profiles: { kernels: { id: 'chromium' | 'firefox' | null }, pending }.
+ * `concurrency` lookups at once (default 4); after `budgetMs` (default 2500) the answer is what is known by then,
+ * `pending` counts the profiles still being asked (their lookups go on and fill the cache for the next call).
+ * A lookup that fails is `null` for that profile and never the list's failure.
+ */
+export async function profileKernels(envIds, opts = {}) {
+  const ids = [...new Set((envIds || []).map(String))];
+  const concurrency = Math.max(1, opts.concurrency || 4);
+  const budgetMs = opts.budgetMs ?? 2500;
+  const queue = ids.filter(id => !heldProfileKernel(id).known);
+  if (queue.length) {
+    let next = 0;
+    const worker = async () => {
+      while (next < queue.length) {
+        const id = queue[next++];
+        try { await lookupProfileKernel(id, opts); } catch { /* null for this one */ }
+      }
+    };
+    const all = Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker)).catch(() => {});
+    let timer = null;
+    await Promise.race([all, new Promise((done) => { timer = setTimeout(done, Math.max(0, budgetMs)); timer.unref?.(); })]);
+    clearTimeout(timer);
+  }
+  const kernels = {};
+  let pending = 0;
+  for (const id of ids) {
+    const held = heldProfileKernel(id);
+    kernels[id] = held.known ? held.kernel : null;
+    if (!held.known) pending++;
+  }
+  return { kernels, pending };
+}
+
+/** The error of a choice SynaBun refuses to save: a profile known to run MoreLogin's Firefox browser. */
+export function notChromiumChoiceError(envId, name = null) {
+  const label = name ? `"${name}" (${envId})` : String(envId);
+  const e = new Error(
+    `MoreLogin profile ${label} is a Firefox-type profile. SynaBun drives a MoreLogin profile over the Chrome DevTools protocol, `
+    + 'so only a Chrome-type profile can be chosen: pick a Chrome-type profile, or create one in MoreLogin (New profile → Browser: Chrome).',
+  );
+  e.code = 'MORELOGIN_NOT_CHROMIUM';
+  e.status = 400;
+  e.kernel = 'firefox';
+  return e;
+}
+
+/**
+ * What answers on a started profile's debug port, asked when `/json/version` did not answer as DevTools does:
+ * { kind: 'devtools' | 'not-devtools' | 'closed', status, server }. `not-devtools` is an HTTP server that is not a
+ * DevTools endpoint (Firefox's remote agent says `Server: httpd.js` and 404); `closed` is nothing listening (yet).
+ * Never throws.
+ */
+export async function describeDebugEndpoint(port, opts = {}) {
+  const fetchImpl = opts.fetch || fetch;
+  let res;
+  try {
+    res = await fetchImpl(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(opts.timeout || 2000) });
+  } catch (err) {
+    return { kind: 'closed', status: null, server: null, error: String(err?.cause?.code || err?.code || err?.message || err) };
+  }
+  const server = res.headers?.get?.('server') || null;
+  let body = null;
+  try { body = await res.json(); } catch { try { await res.body?.cancel(); } catch { /* ignore */ } }
+  if (res.ok && body && typeof body === 'object' && (body.webSocketDebuggerUrl || body.Browser)) {
+    return { kind: 'devtools', status: res.status, server };
+  }
+  return { kind: 'not-devtools', status: res.status, server, firefox: /^httpd\.js/i.test(server || '') };
+}
+
+/** The error of a started profile whose debug port is some other HTTP server (see describeDebugEndpoint). */
+export function notDevToolsError(envId, port, seen = {}) {
+  if (seen.firefox) {
+    return notChromiumError(envId, { started: true, evidence: `port ${port} answers as Firefox's remote agent, HTTP ${seen.status}` });
+  }
+  const e = new Error(
+    `MoreLogin started profile ${envId} and named debug port ${port}, but what listens there is not a Chrome DevTools endpoint `
+    + `(HTTP ${seen.status} for /json/version${seen.server ? `, server "${seen.server}"` : ''}). `
+    + 'SynaBun drives a MoreLogin profile over CDP: use a Chrome-type profile, or close this profile in MoreLogin and start the run again if it is one',
+  );
+  e.code = 'MORELOGIN_NOT_DEVTOOLS';
+  return e;
+}
+
+/**
+ * Start (launch) a profile and return { debugPort, webdriver, kernel, raw }.
  * Recovers the debugPort via status when the env is already running.
+ *
+ * `opts.requireCdp` (a start SynaBun will drive, never the Settings Start button): a Firefox-type profile is
+ * refused with MORELOGIN_NOT_CHROMIUM before it is started when MoreLogin says what it is up front, and right
+ * after the start when only the start's answer says it. It is never closed here: it may be the user's own window.
  */
 export async function startProfile(envId, opts = {}) {
+  if (opts.requireCdp && await profileKernelOf(envId, opts) === 'firefox') {
+    throw notChromiumError(envId, { evidence: 'MoreLogin lists it as a Firefox profile' });
+  }
   let data = null;
   try {
     data = await request('/api/env/start', { envId: String(envId), ...(opts.startArgs || {}) }, opts);
@@ -390,12 +614,17 @@ export async function startProfile(envId, opts = {}) {
     // Already-running or no port echoed — recover from status. A `status` object
     // may be keyed directly or under a list.
     const st = await profileStatus(envId, opts);
-    const stData = Array.isArray(st?.dataList) ? st.dataList[0] : (Array.isArray(st) ? st[0] : st);
+    const stData = statusRow(st);
     port = extractDebugPort(stData);
     webdriver = webdriver || (stData && stData.webdriver);
   }
+  const kernel = profileKernel({ webdriver });
+  if (opts.requireCdp && kernel === 'firefox') {
+    throw notChromiumError(envId, { started: true, evidence: `its browser is ${webdriver}` });
+  }
   if (!port) throw new Error(`MoreLogin started env ${envId} but returned no debugPort`);
-  return { debugPort: port, webdriver: webdriver || null, raw: data };
+  if (kernel === 'chromium') _chromiumProfiles.add(String(envId));
+  return { debugPort: port, webdriver: webdriver || null, kernel, raw: data };
 }
 
 /**
@@ -428,18 +657,53 @@ export async function stopProfile(envId, opts = {}) {
   return request('/api/env/close', { envId: String(envId) }, opts);
 }
 
-/** Create a quick profile. Shape varies by version; pass `opts.body` to override. */
-export async function createProfile(opts = {}) {
-  const body = {
+/** MoreLogin's operating-system id for a profile made on this host (Local API quick create: 1 Windows, 2 macOS,
+ *  3 Android, 4 iOS). macOS on a Mac, Windows everywhere else (MoreLogin has no Linux fingerprint). */
+export function hostOperatorSystemId(platform = process.platform) {
+  return platform === 'darwin' ? 2 : 1;
+}
+
+/** The body of `/api/env/create/quick`, per guide.morelogin.com (Browser → Local API → Profiles, checked 2026-11-11):
+ *  `browserTypeId`, `operatorSystemId` and `quantity` are required; there is no name field. Chrome type (1) is the
+ *  only kind SynaBun can drive. `opts.operatorSystemId`, then `opts.body`, override. */
+export function quickCreateBody(opts = {}) {
+  return {
     quantity: 1,
-    browserTypeId: opts.browserTypeId || 1,
-    ...(opts.name ? { name: opts.name } : {}),
+    browserTypeId: 1,
+    operatorSystemId: opts.operatorSystemId || hostOperatorSystemId(opts.platform),
     ...(opts.body || {}),
   };
-  const data = await request('/api/env/create/quick', body, opts);
-  // Returns { envIds:[...] } or { id } depending on version.
-  const ids = data && (data.envIds || (data.id != null ? [data.id] : []));
-  return { ids: (ids || []).map(String), raw: data };
+}
+
+const CREATE_PREFIX = 'MoreLogin API /api/env/create/quick';
+/** A refusal of quick create, in words a toast can show: "MoreLogin refused the new profile: <reason>". */
+function refusedNewProfile(err) {
+  if (!err || (err.code !== 'MORELOGIN_API' && err.code !== 'MORELOGIN_HTTP')) return err;
+  let reason = String(err.message || '');
+  if (reason.startsWith(CREATE_PREFIX)) reason = reason.slice(CREATE_PREFIX.length).replace(/^\s*(?::|→)\s*/, '');
+  const e = new Error(`MoreLogin refused the new profile: ${reason}`);
+  e.code = err.code;
+  if (err.apiCode !== undefined) e.apiCode = err.apiCode;
+  if (err.status !== undefined) e.status = err.status;
+  e.reason = reason;
+  return e;
+}
+
+/** Create one quick profile. Quick create takes no name, so a name is set right after through `/api/env/update`
+ *  (`envId` + `envName`); the profile exists even when that rename fails (`nameError`). */
+export async function createProfile(opts = {}) {
+  let data;
+  try { data = await request('/api/env/create/quick', quickCreateBody(opts), opts); }
+  catch (err) { throw refusedNewProfile(err); }
+  // Documented answer: `data` is an array of id strings. Older clients answered { envIds } or { id }.
+  const ids = Array.isArray(data) ? data
+    : (data && (data.envIds || (data.id != null ? [data.id] : []))) || [];
+  const out = { ids: ids.map(String), raw: data };
+  if (opts.name && out.ids.length) {
+    try { await request('/api/env/update', { envId: out.ids[0], envName: String(opts.name) }, opts); }
+    catch (err) { out.nameError = err.message; }
+  }
+  return out;
 }
 
 /** Return the first profile, creating a default "SynaBun" profile if none exist. */

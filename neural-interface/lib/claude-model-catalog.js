@@ -21,6 +21,18 @@ import { withPathEnv, getAugmentedPath } from './augmented-path.js';
 // and as the server-side allowlist at every spawn site.
 export const CLAUDE_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 
+// Off for an Assistant route / dispatch / brain turn (effort-levels.js EFFORT_OFF):
+// no --effort, and the SDK's `thinking: { type: 'disabled' }`, over any effortLevel
+// in the user's settings. (The Claude panel's own Think toggle says 'off'.)
+export const CLAUDE_EFFORT_OFF = 'none';
+
+/**
+ * An effort that starts the CLI with thinking disabled: `none` for every session, 'off' only in a
+ * panel session (its Think toggle). Elsewhere (the Assistant brain, loops) 'off' is Auto, the
+ * model's default, which a live process takes without a restart.
+ */
+export function isThinkingOff(effort, { panel = true } = {}) { return effort === CLAUDE_EFFORT_OFF || (panel && effort === 'off'); }
+
 // Used only when discovery fails (CLI missing, spawn error, timeout). Kept
 // deliberately short — a stale fallback is less harmful than a stale primary,
 // because `source: 'fallback'` tells the UI the list is unverified.

@@ -27,7 +27,7 @@ import { requestGeneratedSessionTitle } from './session-title.js';
 import { wireFileLinks } from './ui-file-links.js';
 import { WORKER_END_CLASS, backToAssistant, buildWorkerEndCard, endWorkerRunOnClose, forgetWorkerEnd, trackWorkerEnd, updateWorkerEndBusy } from './ui-worker-end.js';
 import { isDispatchedRun, isEndOfRunAbort, workerEndView } from './worker-end.js';
-import { runAwaitsAnswer } from './sidepanel-session-status.js';
+import { runAwaitsAnswer, runTurnLive } from './sidepanel-session-status.js';
 // ── cp/ feature modules (SDK-engine CLI parity: diffs, agents, bash, perms, statusline) ──
 import { setCpCtx } from './cp/cp-ctx.js';
 import { buildDiffCard, buildDiffPreviewEl, finalizeDiffCard } from './cp/cp-diff.js';
@@ -3490,6 +3490,31 @@ function _loadHistoryIfWorking(tab, saved) {
   loadSessionHistory(tab.sessionId, tab.messagesEl);
 }
 
+// A tab restored as owned by a live run: the run may have ended while this window was away, and the router
+// brings back only recent ended runs (ui-native-loop-router.js reconcileRuns: the last day, ten at most), so
+// such a tab would say "owned by a running automation" for good. The run's own record decides: an ended run
+// (or one the server no longer keeps) frees the tab (not working, not owned, its pill at rest) and gets its
+// end card; a live one is the router's, whose attach does the same when the run ends.
+async function _settleRestoredAutomation(tab) {
+  const runId = tab?.automationRunId;
+  if (!runId) return;
+  let run = null;
+  try {
+    const response = await fetch(`/api/sidepanel-runs/${encodeURIComponent(runId)}`);
+    if (response.status === 404) run = { runId, missing: true };
+    else if (response.ok) run = (await response.json())?.run || null;
+  } catch {}
+  if (!run || tab.closed || tab.automationRunId !== runId || tab._automationHydrated) return;
+  if (!run.missing && (run.status === 'starting' || run.status === 'running' || run.status === 'suspended')) return;
+  tab.automationActive = false;
+  tab.automationAwaits = false;
+  if (tab.running) finishTab(tab, true); else updatePillRunning(tab);
+  if (!run.missing) trackWorkerEnd(run, { apply: (view) => showWorkerEnd(tab, view) });
+  if (tab === activeTab()) populateModeDropdown(_panel?.querySelector('#cp-mode'), tab);
+  renderPills();
+  saveTabs();
+}
+
 function restoreTabs() {
   _cleanStaleWindows();
   const pickRestoredTabIdx = (activeIdx) => {
@@ -3530,6 +3555,7 @@ function restoreTabs() {
           if (t && saved.automationRunId) t.automationOwnerId = saved.automationOwnerId || null;
           if (t && saved.releasedRunId && !saved.automationRunId) t.releasedRunId = saved.releasedRunId;
           if (t) _loadHistoryIfWorking(t, saved);
+          if (t && saved.automationRunId && saved.automationActive) _settleRestoredAutomation(t);
         }
         if (_tabs.length) {
           switchTab(pickRestoredTabIdx(data.activeIdx));
@@ -5011,6 +5037,8 @@ function loadSessionHistory(sid, $msgs) {
     if (!ownerTab) return;
     ownerTab._historyHold = Math.max(0, (ownerTab._historyHold || 1) - 1);
     if (!ownerTab._historyHold && ownerTab._msgBuffer?.length && !ownerTab.closed) _flushMsgBuffer(ownerTab);
+    // The transcript was drawn again: the end card of a dispatched worker (the last row) goes back under it.
+    if (!ownerTab._historyHold) placeWorkerEnd(ownerTab);
   });
 }
 
@@ -10792,7 +10820,14 @@ export async function attachClaudeAutomation(run, { focus = !!run?.focus, isCanc
   tab.effort = run.effort || tab.effort;
   // A warm worker whose turn ended on a question needs you, like one with a card up (setRunning repaints).
   tab.automationAwaits = runAwaitsAnswer(run);
-  setRunning(tab, running);
+  // Whether a turn is in progress is the run's word (runTurnLive): a warm worker between turns is alive, not
+  // working, and a run that ended works no more. A tab still showing a turn the run says is over ends it here
+  // (finishTab: the spinner, the thinking row, the stream, the statusline), whether or not that turn's result
+  // event ever reached this window; the run's own events keep it at work only while the run says so.
+  const working = runTurnLive(run);
+  if (working) setRunning(tab, true);
+  else if (tab.running) finishTab(tab, true);
+  else setRunning(tab, false);
   updatePillLabel(tab);
   tab._automationIteration = run.currentIteration;
   // Resumed after a server restart: what the run did while this window was away (the continuation prompt, its first
@@ -10835,6 +10870,8 @@ export async function attachClaudeAutomation(run, { focus = !!run?.focus, isCanc
     },
   });
   trackWorkerEnd(run, { apply: (view) => showWorkerEnd(tab, view), busy: hasLiveBackgroundWork(tab) });
+  // (The card is drawn only when what it says changes: a transcript read again meanwhile gets it back.)
+  placeWorkerEnd(tab);
   // The mode control is hidden while the run is active and back when it ended.
   if (tab === activeTab()) populateModeDropdown(_panel?.querySelector('#cp-mode'), tab);
   const idx = _tabs.indexOf(tab);
@@ -10982,6 +11019,17 @@ function showWorkerEnd(tab, view) {
     },
   }));
   if (tab === activeTab()) scrollEnd(true);
+}
+
+// The card is drawn once per change of what it says (ui-worker-end.js), and a transcript read again
+// meanwhile (a reconnect, a resume after a server restart) drops it with the rest: put it back, as the last
+// row, from what the tab keeps of it. Nothing happens for a tab without a card or with its card in place.
+function placeWorkerEnd(tab) {
+  const view = tab?._workerEnd;
+  const $msgs = tab?.messagesEl;
+  if (!view || !$msgs || tab.closed) return;
+  if ($msgs.querySelector(`.${WORKER_END_CLASS}`)) return;
+  showWorkerEnd(tab, view);
 }
 
 // The user sends a message of their own in the tab of a run that ended (Codex's

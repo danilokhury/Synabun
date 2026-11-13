@@ -35,6 +35,7 @@ import { setSelectOptions, projectOptionRows } from './ocp-v2-select.js';
 import { replyFailed, replyError } from './ocp-v2-caps.js';
 import { rehydratePanelSession, recoveredErrorSweep } from './ocp-v2-rehydrate.js';
 import { headerStatus } from './ocp-v2-render-logic.js';
+import { runTurnLive } from '../sidepanel-session-status.js';
 import {
   getState, subscribe, setSession, setServerStatus, setCwd, clearMessages, pushError, clearErrors, setHealing,
   addAttachedImage, getDefaultStore, setRunning,
@@ -2542,6 +2543,7 @@ export async function attachOpenCodeAutomation(run, { focus = !!run?.focus, isCa
   const previousRunId = _automationRunIds.get(sessionId);
   const restart = workerRestart(run);
   const running = restart.active;
+  const turnLive = runTurnLive(run);
   _workerRestarts.set(sessionId, restart);
   // The user continued this run's session by hand after the run ended: the tab stays theirs.
   const released = !running && previousRunId === run.runId
@@ -2594,10 +2596,12 @@ export async function attachOpenCodeAutomation(run, { focus = !!run?.focus, isCa
     if (!_visible) await showPrimaryOpencodePanel();
     await switchToSession(sessionId, info, { nav });
   } else if (getState().sessionId === sessionId) {
-    setRunning(running && !restart.suspended);
+    setRunning(turnLive);
     await rehydrateActiveSession().catch(() => {});
   }
-  if (getState().sessionId === sessionId) setRunning(running && !restart.suspended);
+  // The store's `running` (the composer's stop button, the thinking row) follows the run's turn, not the run: a
+  // warm worker between turns rests (its pill says idle: tabPillState), and a run that ended works no more.
+  if (getState().sessionId === sessionId) setRunning(turnLive);
   _renderer?.render();
   // (A dispatched worker's failure, with its reason, is on its end card.)
   if (run.status === 'failed' && run.error && !isDispatchedRun(run) && getState().sessionId === sessionId

@@ -34,7 +34,7 @@
 import { randomBytes } from 'node:crypto';
 import { CATALOG_PROVIDERS, TIERS, defaultIsHidden, defaultModelRow, findModel, hiddenModelId, priceText, providerAllHidden, providerEmpty, rowIsHidden, rowMakes } from './assistant-catalog.js';
 import { effectiveRouting, normalizeRouteMode } from './assistant-config.js';
-import { normalizeEffort } from './effort-levels.js';
+import { EFFORT_OFF, normalizeEffort } from './effort-levels.js';
 import { hasRouteAccounts, routeAccountText } from './assistant-route-accounts.js';
 import { chooseUsageAccount } from './account-usage.js';
 import { PROVIDER_LABELS, coversWork, dryProviders, isFreePrice, isUnpricedProvider, listPriceOf, rowOf } from './assistant-budget-split.js';
@@ -302,8 +302,10 @@ function preferenceTarget(pref, brain, catalog = null, { dispatchOnly = false } 
 export function routeText(target) {
   if (!target) return 'none';
   const where = target.kind === 'direct' ? `here${target.model ? ` on ${target.model}` : ''}` : `${target.provider}/${target.model || 'default'}`;
-  return `${where}${target.effort ? ` (${target.effort})` : ''}`;
+  return `${where}${target.effort ? ` (${effortWord(target.effort)})` : ''}`;
 }
+/** An effort as people read it: `none` is thinking off. */
+export function effortWord(effort) { return String(effort || '').toLowerCase() === EFFORT_OFF ? 'thinking off' : String(effort || ''); }
 
 /** Cheapest vision-capable model, same provider first. */
 function visionFallback(catalog, provider, { brain = {}, routing = {} } = {}) {
@@ -673,7 +675,7 @@ function optionFor(id, rawTarget, badge, { catalog, brain, brainInfo, needsVisio
   const target = effortChecked(rawTarget, catalog);
   const d = describeTarget(target, { catalog, brain, brainInfo });
   const here = target.kind === 'direct';
-  const label = here ? `Do it here with ${d.label}` : `${providerLabel(target.provider)} · ${d.label}${target.effort ? ` · ${target.effort}` : ''}`;
+  const label = here ? `Do it here with ${d.label}` : `${providerLabel(target.provider)} · ${d.label}${target.effort ? ` · ${effortWord(target.effort)}` : ''}`;
   // Design: only a confirmed vision: true on an available row; other vision work: a confirmed false is disabled, unknown is a warning.
   const fit = visionOnly ? designFit(catalog, target, { brain, brainInfo }) : 'ok';
   const option = {
@@ -1327,7 +1329,7 @@ export function createAssistantRouter({
       // on another account: the card names it as a worker and says why, never "Do it here".
       if (option.kind === 'dispatch' && option.accountKind === 'direct') {
         const described = describeTarget(option, { catalog: cat, brain, brainInfo });
-        option.label = `${providerLabel(option.provider)} · ${described?.label || option.model || 'default'}${option.effort ? ` · ${option.effort}` : ''}`;
+        option.label = `${providerLabel(option.provider)} · ${described?.label || option.model || 'default'}${option.effort ? ` · ${effortWord(option.effort)}` : ''}`;
         option.warning = option.accountCorrection?.message || WORKER_FOR_ACCOUNT_TEXT;
       }
     }

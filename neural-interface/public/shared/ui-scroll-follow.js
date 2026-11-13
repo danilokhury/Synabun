@@ -170,6 +170,9 @@ export function createStickyScrollController(container, options = {}) {
 
   const controller = {
     scrollToBottom,
+    // A single transcript container may host several tabs; restore each tab's
+    // following intent before its rows are replaced (and cancel stale frames).
+    setFollowing,
     refresh: refreshPosition,
     isFollowing: () => following,
     setActive(next) {
