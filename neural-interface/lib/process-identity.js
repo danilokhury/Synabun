@@ -328,6 +328,173 @@ export async function readProcessParentAsync(pid, { platform = process.platform,
 }
 
 /**
+ * Every TCP address a process listens on, as the OS reports its sockets: `[{ host, port }]` (host without brackets:
+ * `127.0.0.1`, `::1`, `*` for every address), an empty list when it listens on none, or null when the OS could not be
+ * asked. macOS and Linux: `lsof -nP -a -p <pid> -iTCP -sTCP:LISTEN -Fn` (exit 1 with nothing printed is "none");
+ * Windows: Get-NetTCPConnection by its owning process. What the serve's command line says is never read here: the
+ * sockets are what a page could reach.
+ * @param {number} pid
+ * @param {{ platform?: string, run?: (file: string, args: string[], options: object) => Promise<string> }} [o]
+ */
+export async function listListenAddressesAsync(pid, { platform = process.platform, run = runFile } = {}) {
+  const n = pidOf(pid);
+  if (!n) return null;
+  const parse = (lines) => {
+    const out = [];
+    for (const raw of lines) {
+      const text = raw.trim();
+      if (!text) continue;
+      // "[::1]:4096", "127.0.0.1:4096", "*:4096" (lsof); "::1 4096" or "0.0.0.0 4096" (PowerShell below).
+      const m = /^\[?([^\]\s]*?)\]?[:\s](\d{1,5})$/.exec(text);
+      if (!m || !m[1]) return null;
+      out.push({ host: m[1].toLowerCase(), port: Number(m[2]) });
+    }
+    return out;
+  };
+  if (platform === 'win32') {
+    const query = powershell(`Get-NetTCPConnection -OwningProcess ${n} -State Listen -ErrorAction SilentlyContinue | ForEach-Object { "$($_.LocalAddress) $($_.LocalPort)" }`);
+    try { return parse(String(await run(query.file, query.args, query.options)).split(/\r?\n/)); } catch { return null; }
+  }
+  const names = (out) => String(out ?? '').split(/\r?\n/).filter((l) => l.startsWith('n')).map((l) => l.slice(1));
+  try {
+    return parse(names(await run('lsof', ['-nP', '-a', '-p', String(n), '-iTCP', '-sTCP:LISTEN', '-Fn'], { encoding: 'utf8', timeout: 5000, env: C_ENV() })));
+  } catch (error) {
+    // lsof exits 1 when nothing matched, and for errors too. Only a clean "nothing" (no output at all) is "listens on
+    // none"; sockets printed next to an error, or an error alone, are a partial answer: unknown, refused by callers.
+    if (error?.code !== 1) return null;
+    if (String(error.stdout ?? '').trim() || String(error.stderr ?? '').trim()) return null;
+    return [];
+  }
+}
+
+/**
+ * `readProcessIdentityAsync` for many pids in one question to the OS: a Map pid → `{ pid, startedAt, command }`; a
+ * pid the OS did not report (gone, or unreadable) is absent. null when the OS could not be asked at all.
+ * @param {number[]} pids
+ */
+export async function readProcessIdentitiesAsync(pids, { platform = process.platform, run = runFile } = {}) {
+  const list = [...new Set((pids || []).map(pidOf).filter(Boolean))];
+  const out = new Map();
+  if (!list.length) return out;
+  if (platform === 'win32') {
+    const filter = list.map((n) => `ProcessId=${n}`).join(' or ');
+    const query = powershell(`Get-CimInstance Win32_Process -Filter "${filter}" | ForEach-Object { [pscustomobject]@{ pid = $_.ProcessId; name = $_.Name; startedAt = $(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o') } else { '' }); command = $_.CommandLine } } | ConvertTo-Json -Compress`);
+    try {
+      const text = String(await run(query.file, query.args, query.options)).trim();
+      const rows = text ? JSON.parse(text) : [];
+      for (const row of Array.isArray(rows) ? rows : [rows]) {
+        const n = pidOf(row?.pid);
+        // A protected system process has no command line for another user: its name is all there is ('' command).
+        if (n && (row.command || row.name)) out.set(n, { pid: n, startedAt: String(row.startedAt || ''), command: String(row.command || '').trim(), name: String(row.name || '') });
+      }
+      return out;
+    } catch { return null; }
+  }
+  let text;
+  try {
+    text = await run('ps', ['-ww', '-o', 'pid=', '-o', 'lstart=', '-o', 'command=', '-p', list.join(',')], { encoding: 'utf8', timeout: 5000, env: C_ENV() });
+  } catch (error) {
+    // ps exits 1 when some pid ran nothing: what it printed for the others still stands.
+    if (error?.code !== 1) return null;
+    text = error.stdout;
+  }
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    const m = PS_LINE.exec(line.trim());
+    const n = pidOf(m?.[1]);
+    if (m && n) out.set(n, { pid: n, startedAt: m[2].replace(/\s+/g, ' '), command: m[3].trim() });
+  }
+  return out;
+}
+
+/**
+ * Every process listening on TCP, as the OS reports its sockets: `[{ pid, name, addresses: [{ host, port }] }]` (an
+ * empty list when nothing listens), or null when the OS could not be asked or answered only in part. macOS and Linux:
+ * `lsof -nP -iTCP -sTCP:LISTEN -F pcn` (the user's own processes; exit 1 with nothing printed at all is "none", any
+ * other exit or any output next to an error is null); Windows: Get-NetTCPConnection as JSON. `selfPid` is left out.
+ * @param {{ platform?: string, run?: (file: string, args: string[], options: object) => Promise<string>, selfPid?: number }} [o]
+ */
+export async function listTcpListenersAsync({ platform = process.platform, run = runFile, selfPid = process.pid } = {}) {
+  const byPid = new Map();
+  const add = (pid, name, host, port) => {
+    const n = pidOf(pid);
+    const p = Number(port);
+    if (!n || !Number.isInteger(p) || p <= 0 || p > 65535 || !host) return false;
+    if (n === selfPid) return true;
+    const entry = byPid.get(n) || { pid: n, name: name || '', addresses: [] };
+    if (!entry.addresses.some((a) => a.host === host && a.port === p)) entry.addresses.push({ host, port: p });
+    byPid.set(n, entry);
+    return true;
+  };
+  if (platform === 'win32') {
+    const query = powershell('Get-NetTCPConnection -State Listen -ErrorAction Stop | ForEach-Object { [pscustomobject]@{ pid = $_.OwningProcess; host = $_.LocalAddress; port = $_.LocalPort } } | ConvertTo-Json -Compress');
+    let rows;
+    try {
+      const text = String(await run(query.file, query.args, query.options)).trim();
+      rows = text ? JSON.parse(text) : [];
+    } catch { return null; }
+    for (const row of Array.isArray(rows) ? rows : [rows]) {
+      // pid 0 / 4 are the kernel's own listeners (System Idle, System): never OpenCode.
+      if (row && (Number(row.pid) === 0 || Number(row.pid) === 4)) continue;
+      if (!row || !add(row.pid, '', String(row.host ?? '').toLowerCase(), row.port)) return null;
+    }
+    return [...byPid.values()];
+  }
+  let out;
+  try {
+    out = await run('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-F', 'pcn'], { encoding: 'utf8', timeout: 5000, env: C_ENV(), maxBuffer: 16 * 1024 * 1024 });
+  } catch (error) {
+    if (error?.code !== 1) return null;
+    if (String(error.stdout ?? '').trim() || String(error.stderr ?? '').trim()) return null;
+    return [];
+  }
+  let pid = null;
+  let name = '';
+  for (const raw of String(out ?? '').split(/\r?\n/)) {
+    if (!raw) continue;
+    const tag = raw[0];
+    const value = raw.slice(1);
+    if (tag === 'p') { pid = pidOf(value); name = ''; if (!pid) return null; continue; }
+    if (tag === 'c') { name = value; continue; }
+    if (tag === 'f') continue;
+    if (tag === 'n') {
+      const m = /^\[?([^\]\s]*?)\]?:(\d{1,5})$/.exec(value.trim());
+      if (!m || !m[1] || !pid || !add(pid, name, m[1].toLowerCase(), m[2])) return null;
+      continue;
+    }
+    // A field SynaBun did not ask for: the output is not the one this parser knows.
+    return null;
+  }
+  return [...byPid.values()];
+}
+
+/**
+ * The executable file a running process was started from, as the OS maps it (a symbolic link already followed):
+ * a path, or null when it cannot be read. macOS: the first `txt` file lsof reports for the pid; Linux:
+ * /proc/<pid>/exe; Windows: the process's ExecutablePath.
+ * @param {number} pid
+ */
+export async function readProcessExecutableAsync(pid, { platform = process.platform, run = runFile, readlink = null } = {}) {
+  const n = pidOf(pid);
+  if (!n) return null;
+  if (platform === 'linux') {
+    try {
+      const link = readlink || (await import('node:fs/promises')).readlink;
+      const target = String(await link(`/proc/${n}/exe`));
+      return target && !target.endsWith(' (deleted)') ? target : null;
+    } catch { return null; }
+  }
+  if (platform === 'win32') {
+    const query = powershell(`(Get-CimInstance Win32_Process -Filter "ProcessId=${n}").ExecutablePath`);
+    try { return firstLine(await run(query.file, query.args, query.options)) || null; } catch { return null; }
+  }
+  try {
+    const out = String(await run('lsof', ['-nP', '-a', '-p', String(n), '-d', 'txt', '-F', 'n'], { encoding: 'utf8', timeout: 5000, env: C_ENV() }));
+    const first = out.split(/\r?\n/).find((l) => l.startsWith('n'));
+    return first ? first.slice(1) : null;
+  } catch { return null; }
+}
+
+/**
  * The pids that listen on a local TCP port: a list (empty: nothing listens that the user may see), or null when the
  * OS could not be asked. macOS and Linux: lsof (exit 1 with nothing printed is "none"; no lsof is null); Windows:
  * Get-NetTCPConnection, where an empty answer is null too (it lists every user's listeners: something answered on

@@ -1,3 +1,4 @@
+import { isolatedServeFailure } from './opencode-launch-error.js';
 import { retainExternalRefs } from './mcp-external-servers.js';
 import { storedToolList, toolListRecord, readStoredToolListRecord } from './tool-lists.js';
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -64,6 +65,7 @@ function rawDescriptor(record) {
     claimedBy: record.claimedBy || null,
     claimedAt: record.claimedAt || null,
     error: record.error || null,
+    ...(record.errorCode ? { errorCode: record.errorCode, offenders: record.offenders } : {}),
     version: Number(record.version) || 0,
     // Task-mode (assistant dispatch) fields. Absent/null for classic loops so
     // existing consumers (router, sidepanels, schedules) are unaffected.
@@ -951,12 +953,13 @@ export class NativeLoopRuntime {
     clearTimeout(record.timer);
     record.status = status === 'interrupted' ? 'interrupted' : 'failed';
     record.error = errorText(error);
+    if (error?.code) { const safe = isolatedServeFailure(error); record.errorCode = safe.code; record.offenders = safe.offenders; }
     record.stoppedReason = reason;
     record.completedAt = iso(this.now());
     if (record._resolveIdentity) { record._resolveIdentity(null); record._resolveIdentity = null; }
     try { record.startupAbortController?.abort(reason); } catch {}
     if (record._cancelStartup) { record._cancelStartup(reason); record._cancelStartup = null; }
-    this._writeTerminalState(record, { active: false, pending: false, completedAt: record.completedAt, stoppedReason: reason, error: record.error });
+    this._writeTerminalState(record, { active: false, pending: false, completedAt: record.completedAt, stoppedReason: reason, error: record.error, errorCode: record.errorCode, offenders: record.offenders });
     try { await record.adapter?.abort?.(reason); } catch {}
     try { await record.adapter?.dispose?.({ preserveSession: true }); } catch {}
     this._releaseRuntimeRefs(record);

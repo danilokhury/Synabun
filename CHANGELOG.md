@@ -1,3 +1,17 @@
+# SynaBun v.2.3.1
+
+SynaBun 2.3.1 is a fix release. Browser automations keep working after OpenCode updates, Sabiá works in protected workers, and floating windows follow your Appearance settings again.
+
+## 🛠 Fixed
+
+- **Browser automations survive OpenCode updates.** After OpenCode updated itself, browser starts for the Assistant, workers, loops and schedules could be refused because the new version was not on a fixed list. SynaBun now checks what each OpenCode server actually does: it must listen only on this computer and refuse requests without its password. Any version that passes can run, and a refusal says which check failed and how to fix it.
+- **Safer OpenCode checks with MoreLogin profiles.** A new OpenCode version is checked once in a throwaway server, away from your browser profiles, before it can run alongside an attached MoreLogin browser. A server that was already checked is checked again when its program changes, and a failed check keeps it from running.
+- **Clearer handling of removed MoreLogin profiles.** Profiles that no longer exist in MoreLogin are skipped instead of stopping a run, and Settings lets you remove them from the profiles agents may use.
+- **Sabiá in protected OpenCode workers.** Workers running Maritaca's Sabiá models with Protect workers turned on could fail with "Transport: ECONNRESET" and produce nothing. They now reach Maritaca and answer normally, using your saved key.
+- **Floating window transparency.** Settings, Skills Studio, Automation Studio and the other floating windows use your saved Appearance opacity, blur, saturation, border and shadow again, including with the file explorer open. 100% opacity is fully opaque.
+
+---
+
 # SynaBun v.2.3.0
 
 SynaBun 2.3.0 adds local browser profiles and lets automations use separate profiles in parallel. Browser work stays in the background, with clearer profile choices and tighter control over which accounts agents may use.

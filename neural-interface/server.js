@@ -166,7 +166,7 @@ import {
 import { createCliResolver, spawnArgsFor } from './lib/cli-resolver.js';
 import { osPath } from './lib/os-path.js';
 import { createCliInstaller, CLI_INSTALL_GUIDES } from './lib/cli-install.js';
-import { createCliInstallApi, createCliPathApi, createGitBashApi } from './lib/cli-install-api.js';
+import { createCliInstallApi, createCliPathApi, createGitBashApi, createOpencodeServeVerifyApi } from './lib/cli-install-api.js';
 import { createAppControlsApi, createAppSettingsStore } from './lib/app-controls-api.js';
 import { createCrashNoticeApi } from './lib/crash-notice-api.js';
 import { createLoginStart } from './lib/login-start.js';
@@ -226,8 +226,41 @@ import {
 } from './lib/native-loop-providers.js';
 import { createOpenCodeActivityRelay } from './lib/opencode-worker-activity.js';
 import { browserServePortDenial, browserSessionLossRule } from './lib/browser-tool-policy.js';
-import { createNativeServeBoundary, nativeServeCapability, nativeServeReason, narrowOffenders } from './lib/opencode-native-boundary.js';
-const nativeServeBoundary = createNativeServeBoundary();
+import { createNativeServeBoundary, createVerdictFile, nativeServeCapability, nativeServeReason, nativeServeVersionPolicy, narrowOffenders } from './lib/opencode-native-boundary.js';
+import { isolatedServeFailure } from './lib/opencode-launch-error.js';
+import { reconcilePreflightProfiles, preflightExcludedPorts, runOpencodeBuildPreflight } from './lib/opencode-build-preflight.js';
+import { binaryIdentity as opencodeBinaryIdentity, binaryKey as opencodeBinaryKey } from './lib/opencode-serve-probe.js';
+// Every OpenCode serve SynaBun starts is probed once it answers (lib/opencode-serve-probe.js: loopback only, every
+// sensitive /api request and WebSocket upgrade refused without its password, SynaBun's password accepted); what is
+// learned about a build is kept in DATA_HOME/data/opencode-serve-verdicts.json (read on first use).
+const nativePreflightProfiles = new Set();
+const nativeStaleProfilesLogged = new Set();
+const nativeServeBoundary = createNativeServeBoundary({
+  preflight: async (info, operations) => {
+    const cfg = loadBrowserConfig();
+    const profiles = new Map(normalizeAgentProfiles(cfg).map(p => [p.envId, p]));
+    const defaultId = moreLoginDefaultEnvId(cfg);
+    if (defaultId) profiles.set(String(defaultId), { envId: String(defaultId) });
+    for (const envId of nativePreflightProfiles) profiles.set(envId, { envId });
+    const remote = [...profiles.values()].filter(p => !moreLogin.isLocalProfileId(p.envId));
+    const liveProfiles = remote.length ? await reconcilePreflightProfiles(remote,
+      () => moreLogin.listCompleteProfiles({ savedCfg: cfg, timeout: 5000 }),
+      { log: line => { if (!nativeStaleProfilesLogged.has(line)) { nativeStaleProfilesLogged.add(line); console.warn(`[opencode] ${line}`); } } }) : [];
+    const excludedPorts = await preflightExcludedPorts(liveProfiles,
+      envId => moreLogin.profileDetail(envId, { savedCfg: cfg, timeout: 5000 }));
+    const token = opencodeServeRecords.newToken();
+    return runOpencodeBuildPreflight(info, { ...operations, excludedPorts,
+      spawnProcess: (command, args, options) => spawn(command, args, { ...options, env: { ...options.env, [SERVE_TOKEN_ENV]: token } }),
+      track: (proc, detail) => {
+        operations.track(proc, { ...detail, kill: signal => signalOpencodeServeProcess(proc, signal) });
+        // A crash must leave the throwaway serve on the same ownership record as every normal serve.
+        trackOpencodeServe(proc, { kind: 'isolated', id: 'build-preflight', port: detail.port, token, boundaryTracked: true });
+      },
+    });
+  },
+  verdicts: createVerdictFile({ file: () => resolve(DATA_HOME, 'data', 'opencode-serve-verdicts.json') }),
+  log: (line) => console.warn(`[opencode] ${line}`),
+});
 import { setBrowserNetworkRule, usesNativeBrowserNetworkGuard, disposeBrowserNetworkGuard, recoverBrowserNetworkGuard, MONEY_PATTERNS, SERVE_PORT_PATTERNS } from './lib/browser-network-guard.js';
 import { browserPolicyRoots } from './lib/browser-policy-roots.js';
 import {
@@ -278,7 +311,7 @@ import { createMaritacaKeyStore } from './lib/maritaca/key-store.js';
 import { createMaritacaSessionStore } from './lib/maritaca/sessions.js';
 import { createMaritacaPanelBridge } from './lib/maritaca/panel-bridge.js';
 import { registerMaritacaRoutes } from './lib/maritaca/api.js';
-import { createMaritacaOpencodeSync } from './lib/maritaca/opencode.js';
+import { createMaritacaOpencodeSync, maritacaWorkerChannelProvider } from './lib/maritaca/opencode.js';
 import { createMaritacaOpencodeProxy, maritacaOpencodeProxyBaseUrl } from './lib/maritaca/opencode-proxy.js';
 import { antigravityHomeDir, antigravityHomesRoot, pruneAntigravityHomes } from './lib/antigravity/home.js';
 import { antigravityStores, findUserConversation, parseAntigravityTranscript, readTranscriptText } from './lib/antigravity/transcripts.js';
@@ -3813,15 +3846,23 @@ function getNativeCodexBin() {
 // serveSpecFor). Every production serve uses `passwordFrom: 'stdout'`: no password variable at all
 // (the login shell unsets both after the profile ran): the serve prints the
 // password it made, `password` is null and the caller reads it from stdout.
-function opencodeServeLaunch(port, { env = process.env, password = null, passwordFrom = 'stdout' } = {}) {
+async function opencodeServeLaunch(port, { env = process.env, password = null, passwordFrom = 'stdout', preflightOnly = false } = {}) {
   const found = cliResolver.launcher('opencode');
   _noteCliLookup('opencode', found, 'OpenCode');
   const line = configuredCommandLine('opencode');
   const nativeWebSocketSafe = nativeServeCapability({ version: found.version, commandLine: !!line, passwordFrom });
   // What the browser boundary names when this serve is the one that blocks a native (MoreLogin) context. A command
   // line from Settings runs whatever it names: the resolver's version is of another binary, so none is reported.
-  const nativeServe = { version: line ? null : (found.version || null), path: line || found.launchPath || found.path || null, reason: nativeServeReason({ version: found.version, commandLine: !!line, passwordFrom }) };
+  // The binary's identity (real path, size, times) and version are the build its runtime check is filed under: a
+  // Homebrew update is a new build, checked again.
+  const policy = line ? null : nativeServeVersionPolicy(found.version);
+  const identity = line ? null : opencodeBinaryIdentity(found.launchPath || found.path || null);
+  const nativeServe = { version: line ? null : (policy?.version || found.version || null), path: line || found.launchPath || found.path || null,
+    reason: nativeServeReason({ version: found.version, commandLine: !!line, passwordFrom }),
+    identity, key: opencodeBinaryKey(identity, policy?.version || null), knownGood: !!policy?.knownGood };
+  await nativeServeBoundary.prepareBuild(nativeWebSocketSafe, { port, ...nativeServe });
   nativeServeBoundary.assertLaunch(nativeWebSocketSafe, { port, ...nativeServe });
+  if (preflightOnly) return nativeServe;
   const spec = serveSpecFor(port, { env, password, passwordFrom });
   const words = spec.args.join(' ');
   if (IS_WIN) {
@@ -3833,7 +3874,9 @@ function opencodeServeLaunch(port, { env = process.env, password = null, passwor
     const text = `${line || 'opencode'} ${words}`;
     return { command: DEFAULT_SHELL, args: ['/d', '/s', '/c', text], options: { env: spawnEnv, windowsHide: true }, label: text, password: spec.password, passwordFrom: spec.passwordFrom, nativeWebSocketSafe, nativeServe };
   }
-  const cmd = line || (found.path ? shellSingleQuote(found.path) : 'opencode');
+  // The file whose identity and version were just read is the one exec'd: its real path, not a link that could be
+  // pointed elsewhere between the read and the start (the boundary checks the listening process runs that file).
+  const cmd = line || (identity?.realpath ? shellSingleQuote(identity.realpath) : found.path ? shellSingleQuote(found.path) : 'opencode');
   const unset = spec.passwordFrom === 'stdout' ? `${serveUnsetCommand()}; ` : '';
   // A packaged application's runtime and npm after the user's own (the login shell adds the user's profile on top).
   return { command: DEFAULT_SHELL, args: ['-lc', `${unset}exec ${cmd} ${words}`], options: { env: withPackagedPathLast(spec.env) }, label: `${cmd} ${words}`, password: spec.password, passwordFrom: spec.passwordFrom, nativeWebSocketSafe, nativeServe };
@@ -8373,8 +8416,12 @@ function noteOpencodeServePort(port, delta) {
   if (next > 0) _opencodeServePortCounts.set(p, next); else _opencodeServePortCounts.delete(p);
 }
 
-function trackOpencodeServe(proc, { kind, id = null, port, token, nativeWebSocketSafe = false, nativeServe = null }) {
-  nativeServeBoundary.track(proc, { ...(nativeServe || {}), port, safe: nativeWebSocketSafe });
+function trackOpencodeServe(proc, { kind, id = null, port, token, nativeWebSocketSafe = false, nativeServe = null, boundaryTracked = false }) {
+  // A serve that fails its runtime check while a native context is attached is stopped (its pages could reach it).
+  // A serve that fails its runtime check is stopped by the boundary: SIGTERM, then SIGKILL, until the OS confirms
+  // its process and its listener are gone (lib/opencode-native-boundary.js terminate).
+  // The pre-flight coordinator already tracked this handle and retained its cleanup evidence.
+  if (!boundaryTracked) nativeServeBoundary.track(proc, { ...(nativeServe || {}), port, safe: nativeWebSocketSafe, kill: (signal) => signalOpencodeServeProcess(proc, signal) });
   const pid = Number(proc?.pid) || null;
   const exited = () => !proc || proc.exitCode != null || proc.signalCode != null;
   if (!exited()) {
@@ -8395,13 +8442,15 @@ function trackOpencodeServe(proc, { kind, id = null, port, token, nativeWebSocke
   else proc.once?.('exit', forget);
   return {
     spawned,
-    async answering() {
+    // `password`: the one the serve printed, which its runtime check proves it accepts.
+    async answering({ password = null } = {}) {
       await spawned;
       const who = await opencodeServeRecords.answering({ port, pid, exited });
       // Every caller has already passed private HTTP/WS readiness. A port
       // collision never becomes a native capability; a new native attachment
-      // must wait until this check, including starts already under way.
-      if (who.state !== 'foreign' && !exited()) nativeServeBoundary.ready(proc);
+      // must wait until this check, including starts already under way, and
+      // until the serve's runtime check (started here, in the background) passed.
+      if (who.state !== 'foreign' && !exited()) nativeServeBoundary.ready(proc, { pid: who.state === 'ours' ? who.pid : pid, password });
       if (who.state !== 'ours') return who.state;
       // Read again now that it answers (its login shell has exec'd OpenCode by now), and the process that answers
       // when the spawned one started it.
@@ -8655,6 +8704,16 @@ async function endOpencodeChild(proc, timeoutMs = 3000) {
   return false;
 }
 
+// One signal to a serve SynaBun spawned. Windows has no SIGTERM: taskkill ends the tree, /F for SIGKILL.
+function signalOpencodeServeProcess(proc, signal = 'SIGTERM') {
+  if (!proc || proc.exitCode != null || proc.signalCode != null) return;
+  if (IS_WIN && proc.pid) {
+    spawn('taskkill', ['/pid', String(proc.pid), '/T', ...(signal === 'SIGKILL' ? ['/F'] : [])], { windowsHide: true, stdio: 'ignore' }).on?.('error', () => {});
+    return;
+  }
+  proc.kill(signal);
+}
+
 function killIsolatedServeProcess(proc) {
   try {
     if (proc && !proc.killed && proc.exitCode == null) {
@@ -8820,7 +8879,8 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, c
     if (serializeToolList(entry.tools) !== serializeToolList(requestedTools)) {
       throw new Error(`OpenCode serve ${termId} is starting with ${serializeToolList(entry.tools)}; scoped restart required for ${serializeToolList(requestedTools)}`);
     }
-    for (let i = 0; i < 60 && !entry.ready; i++) await new Promise(r => setTimeout(r, 250));
+    for (let i = 0; i < 60 && !entry.ready && !entry.startError; i++) await new Promise(r => setTimeout(r, 250));
+    if (entry.startError) throw entry.startError;
     return entry.ready ? entry : null;
   }
   // An OpenCode SynaBun does not drive (OpenCode 0 / 1, an OpenCode 2 older than the minimum, OpenCode 3) never
@@ -8902,7 +8962,10 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, c
         const token = opencodeServeRecords.newToken();
         // A protected worker's serve (hidePassword): no password variable in any environment, its own shell's
         // included; the serve prints the password it made, read here from its output (and never logged).
-        const launch = opencodeServeLaunch(port, { env: { ...isolatedEnv, [SERVE_TOKEN_ENV]: token }, passwordFrom: 'stdout' });
+        const pin = runMoreLoginPin(termId);
+        if (pin?.envId && !moreLogin.isLocalProfileId(pin.envId)) await reconcilePreflightProfiles([],
+          () => moreLogin.listCompleteProfiles(_moreLoginOpts()), { requested: [pin.envId] });
+        const launch = await opencodeServeLaunch(port, { env: { ...isolatedEnv, [SERVE_TOKEN_ENV]: token }, passwordFrom: 'stdout' });
         const readPassword = launch.passwordFrom === 'stdout' ? servePasswordReader() : null;
         // A guarded worker's serve (macOS): run the whole serve tree under the run's Seatbelt profile, so its shell
         // commands cannot reach SynaBun's control port. The profile leaves the worker-only channel open, which the
@@ -8959,7 +9022,7 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, c
           if (readPassword && !entry.password) { if (proc.exitCode != null || proc.signalCode != null) { outcome = 'exited'; break; } continue; }
           check = await checkOpencodeServer({ port, password: entry.password, timeoutMs: 3000 });
           if (check.ok) {
-            if (await tracked.answering() !== 'foreign') { booting = false; return 'ready'; }
+            if (await tracked.answering({ password: entry.password }) !== 'foreign') { booting = false; return 'ready'; }
             outcome = 'collision';
             break;
           }
@@ -9026,9 +9089,11 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, c
     console.log(`[ocp-iso] isolated serve ready term=${tag} port=${port} tools=${serializeToolList(requestedTools)}`);
     return entry;
   } catch (err) {
-    console.warn(`[ocp-iso] spawn failed: ${err.message}`);
+    const failure = isolatedServeFailure(err);
+    entry.startError = failure;
+    console.warn(`[ocp-iso] spawn failed: ${failure.message}`);
     endIsolatedStart(termId, entry);
-    return null;
+    throw failure;
   }
 }
 
@@ -9811,7 +9876,7 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
       try {
         // A token of this spawn in its environment: what tells its processes from any other (lib/opencode-serve-records.js).
         const token = opencodeServeRecords.newToken();
-        const launch = opencodeServeLaunch(_ocpPort, { env: { ...process.env, FORCE_COLOR: '0', OPENCODE_DISABLE_CLAUDE_CODE: '1', [SERVE_TOKEN_ENV]: token,
+        const launch = await opencodeServeLaunch(_ocpPort, { env: { ...process.env, FORCE_COLOR: '0', OPENCODE_DISABLE_CLAUDE_CODE: '1', [SERVE_TOKEN_ENV]: token,
           OPENCODE_CONFIG_CONTENT: buildSharedOpenCodeConfigOverlay(opencodeServeBaseConfig(), process.env.OPENCODE_CONFIG_CONTENT),
         } });
         _ocpPassword = launch.password;
@@ -9856,7 +9921,7 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
         if (await checkOpencodeHealth()) {
           // Only SynaBun's own process counts (the spawned one, or one it started): another server that took the
           // port meanwhile answers for itself.
-          if (await tracked.answering() !== 'foreign') return 'ready';
+          if (await tracked.answering({ password: _ocpPassword }) !== 'foreign') return 'ready';
           if (_ocpProc === proc) _ocpProc = null;
           killIsolatedServeProcess(proc);
           await endOpencodeChild(proc);
@@ -18914,6 +18979,20 @@ const cliInstaller = createCliInstaller({
 app.use('/api/cli/install', createCliInstallApi({ installer: cliInstaller, isGuestRequest, port: () => PORT, log: (line) => console.warn(line) }));
 // Settings beside the CLIs: the Git Bash Claude Code gets on Windows, its download and a new look (lib/git-bash/).
 app.use('/api/cli/git-bash', createGitBashApi({ manager: gitBash, isGuestRequest, port: () => PORT, onRecheck: async () => { syncGitBashSettings(); } }));
+// Settings → Executable paths → Verify OpenCode: the serves SynaBun runs, each one's runtime authentication check
+// (lib/opencode-serve-probe.js through nativeServeBoundary), a check again on request, and the OpenCode SynaBun would
+// start with what is known about that build.
+app.use('/api/cli/opencode-serves', createOpencodeServeVerifyApi({ boundary: nativeServeBoundary, isGuestRequest, port: () => PORT,
+  executable: () => {
+    if (configuredCommandLine('opencode')) return { commandLine: true, path: null, version: null, policy: 'command-line', verdict: null };
+    const found = cliResolver.launcher('opencode');
+    if (!found.path) return { commandLine: false, path: null, version: null, policy: 'missing', verdict: null };
+    const policy = nativeServeVersionPolicy(found.version);
+    const key = opencodeBinaryKey(opencodeBinaryIdentity(found.launchPath || found.path), policy.version);
+    const known = key ? nativeServeBoundary.buildVerdict(key) : null;
+    return { commandLine: false, path: found.path, version: policy.version || found.version || null, knownGood: policy.knownGood,
+      policy: policy.ok ? 'ok' : policy.reason, verdict: known ? { ok: known.ok, failed: known.failed || null, detail: known.detail || null, at: known.at || null } : null };
+  } }));
 
 // ═══════════════════════════════════════════
 // FULL SYSTEM BACKUP & RESTORE
@@ -19457,7 +19536,7 @@ const editorCompletionServe = createOpencodeCompletionEngine({
   // On record from its spawn (spawnServe), its record gone with its process: a crash of SynaBun does not leave it
   // running. Once something answers on its port: is it this start's own serve ('foreign': another server took the
   // port, which the engine leaves running while it tries another)?
-  trackServe: ({ proc }) => editorCompletionServeTracks.get(proc)?.answering(),
+  trackServe: ({ proc, password }) => editorCompletionServeTracks.get(proc)?.answering({ password }),
   // As the isolated serves are started (opencodeServeLaunch): the CLI the resolver found, through the login shell,
   // with the password OpenCode prints privately for this start; its start waits its turn among every serve SynaBun starts
   // (one OpenCode database cannot be opened by two serves at once).
@@ -19465,9 +19544,9 @@ const editorCompletionServe = createOpencodeCompletionEngine({
   startOneAtATime: oneOpencodeStartAtATime,
   passwordFrom: 'stdout',
   checkServer: checkOpencodeServer,
-  spawnServe: ({ port, env, cwd }) => {
+  spawnServe: async ({ port, env, cwd }) => {
     const token = opencodeServeRecords.newToken();
-    const launch = opencodeServeLaunch(port, { env: { ...env, [SERVE_TOKEN_ENV]: token }, passwordFrom: 'stdout' });
+    const launch = await opencodeServeLaunch(port, { env: { ...env, [SERVE_TOKEN_ENV]: token }, passwordFrom: 'stdout' });
     const proc = spawn(launch.command, launch.args, { stdio: ['ignore', 'pipe', 'pipe'], ...launch.options, cwd, detached: false, shell: false, windowsHide: true });
     editorCompletionServeTracks.set(proc, trackOpencodeServe(proc, { kind: 'completion', id: 'editor-complete', port, token, nativeWebSocketSafe: launch.nativeWebSocketSafe, nativeServe: launch.nativeServe }));
     const outLog = createServeLogRedactor(line => console.log(`[editor-complete:out] ${line.trim().slice(0, 500)}`));
@@ -20386,12 +20465,13 @@ app.get('/api/morelogin/profiles', async (req, res) => {
     // Each with the browser it runs (`browser`): "use as default" is not offered for a Firefox-type one.
     // MoreLogin's profiles and SynaBun's local ones (`kind: 'local'`). With MoreLogin closed the local ones are still
     // listed, and `moreloginError` says why MoreLogin's are missing.
-    const rows = await moreLogin.listProfiles(_moreLoginOpts());
+    const rows = await moreLogin.listProfiles({ ..._moreLoginOpts(), complete: true });
     const listed = await withMoreLoginBrowsers(rows, _moreLoginOpts());
     // `agentsMayChoose`: on the owner's list (the Settings toggle, and what the `morelogin` tool's "list" shows).
     const allowed = moreLoginAgentProfiles();
     res.json({
       ok: true, envs: listed.envs.map((env) => ({ ...env, agentsMayChoose: allowed.some((row) => row.envId === String(env.id)) })), browsersPending: listed.browsersPending, agentProfiles: allowed,
+      staleProfiles: rows.moreloginError ? [] : [...new Map([...allowed, ...(moreLoginDefaultEnvId(loadBrowserConfig()) ? [{ envId: String(moreLoginDefaultEnvId(loadBrowserConfig())) }] : [])].map(p => [p.envId, p])).values()].filter(p => !moreLogin.isLocalProfileId(p.envId) && !rows.some(e => String(e.id) === p.envId)),
       local: { count: listed.envs.filter((env) => env.kind === 'local').length },
       ...(rows.moreloginError ? { moreloginError: rows.moreloginError.message } : {}),
     });
@@ -20427,6 +20507,7 @@ app.post('/api/morelogin/start', async (req, res) => {
     // Only that may end a running local profile to start it again (lib/local-profiles.js startNow); an automation
     // gets LOCAL_PROFILE_RESTART_NEEDED / LOCAL_PROFILE_BUSY by name below, and no browser.
     const who = browserCaller(req);
+    nativePreflightProfiles.add(String(envId));
     const out = await moreLogin.startProfile(envId, { ..._moreLoginOpts(), owner: !who.automation && moreLoginOwnerPageCall(req) });
     if (!who.automation) return res.json({ ok: true, ...out });
     // An automation's start: the profile is the caller's to stop later (POST /api/morelogin/stop), and the answer
@@ -20546,10 +20627,11 @@ function retireSavedProfileChoiceOwners() {
 async function resolveMoreLoginProfileChoice(ref) {
   let envs = [];
   const unreachable = (reason) => Object.assign(new Error(`MoreLogin's profile list could not be read: ${reason}. Open the MoreLogin app (its Local API must be on).`), { status: 502, code: 'MORELOGIN_UNREACHABLE' });
-  try { envs = await moreLogin.listProfiles(_moreLoginOpts()); } catch (err) { throw unreachable(err.message); }
+  try { envs = await moreLogin.listProfiles({ ..._moreLoginOpts(), complete: true }); } catch (err) { throw unreachable(err.message); }
   let found;
   try { found = resolveProfileRef(ref, envs); } catch (err) {
     if (envs.moreloginError && err?.code === 'ENV_NOT_FOUND') throw unreachable(envs.moreloginError.message);
+    if (err?.code === 'ENV_NOT_FOUND' && !/^lp-[0-9a-f]{12}$/.test(String(ref?.envId || ''))) err.code = 'MORELOGIN_PROFILE_MISSING';
     throw err;
   }
   await refuseFirefoxMoreLoginChoice({ moreloginEnvId: found.envId, moreloginEnvName: found.name });
@@ -27718,7 +27800,9 @@ try {
   if (sandboxSupported() && sandboxExecAvailable()) {
     try {
       // The channel's path token names the run; the channel adds that run's terminal token itself (never the worker's).
-      _workerMcpChannel = createWorkerMcpChannel({ createMcpRoutes, mainPort: Number(PORT) || 3344, log: (line) => console.log(line), terminalToken: (runId) => _terminalTokens.tokenFor(runId), terminalAuth });
+      _workerMcpChannel = createWorkerMcpChannel({ createMcpRoutes, mainPort: Number(PORT) || 3344, log: (line) => console.log(line), terminalToken: (runId) => _terminalTokens.tokenFor(runId), terminalAuth,
+        // A sandboxed OpenCode worker's Maritaca requests (its block points here: maritacaWorkerChannelProvider).
+        maritaca: (req, res) => maritacaOpencodeProxy.handle(req, res, { channel: true }) });
       _workerMcpChannel.start().catch((error) => { console.warn('  worker-only MCP channel did not start (guarded workers run without OS isolation):', error?.message || error); _workerMcpChannel = null; });
     } catch (error) {
       console.warn('  worker-only MCP channel unavailable:', error?.message || error);
@@ -28894,6 +28978,8 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       // data home — nothing in the sandbox opens the memory DB. The run's routing travels as headers.
       const remoteMcp = iso?.profilePath && iso.mcpUrl ? {
         url: iso.mcpUrl,
+        // The run's channel base (…/w/<token>), for a Maritaca block (setupOpencodeLoopConfig) when the channel carries it.
+        base: _workerMcpChannel?.carriesMaritaca?.() ? (iso.browserBase || null) : null,
         headers: {
           'X-Synabun-Browser-Session': state.browserSessionId || '',
           'X-Synabun-Browser-Tab': state.browserTabId || '',
@@ -28926,6 +29012,9 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       // An evaluation trial with the skill: its copy goes into this run's own configuration folder, which OpenCode reads
       // as its global one (never OPENCODE_CONFIG_DIR, which would take the place of this configuration).
       if (evalEnv) openCodeEvalSkillFor(state, resolve(xdgRoot, 'opencode'));
+      if (remoteMcp?.maritaca && !_workerMcpChannel?.allowMaritaca?.(state.runId)) {
+        try { state.onNote?.('Maritaca through the worker channel could not be enabled for this run: its Sabiá models will not answer.'); } catch {}
+      }
       const entry = await ensureIsolatedServe(state.runId, {
         xdgRoot,
         keepAlive: true,
@@ -29671,6 +29760,10 @@ function setupOpencodeLoopConfig(terminalSessionId, browserSessionId, browserTab
     const headers = {};
     for (const [k, v] of Object.entries(remoteMcp.headers || {})) if (v) headers[k] = String(v);
     setMcpServer(baseCfg, 'SynaBun', { type: 'remote', codemode: false, url: String(remoteMcp.url), ...(Object.keys(headers).length ? { headers } : {}) });
+    // Maritaca's block reaches SynaBun's proxy on the control port with a key file in the data home: the sandbox
+    // blocks both, and OpenCode retried a connection that never opened ("Transport: ECONNRESET"). The run's copy goes
+    // through the same proxy on the worker channel; the launch then lets this run use that route (remoteMcp.maritaca).
+    if (remoteMcp.base && maritacaWorkerChannelProvider(baseCfg, remoteMcp.base)) remoteMcp.maritaca = true;
   } else {
   const pinOverrides = {
     SYNABUN_TERMINAL_SESSION: terminalSessionId,
@@ -34141,6 +34234,9 @@ async function installServePortGuard(ctx, { deadline = Infinity, signal = null }
   });
   if (native) {
     // Held first (assertLaunch refuses an unverified start from here on), then the HTTP rule, then the bounded check.
+    // Warm the selected build before reserving/admitting this context. An existing attached context refuses a
+    // new build here; its pre-flight must never be exposed through MoreLogin's 0.0.0.0 bypass.
+    await opencodeServeLaunch(0, { preflightOnly: true });
     const release = nativeServeBoundary.reserve(ctx);
     try { await installRule(); } catch (error) {
       release();
@@ -34545,6 +34641,7 @@ async function createBrowserSession(options = {}) {
       }
       // requireCdp: a Firefox-type profile has no DevTools endpoint and is refused, before it is started when
       // MoreLogin says what it is up front.
+      nativePreflightProfiles.add(String(envId));
       const { debugPort } = await moreLogin.startProfile(envId, { ...mlOpts, requireCdp: true });
       // Wait for MoreLogin's Chromium DevTools endpoint to come up.
       let endpoint = null;

@@ -68,7 +68,7 @@ export async function listAllProfiles(opts = {}) {
   const localRows = firstPage ? await listLocalProfiles() : [];
   let remote = [];
   let moreloginError = null;
-  try { remote = await ml.listProfiles(opts); } catch (err) { moreloginError = describeError(err); moreloginError.cause = err; }
+  try { remote = await (opts.complete ? ml.listCompleteProfiles(opts) : ml.listProfiles(opts)); } catch (err) { moreloginError = describeError(err); moreloginError.cause = err; }
   return { envs: [...remote, ...localRows], moreloginError, localCount: localRows.length };
 }
 

@@ -122,6 +122,41 @@ export function maritacaOpencodeState({ config, keyStatus, keyPath, models = MAR
   };
 }
 
+/** The path of the Maritaca route on the worker-only channel, under a run's `/w/<token>` base (lib/worker-mcp-channel.js). */
+export const MARITACA_WORKER_CHANNEL_PATH = '/maritaca/v1';
+/**
+ * What a sandboxed worker's block holds as its key: not a key. The channel's per-run path token is the caller's proof
+ * and the channel uses SynaBun's saved key itself, so nothing secret is written into the run's configuration.
+ */
+export const MARITACA_WORKER_CHANNEL_KEY = 'synabun-worker-channel';
+
+/**
+ * A protected worker's OpenCode serve on macOS runs under a Seatbelt profile (lib/worker-sandbox.js) that blocks
+ * SynaBun's control port and reads of SynaBun's data home. The block the sync writes needs both: its base URL is this
+ * server's route on the control port and its key a {file:…} reference into the data home, so inside the sandbox
+ * OpenCode can neither read the key nor connect ("Transport: ECONNRESET", retried until the run is stopped). For such
+ * a run the block is pointed at the same proxy on the worker-only channel instead (`channelBase` is the run's
+ * `http://127.0.0.1:<port>/w/<token>`), with a placeholder for the key. Only a block that routes through SynaBun
+ * (route 'synabun') is changed; anything else is the user's and left as it is. Mutates `config`; returns whether it
+ * changed the block.
+ */
+export function maritacaWorkerChannelProvider(config, channelBase) {
+  const base = trimUrl(channelBase);
+  if (!config || typeof config !== 'object' || !/^http:\/\/127\.0\.0\.1:\d{1,5}\/w\/[A-Za-z0-9]+$/.test(base)) return false;
+  for (const section of ['providers', 'provider']) {
+    const entry = config[section]?.[MARITACA_OPENCODE_PROVIDER_ID];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const settings = entry.settings && typeof entry.settings === 'object' ? entry.settings : null;
+    if (!settings || maritacaOpencodeRoute(settings.baseURL) !== 'synabun') return false;
+    config[section][MARITACA_OPENCODE_PROVIDER_ID] = {
+      ...entry,
+      settings: { ...settings, baseURL: `${base}${MARITACA_WORKER_CHANNEL_PATH}`, apiKey: MARITACA_WORKER_CHANNEL_KEY },
+    };
+    return true;
+  }
+  return false;
+}
+
 export function maritacaOpencodeError(code, message, status = 500) {
   return Object.assign(new Error(message), { code, status });
 }

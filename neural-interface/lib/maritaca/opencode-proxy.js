@@ -98,7 +98,12 @@ export function createMaritacaOpencodeProxy({ keyStore, upstreamBaseUrl = MARITA
     log(line);
   }
 
-  async function handle(req, res) {
+  /**
+   * `channel: true` only from the worker-only channel (lib/worker-mcp-channel.js), which has already proved the caller
+   * by the run's path token and let only a run whose own configuration routes Maritaca there: a sandboxed worker
+   * cannot read the key file, so it presents no key, and the saved key is used as for any other caller.
+   */
+  async function handle(req, res, { channel = false } = {}) {
     stats.requests += 1;
     let key;
     try { key = keyStore.readKey(); } catch (error) {
@@ -106,7 +111,7 @@ export function createMaritacaOpencodeProxy({ keyStore, upstreamBaseUrl = MARITA
       return sendError(res, 500, error?.code || 'KEY_UNREADABLE', 'SynaBun could not read its saved Maritaca key. Save it again in the Maritaca panel (the cog).');
     }
     if (!key) { stats.refused += 1; return sendError(res, 401, 'NO_KEY', 'No Maritaca API key is saved in SynaBun. Save one in the Maritaca panel (the cog).'); }
-    if (!sameKey(presentedKey(req), key)) {
+    if (channel !== true && !sameKey(presentedKey(req), key)) {
       stats.refused += 1;
       return sendError(res, 401, 'KEY_MISMATCH', 'This address takes the Maritaca key SynaBun has saved. Re-sync Maritaca under Settings → OpenCode → Providers.');
     }

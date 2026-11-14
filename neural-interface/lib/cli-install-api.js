@@ -135,3 +135,26 @@ export function createCliPathApi({ pathManager, resolver, diagnostics = async ()
   });
   return router;
 }
+
+/**
+ * Settings → Executable paths → Verify OpenCode (`/api/cli/opencode-serves`): the OpenCode serves SynaBun runs and
+ * the result of each one's runtime authentication check (lib/opencode-serve-probe.js through the native serve
+ * boundary), and the executable SynaBun would start. POST /verify checks every serve again. Same owner / localhost /
+ * Origin / UI guards as Install; nothing in an answer is a password or a token.
+ */
+export function createOpencodeServeVerifyApi({ boundary, executable = () => null, isGuestRequest, port } = {}) {
+  if (!boundary) throw new Error('createOpencodeServeVerifyApi needs the native serve boundary');
+  const { router, mutating } = localCliRouter({ isGuestRequest, port });
+  const answer = (status) => {
+    let exe = null;
+    try { exe = executable(); } catch { exe = null; }
+    return { ok: true, ...status, executable: exe };
+  };
+  router.get('/', (req, res) => { res.json(answer(boundary.status())); });
+  router.post('/verify', ...mutating, async (req, res) => {
+    if (Object.keys(req.body || {}).length) return res.status(400).json({ ok: false, code: 'UNEXPECTED_BODY' });
+    try { res.json(answer(await boundary.reverify())); }
+    catch (error) { res.status(500).json({ ok: false, error: String(error?.message || error) }); }
+  });
+  return router;
+}

@@ -283,6 +283,32 @@ export async function listProfiles(opts = {}) {
   return profileRows(data).map(normalizeProfile).filter(p => p.id);
 }
 
+/** Complete enumeration for absence decisions. Partial, repeated and changing pages refuse. */
+export async function listCompleteProfiles(opts = {}) {
+  const out = [], seen = new Set();
+  let total;
+  for (let pageNo = 1; pageNo <= 1000; pageNo++) {
+    const data = await request('/api/env/page', { pageNo, pageSize: 100 }, opts);
+    if (!Array.isArray(data) && !PROFILE_LIST_KEYS.some(k => Array.isArray(data?.[k]))) throw shapeError(data);
+    const rows = profileRows(data);
+    if (data?.total != null && !/^(0|[1-9][0-9]*)$/.test(String(data.total))) throw shapeError(data);
+    const count = data?.total == null ? undefined : Number(data.total);
+    if (count !== undefined && (!Number.isSafeInteger(count) || count < 0 || (total !== undefined && count !== total))) throw shapeError(data);
+    if (pageNo > 1 && count !== total) throw shapeError(data);
+    total = count;
+    for (const row of rows) {
+      if (!row?.id || !['string', 'number'].includes(typeof row.id) || !String(row.id).trim() || /[\u0000-\u001f]/.test(String(row.id))
+        || (typeof row.id === 'number' && !Number.isSafeInteger(row.id)) || seen.has(String(row.id))) throw shapeError(data);
+      seen.add(String(row.id)); out.push(normalizeProfile(row));
+    }
+    if (total !== undefined) {
+      if (out.length > total || (!rows.length && out.length < total)) throw shapeError(data);
+      if (out.length === total) return out;
+    } else if (!rows.length) return out;
+  }
+  throw shapeError(null);
+}
+
 /**
  * Lightweight reachability probe. Never throws — returns {running, count}.
  * `running` means the local API answered at all: an answer that is an HTTP or API

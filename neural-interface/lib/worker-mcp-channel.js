@@ -21,6 +21,10 @@
 // made by the Neural Interface process itself to its own loopback port — never by the worker — so it is outside the
 // worker's sandbox and works normally.
 //
+// One more route, for a run that needs it: POST /w/<token>/maritaca/v1/chat/completions, SynaBun's Maritaca proxy for
+// an OpenCode worker whose configuration names Maritaca (the proxy's own route is on the control port, which the
+// sandbox blocks, and its key file is in the data home, which the sandbox denies). Allowed per run (allowMaritaca).
+//
 // Only an enforced guard on macOS uses this channel; a full worker, a warn/off run, or any non-macOS host keeps the
 // main /mcp mount unchanged. If the channel cannot start, the caller falls back to the main mount and says so (the
 // worker is then not OS-isolated): the live tree must never lose worker dispatch to a channel that failed to bind.
@@ -78,18 +82,40 @@ export function proxiedBrowserRoute(method, url, mainPort) {
  * take a run's pin only with its token. `terminalAuth` is handed to the channel's MCP routes (as server.js's /mcp).
  * @returns an object with start/stop/register/unregister/url/port.
  */
-export function createWorkerMcpChannel({ createMcpRoutes, mainPort = null, fetchImpl = globalThis.fetch, log = () => {}, terminalToken = () => null, terminalAuth = undefined } = {}) {
+export function createWorkerMcpChannel({ createMcpRoutes, mainPort = null, fetchImpl = globalThis.fetch, log = () => {}, terminalToken = () => null, terminalAuth = undefined, maritaca = null } = {}) {
   if (typeof createMcpRoutes !== 'function') throw new Error('createWorkerMcpChannel needs createMcpRoutes');
   /** The run's terminal token, or null (none issued; a lookup that failed). */
   const tokenOf = (runId) => { try { const t = terminalToken(runId); return typeof t === 'string' && t ? t : null; } catch { return null; } };
   const tokenToRun = new Map(); // token → runId
   const runToToken = new Map(); // runId → token
   const selections = new Map(); // runId → immutable snapshot, never a request header
+  const maritacaRuns = new Set(); // runs whose own OpenCode configuration routes Maritaca through this channel
   let server = null;
   let port = null;
 
   const app = express();
   app.disable('x-powered-by');
+
+  // Maritaca for a sandboxed OpenCode worker (lib/maritaca/opencode.js maritacaWorkerChannelProvider): the Seatbelt
+  // profile blocks SynaBun's control port, where OpenCode's Maritaca route lives, and the key file in the data home, so
+  // the run's block points here instead. `maritaca(req, res)` is that same proxy (lib/maritaca/opencode-proxy.js) with
+  // SynaBun's saved key: the path token proves the run, and only a run allowed by allowMaritaca (its configuration was
+  // written so) reaches it. Chat completions only; whatever authorization the worker sends is dropped.
+  app.post('/w/:token/maritaca/v1/chat/completions', (req, res, next) => {
+    const runId = tokenToRun.get(String(req.params.token || ''));
+    if (!runId) return res.status(404).json({ error: { message: 'Unknown worker channel', type: 'synabun_worker_channel', code: 'WORKER_CHANNEL_UNKNOWN' } });
+    if (typeof maritaca !== 'function' || !maritacaRuns.has(runId)) {
+      return res.status(403).json({ error: { message: 'This run does not reach Maritaca through the worker channel.', type: 'synabun_worker_channel', code: 'WORKER_CHANNEL_ROUTE' } });
+    }
+    delete req.headers.authorization;
+    next();
+  }, express.json({ limit: '32mb' }), (req, res) => {
+    Promise.resolve().then(() => maritaca(req, res)).catch((error) => {
+      try { log(`[worker-mcp] Maritaca through the channel: ${error?.code || 'ERROR'}`); } catch {}
+      if (!res.headersSent) res.status(500).json({ error: { message: 'SynaBun could not send this request on to Maritaca.', type: 'synabun_worker_channel', code: 'PROXY_ERROR' } });
+      else { try { res.end(); } catch { /* gone */ } }
+    });
+  });
 
   // The browser proxy: a sandboxed OpenCode worker's stdio MCP child points NEURAL_INTERFACE_URL at this channel
   // (.../w/<token>) and drives the browser over it; the channel forwards ONLY the browser subset to the real
@@ -179,6 +205,15 @@ export function createWorkerMcpChannel({ createMcpRoutes, mainPort = null, fetch
       selections.set(String(runId), { groups, mode: valid && selection?.mode === 'focus' ? 'focus' : 'strict' });
     },
     has(runId) { return runToToken.has(String(runId)); },
+    /** Let a registered run's OpenCode reach Maritaca here (its configuration was pointed at the channel). */
+    allowMaritaca(runId) {
+      const id = String(runId || '');
+      if (!runToToken.has(id)) return false;
+      maritacaRuns.add(id);
+      return true;
+    },
+    /** Whether the channel carries Maritaca at all (built with the proxy). */
+    carriesMaritaca() { return typeof maritaca === 'function'; },
     /** The MCP URL for a run (registers it if new), or null when the channel is not up. Claude's HTTP MCP uses this. */
     url(runId) {
       if (!port) return null;
@@ -195,11 +230,13 @@ export function createWorkerMcpChannel({ createMcpRoutes, mainPort = null, fetch
     unregister(runId) {
       const id = String(runId || '');
       selections.delete(id);
+      maritacaRuns.delete(id);
       const token = runToToken.get(id);
       if (token) { tokenToRun.delete(token); runToToken.delete(id); }
     },
     async stop() {
       selections.clear();
+      maritacaRuns.clear();
       tokenToRun.clear();
       runToToken.clear();
       if (server) { await new Promise((r) => server.close(r)); server = null; port = null; }

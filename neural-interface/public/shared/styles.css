@@ -221,15 +221,20 @@
      GLASSMORPHISM BASE
      ═══════════════════════════════════════════ */
   .glass {
-    background: rgba(28, 28, 30, var(--glass-opacity));
-    backdrop-filter: blur(calc(var(--glass-blur) * 1px)) saturate(var(--glass-saturate));
-    -webkit-backdrop-filter: blur(calc(var(--glass-blur) * 1px)) saturate(var(--glass-saturate));
-    border: 1px solid rgba(255, 255, 255, var(--glass-border-opacity));
-    border-radius: calc(var(--glass-radius) * 1px);
-    box-shadow: 0 1px 2px rgba(0,0,0, var(--glass-shadow-opacity)),
+    /* Resolve these on the surface so scoped/skin glass variables still work.
+       Floating window chrome reuses the same values instead of fixed alpha/shadows. */
+    --glass-background: rgba(28, 28, 30, var(--glass-opacity));
+    --glass-backdrop: blur(calc(var(--glass-blur) * 1px)) saturate(var(--glass-saturate));
+    --glass-border: rgba(255, 255, 255, var(--glass-border-opacity));
+    --glass-shadow: 0 1px 2px rgba(0,0,0, var(--glass-shadow-opacity)),
                 0 calc(var(--glass-shadow-spread) * 0.15 * 1px) calc(var(--glass-shadow-spread) * 0.4 * 1px) rgba(0,0,0, calc(var(--glass-shadow-opacity) * 0.55)),
-                0 calc(var(--glass-shadow-spread) * 0.4 * 1px) calc(var(--glass-shadow-spread) * 1px) rgba(0,0,0, calc(var(--glass-shadow-opacity) * 0.35)),
-                inset 0 0.5px 0 rgba(255,255,255,0.07);
+                0 calc(var(--glass-shadow-spread) * 0.4 * 1px) calc(var(--glass-shadow-spread) * 1px) rgba(0,0,0, calc(var(--glass-shadow-opacity) * 0.35));
+    background: var(--glass-background);
+    backdrop-filter: var(--glass-backdrop);
+    -webkit-backdrop-filter: var(--glass-backdrop);
+    border: 1px solid var(--glass-border);
+    border-radius: calc(var(--glass-radius) * 1px);
+    box-shadow: var(--glass-shadow), var(--shadow-highlight);
   }
 
   /* Floating windows — thin visible border so they don't blend into the background */
@@ -14730,6 +14735,14 @@
     padding: 0 0 0 4px; font-size: 12px; font-weight: 400; letter-spacing: 0; background: none; color: var(--stg-help);
   }
   .settings-panel .stg-card .cli-path-status.detected { color: var(--stg-ok); }
+  /* Settings → Executable paths → Verify OpenCode: one block per OpenCode serve, its state said in words and shown by
+     the block's edge (verified / refused / being checked), the file it runs in mono. */
+  .settings-panel .opencode-verify-serve { margin-top: 6px; padding-left: 8px; border-left: 2px solid var(--stg-help); }
+  .settings-panel .opencode-verify-serve[data-state="ok"] { border-left-color: var(--stg-ok); }
+  .settings-panel .opencode-verify-serve[data-state="checking"] { border-left-color: var(--stg-warn); }
+  .settings-panel .opencode-verify-serve[data-state="refused"] { border-left-color: var(--stg-err); }
+  .settings-panel .opencode-verify-serve[data-state="refused"] .opencode-verify-serve-line { color: var(--stg-err); }
+  .settings-panel .opencode-verify-path { font-family: 'JetBrains Mono', monospace; overflow-wrap: anywhere; }
   .settings-panel .stg-card .cli-path-status.not-found { color: var(--stg-err); }
 
   /* The save bar under a pane: the panel's own surface and a hairline */
@@ -23942,8 +23955,8 @@
   }
   .sched-dialog {
     width: 420px; max-width: 100%; max-height: 100%; overflow-y: auto;
-    color: var(--stg-text); background: var(--s-panel); border: 1px solid var(--fw-border);
-    border-radius: var(--fw-radius); box-shadow: var(--fw-shadow);
+    color: var(--stg-text); background: var(--s-panel); border: 1px solid var(--b-visible);
+    border-radius: var(--fw-radius); box-shadow: var(--shadow-xl);
   }
   .sched-dialog h4 { margin: 0; padding: 14px 18px 0; font-family: var(--stg-font); font-size: var(--fs-sm); font-weight: 600; line-height: 1.4; }
   .sched-dialog-body { padding: 8px 18px 2px; }
@@ -26934,7 +26947,14 @@
   body :is(.settings-panel, .skills-studio-panel, .automation-studio-panel,
     .schedules-studio-panel, .session-monitor-panel, .command-runner-panel, .styleguide-panel,
     .image-gallery-panel, .detail-card, .tw, .sched-prompt-modal, .term-picker-modal).glass {
+    /* Appearance owns glass surfaces, including while the explorer is open.
+       Keep non-glass terminal/editor/provider chrome on its own roles. */
+    --fw-surface: var(--glass-background);
+    --fw-border: var(--glass-border);
+    --fw-shadow: var(--glass-shadow);
     background: var(--fw-surface);
+    backdrop-filter: var(--glass-backdrop);
+    -webkit-backdrop-filter: var(--glass-backdrop);
   }
   body .sp-sidepanel.sp-floating {
     background: var(--fw-surface);
@@ -27349,7 +27369,7 @@
   .cr-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 22px; color: var(--stg-warn); border-bottom: 1px solid var(--stg-sep); font-size: var(--fs-xs); line-height: 1.45; }
   .cr-modal-overlay { position: absolute; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; padding: 12px; background: var(--s-panel); backdrop-filter: blur(4px); }
   .cr-modal-overlay.hidden { display: none; }
-  .cr-modal { width: 480px; max-width: 100%; max-height: 100%; overflow-y: auto; overscroll-behavior: contain; color: var(--stg-text); background: var(--s-panel); border: 1px solid var(--fw-border); border-radius: var(--fw-radius); box-shadow: var(--fw-shadow); }
+  .cr-modal { width: 480px; max-width: 100%; max-height: 100%; overflow-y: auto; overscroll-behavior: contain; color: var(--stg-text); background: var(--s-panel); border: 1px solid var(--b-visible); border-radius: var(--fw-radius); box-shadow: var(--shadow-xl); }
   .cr-modal-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 8px 22px; border-bottom: 1px solid var(--stg-line); }
   .cr-modal-header > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
   .cr-modal-header h4 { margin: 0; font-family: var(--stg-font); font-size: var(--fs-sm); line-height: 1.4; font-weight: 500; }

@@ -29,7 +29,10 @@ import { setStaticBgVisible } from './static-bg-state.js';
 setCliInstallTranslator((key, params) => kit.tx(`cliInstall.${key}`, params));
 import { setGitBashTranslator } from './git-bash-view.js';
 import { gitBashRowHtml, wireGitBashRow } from './ui-git-bash.js';
+import { setOpencodeVerifyTranslator } from './opencode-verify-view.js';
+import { opencodeVerifyRowHtml, wireOpencodeVerifyRow } from './ui-opencode-verify.js';
 setGitBashTranslator((key, params) => kit.tx(`gitBash.${key}`, params));
+setOpencodeVerifyTranslator((key, params) => kit.tx(`opencodeVerify.${key}`, params));
 import { initI18n, isReady as i18nReady, SUPPORTED_LOCALES, LOCALE_NAMES, SYSTEM_LOCALE, getLocale, getLocaleChoice, setLocaleChoice, getSystemLocale, englishTranslator, loadEnglishTranslator } from './i18n.js';
 import { wireSettingsShell, wireSettingsSearch, collectSearchRows, revealSettingsTarget, followSettingsTarget, onSettingsTakeover, applyStoredSections, storeSectionState } from './settings/settings-shell.js';
 import { buildSettingsSearchIndex } from './settings/settings-search.js';
@@ -1194,6 +1197,7 @@ function buildTerminalTab(cliConfig) {
           ${kit.help('CLI002', { forId: 'cli-paths-detect' })}
           ${cliProfiles.map(pathRow).join('')}
           ${gitBashRowHtml()}
+          ${opencodeVerifyRowHtml()}
           <button type="button" class="stg-action-btn stg-save-btn" id="cli-paths-save" ${kit.inv('CLI006')} aria-describedby="cli-paths-save-help">
             ${kit.L('CLI006')}
           </button>
@@ -2663,7 +2667,8 @@ function wireMoreLoginTab(overlay, signal) {
 
   // `agentProfiles`: the owner's list of profiles agents may choose (GET /api/morelogin/profiles). A server from
   // before that list sends none: the switches are then left out and the pane says a restart is missing.
-  function renderProfiles(envs, agentProfiles) {
+  function renderProfiles(envs, agentProfiles, staleProfiles = []) {
+    envs = [...(envs || []), ...staleProfiles.map(p => ({ id: p.envId, name: p.name || p.envId, stale: true }))];
     const list = $('ml-profile-list');
     if (!list) return;
     // The open editor's typed values outlive a redraw of the list (a Start, a switch, the quiet ask again).
@@ -2678,6 +2683,9 @@ function wireMoreLoginTab(overlay, signal) {
     list.innerHTML = missing + envs.map(e => {
       const id = escapeHtml(String(e.id));
       const isDefault = String(e.id) === String(_defaultEnvId);
+      if (e.stale) return `<div data-ml-stale="${id}" class="settings-hint"><span>${escapeHtml(kit.tx('settings.redesign.morelogin.staleProfile', { name: e.name, id: String(e.id) }))}</span>
+        ${isDefault ? `<span>${kit.te('settings.redesign.morelogin.staleDefault')}</span>` : ''}
+        ${allowed.has(String(e.id)) ? `<button type="button" class="conn-add-btn ml-remove-stale" data-env-id="${id}">${kit.te('settings.redesign.morelogin.removeStale')}</button>` : ''}</div>`;
       // SynaBun drives a profile over CDP: a Firefox-type one (`browser` from the server; absent = not known) cannot
       // be the AI browser, so "Use as default" is not offered for it. Start and Stop stay for either kind.
       const firefox = e.browser === 'firefox';
@@ -2715,6 +2723,12 @@ function wireMoreLoginTab(overlay, signal) {
       box.disabled = false;
       if (r && r.ok) showCCToast(kit.tx(want ? 'settings.redesign.morelogin.agentsMayChooseOn' : 'settings.redesign.morelogin.agentsMayChooseOff', { name }));
       else { box.checked = !want; showCCToast(kit.tx('settings.redesign.morelogin.agentsMayChooseFailed', { error: (r && r.error) || kit.tx('settings.redesign.morelogin.failed') })); }
+    }));
+    list.querySelectorAll('.ml-remove-stale').forEach(b => b.addEventListener('click', async () => {
+      b.disabled = true;
+      const r = await jsend('PUT', '/api/morelogin/agent-profiles', { envId: b.dataset.envId, allowed: false });
+      if (!r.ok) { showCCToast(r.error || kit.tx('settings.redesign.morelogin.failed')); b.disabled = false; }
+      else await reload();
     }));
     list.querySelectorAll('.ml-use').forEach(b => b.addEventListener('click', async () => {
       const r = await jpost('/api/morelogin/use-default', { envId: b.dataset.envId });
@@ -2912,7 +2926,7 @@ function wireMoreLoginTab(overlay, signal) {
       if (d && d.ok && Array.isArray(d.profiles)) _localDetails = new Map(d.profiles.map(row => [String(row.id), row]));
     } else _localDetails = new Map();
     _moreloginError = p.moreloginError || '';
-    renderProfiles(p.envs || [], p.agentProfiles);
+    renderProfiles(p.envs || [], p.agentProfiles, p.moreloginError ? [] : p.staleProfiles || []);
     // The server is still asking MoreLogin which browser some profiles run: ask again quietly, a few times.
     clearTimeout(_browsersTimer);
     if (Number(p.browsersPending) > 0 && _browsersTries < 8 && $('ml-profile-list')?.isConnected) {
@@ -5107,6 +5121,7 @@ async function openSettingsModalNow(options = {}) {
     });
     // Windows: the Git Bash every Claude Code SynaBun starts gets (ui-git-bash.js; hidden on macOS and Linux).
     wireGitBashRow(overlay.querySelector('#cli-git-bash'));
+    wireOpencodeVerifyRow(overlay.querySelector('#cli-opencode-verify'));
     overlay.querySelector('#cli-path-diagnostics')?.addEventListener('click', async () => {
       try {
         const response = await fetch('/api/cli/path');

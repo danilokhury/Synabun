@@ -225,7 +225,7 @@ function abortError() {
  *   in its turn among every serve SynaBun starts (server.js oneOpencodeStartAtATime); by itself when not given
  * @param {number} [deps.exitWaitMs] how long a failed start waits for its process to exit after SIGTERM, and again
  *   after SIGKILL, before its turn ends
- * @param {(o: { port: number, proc: object }) => any} [deps.trackServe] told once something answers on the port
+ * @param {(o: { port: number, proc: object, password: string | null }) => any} [deps.trackServe] told once something answers on the port (with the password the serve printed, which its runtime check proves it accepts)
  *   (server.js keeps the serve on record from its spawn, so that a crash of SynaBun does not leave it running for
  *   good); 'foreign' (or a promise of it): what answers is not this start's process but another server that took
  *   the port, which is left running while the start ends its own process and tries another port
@@ -362,7 +362,8 @@ export function createOpencodeCompletionEngine({
       // is gone.
       const check = await startOneAtATime(async () => {
         stillWanted();
-        started.proc = spawnServe({ port, env: completionServeEnvironment(env, { configHome: dataDir }), cwd: workDir, password, passwordFrom });
+        const pendingSpawn = spawnServe({ port, env: completionServeEnvironment(env, { configHome: dataDir }), cwd: workDir, password, passwordFrom });
+        started.proc = typeof pendingSpawn?.then === 'function' ? await pendingSpawn : pendingSpawn;
         if (passwordFrom === 'stdout') {
           const readPassword = servePasswordReader();
           started.proc?.stdout?.on('data', chunk => { started.password = readPassword(chunk); });
@@ -384,7 +385,7 @@ export function createOpencodeCompletionEngine({
             if (answer?.ok) {
               // Only this start's own process counts: another server that took the port answers for itself.
               let verdict = null;
-              try { verdict = await trackServe({ port, proc: started.proc }); } catch { /* the record is the caller's */ }
+              try { verdict = await trackServe({ port, proc: started.proc, password: started.password }); } catch { /* the record is the caller's */ }
               if (verdict === 'foreign') throw Object.assign(new Error(`Another server answers on port ${port}`), { portTaken: true });
               return answer;
             }
