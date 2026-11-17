@@ -250,3 +250,50 @@ jobs:
               process.exit(1);
             });
           '
+
+  # Tells synabun.ai to re-read the releases now instead of at its hourly check.
+  # Runs after the release job has finished, passed or failed, so the notes and
+  # attached reports are final. Uses no GITHUB_TOKEN and never fails the release:
+  # without the secret it only leaves a notice.
+  notify-website:
+    needs: fallback
+    if: always() && github.repository == 'danilokhury/Synabun' && github.event_name == 'release'
+    permissions: {}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Notify synabun.ai website
+        env:
+          DISPATCH_TOKEN: ${{ secrets.SYNABUN_WEBSITE_DISPATCH_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          DISPATCH_URL: https://api.github.com/repos/danilokhury/SynaBunWebsite/dispatches
+        run: |
+          if [ -z "$DISPATCH_TOKEN" ]; then
+            echo "::notice title=Website not notified::Secret SYNABUN_WEBSITE_DISPATCH_TOKEN is not set, so synabun.ai picks up $RELEASE_TAG at its hourly check. Add a fine-grained token for danilokhury/SynaBunWebsite (Contents: read and write) under Settings > Secrets and variables > Actions."
+            exit 0
+          fi
+          payload=$(jq -nc --arg tag "$RELEASE_TAG" '{event_type: "synabun-release", client_payload: {tag: $tag}}')
+          answer="$RUNNER_TEMP/website-dispatch.txt"
+          for attempt in 1 2; do
+            status=$(curl --silent --show-error --output "$answer" --write-out '%{http_code}' \
+              --connect-timeout 10 --max-time 30 --request POST \
+              --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              --header "Authorization: Bearer $DISPATCH_TOKEN" \
+              --data "$payload" "$DISPATCH_URL") || status=000
+            case "$status" in
+              2??) echo "synabun.ai notified of $RELEASE_TAG (HTTP $status)."; exit 0 ;;
+              000|408|429|5??)
+                if [ "$attempt" = 1 ]; then echo "Dispatch answered HTTP $status; retrying in 10 s."; sleep 10; continue; fi ;;
+            esac
+            break
+          done
+          case "$status" in
+            401) reason='the token is invalid or expired; replace the SYNABUN_WEBSITE_DISPATCH_TOKEN secret' ;;
+            403|404) reason='the token cannot reach danilokhury/SynaBunWebsite or lacks Contents: read and write; replace the SYNABUN_WEBSITE_DISPATCH_TOKEN secret' ;;
+            000) reason='GitHub could not be reached; re-run this job' ;;
+            *) reason='GitHub refused the dispatch; re-run this job' ;;
+          esac
+          echo "::error title=Website not notified::HTTP $status: $reason. synabun.ai still picks up $RELEASE_TAG at its hourly check."
+          cat "$answer" 2>/dev/null || true
+          exit 1
