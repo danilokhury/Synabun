@@ -165,7 +165,7 @@ export const ASK_CSS = `
     display: flex;
     flex-direction: column;
     gap: 8px;
-    max-width: 560px;
+    width: 100%;
     min-width: 0;
     margin-top: 10px;
     padding: 12px 14px;
@@ -184,8 +184,7 @@ export const ASK_CSS = `
     flex-direction: row;
     align-items: center;
     gap: 8px;
-    width: fit-content;
-    max-width: min(100%, 560px);
+    width: 100%;
     min-height: var(--asst-pill-h-md);
     padding: 4px 10px 4px 8px;
     border-radius: var(--asst-pill-r-md);

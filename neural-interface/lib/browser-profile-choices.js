@@ -3,13 +3,13 @@
 // A run can be launched with a MoreLogin profile (a schedule's, a group's, a timer's, a launch's, a dispatch's:
 // server.js pinRunMoreLoginProfile). A session can also choose one for itself while it runs (the `morelogin` tool's
 // "use" action, POST /api/morelogin/use): the same pin, set for the caller's own owner key and for nobody else. The
-// default of Settings → Browser and every other session stay as they are.
+// default AI browser (Settings → Connected tools → MoreLogin) and every other session stay as they are.
 //
 // The pin map lives in memory, and a run's launch pin is read back from its loop file after a restart. A choice a
 // session made itself has no such file (a side panel, the Assistant's brain, a CLI window), and losing it would send
 // that session's next browser call to the default profile without a word: another account. So choices are kept in one
 // small file (DATA_HOME/data/browser-profile-choices.json) and put back into the pin map when the server starts.
-// `envId: null` is a choice too: "the Browser settings default", made by a run that was launched with a profile.
+// `envId: null` is a choice too: "the default AI browser", made by a run that was launched with a profile.
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -121,7 +121,7 @@ export function createProfileChoiceStore({ file, now = Date.now, log = () => {},
       const row = loaded().get(ownerKey);
       return row ? { envId: row.envId, name: row.name } : undefined;
     },
-    /** Keep `ownerKey`'s choice: a profile, or null for "the Browser settings default". */
+    /** Keep `ownerKey`'s choice: a profile, or null for "the default AI browser". */
     set(ownerKey, choice) {
       if (!OWNER_RE.test(String(ownerKey || ''))) return false;
       const envId = cleanId(choice?.envId);

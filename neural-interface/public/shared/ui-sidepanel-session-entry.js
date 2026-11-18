@@ -2,10 +2,29 @@ import { hostedSidepanelId, sidepanelHost } from './ui-sidepanel-runtime.js';
 import { emit } from './state.js';
 import { sessionWindowStatus } from './sidepanel-session-status.js';
 
+export function observeSessionWindowStatus(tray, reportStatus) {
+  let sentStatus = '';
+  const syncStatus = () => {
+    const pills = Array.from(tray?.querySelectorAll('.term-minimized-pill') || [], (pill) => ({
+      classes: pill.classList,
+      status: pill.dataset.status,
+      badgeStatus: pill.querySelector('.cli-status-badge')?.dataset.status,
+    }));
+    const status = sessionWindowStatus(pills);
+    if (status === sentStatus) return;
+    sentStatus = status;
+    reportStatus(status);
+  };
+  if (tray) new MutationObserver(syncStatus).observe(tray, {
+    childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'data-status'],
+  });
+  syncStatus();
+}
+
 const host = sidepanelHost();
-const provider = new URLSearchParams(location.search).get('provider');
 if (hostedSidepanelId && host) {
   try {
+    const provider = new URLSearchParams(location.search).get('provider');
     let receivePath, end, defaults;
     if (provider === 'claude') {
       const panel = await import('./ui-claude-panel.js');
@@ -49,15 +68,9 @@ if (hostedSidepanelId && host) {
     // What its sessions do, for this window's pill in the main window: read from this document's own tray
     // pills, which the panel paints from its sessions' state, and sent when it changes.
     const tray = document.getElementById('term-minimized-tray');
-    let sentStatus = '';
-    const syncStatus = () => {
-      const status = sessionWindowStatus([...(tray?.querySelectorAll('.term-minimized-pill') || [])].map((pill) => [...pill.classList]));
-      if (status === sentStatus) return;
-      sentStatus = status;
+    observeSessionWindowStatus(tray, (status) => {
       host.status?.(hostedSidepanelId, status);
-    };
-    if (tray) new MutationObserver(syncStatus).observe(tray, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
-    syncStatus();
+    });
     host.ready(hostedSidepanelId, { focus, defaults, end, receive(kind, data) {
       if (kind === 'path') return receivePath(data);
       emit(kind === 'image' ? 'wb:send-to-panel' : kind, data);

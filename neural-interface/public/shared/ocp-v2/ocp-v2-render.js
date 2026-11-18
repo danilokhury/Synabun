@@ -23,7 +23,9 @@ import { TOOL_ICONS } from './ocp-v2-icons.js';
 import { renderToolCard } from './ocp-v2-tools.js';
 import { messageMetaText } from './ocp-v2-tools-logic.js';
 import { createStickyScrollController } from '../ui-scroll-follow.js';
+import { watchTranscriptRows } from '../transcript-rows.js';
 import { sanitizeHtmlString } from '../assistant/asst-sanitize.js';
+import { withCodeCopyButtons } from '../code-copy.js';
 import { openProviderSettings } from './ocp-v2-settings-link.js';
 import {
   visibleParts, partSignature, messageErrorView, retryBannerView, retryPartText,
@@ -82,6 +84,10 @@ export function mountRenderer(containerEl, store = getDefaultStore(), opts = {})
   let _container = containerEl;
   let _renderScheduled = false;
   const scrollController = createStickyScrollController(_container);
+  // Rows far from the screen are skipped by the engine, at their exact size (transcript-rows.js). The rows
+  // are the keyed children _reconcile keeps; the declarations are inline, so a kept row keeps them and a
+  // rebuilt one starts plain.
+  const rowWatcher = watchTranscriptRows(_container);
 
   const doRender = () => {
     render(_container, store, opts);
@@ -108,6 +114,7 @@ export function mountRenderer(containerEl, store = getDefaultStore(), opts = {})
     unmount: () => {
       try { unsubscribe(); } catch {}
       scrollController?.destroy();
+      rowWatcher.disconnect();
       _activeRenderers.delete(instance);
       _container = null;
     },
@@ -124,7 +131,18 @@ export function unmountRenderer() {
   for (const r of _activeRenderers) { try { r.unmount(); } catch {} }
 }
 
-const _partSig = partSignature;
+// A part's signature, kept per part object. The store never changes a part in place (an update or a streamed
+// chunk puts a new object in its place: ocp-v2-state.js upsertPart / appendPartDelta), so one object has one
+// signature. A render pass signs every part of the transcript, and a tool part's signature serialises its
+// input, output and metadata to measure them: without this, every frame of a stream did that again for every
+// tool call the session ever made.
+const _partSigs = new WeakMap();
+function _partSig(part) {
+  if (!part || typeof part !== 'object') return partSignature(part);
+  let sig = _partSigs.get(part);
+  if (sig === undefined) { sig = partSignature(part); _partSigs.set(part, sig); }
+  return sig;
+}
 
 function _msgSig(msg) {
   let sig = `m:${msg.role || 'assistant'}`;
@@ -647,26 +665,9 @@ function renderPart(part, store) {
 function renderTextPart(part) {
   const el = document.createElement('div');
   el.className = 'ocpv2-part ocpv2-part-text';
+  // Every fenced block carries the shared Copy button: renderMarkdown writes it in (../code-copy.js).
   el.innerHTML = renderMarkdown(part.text || '');
-  decorateCodeBlocks(el);
   return el;
-}
-
-// A Copy button on every fenced block.
-function decorateCodeBlocks(root) {
-  for (const pre of root.querySelectorAll('pre')) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'ocpv2-code-copy';
-    btn.textContent = 'Copy';
-    btn.addEventListener('click', (event) => {
-      event.stopPropagation();
-      const code = pre.querySelector('code');
-      copyText((code || pre).textContent || '', btn).catch(() => {});
-    });
-    pre.classList.add('ocpv2-code-block');
-    pre.appendChild(btn);
-  }
 }
 
 function renderReasoningPart(part) {
@@ -1777,13 +1778,15 @@ function renderMarkdown(src) {
   } else {
     html = escapeHtml(text).replace(/\n/g, '<br>');
   }
+  // Every code block gets the shared Copy button, written in after the sanitiser (../code-copy.js).
+  const shown = withCodeCopyButtons(html);
   if (_markdownCache.size >= _markdownCacheLimit) {
     // Evict oldest insertion (Map preserves insertion order)
     const firstKey = _markdownCache.keys().next().value;
     if (firstKey !== undefined) _markdownCache.delete(firstKey);
   }
-  _markdownCache.set(text, html);
-  return html;
+  _markdownCache.set(text, shown);
+  return shown;
 }
 
 function escapeHtml(s) {

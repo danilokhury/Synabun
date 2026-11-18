@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════
 
 import { emit, on } from './state.js';
-import { loadIfaceConfig, applyIfaceConfig, saveIfaceConfig } from './ui-settings.js';
+import { loadIfaceConfig, applyIfaceConfig, saveIfaceConfig } from './iface-config.js';
 import { storage } from './storage.js';
 import { KEYS } from './constants.js';
 

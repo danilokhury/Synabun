@@ -90,6 +90,7 @@ export function getEditorPanelHTML() {
 export function getSharedHTML() {
   const variant = getVariant() || '3d';
   const is3D = variant === '3d';
+  const attentionDot = '<span class="menubar-attention-dot" aria-hidden="true" hidden></span>';
 
   return `
 <!-- App frame (styles.css APP FRAME): the card's interior under the graph, its border and gutter over the windows -->
@@ -409,7 +410,7 @@ ${is3D ? '' : `
 `}
       <!-- Skills menu -->
       <div class="menubar-item" data-menu="skills">
-        <button class="menubar-label">${t('nav.skills')}</button>
+        <button class="menubar-label" data-studio-attention="skills">${t('nav.skills')}${attentionDot}</button>
         <div class="menubar-dropdown glass">
           <div class="menu-item" id="menu-open-skills-studio">
             <span class="menu-check"></span>
@@ -432,9 +433,34 @@ ${is3D ? '' : `
         </div>
       </div>
 
+      <!-- Agents menu (agents-p5: Agents Studio, public/shared/ui-agents.js) -->
+      <div class="menubar-item" data-menu="agents">
+        <button class="menubar-label" id="menubar-agents" data-studio-attention="agents">${t('nav.agents')}${attentionDot}</button>
+        <div class="menubar-dropdown glass">
+          <div class="menu-item" id="menu-open-agents-studio">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="8" width="14" height="11" rx="2.5"/><path d="M12 8V4"/><path d="M9.5 13v1.5"/><path d="M14.5 13v1.5"/><path d="M2.5 13v3"/><path d="M21.5 13v3"/></svg></span> ${t('menu.agents.studio')}</span>
+            <span class="menu-shortcut" data-keybind-for="open-agents"></span>
+          </div>
+          <div class="menu-item" id="menu-agents-new">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg></span> ${t('menu.agents.newAgent')}</span>
+          </div>
+          <div class="menu-sep"></div>
+          <div class="menu-item" id="menu-agents-review">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l4 4 10-10"/></svg></span> ${t('menu.agents.reviewQueue')} <span class="count-badge count-badge--gold" id="menu-agents-review-count" hidden></span></span>
+          </div>
+          <div class="menu-item" id="menu-agents-teams">
+            <span class="menu-check"></span>
+            <span class="menu-text"><span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><circle cx="17" cy="10" r="2.3"/><path d="M16 14.6a4.5 4.5 0 0 1 4.5 4.4"/></svg></span> ${t('menu.agents.teams')}</span>
+          </div>
+        </div>
+      </div>
+
       <!-- Automations menu -->
       <div class="menubar-item" data-menu="automations">
-        <button class="menubar-label">${t('nav.automations')}</button>
+        <button class="menubar-label" data-studio-attention="automations">${t('nav.automations')}${attentionDot}</button>
         <div class="menubar-dropdown glass">
           <div class="menu-item" id="menu-open-automation-studio">
             <span class="menu-check"></span>
@@ -454,7 +480,7 @@ ${is3D ? '' : `
       </div>
 
       <!-- Schedules (opens and closes the Schedules window; no dropdown) -->
-      <button type="button" class="menubar-label menubar-action" id="menubar-schedules-btn" aria-expanded="false" aria-controls="schedules-studio-panel">${t('nav.schedules')}</button>
+      <button type="button" class="menubar-label menubar-action" id="menubar-schedules-btn" aria-expanded="false" aria-controls="schedules-studio-panel" data-studio-attention="schedules">${t('nav.schedules')}${attentionDot}</button>
 
       <!-- Settings (text button) -->
       <button class="menubar-label menubar-action" id="menubar-settings-btn">${t('nav.settings')}</button>
@@ -503,7 +529,7 @@ ${is3D ? '' : `
      ⋯ (#topright-overflow-btn: what does not fit the band, ui-topright-overflow.js), the tools toggle
      (#topright-tools-btn, shows and hides the dock) and the agent side panels. Always one row, never wrapped.
      Snap to grid and Tile terminals are on the whiteboard rail (#wb-toolbar) and in View. The session pills
-     (#term-minimized-tray) are a row under the bar, right-aligned with it (styles.css: "Fit"). -->
+     (#term-minimized-tray) are in status columns under the bar, right-aligned with it (styles.css: "Fit"). -->
 <div id="topright-controls">
   <div id="topright-inner">
   <div id="workspace-overlay">
@@ -604,6 +630,9 @@ ${is3D ? '' : `
   </button>
   <button id="topright-maritaca-panel-btn" class="topright-icon-btn" data-tooltip="${t('maritacaPanel.toolbar')}">
     <svg viewBox="0 0 12.48 13.73" fill="currentColor"><path d="M10.11 11.01h1.9S7.21 5.97 5.72 4.4a.62.62 0 0 0-.93.04c-.48.59-.76 1.33-.81 2.1-.06 1.04.32 2.06 1.04 2.8l4.35 4.4h3.1l-2.37-2.72Z"/><path d="M5.69 11 4.52 9.82c-.86-.89-1.31-2.1-1.24-3.33s.67-2.38 1.62-3.16c.35.06.71-.02 1.01-.24-.07-.24-.16-.55-.22-.75-.02-.07.06-.13.12-.09l1.16.77c.3-.61.22-1.37-.26-1.9.1-.18.06-.44-.15-.57C6.07.26 5.36 0 4.41 0 2.76 0 0 1.5 0 5.18c0 2.12 1.36 4.57 3.86 5.47l-1.43 3.08h1.05L4.8 10.9c.29.05.58.09.89.1l-1.27 2.73h1.05l.94-2.01L5.7 11ZM4.84.67c.23 0 .42.19.42.42s-.19.42-.42.42-.42-.19-.42-.42.19-.42.42-.42"/></svg>
+  </button>
+  <button id="topright-auto-close-btn" class="topright-icon-btn" type="button" aria-pressed="false" aria-label="${t('toolbar.trayAutoCloseOff')}" data-tooltip="${t('toolbar.trayAutoCloseOff')}">
+    <svg viewBox="0 0 24 24" aria-hidden="true" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 8h18m-13 6 3 3 5-6"/></svg>
   </button>
   </div>
   <div id="term-minimized-tray"></div>

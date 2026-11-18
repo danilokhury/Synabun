@@ -13,6 +13,7 @@ import { isGraphPointerActivity } from '../../shared/graph-activity.js';
 import { clearSearch } from '../../shared/ui-search.js';
 import { escapeHtml } from '../../shared/utils.js';
 import { frameRect } from '../../shared/app-frame.js';
+import { openEscapeOverlay } from '../../shared/window-keys.js';
 
 const CLICK_SLOP = 5; // px a press may move and still count as a click
 
@@ -137,12 +138,13 @@ export function initMapControls({ renderer, view, labels, onContextMenu = null }
     view.frameAll();
   });
 
-  // Esc: search first, then selection. Backs off whenever something else owns it.
+  // Esc: search first, then selection. Backs off whenever something else owns it: the focus is elsewhere, or a
+  // dialog, picker, menu or dropdown is open (the same list the whiteboard yields to: shared/window-keys.js).
   const onKeyDown = (e) => {
     if (e.key !== 'Escape' || e.defaultPrevented) return;
     const active = document.activeElement;
     const owned = active && active !== document.body && active !== canvas;
-    if (owned || document.querySelector('.menubar-item.open, .modal-overlay.open, .settings-modal.open')) return;
+    if (owned || document.querySelector('.menubar-item.open, .modal-overlay.open, .settings-modal.open') || openEscapeOverlay(document)) return;
     if (view.searching) { clearSearch(); return; }
     if (view.selectedId) view.clearSelection();
   };

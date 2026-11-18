@@ -1390,12 +1390,13 @@ export function createUsageLedger({ dataDir, now = Date.now, log = () => {}, jud
     return task;
   }
 
-  function beginTask(sessionId, { title = null, at = null } = {}) {
+  function beginTask(sessionId, { title = null, at = null, afterSequence = 0 } = {}) {
     if (!usageLedgerPath(dataDir, sessionId)) return null;
     dropped.delete(String(sessionId));
     const session = open(sessionId);
     if (!session) return null;
-    const n = session.maxN + 1;
+    // The runtime may have allocated task ids while metering was unavailable. Never reuse those ids.
+    const n = Math.max(session.maxN, count(afterSequence)) + 1;
     const clean = typeof title === 'string' && title.trim() ? title.trim().slice(0, TITLE_MAX) : null;
     const task = startTask(session, { id: `task-${n}`, n, title: clean, at: count(at) || now() });
     notify(session.id);

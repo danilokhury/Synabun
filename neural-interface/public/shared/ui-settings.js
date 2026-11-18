@@ -1,3 +1,4 @@
+import { extensionSettingsHTML, wireExtensionSettings } from './settings/settings-browser-extension.js';
 import { fetchToolCatalog } from './agent-runtime-options.js';
 import { reloadAfterRestore } from './server-back.js';
 import { configureToolPickerTranslation, toolPickerHTML, readToolPicker, toolWord, toolServersNote } from './tool-list-picker.js';
@@ -15,6 +16,7 @@ import { readUserContextResponse, describeUserContext, describeUserContextSaveFa
 import { readWorkerGuardResponse, describeWorkerGuard, describeWorkerGuardSaveFailure } from './settings/settings-worker-guard.js';
 import { readOwnerAccessResponse, describeOwnerAccess, describeOwnerAccessSaveFailure } from './settings/settings-browser-owner-access.js';
 import { CLAUDE_HOOK_ROWS, readClaudeHooksResponse, describeClaudeHooks, describeClaudeHooksSaveFailure } from './settings/settings-claude-hooks.js';
+import { masterView, masterRequests, countTools } from './settings/settings-tool-permissions.js';
 import { readGreetingStatus, describeGreeting, describeGreetingSaveFailure } from './settings/settings-greeting.js';
 import { describeOpencodeInstall } from './settings/settings-opencode.js';
 import { maritacaOpencodeCardView, maritacaOpencodeModelRows, MARITACA_OPENCODE_KEYS, MARITACA_OPENCODE_PROVIDER } from './settings/settings-maritaca-opencode.js';
@@ -25,7 +27,11 @@ import { recheckCliStatus, getCliStatus, addCliToPath } from './cli-status.js';
 import { cliInstallText, setCliInstallTranslator } from './cli-install-view.js';
 import { dropdownHTML, wireDropdowns, setDropdownItems, setDropdownValue } from './cc-dropdown.js';
 import { PROXY_TYPES, isLocalProfile, proxySummary, defaultCreateWhere, isPlanLimit, formOfProfile, readLocalProfileForm, proxyOfForm, createAction, whereOptions, passwordNeededAgain } from './settings/settings-local-profiles.js';
-import { setStaticBgVisible } from './static-bg-state.js';
+import { startLimitNotes, closedOutsideNotes } from './settings/settings-morelogin-cooldown.js';
+import { AI_BROWSER_EVENT, aiBrowserOf, aiBrowserOfStatus, localConnectModeOf, browserSaveFields, switchRequest, pickRequest, aiBrowserLine, profileOf, aiBrowserDetail } from './settings/settings-ai-browser.js';
+import { IFACE_DEFAULTS, loadIfaceConfig, saveIfaceConfig, applyIfaceConfig, restoreInterfaceConfig, loadSkinStylesheet, removeSkinStylesheet, restoreSkin, setSkinsTabRefresher } from './iface-config.js';
+// The interface config and the skin, for the modules that import them from here.
+export { loadIfaceConfig, saveIfaceConfig, applyIfaceConfig, restoreInterfaceConfig, restoreSkin };
 setCliInstallTranslator((key, params) => kit.tx(`cliInstall.${key}`, params));
 import { setGitBashTranslator } from './git-bash-view.js';
 import { gitBashRowHtml, wireGitBashRow } from './ui-git-bash.js';
@@ -133,24 +139,9 @@ function showCCToast(msg, duration = 3500) {
 // INTERFACE CUSTOMIZATION — config, presets, apply
 // ═══════════════════════════════════════════
 
-// Optional legacy view preferences must never reintroduce a 2D selection.
-const IFACE_DEFAULTS = {
-  visualizationEnabled: true,
-  scale: 1,
-  glassOpacity: 0.72,
-  // 16 keeps the glass look at a fraction of the compositing cost — users can
-  // still crank the slider to 80 to explicitly opt back into heavier blur
-  glassBlur: 16,
-  glassSaturate: 1.4,
-  glassBorderOpacity: 0.06,
-  glassShadowOpacity: 0.4,
-  glassShadowSpread: 20,
-  glassRadius: 14,
-  fontScale: 1,
-  accentHue: 0,
-  accentSaturation: 0,
-  accentLightness: 80,
-};
+// IFACE_DEFAULTS, loading / saving / applying the config and the skin stylesheet live in iface-config.js: the boot
+// needs them before this module (the Settings window, loaded on first open or in idle time) has loaded.
+setSkinsTabRefresher((panel) => refreshSkinsTab(panel));
 
 const IFACE_PRESETS = {
   default: { label: 'Default',  desc: 'Standard glass look',      values: { ...IFACE_DEFAULTS } },
@@ -179,197 +170,6 @@ const IFACE_SLIDERS = {
   ],
 };
 
-export function loadIfaceConfig() {
-  try {
-    const raw = storage.getItem('neural-interface-config');
-    if (raw) return { ...IFACE_DEFAULTS, ...normalizeViewConfig(JSON.parse(raw)) };
-    // Migrate legacy ui-scale if present
-    const legacyScale = storage.getItem('neural-ui-scale');
-    if (legacyScale) {
-      const cfg = { ...IFACE_DEFAULTS, scale: parseFloat(legacyScale) || 1 };
-      saveIfaceConfig(cfg);
-      return cfg;
-    }
-    return { ...IFACE_DEFAULTS };
-  } catch { return { ...IFACE_DEFAULTS }; }
-}
-
-export function saveIfaceConfig(cfg) {
-  storage.setItem('neural-interface-config', JSON.stringify(normalizeViewConfig(cfg)));
-  // Keep legacy key in sync for backwards compat
-  storage.setItem('neural-ui-scale', cfg.scale);
-}
-
-export function applyIfaceConfig(cfg, { instant = false } = {}) {
-  const r = document.documentElement.style;
-  r.setProperty('--ui-scale', cfg.scale);
-  r.setProperty('--glass-opacity', cfg.glassOpacity);
-  r.setProperty('--glass-blur', cfg.glassBlur);
-  r.setProperty('--glass-saturate', cfg.glassSaturate);
-  r.setProperty('--glass-border-opacity', cfg.glassBorderOpacity);
-  r.setProperty('--glass-shadow-opacity', cfg.glassShadowOpacity);
-  r.setProperty('--glass-shadow-spread', cfg.glassShadowSpread);
-  r.setProperty('--glass-radius', cfg.glassRadius);
-  r.setProperty('--font-scale', cfg.fontScale);
-  r.setProperty('--accent-hue', cfg.accentHue);
-  r.setProperty('--accent-saturation', cfg.accentSaturation + '%');
-  r.setProperty('--accent-lightness', cfg.accentLightness + '%');
-
-  // Focus Mode — scale+blur transition with staggered controls
-  const vizEnabled = cfg.visualizationEnabled !== false;
-  const graphContainer = document.getElementById('graph-container');
-  const staticBg = document.getElementById('static-bg');
-
-  if (!vizEnabled) {
-    // ENTERING FOCUS MODE
-
-    // ── Clean up all interactive state ──
-    // Hide 3D tooltip + detach its mousemove listener
-    const $tooltip = document.getElementById('tooltip');
-    if ($tooltip) {
-      $tooltip.classList.remove('visible');
-      if ($tooltip._moveHandler) {
-        document.removeEventListener('mousemove', $tooltip._moveHandler);
-        $tooltip._moveHandler = null;
-      }
-    }
-    // Hide data-tooltip tooltips
-    const uiTip = document.querySelector('.ui-tooltip');
-    if (uiTip) {
-      uiTip.classList.remove('visible');
-      uiTip.style.display = 'none';
-    }
-    // Clear hover state
-    state.hoveredNodeId = null;
-    // Clear multi-select
-    if (state.multiSelected.size > 0) {
-      state.multiSelected.clear();
-      const bar = document.getElementById('multi-select-bar');
-      if (bar) bar.classList.remove('open');
-      emit('multiselect:cleared');
-    }
-    // Reset cursor
-    document.body.style.cursor = 'default';
-
-    // Hide controls, 2D canvases, category sidebar
-    for (const id of ['controls-panel', 'stats-bar', 'category-sidebar']) {
-      const el = document.getElementById(id);
-      if (el) el.classList.add('viz-hidden');
-    }
-    for (const id of ['bg-canvas', 'hull-canvas', 'lasso-canvas']) {
-      const el = document.getElementById(id);
-      if (el) el.classList.add('viz-hidden-2d');
-    }
-    if (instant) {
-      // Page load — apply immediately without animation
-      if (graphContainer) graphContainer.classList.add('focus-active');
-      setStaticBgVisible(staticBg, true);
-    } else {
-      // User toggle — stagger: controls fade first, then iris closes
-      setTimeout(() => {
-        if (graphContainer) graphContainer.classList.add('focus-active');
-        setStaticBgVisible(staticBg, true);
-      }, 100);
-    }
-    // Notify variant-specific cleanup (lasso, context menu, etc.)
-    emit('focus:enter');
-  } else {
-    // EXITING FOCUS MODE
-    // Iris open the graph + close focus bg
-    if (graphContainer) graphContainer.classList.remove('focus-active');
-    setStaticBgVisible(staticBg, false);
-    // 2D canvases
-    for (const id of ['bg-canvas', 'hull-canvas', 'lasso-canvas']) {
-      const el = document.getElementById(id);
-      if (el) el.classList.remove('viz-hidden-2d');
-    }
-    if (instant) {
-      // Page load — show controls immediately
-      for (const id of ['controls-panel', 'stats-bar', 'category-sidebar']) {
-        const el = document.getElementById(id);
-        if (el) el.classList.remove('viz-hidden');
-      }
-    } else {
-      // User toggle — delay controls until iris starts opening
-      setTimeout(() => {
-        for (const id of ['controls-panel', 'stats-bar', 'category-sidebar']) {
-          const el = document.getElementById(id);
-          if (el) el.classList.remove('viz-hidden');
-        }
-      }, 200);
-    }
-    emit('focus:exit');
-  }
-  // Notify variants to pause/resume rendering
-  emit('viz:toggle', vizEnabled);
-}
-
-/** Call on page load to restore saved interface config */
-export function restoreInterfaceConfig() {
-  // Suppress transitions during initial load to prevent flash
-  document.documentElement.classList.add('no-transition');
-  applyIfaceConfig(loadIfaceConfig(), { instant: true });
-  // Re-enable transitions after a frame
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      document.documentElement.classList.remove('no-transition');
-    });
-  });
-}
-
-// ═══════════════════════════════════════════
-// SKIN LOADING — stylesheet injection + boot restore
-// ═══════════════════════════════════════════
-
-const SKIN_LINK_ID = 'synabun-skin-css';
-
-/** Insert or update the skin stylesheet <link> */
-function loadSkinStylesheet(skinId) {
-  if (!skinId || skinId === 'default') {
-    removeSkinStylesheet();
-    return;
-  }
-  let link = document.getElementById(SKIN_LINK_ID);
-  if (!link) {
-    link = document.createElement('link');
-    link.id = SKIN_LINK_ID;
-    link.rel = 'stylesheet';
-    // Insert after the main styles.css
-    const mainCSS = document.querySelector('link[href*="styles.css"]');
-    if (mainCSS && mainCSS.nextSibling) {
-      mainCSS.parentNode.insertBefore(link, mainCSS.nextSibling);
-    } else {
-      document.head.appendChild(link);
-    }
-  }
-  link.href = `/skins/${skinId}/skin.css`;
-  storage.setItem(KEYS.ACTIVE_SKIN, skinId);
-}
-
-/** Remove the skin stylesheet */
-function removeSkinStylesheet() {
-  const link = document.getElementById(SKIN_LINK_ID);
-  if (link) link.remove();
-  storage.setItem(KEYS.ACTIVE_SKIN, 'default');
-}
-
-/** Restore active skin on page load. Export for variant main.js to call. */
-export function restoreSkin() {
-  const skinId = storage.getItem(KEYS.ACTIVE_SKIN) || 'default';
-  if (skinId && skinId !== 'default') {
-    loadSkinStylesheet(skinId);
-  }
-}
-
-// Listen for cross-tab skin changes via WebSocket
-on('sync:skin:changed', (msg) => {
-  const id = msg?.id || 'default';
-  if (id === 'default') removeSkinStylesheet();
-  else loadSkinStylesheet(id);
-  // Update settings panel if open
-  const panel = document.getElementById('settings-panel');
-  if (panel) refreshSkinsTab(panel);
-});
 
 // ═══════════════════════════════════════════
 // SKINS TAB — builder + interaction
@@ -765,7 +565,6 @@ function buildServerTab(settings, connections = []) {
 function buildBrowserTab(ownerAccess = null) {
   const b = (key) => kit.te(`settings.redesign.browser.${key}`);
   const SEARCH = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
-  const REFRESH = '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>';
   const FOLDER = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>';
 
   // The app's custom select, wired by the browser pane itself (.bc-dropdown). `name` picks the option labels.
@@ -821,7 +620,13 @@ function buildBrowserTab(ownerAccess = null) {
         ${kit.card({
           id: 'setup-browser', section: 'browser.browser_choice',
           body: `
-          ${kit.field('BRW003', `<div class="bc-inline-group">${dd('BRW003', 'bc-browser', 'browser', ['auto', 'chrome', 'msedge', 'chromium', 'morelogin', 'custom'], { attrs: 'id="bc-browser-dropdown"' })}<input type="hidden" id="bc-channel" value=""></div>`)}
+          <div class="stg-field" id="bc-ai-browser-row" style="display:none">
+            <div class="stg-action-row" style="align-items:center;flex-wrap:wrap;gap:8px">
+              <span class="stg-inline-status" id="bc-ai-browser-text" role="status" aria-live="polite"></span>
+              <button type="button" class="stg-action-btn compact" id="bc-ai-browser-open">${b('aiBrowser.open')}</button>
+            </div>
+          </div>
+          ${kit.field('BRW003', `<div class="bc-inline-group">${dd('BRW003', 'bc-browser', 'browser', ['auto', 'chrome', 'msedge', 'chromium', 'custom'], { attrs: 'id="bc-browser-dropdown"' })}<input type="hidden" id="bc-channel" value=""></div>`)}
           <div class="stg-field bc-card-row" id="bcg-executable" ${kit.inv('BRW001')}>
             <label for="bc-executablePath">${kit.L('BRW001')}</label>
             <div class="browser-cfg-input-row">
@@ -849,19 +654,10 @@ function buildBrowserTab(ownerAccess = null) {
           id: 'bcg-profiles', section: 'browser.browser_profiles',
           body: `
           <input type="hidden" id="bc-userDataDir" value="">
-          ${kit.field('BRW011', dd('BRW011', 'bc-connectMode', 'connect', ['mirror', 'attach', 'morelogin']))}
+          ${kit.field('BRW011', `${dd('BRW011', 'bc-connectMode', 'connect', ['mirror', 'attach', 'extension'])}
+            <div class="stg-help" id="bc-connectMode-ai-note" style="display:none">${b('aiBrowser.connectionNote')}</div>`)}
+          ${extensionSettingsHTML(kit)}
           ${kit.field('BRW012', dd('BRW012', 'bc-attachSeed', 'seed', ['real', 'fresh']), { attrs: 'id="bc-attachSeed-row" style="display:none"' })}
-          <div class="stg-field bc-card-row" id="bc-morelogin-row" ${kit.inv('BRW013')} style="display:none">
-            <label id="bc-morelogin-env-id-label" for="bc-morelogin-env-id-trigger">${kit.L('BRW013')}</label>
-            <div class="browser-cfg-input-row">
-              ${dropdownHTML('bc-morelogin-env-id', [{ value: '', label: kit.tx('settings.redesign.browser.loadingProfiles') }], { classes: 'bc-ml-dropdown', labelledBy: 'bc-morelogin-env-id-label', attrs: 'style="flex:1;min-width:0"' }).replace('role="combobox"', 'role="combobox" aria-describedby="bc-morelogin-env-id-help"')}
-              <button type="button" class="cli-detect-btn" id="bc-morelogin-refresh" ${kit.inv('BRW014')} title="${kit.H('BRW014')}">${REFRESH}${kit.L('BRW014')}</button>
-            </div>
-            <div class="stg-help" id="bc-morelogin-env-id-help">${kit.H('BRW013')}</div>
-          </div>
-          <div class="stg-field" id="bc-morelogin-status-row" style="display:none">
-            <span class="bc-hint-inline stg-help" id="bc-morelogin-status-text" role="status" aria-live="polite"></span>
-          </div>
           <div class="stg-field bc-card-row" ${kit.inv('BRW083')}>
             <label id="bc-profile-list-label">${kit.L('BRW083')}</label>
             <div class="browser-cfg-input-row">
@@ -1760,7 +1556,7 @@ function buildSkillsTab(ccSkills) {
       </div>`;
 }
 
-function buildPermissionsTab(toolCategories, toolPermissions) {
+function buildPermissionsTab(toolCategories, toolPermissions, capabilities = []) {
   const categories = (toolCategories || []).filter(c => c.id !== 'social');
   const perms = toolPermissions || {};
   // The inventory ids of the "all tools of this group" switches, by group.
@@ -1777,6 +1573,12 @@ function buildPermissionsTab(toolCategories, toolPermissions) {
     return { ...cat, onCount };
   });
   const allOn = !!totalAll && totalOn === totalAll;
+  // The switch for every tool of the section, next to the total (settings/settings-tool-permissions.js): on, off
+  // or mixed. `data-bulk`: this server takes all the groups in one request.
+  const master = masterView(countTools(categories, perms), { tx: kit.tx });
+  const masterHTML = !master.shown ? '' : `<button type="button" class="cc-tools-master" id="cc-tools-master" ${kit.inv('PER013')} role="checkbox" aria-checked="${master.checked}" data-state="${master.state}"${(capabilities || []).includes('categories') ? ' data-bulk="1"' : ''} title="${kit.esc(master.title)}">
+              <span class="cc-tools-master-label">${kit.L('PER013')}</span><span class="cc-tools-master-switch" aria-hidden="true"></span>
+            </button>`;
 
   const categoryHTML = catData.map(cat => {
     const catAllOn = cat.onCount === cat.tools.length;
@@ -1798,7 +1600,7 @@ function buildPermissionsTab(toolCategories, toolPermissions) {
       <div class="stg-pane" data-stg-pane="permissions">
         ${kit.card({
           id: 'stg-sec-tool-permissions', section: 'tool_access.tool_permissions',
-          status: `<span class="cc-hooks-badge${allOn ? ' all-on' : ''}" id="cc-tools-badge" title="${kit.te('settings.redesign.permissions.badge')}">${totalOn}/${totalAll}</span>`,
+          status: `<span class="cc-hooks-badge${allOn ? ' all-on' : ''}" id="cc-tools-badge" title="${kit.te('settings.redesign.permissions.badge')}">${totalOn}/${totalAll}</span>${masterHTML}`,
           body: categories.length
             ? `<div ${kit.inv('PER012')} role="group" aria-label="${kit.L('PER012')}">${categoryHTML}</div>`
             : `<div class="stg-help" style="margin-top:0">${kit.te('settings.redesign.permissions.none')}</div>`,
@@ -2522,9 +2324,32 @@ function buildMoreLoginTab() {
   const text = (id, { ph = '', type = 'text' } = {}) =>
     `<input type="${type}" id="${id}" value=""${ph ? ` placeholder="${ph}"` : ''} autocomplete="off" spellcheck="false" aria-describedby="${id}-help">`;
   const btn = (invId, id) => `<button type="button" class="stg-action-btn compact" id="${id}" ${kit.inv(invId)} title="${kit.H(invId)}">${kit.L(invId)}</button>`;
+  const REFRESH = '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>';
 
   return `
     <div class="stg-pane" data-stg-pane="morelogin">
+
+      ${kit.card({
+        // Everything about choosing a profile as the AI browser (settings-ai-browser.js). The Browser tab only says so.
+        // The picker is driven by cc-dropdown.js alone (wireMoreLoginTab): never `.stg-dropdown`, which the panel's older
+        // per-element wiring (wireStgDropdowns) also takes, and a second click handler closes it as it opens.
+        id: 'stg-sec-ml-default', section: 'connected_tools.morelogin_default',
+        status: kit.pill(m('aiBrowser.stateOff'), { id: 'ml-ai-state', state: 'off' }),
+        body: `
+        ${kit.toggleField('ML037', kit.switchInput('ml-ai-on'), { forId: 'ml-ai-on' })}
+        <div class="stg-field bc-card-row" id="ml-ai-profile-row" ${kit.inv('ML038')}>
+          <label id="ml-ai-env-id-label" for="ml-ai-env-id-trigger">${kit.L('ML038')}</label>
+          <div class="browser-cfg-input-row">
+            ${dropdownHTML('ml-ai-env-id', [{ value: '', label: kit.tx('settings.redesign.morelogin.aiBrowser.loadingProfiles') }], { classes: 'bc-ml-dropdown', labelledBy: 'ml-ai-env-id-label', attrs: 'style="flex:1;min-width:0"' }).replace('role="combobox"', 'role="combobox" aria-describedby="ml-ai-env-id-help"')}
+            <button type="button" class="cli-detect-btn" id="ml-ai-refresh" ${kit.inv('ML039')} title="${kit.H('ML039')}">${REFRESH}${kit.L('ML039')}</button>
+          </div>
+          <div class="stg-help" id="ml-ai-env-id-help">${kit.H('ML038')}</div>
+        </div>
+        <div class="stg-field">
+          <div class="stg-inline-status" id="ml-ai-line" role="status" aria-live="polite">${m('aiBrowser.line.off')}</div>
+          <span class="bc-hint-inline stg-help" id="ml-ai-status-text" role="status" aria-live="polite"></span>
+        </div>`,
+      })}
 
       ${kit.card({
         id: 'stg-sec-ml-connection', section: 'connected_tools.morelogin_connection',
@@ -2628,6 +2453,7 @@ function wireMoreLoginTab(overlay, signal) {
     { value: 'morelogin', label: kit.tx('settings.redesign.morelogin.local.whereMoreLogin'), selected: true },
   ], { classes: 'stg-dropdown', label: kit.tx('settings.redesign.control.ml020.label') }); }
   { const card = $('stg-sec-ml-profiles'); if (card) wireDropdowns(card, { signal }); }
+  { const card = $('stg-sec-ml-default'); if (card) wireDropdowns(card, { signal }); }
   $('ml-create-where')?.addEventListener('change', () => { _whereTouched = true; });
   // "Where" follows what MoreLogin can do until the owner picks: Local while MoreLogin is closed, refusing or full.
   function syncCreateWhere() {
@@ -2659,10 +2485,12 @@ function wireMoreLoginTab(overlay, signal) {
     else { dot.className = 'settings-status-dot connected'; line.textContent = kit.tx('settings.redesign.morelogin.connectedProfileSPort', { profileCount: s.profileCount, port: s.port }); if (conn) conn.textContent = kit.tx('settings.redesign.morelogin.connected'); }
     const hint = $('ml-path-hint');
     if (hint) hint.hidden = !!(s.installed && s.running);
-    _defaultEnvId = s.defaultEnvId || null;
+    // A row is marked as the default only while a profile is the AI browser (a leftover id of a switched-off one is not).
+    _defaultEnvId = s.isDefault ? (s.defaultEnvId || null) : null;
     _status = s;
     const ds = $('ml-default-status');
     if (ds) ds.textContent = (s.isDefault && s.defaultEnvId) ? kit.tx('settings.redesign.morelogin.defaultAiBrowserSet') : kit.tx('settings.redesign.morelogin.noDefaultSet');
+    noteAi(aiBrowserOfStatus(s));
   }
 
   // `agentProfiles`: the owner's list of profiles agents may choose (GET /api/morelogin/profiles). A server from
@@ -2730,10 +2558,10 @@ function wireMoreLoginTab(overlay, signal) {
       if (!r.ok) { showCCToast(r.error || kit.tx('settings.redesign.morelogin.failed')); b.disabled = false; }
       else await reload();
     }));
+    // The same request as the Default AI browser card's: the card follows (useDefault), without a reload of the page.
     list.querySelectorAll('.ml-use').forEach(b => b.addEventListener('click', async () => {
-      const r = await jpost('/api/morelogin/use-default', { envId: b.dataset.envId });
-      showCCToast(r.ok ? kit.tx('settings.redesign.morelogin.moreloginSetAsDefaultAiBrowser') : (r.error || kit.tx('settings.redesign.morelogin.failed')));
-      reload();
+      b.disabled = true;
+      await useDefault({ envId: b.dataset.envId });
     }));
     list.querySelectorAll('.ml-start').forEach(b => b.addEventListener('click', async () => {
       b.disabled = true; const t = b.textContent; b.textContent = kit.tx('settings.redesign.morelogin.starting');
@@ -2898,6 +2726,7 @@ function wireMoreLoginTab(overlay, signal) {
     const s = await jget('/api/morelogin/status');
     // No owner access (SynaBun's automation browser opened this page): "No access", never "not installed" or defaults.
     if (markPaneRefused(overlay, 'morelogin', refusalOfError({ status: s._status, code: s.code }))) {
+      _refused = true;
       const dot = $('ml-status-dot'), line = $('ml-status-line');
       if (dot) dot.className = 'settings-status-dot disconnected';
       if (line) line.textContent = ownerAccessSay('panelTitle');
@@ -2926,7 +2755,9 @@ function wireMoreLoginTab(overlay, signal) {
       if (d && d.ok && Array.isArray(d.profiles)) _localDetails = new Map(d.profiles.map(row => [String(row.id), row]));
     } else _localDetails = new Map();
     _moreloginError = p.moreloginError || '';
+    _profileRows = p.envs || [];
     renderProfiles(p.envs || [], p.agentProfiles, p.moreloginError ? [] : p.staleProfiles || []);
+    drawAiBrowser();
     // The server is still asking MoreLogin which browser some profiles run: ask again quietly, a few times.
     clearTimeout(_browsersTimer);
     if (Number(p.browsersPending) > 0 && _browsersTries < 8 && $('ml-profile-list')?.isConnected) {
@@ -2936,6 +2767,184 @@ function wireMoreLoginTab(overlay, signal) {
   }
   let _browsersTimer = null;
   let _browsersTries = 0;
+
+  // ── Default AI browser: a MoreLogin or SynaBun local profile as the browser of SynaBun's web tasks ──
+  // The only place that turns it on or off (settings-ai-browser.js). The switch and a new pick save at once through
+  // POST /api/morelogin/use-default, as a row's "Use as default" does: one request, one state (_ai), drawn in the card,
+  // the list's default mark and, through AI_BROWSER_EVENT on the overlay, the Browser tab's line.
+  let _ai = { moreLogin: false, envId: null }; // what the server holds
+  let _aiWanted = '';      // the picker's profile: the AI browser's, or the owner's pick while it is off
+  let _aiEnvs = [];        // the picker's rows (GET /api/browser/morelogin-envs)
+  let _profileRows = [];   // the list's rows (GET /api/morelogin/profiles): names while the picker has none
+  let _refused = false;    // no owner access: nothing more is asked
+  let _aiBrowsersTimer = null;
+  let _aiBrowsersTries = 0;
+  // keepShown: a redraw of the list (the quiet ask again, a change of the choice) keeps what the picker shows;
+  // without it the AI browser's profile is put back, as on open and on Refresh.
+  async function loadMoreLoginEnvs(keepShown = false) {
+    const sel = $('ml-ai-env-id');
+    // A placeholder choice (loading / error / not running) keeps its reason visible in the closed dropdown.
+    const only = (key) => setDropdownItems(sel, [{ value: '', label: kit.tx(key), selected: true }]);
+    const statusEl = $('ml-ai-status-text');
+    if (!sel) return;
+    try {
+      const r = await fetch('/api/browser/morelogin-envs');
+      const d = await r.json();
+      // SynaBun's own local profiles (`kind: 'local'`) are in every answer, whatever MoreLogin does: with one or
+      // more, the picker lists them and the line under it says why MoreLogin's are missing.
+      const localEnvs = (d && Array.isArray(d.envs) ? d.envs : []).filter(e => e && e.kind === 'local');
+      // MoreLogin refused a start for its plan's daily limit: SynaBun asks it for no start of that profile until
+      // MoreLogin's day resets (lib/morelogin-start-cooldown.js). Said per profile, with the reset in local time, on
+      // every line below: the hold stays while MoreLogin is closed, and opening it does not end the hold.
+      const limits = startLimitNotes(d && d.startCooldowns, d && d.envs, { locale: getLocale() });
+      const limitText = (limits.length
+        ? ' · ⚠ ' + limits.map(n => kit.tx('settings.redesign.morelogin.aiBrowser.moreloginStartLimitReached', { name: n.name, time: n.time })).join(' · ⚠ ')
+        : '')
+        // A profile closed outside SynaBun: no session, run, agent or script starts it again until the owner does (in
+        // MoreLogin, or Start here) or its next scheduled run (lib/morelogin-outside-close.js). Said the same way.
+        + closedOutsideNotes(d && d.closedOutside, d && d.envs, { locale: getLocale() })
+          .map(n => ' · ⚠ ' + kit.tx('settings.redesign.morelogin.aiBrowser.moreloginClosedOutside', { name: n.name, time: n.time })).join('');
+      let moreloginNote = '';
+      // With a local profile to list, MoreLogin's state is a note under the picker; without one it is the picker's
+      // only choice, as before. → true when the picker was filled with the reason (nothing more to draw).
+      const without = (message, placeholder) => {
+        if (localEnvs.length) { moreloginNote = message; return false; }
+        placeholder();
+        _aiEnvs = [];
+        if (statusEl) {
+          statusEl.textContent = message + limitText;
+          if (limitText) statusEl.style.color = 'var(--stg-warn)';
+        }
+        return true;
+      };
+      if (!d || d.ok === false) { if (without((d && d.error) || kit.tx('settings.redesign.morelogin.aiBrowser.failedToLoadMoreloginProfiles'), () => only('settings.redesign.morelogin.aiBrowser.error'))) return; }
+      else if (!d.installed) { if (without(kit.tx('settings.redesign.morelogin.aiBrowser.moreloginDesktopAppIsNotInstalled') + ' ' + kit.tx('settings.redesign.morelogin.aiBrowser.moreloginCustomPathHint'), () => only('settings.redesign.morelogin.aiBrowser.moreloginNotInstalled'))) return; }
+      else if (!d.running) { if (without(kit.tx('settings.redesign.morelogin.aiBrowser.moreloginNotRunningOpenTheApp', { port: d.port }) + (d.error ? ' ' + String(d.error) : ''), () => only('settings.redesign.morelogin.aiBrowser.startMorelogin'))) return; }
+      const envs = moreloginNote ? localEnvs : (d.envs || []);
+      _aiEnvs = envs;
+      if (!envs.length) { only('settings.redesign.morelogin.aiBrowser.noProfiles'); if (statusEl) statusEl.textContent = kit.tx('settings.redesign.morelogin.aiBrowser.noMoreloginProfilesYetOneIs'); drawAiBrowser(); return; }
+      const want = (keepShown === true && sel.value) || _aiWanted || sel.value || '';
+      // Show each env's proxy — without it there is no way to tell from SynaBun
+      // whether a profile's traffic leaves the machine.
+      const proxyLabel = (p) => {
+        if (!p) return '';
+        const where = [p.host, p.port].filter(Boolean).join(':');
+        return ` · ${[p.type, where, p.country].filter(Boolean).join(' ')}`;
+      };
+      // SynaBun drives the profile over CDP, so a Firefox-type one (`browser` from the server; absent = not known)
+      // is listed, said as such and cannot be picked. One already saved as the default stays shown, with a warning.
+      // dropdownHTML escapes the labels itself.
+      setDropdownItems(sel, envs.map(e => (e.browser === 'firefox'
+        ? { value: String(e.id), label: kit.tx('settings.redesign.morelogin.aiBrowser.moreloginFirefoxOption', { name: String(e.name ?? e.id) }), disabled: true }
+        : { value: String(e.id), label: `${e.kind === 'local' ? kit.tx('settings.redesign.morelogin.aiBrowser.moreloginLocalOption', { name: String(e.name ?? e.id) }) : (e.name ?? '')}${e.status ? ` (${String(e.status)})` : ''}${proxyLabel(e.proxy)}` })));
+      if (want && envs.some(e => String(e.id) === String(want))) setDropdownValue(sel, String(want));
+      const chosenFirefox = envs.some(e => String(e.id) === String(sel.value) && e.browser === 'firefox');
+      if (statusEl) statusEl.style.color = chosenFirefox ? 'var(--stg-warn)' : '';
+      // The server is still asking MoreLogin which browser some profiles run: ask again quietly, a few times.
+      clearTimeout(_aiBrowsersTimer);
+      if (Number(d.browsersPending) > 0 && _aiBrowsersTries < 8 && sel.isConnected) {
+        _aiBrowsersTries += 1;
+        _aiBrowsersTimer = setTimeout(() => loadMoreLoginEnvs(true), 2500);
+      } else _aiBrowsersTries = 0;
+      if (statusEl) {
+        let msg = chosenFirefox
+          ? kit.tx('settings.redesign.morelogin.aiBrowser.moreloginFirefoxDefault')
+          : (moreloginNote
+            ? kit.tx('settings.redesign.morelogin.aiBrowser.localProfilesOnly', { count: envs.length }) + ' ' + moreloginNote
+            : kit.tx('settings.redesign.morelogin.aiBrowser.profileSApiPort', { count: envs.length, port: d.port }));
+        // MoreLogin silently redirects a navigation it refuses to its stop page: a
+        // localhost port missing from the profile's Port scan protection list, or a
+        // host its website blacklist/whitelist refuses. Surface it; nothing else in
+        // the UI can explain it.
+        if (d.blockedNavigations > 0) {
+          msg += (" " + kit.tx('settings.redesign.morelogin.aiBrowser.moreloginBlockedNavigationS', { blockedNavigations: d.blockedNavigations }));
+          if (d.lastBlockedUrl) msg += kit.tx('settings.redesign.morelogin.aiBrowser.mostRecently', { lastBlockedUrl: String(d.lastBlockedUrl).slice(0, 80) });
+          msg += kit.tx('settings.redesign.morelogin.aiBrowser.aLocalhostPortMustBeIn');
+        }
+        // The plan's daily start limit (limitText, above).
+        if (limitText) {
+          msg += limitText;
+          statusEl.style.color = 'var(--stg-warn)';
+        }
+        statusEl.textContent = msg;
+      }
+      drawAiBrowser();
+    } catch {
+      only('settings.redesign.morelogin.aiBrowser.error');
+      _aiEnvs = [];
+      if (statusEl) statusEl.textContent = kit.tx('settings.redesign.morelogin.aiBrowser.failedToReachMorelogin');
+    }
+  }
+  /** The listed profile with this id: the picker's rows first, then the list's. */
+  const aiProfile = (envId) => profileOf(_aiEnvs, envId) || profileOf(_profileRows, envId);
+  /** The card as _ai says, and the news for the Browser tab (it keeps the last one on the overlay, for a late reader). */
+  function drawAiBrowser() {
+    const box = $('ml-ai-on');
+    if (box) box.checked = _ai.moreLogin;
+    const profile = aiProfile(_ai.envId);
+    const line = aiBrowserLine(_ai, profile);
+    const text = $('ml-ai-line');
+    if (text) text.textContent = kit.tx(`settings.redesign.morelogin.aiBrowser.line.${line.key}`, line.params);
+    const pill = $('ml-ai-state');
+    if (pill) {
+      pill.textContent = kit.tx(_ai.moreLogin ? 'settings.redesign.morelogin.aiBrowser.stateOn' : 'settings.redesign.morelogin.aiBrowser.stateOff');
+      pill.dataset.state = _ai.moreLogin ? 'ok' : 'off';
+    }
+    const detail = aiBrowserDetail(_ai, profile);
+    overlay._stgAiBrowser = detail;
+    overlay.dispatchEvent(new CustomEvent(AI_BROWSER_EVENT, { detail }));
+  }
+  /** What the server holds now (GET /api/morelogin/status, a use-default answer). The picker follows the AI browser's
+   *  profile; while it is off, a profile the owner picked by hand stays picked. */
+  function noteAi(state) {
+    _ai = { moreLogin: state.moreLogin === true, envId: state.envId || null };
+    if (_ai.envId && (_ai.moreLogin || !_aiWanted)) {
+      _aiWanted = _ai.envId;
+      const sel = $('ml-ai-env-id');
+      if (sel && _aiEnvs.some(e => String(e.id) === _ai.envId)) setDropdownValue(sel, _ai.envId);
+    }
+    drawAiBrowser();
+  }
+  /** POST /api/morelogin/use-default: `{ envId }` makes it the AI browser, `{ clear: true }` goes back to SynaBun's own
+   *  browser (connect mode 'mirror'). A refusal leaves everything as the server holds it, and says why. */
+  async function useDefault(body) {
+    const box = $('ml-ai-on');
+    if (box) box.disabled = true;
+    const r = await jpost('/api/morelogin/use-default', body);
+    if (box) box.disabled = false;
+    if (r && r.ok) {
+      noteAi(aiBrowserOf(r));
+      showCCToast(kit.tx(body.clear ? 'settings.redesign.morelogin.aiBrowser.offToast' : 'settings.redesign.morelogin.moreloginSetAsDefaultAiBrowser'));
+    } else {
+      showCCToast(kit.tx('settings.redesign.morelogin.aiBrowser.changeFailed', { error: (r && r.error) || kit.tx('settings.redesign.morelogin.failed') }));
+      drawAiBrowser();
+    }
+    await reload();
+    loadMoreLoginEnvs();
+    return !!(r && r.ok);
+  }
+  $('ml-ai-on')?.addEventListener('change', async () => {
+    const box = $('ml-ai-on');
+    // What the picker shows, nothing else: a profile remembered from before but not listed now is not offered.
+    const chosen = $('ml-ai-env-id')?.value || '';
+    const ask = switchRequest({ on: box.checked, chosen, firefox: aiProfile(chosen)?.browser === 'firefox' });
+    if (ask.refuse) {
+      box.checked = _ai.moreLogin;
+      showCCToast(kit.tx(`settings.redesign.morelogin.aiBrowser.${ask.refuse}`));
+      return;
+    }
+    await useDefault(ask.body);
+  }, { signal });
+  // Another profile chosen: saved at once while a profile is the AI browser; the line under the picker says what
+  // holds for that one (the Firefox warning goes).
+  $('ml-ai-env-id')?.addEventListener('change', async () => {
+    const chosen = $('ml-ai-env-id').value;
+    _aiWanted = chosen;
+    const ask = pickRequest({ on: _ai.moreLogin, chosen, current: _ai, firefox: aiProfile(chosen)?.browser === 'firefox' });
+    if (ask) { await useDefault(ask.body); return; }
+    loadMoreLoginEnvs(true);
+  }, { signal });
+  $('ml-ai-refresh')?.addEventListener('click', (e) => { e.preventDefault(); loadMoreLoginEnvs(); }, { signal });
 
   const saveCfg = (key, value) => fetch('/api/morelogin/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key, value }) });
 
@@ -3012,7 +3021,7 @@ function wireMoreLoginTab(overlay, signal) {
     if (res) { res.style.display = 'block'; res.textContent = r.ok ? kit.tx('settings.redesign.morelogin.removedFrom', { targets: (r.targets || []).join(', ') || kit.tx('settings.redesign.morelogin.none') }) : (r.error || kit.tx('settings.redesign.morelogin.failed')); res.style.background = 'var(--s-darker)'; res.style.color = 'var(--t-secondary)'; }
   });
 
-  reload();
+  reload().then(() => { if (!_refused) loadMoreLoginEnvs(); });
 }
 
 function buildDiscordTab(discordConfig) {
@@ -3707,6 +3716,7 @@ async function openSettingsModalNow(options = {}) {
   let setupStatus = { claude: {}, antigravity: {}, codex: {}, opencode: {}, paths: {} };
   let cliConfig = {};
   let toolPermissions = {};
+  let toolPermissionCaps = [];
   let toolCategories = [];
   let discordConfig = {};
   let skinsData = { skins: [], active: 'default' };
@@ -3760,7 +3770,10 @@ async function openSettingsModalNow(options = {}) {
     if (greetRes.status === 'fulfilled') greetingReading = greetRes.value;
     if (setupRes.status === 'fulfilled' && setupRes.value.ok) setupStatus = setupRes.value;
     if (cliRes.status === 'fulfilled' && cliRes.value.ok) cliConfig = cliRes.value.config;
-    if (toolPermsRes.status === 'fulfilled' && toolPermsRes.value.ok) toolPermissions = toolPermsRes.value.tools;
+    if (toolPermsRes.status === 'fulfilled' && toolPermsRes.value.ok) {
+      toolPermissions = toolPermsRes.value.tools;
+      toolPermissionCaps = Array.isArray(toolPermsRes.value.capabilities) ? toolPermsRes.value.capabilities : [];
+    }
     if (toolCatsRes.status === 'fulfilled' && toolCatsRes.value.ok) toolCategories = toolCatsRes.value.categories;
     if (discordRes.status === 'fulfilled' && discordRes.value.ok) discordConfig = discordRes.value.config;
     if (skinsRes.status === 'fulfilled' && skinsRes.value.ok) skinsData = skinsRes.value;
@@ -3836,7 +3849,7 @@ async function openSettingsModalNow(options = {}) {
             discord: buildDiscordTab(discordConfig),
             whatsapp: buildWhatsAppTab(),
             morelogin: buildMoreLoginTab(),
-            permissions: buildPermissionsTab(toolCategories, toolPermissions),
+            permissions: buildPermissionsTab(toolCategories, toolPermissions, toolPermissionCaps),
             editor: buildCodeEditorTab(),
             social: buildSocialTab(toolCategories, toolPermissions),
             youtube: buildYoutubeTab(youtubeConfig),
@@ -5738,6 +5751,14 @@ async function openSettingsModalNow(options = {}) {
       badge.textContent = `${totalOn}/${totalAll}`;
       badge.classList.toggle('all-on', totalOn === totalAll);
     }
+    // The switch for every tool: on, off or mixed, from the same count as the total next to it.
+    const master = overlay.querySelector('#cc-tools-master');
+    if (master) {
+      const view = masterView({ on: totalOn, total: totalAll }, { tx: kit.tx });
+      master.dataset.state = view.state;
+      master.setAttribute('aria-checked', view.checked);
+      master.title = view.title;
+    }
   }
 
   function applyToolPermissionResult(tools) {
@@ -5785,6 +5806,34 @@ async function openSettingsModalNow(options = {}) {
       finally { btn.style.opacity = ''; btn.style.pointerEvents = ''; }
     });
   });
+
+  // The switch for every tool of the section (its header, next to the total): everything on switches all off,
+  // anything else switches all on. One request where the server takes the groups together, else one per group.
+  {
+    const master = overlay.querySelector('#cc-tools-master');
+    if (master) {
+      master.addEventListener('click', async (e) => {
+        e.stopPropagation(); // the header it sits in opens and closes the section
+        const section = master.closest('.stg-card');
+        const groups = [...(section?.querySelectorAll('.cc-tool-category[data-tool-category]') || [])].map(el => el.dataset.toolCategory);
+        const requests = masterRequests({
+          categories: groups, enabled: master.dataset.state !== 'on',
+          capabilities: master.dataset.bulk === '1' ? ['categories'] : [],
+        });
+        if (!requests.length) return;
+        master.disabled = true;
+        try {
+          for (const body of requests) {
+            const res = await fetch('/api/claude-code/tool-permissions', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            const data = await res.json();
+            if (!data.ok) { alert(data.error || kit.tx('settings.redesign.permissions.failedToToggleAll')); break; }
+            applyToolPermissionResult(data.tools);
+          }
+        } catch (err) { alert(kit.tx('settings.redesign.permissions.failed', { message: err.message })); }
+        finally { master.disabled = false; }
+      });
+    }
+  }
 
   // ── User Learning threshold handler ──
   {
@@ -6414,25 +6463,7 @@ async function openSettingsModalNow(options = {}) {
             const execInput = overlay.querySelector('#bc-executablePath');
             const channelInput = overlay.querySelector('#bc-channel');
             const pathRow = overlay.querySelector('#bc-executablePath')?.closest('.bc-card-row');
-            const connectHidden = overlay.querySelector('#bc-connectMode');
-            const wasMoreLogin = connectHidden?.value === 'morelogin';
 
-            if (val === 'morelogin') {
-              // MoreLogin is a browser backend — mirror it into the Connection dropdown.
-              if (channelInput) channelInput.value = '';
-              if (execInput) execInput.value = '';
-              if (pathRow) pathRow.style.display = '';
-              if (connectHidden) connectHidden.value = 'morelogin';
-              syncBcDropdowns();
-              applyMoreLoginMode(true);
-              return;
-            }
-            // Leaving MoreLogin → revert the Connection dropdown to Mirror.
-            if (wasMoreLogin) {
-              if (connectHidden) connectHidden.value = 'mirror';
-              syncBcDropdowns();
-              applyMoreLoginMode(false);
-            }
             if (val === 'auto') {
               if (execInput) execInput.value = '';
               if (channelInput) channelInput.value = '';
@@ -6470,118 +6501,45 @@ async function openSettingsModalNow(options = {}) {
       })();
     }
 
-    // ── Connection mode (mirror / attach / MoreLogin) ──
-    let _moreloginDesiredEnvId = '';
-    let _moreloginBrowsersTimer = null;
-    let _moreloginBrowsersTries = 0;
-    // keepShown: a redraw of the list (the quiet ask again, a change of the choice) keeps what the picker shows;
-    // without it the saved default is put back, as on open and on Refresh.
-    async function loadMoreLoginEnvs(keepShown = false) {
-      const sel = overlay.querySelector('#bc-morelogin-env-id');
-      // A placeholder choice (loading / error / not running) keeps its reason visible in the closed dropdown.
-      const only = (key) => setDropdownItems(sel, [{ value: '', label: kit.tx(key), selected: true }]);
-      const statusEl = overlay.querySelector('#bc-morelogin-status-text');
-      if (!sel) return;
-      try {
-        const r = await fetch('/api/browser/morelogin-envs');
-        const d = await r.json();
-        // SynaBun's own local profiles (`kind: 'local'`) are in every answer, whatever MoreLogin does: with one or
-        // more, the picker lists them and the line under it says why MoreLogin's are missing.
-        const localEnvs = (d && Array.isArray(d.envs) ? d.envs : []).filter(e => e && e.kind === 'local');
-        let moreloginNote = '';
-        // With a local profile to list, MoreLogin's state is a note under the picker; without one it is the picker's
-        // only choice, as before. → true when the picker was filled with the reason (nothing more to draw).
-        const without = (message, placeholder) => {
-          if (localEnvs.length) { moreloginNote = message; return false; }
-          placeholder();
-          if (statusEl) statusEl.textContent = message;
-          return true;
-        };
-        if (!d || d.ok === false) { if (without((d && d.error) || kit.tx('settings.redesign.browser.failedToLoadMoreloginProfiles'), () => only('settings.redesign.browser.error'))) return; }
-        else if (!d.installed) { if (without(kit.tx('settings.redesign.browser.moreloginDesktopAppIsNotInstalled') + ' ' + kit.tx('settings.redesign.browser.moreloginCustomPathHint'), () => only('settings.redesign.browser.moreloginNotInstalled'))) return; }
-        else if (!d.running) { if (without(kit.tx('settings.redesign.browser.moreloginNotRunningOpenTheApp', { port: d.port }) + (d.error ? ' ' + String(d.error) : ''), () => only('settings.redesign.browser.startMorelogin'))) return; }
-        const envs = moreloginNote ? localEnvs : (d.envs || []);
-        if (!envs.length) { only('settings.redesign.browser.noProfiles'); if (statusEl) statusEl.textContent = kit.tx('settings.redesign.browser.noMoreloginProfilesYetOneIs'); return; }
-        const want = (keepShown === true && sel.value) || _moreloginDesiredEnvId || sel.value || '';
-        // Show each env's proxy — without it there is no way to tell from SynaBun
-        // whether a profile's traffic leaves the machine.
-        const proxyLabel = (p) => {
-          if (!p) return '';
-          const where = [p.host, p.port].filter(Boolean).join(':');
-          return ` · ${[p.type, where, p.country].filter(Boolean).join(' ')}`;
-        };
-        // SynaBun drives the profile over CDP, so a Firefox-type one (`browser` from the server; absent = not known)
-        // is listed, said as such and cannot be picked. One already saved as the default stays shown, with a warning.
-        // dropdownHTML escapes the labels itself.
-        setDropdownItems(sel, envs.map(e => (e.browser === 'firefox'
-          ? { value: String(e.id), label: kit.tx('settings.redesign.browser.moreloginFirefoxOption', { name: String(e.name ?? e.id) }), disabled: true }
-          : { value: String(e.id), label: `${e.kind === 'local' ? kit.tx('settings.redesign.browser.moreloginLocalOption', { name: String(e.name ?? e.id) }) : (e.name ?? '')}${e.status ? ` (${String(e.status)})` : ''}${proxyLabel(e.proxy)}` })));
-        if (want && envs.some(e => String(e.id) === String(want))) setDropdownValue(sel, String(want));
-        const chosenFirefox = envs.some(e => String(e.id) === String(sel.value) && e.browser === 'firefox');
-        if (statusEl) statusEl.style.color = chosenFirefox ? 'var(--stg-warn)' : '';
-        // The server is still asking MoreLogin which browser some profiles run: ask again quietly, a few times.
-        clearTimeout(_moreloginBrowsersTimer);
-        if (Number(d.browsersPending) > 0 && _moreloginBrowsersTries < 8 && sel.isConnected) {
-          _moreloginBrowsersTries += 1;
-          _moreloginBrowsersTimer = setTimeout(() => loadMoreLoginEnvs(true), 2500);
-        } else _moreloginBrowsersTries = 0;
-        if (statusEl) {
-          let msg = chosenFirefox
-            ? kit.tx('settings.redesign.browser.moreloginFirefoxDefault')
-            : (moreloginNote
-              ? kit.tx('settings.redesign.browser.localProfilesOnly', { count: envs.length }) + ' ' + moreloginNote
-              : kit.tx('settings.redesign.browser.profileSApiPort', { count: envs.length, port: d.port }));
-          // MoreLogin silently redirects a navigation it refuses to its stop page: a
-          // localhost port missing from the profile's Port scan protection list, or a
-          // host its website blacklist/whitelist refuses. Surface it; nothing else in
-          // the UI can explain it.
-          if (d.blockedNavigations > 0) {
-            msg += (" " + kit.tx('settings.redesign.browser.moreloginBlockedNavigationS', { blockedNavigations: d.blockedNavigations }));
-            if (d.lastBlockedUrl) msg += kit.tx('settings.redesign.browser.mostRecently', { lastBlockedUrl: String(d.lastBlockedUrl).slice(0, 80) });
-            msg += kit.tx('settings.redesign.browser.aLocalhostPortMustBeIn');
-          }
-          statusEl.textContent = msg;
-        }
-      } catch {
-        only('settings.redesign.browser.error');
-        if (statusEl) statusEl.textContent = kit.tx('settings.redesign.browser.failedToReachMorelogin');
-      }
+    // ── The AI browser: a MoreLogin / local profile chosen in the MoreLogin tab (settings-ai-browser.js) ──
+    // This tab only says so, with the way there. It never turns a profile on or off and never changes or clears it: a
+    // save carries back what the server holds (browserSaveFields). Its own fields stay the local browser's.
+    let _aiBrowser = { moreLogin: false, envId: null };
+    let _aiBrowserProfile = null; // { envId, name, kind } as the MoreLogin tab listed it
+    function showAiBrowser() {
+      const profile = _aiBrowserProfile && _aiBrowserProfile.envId === _aiBrowser.envId ? _aiBrowserProfile : null;
+      const line = aiBrowserLine(_aiBrowser, profile);
+      const on = line.key !== 'off';
+      const row = overlay.querySelector('#bc-ai-browser-row');
+      if (row) row.style.display = on ? '' : 'none';
+      const text = overlay.querySelector('#bc-ai-browser-text');
+      if (text) text.textContent = on ? kit.tx(`settings.redesign.browser.aiBrowser.${line.key}`, line.params) : '';
+      // The Connection field is the local browser's mode: not in use while a profile is the AI browser.
+      const mode = overlay.querySelector('#bc-connectMode');
+      if (mode) mode.disabled = on;
+      const note = overlay.querySelector('#bc-connectMode-ai-note');
+      if (note) note.style.display = on ? '' : 'none';
+      syncBcDropdowns();
     }
-    // Toggle MoreLogin-backend UI: show the MoreLogin profile picker, hide the
-    // Chrome-only controls (Chrome Profile row + list, profile Path, attach Seed).
-    function applyMoreLoginMode(on) {
-      const mlRow = overlay.querySelector('#bc-morelogin-row');
-      const mlStatusRow = overlay.querySelector('#bc-morelogin-status-row');
-      if (mlRow) mlRow.style.display = on ? '' : 'none';
-      if (mlStatusRow) mlStatusRow.style.display = on ? '' : 'none';
-      const chromeProfRow = overlay.querySelector('#bc-detect-profiles')?.closest('.bc-card-row');
-      const profileList = overlay.querySelector('#bc-profile-list');
-      const profPathRow = overlay.querySelector('#bc-custom-profile-path')?.closest('.bc-card-row');
-      if (chromeProfRow) chromeProfRow.style.display = on ? 'none' : '';
-      if (profileList) profileList.style.display = on ? 'none' : '';
-      if (profPathRow) profPathRow.style.display = on ? 'none' : '';
-      if (on) {
-        const seedRow = overlay.querySelector('#bc-attachSeed-row');
-        if (seedRow) seedRow.style.display = 'none';
-        loadMoreLoginEnvs();
-      }
+    /** The AI browser as last heard: the MoreLogin tab's news (with the profile's name), or a read of the config. */
+    function noteAiBrowser(detail) {
+      if (!detail || typeof detail !== 'object') return;
+      _aiBrowser = { moreLogin: detail.moreLogin === true, envId: detail.envId == null || detail.envId === '' ? null : String(detail.envId) };
+      if (detail.name != null || detail.kind) _aiBrowserProfile = { envId: _aiBrowser.envId, name: detail.name ?? null, kind: detail.kind || null };
+      showAiBrowser();
     }
+    overlay.addEventListener(AI_BROWSER_EVENT, (e) => noteAiBrowser(e.detail), { signal: panelLife.signal });
+    if (overlay._stgAiBrowser) noteAiBrowser(overlay._stgAiBrowser);
+    overlay.querySelector('#bc-ai-browser-open')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      applySettingsOpenOptions(overlay, { tab: 'connected-tools', expand: 'stg-sec-ml-default', scrollTo: 'stg-sec-ml-default', highlight: 'stg-sec-ml-default' });
+    }, { signal: panelLife.signal });
+
+    // ── Connection mode (mirror / attach / extension) ──
     function refreshAttachSeedRow() {
       const mode = overlay.querySelector('#bc-connectMode')?.value || 'mirror';
       const seedRow = overlay.querySelector('#bc-attachSeed-row');
       if (seedRow) seedRow.style.display = mode === 'attach' ? '' : 'none';
-      const showMl = mode === 'morelogin';
-      // Keep the Browser dropdown in sync — MoreLogin appears in BOTH dropdowns.
-      const browserHidden = overlay.querySelector('#bc-browser');
-      if (showMl && browserHidden && browserHidden.value !== 'morelogin') {
-        browserHidden.value = 'morelogin';
-        syncBcDropdowns();
-      } else if (!showMl && browserHidden && browserHidden.value === 'morelogin') {
-        browserHidden.value = 'auto';
-        const chan = overlay.querySelector('#bc-channel'); if (chan) chan.value = '';
-        syncBcDropdowns();
-      }
-      applyMoreLoginMode(showMl);
       updateChromeRunningWarning();
     }
     const connectModeDd = overlay.querySelector('.bc-dropdown[data-for="bc-connectMode"]');
@@ -6591,10 +6549,6 @@ async function openSettingsModalNow(options = {}) {
         item.addEventListener('click', refreshAttachSeedRow);
       });
     }
-    { const mlRow = overlay.querySelector('#bc-morelogin-row'); if (mlRow) wireDropdowns(mlRow, { signal: panelLife.signal }); }
-    // Another profile chosen: the line under the picker says what holds for that one (the Firefox warning goes).
-    overlay.querySelector('#bc-morelogin-env-id')?.addEventListener('change', () => loadMoreLoginEnvs(true), { signal: panelLife.signal });
-    overlay.querySelector('#bc-morelogin-refresh')?.addEventListener('click', (e) => { e.preventDefault(); loadMoreLoginEnvs(); });
     const attachSeedDd = overlay.querySelector('.bc-dropdown[data-for="bc-attachSeed"]');
     if (attachSeedDd) {
       attachSeedDd.querySelectorAll('.cc-dropdown-item').forEach(item => {
@@ -6878,10 +6832,13 @@ async function openSettingsModalNow(options = {}) {
     }
 
     // Collect all config from the form
+    const refreshExtensionSettings = wireExtensionSettings(overlay, { tx: kit.tx, signal: panelLife.signal });
+
     function collectBrowserConfig() {
       const val = (id) => (overlay.querySelector(`#${id}`)?.value || '').trim();
       const num = (id, def) => { const v = parseInt(val(id), 10); return isNaN(v) ? def : v; };
       const numF = (id, def) => { const v = parseFloat(val(id)); return isNaN(v) ? def : v; };
+      const connection = browserSaveFields(val('bc-connectMode'), _aiBrowser);
 
       // Permissions
       const permissions = [];
@@ -6893,11 +6850,12 @@ async function openSettingsModalNow(options = {}) {
         // Executable
         executablePath: val('bc-executablePath') || null,
         userDataDir: val('bc-userDataDir') || null,
-        browser: (val('bc-browser') === 'morelogin' ? 'auto' : (val('bc-browser') || 'auto')),
+        browser: val('bc-browser') || 'auto',
         channel: val('bc-channel') || null,
-        connectMode: ['attach', 'morelogin'].includes(val('bc-connectMode')) ? val('bc-connectMode') : 'mirror',
+        // The AI browser goes back as the server holds it (a MoreLogin profile stays on, its id is never cleared here).
+        connectMode: connection.connectMode,
         attachSeed: val('bc-attachSeed') === 'fresh' ? 'fresh' : 'real',
-        moreloginEnvId: val('bc-morelogin-env-id') || null,
+        moreloginEnvId: connection.moreloginEnvId,
         slowMo: num('bc-slowMo', 0),
         timeout: num('bc-timeout', 30000),
         navigationTimeout: num('bc-navigationTimeout', 30000),
@@ -7006,16 +6964,14 @@ async function openSettingsModalNow(options = {}) {
       setVal('bc-executablePath', cfg.executablePath);
       setVal('bc-userDataDir', cfg.userDataDir || '');
       matchProfileSelection(cfg.userDataDir || '', _synabunProfile);
-      const _showMl = cfg.connectMode === 'morelogin';
-      // MoreLogin shows in BOTH dropdowns — label the Browser dropdown 'morelogin' too.
-      setVal('bc-browser', _showMl ? 'morelogin' : (cfg.browser || 'auto'));
+      // The local browser's own fields; a MoreLogin AI browser is shown by showAiBrowser, never as one of their values.
+      setVal('bc-browser', cfg.browser && cfg.browser !== 'morelogin' ? cfg.browser : 'auto');
       setVal('bc-channel', cfg.channel || '');
-      setVal('bc-connectMode', cfg.connectMode || 'mirror');
+      setVal('bc-connectMode', localConnectModeOf(cfg));
+      refreshExtensionSettings?.();
       setVal('bc-attachSeed', cfg.attachSeed || 'real');
       const _seedRow = overlay.querySelector('#bc-attachSeed-row');
       if (_seedRow) _seedRow.style.display = (cfg.connectMode === 'attach') ? '' : 'none';
-      _moreloginDesiredEnvId = cfg.moreloginEnvId || '';
-      applyMoreLoginMode(_showMl);
       setVal('bc-slowMo', cfg.slowMo ?? 0);
       setVal('bc-timeout', cfg.timeout ?? 30000);
       setVal('bc-navigationTimeout', cfg.navigationTimeout ?? 30000);
@@ -7145,7 +7101,7 @@ async function openSettingsModalNow(options = {}) {
       return r.json();
     }).then(async (data) => {
       if (!data) return;
-      if (data.config) { applyBrowserConfig(data.config); syncBcDropdowns(); }
+      if (data.config) { applyBrowserConfig(data.config); syncBcDropdowns(); noteAiBrowser(aiBrowserOf(data.config)); }
       // Show detected path
       const hint = overlay.querySelector('#bc-detected-path');
       if (hint && data.detectedPath) hint.textContent = kit.tx('settings.redesign.browser.detected', { detectedPath: data.detectedPath });
@@ -7160,10 +7116,22 @@ async function openSettingsModalNow(options = {}) {
     const saveBtn = overlay.querySelector('#bc-save-all');
     if (saveBtn) {
       saveBtn.addEventListener('click', async () => {
-        const config = collectBrowserConfig();
         saveBtn.style.opacity = '0.5'; saveBtn.style.pointerEvents = 'none';
         const status = overlay.querySelector('#bc-save-status');
+        // The AI browser as the server holds it now: the MoreLogin tab, or another window, may have changed it since this
+        // page read it, and this save carries it back unchanged. A failed read keeps the last one heard.
         try {
+          const fresh = await fetch('/api/browser/config');
+          const freshData = fresh.ok ? await fresh.json() : null;
+          if (freshData && freshData.config) noteAiBrowser(aiBrowserOf(freshData.config));
+        } catch { /* the last state heard stands */ }
+        const config = collectBrowserConfig();
+        try {
+          // Public assets can reload before the backend. An older server normalizes an unknown mode to mirror.
+          if (config.connectMode === 'extension') {
+            const support = await fetch('/api/browser/extension');
+            if (!support.ok || !(await support.json()).extensionId) throw new Error(kit.tx('browserExtension.restart'));
+          }
           const res = await fetch('/api/browser/config', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
@@ -10410,34 +10378,21 @@ function showSyncCopiedModal(count) {
 // INIT — wire settings button clicks
 // ═══════════════════════════════════════════
 
-export function initSettings() {
-  const settingsBtn = document.getElementById('settings-btn');
-  if (settingsBtn) settingsBtn.addEventListener('click', () => openSettingsModal());
+// The buttons, the shortcut, the launch prefetches and the sync listeners are wired by ui-settings-entry.js (its
+// initSettings, re-exported here), which loads this module on the first open or in idle time after the page shows.
+export { initSettings } from './ui-settings-entry.js';
 
-  const titlebarBtn = document.getElementById('titlebar-settings-btn');
-  if (titlebarBtn) titlebarBtn.addEventListener('click', () => openSettingsModal());
-
-  const menubarBtn = document.getElementById('menubar-settings-btn');
-  if (menubarBtn) menubarBtn.addEventListener('click', () => openSettingsModal());
-
-  registerAction('open-settings', openSettingsModal);
-
-  // A language change reloaded the app: open Settings again where the user was, once the rest of the app has started.
+/** A language change reloaded the app: open Settings again where the user was (ui-settings-entry.js, once). */
+export function reopenSettingsAfterReload() {
   const reopenPage = takeSettingsReopen();
-  if (reopenPage) setTimeout(() => openSettingsModal({ tab: reopenPage, expand: ['stg-sec-language'] }), 0);
-
-  // Launch: what Settings is built from, and its search index (the English names too), read and made once the
-  // page has painted, so the first open and the first search wait for nothing.
-  registerLaunchPrefetch('settings-data', () => prefetchSettingsData(), { order: 60, owner: true });
-  registerLaunchPrefetch('settings-search-index', () => prebuildSettingsSearchIndex(), { order: 62 });
-  // Changes other windows announce: the next open shows them.
-  on('sync:skin:changed', () => refreshSettingsData(['skins']));
-  on('sync:greeting:changed', () => refreshSettingsData(['greeting']));
-  on('sync:assistant:user-context-changed', () => refreshSettingsData(['userContext']));
-
-  // Expose sync functions for inline onclick attributes (if any remain)
-  window.checkSyncStatus = checkSyncStatus;
-  window.copySyncPrompt = copySyncPrompt;
+  if (reopenPage) openSettingsModal({ tab: reopenPage, expand: ['stg-sec-language'] });
 }
+
+/** The launch step that makes the Settings search index (ui-settings-entry.js registers it). */
+export { prebuildSettingsSearchIndex };
+
+// Expose sync functions for inline onclick attributes (if any remain)
+window.checkSyncStatus = checkSyncStatus;
+window.copySyncPrompt = copySyncPrompt;
 
 configureToolPickerTranslation((key, params) => kit.tx(key, params));

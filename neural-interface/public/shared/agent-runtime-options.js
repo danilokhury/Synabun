@@ -692,10 +692,12 @@ const EFFORT_OFF_CHOICE = Object.freeze({ id: EFFORT_OFF, label: 'Off', desc: 'N
  * Can this model run with thinking off? Mirrors lib/effort-levels.js supportsEffortOff: Claude Code
  * whenever the model thinks at all (Haiku lists no level: no; a model nothing is known about: yes,
  * the SDK and `--thinking disabled` work for any), Codex and OpenCode only when the model lists
- * `none`, Antigravity never.
+ * `none`, Antigravity never. A Claude model whose CLI says its thinking cannot be turned off
+ * (`supportsThinkingOff: false`, the catalog's `thinkingOff: false`: Opus 5.5) never offers it.
  */
 export function modelSupportsEffortOff(profileId, model) {
   const ids = modelEffortIds(model);
+  if (profileId === 'claude-code' && model && (model.supportsThinkingOff === false || model.thinkingOff === false)) return false;
   if (profileId === 'claude-code') return ids ? ids.some(id => id.toLowerCase() !== EFFORT_OFF) : true;
   if (profileId === 'antigravity') return false;
   return !!ids?.some(id => id.toLowerCase() === EFFORT_OFF);

@@ -50,8 +50,21 @@ export function isBrowserStarting(result: NiResponse | null | undefined): boolea
  */
 export const AUTO_CREATE_STARTING = 'The browser is still starting (a cold MoreLogin start can take about two minutes); nothing failed. Call browser_navigate again in a moment: it opens the page in that browser as soon as it is ready and never starts a second one.';
 
-/** A route, or why there is none (`starting`: the browser is still starting, not a failure). */
-type RouteOrError = { sessionId: string; tabId?: string } | { error: string; starting?: boolean };
+/**
+ * A route, or why there is none (`starting`: the browser is still starting, not a failure; `needsUser`: the server
+ * refused on purpose and only the user can change that, e.g. a MoreLogin profile closed outside SynaBun).
+ */
+type RouteOrError = { sessionId: string; tabId?: string } | { error: string; starting?: boolean; code?: string; needsUser?: boolean };
+
+/**
+ * A browser start the server refused because the user has to act first (`needsUser`: a MoreLogin profile closed outside
+ * SynaBun, MORELOGIN_CLOSED_OUTSIDE; a start MoreLogin refused for its plan): its sentence as it is, with no "call
+ * browser_session create" after it (a create is refused the same way) and never announced as a replacement tab.
+ */
+export function userBlockedStart(result: NiResponse | null | undefined): { error: string; code?: string; needsUser: true } | null {
+  if (!result || result.needsUser !== true || typeof result.error !== 'string' || !result.error) return null;
+  return { error: result.error, ...(typeof result.code === 'string' ? { code: result.code } : {}), needsUser: true };
+}
 // Existing engagement spacing can consume 90 seconds before the click begins.
 const CLICK_TIMEOUT = 120_000;
 
@@ -137,6 +150,7 @@ export interface BrowserSessionInfo {
   agentOwned?: boolean;
   persistent?: boolean;
   activeTabId?: string | null;
+  ownTabsOnly?: boolean;
   tabs?: Array<{ id: string; url?: string; title?: string; active?: boolean }>;
   /** ownerKey → tabId for every automation that owns a tab in this session.
    *  Used to tell a pristine (manual) session apart from one another automation
@@ -168,6 +182,7 @@ async function requestOnce(
   body?: Record<string, unknown>,
   timeout = DEFAULT_TIMEOUT,
   extraHeaders: Record<string, string> = {},
+  preserveJson = false,
 ): Promise<NiResponse> {
   const cancellation = browserCancellation.getStore();
   const callerSignal = cancellation?.signal;
@@ -233,7 +248,7 @@ async function requestOnce(
       const { image: _image, screenshot: _screenshot, data: _data, ...textFields } = data;
       estimatedTextTokens = Math.ceil(JSON.stringify(textFields).length / 4);
     }
-    if (!res.ok && !data.error) {
+    if (!res.ok && !data.error && !preserveJson) {
       data.error = `HTTP ${res.status}`;
     }
     return data;
@@ -276,7 +291,7 @@ async function request(
   path: string,
   body?: Record<string, unknown>,
   timeout = DEFAULT_TIMEOUT,
-  opts: { recover?: boolean } = {},
+  opts: { recover?: boolean; preserveJson?: boolean } = {},
 ): Promise<NiResponse> {
   const match = /^\/api\/browser\/sessions\/([^/?]+)\/(.+)$/.exec(path);
   // A tool call whose page was lost runs nothing more on a tab (browser-route-flow.ts): a later step would run on
@@ -284,7 +299,7 @@ async function request(
   const flow = currentRouteFlow();
   const guarded = !!flow && flow.policy !== 'follow' && !!match;
   if (guarded && flow!.loss) throw new BrowserRouteLost(flow!.loss);
-  const result = await requestOnce(method, path, body, timeout);
+  const result = await requestOnce(method, path, body, timeout, {}, opts.preserveJson);
   const context = batchContext.getStore();
   const missingRoute = isMissingRoute(result);
   const routeOf = (): RouteLoss['from'] => {
@@ -347,15 +362,18 @@ async function request(
       // Recovery failed: report why (e.g. "MoreLogin connect failed: …"), not the
       // bare "Session not found" that triggered it. Nothing was started.
       const starting = (refreshed as { starting?: boolean }).starting === true;
+      // Refused until the user acts (a MoreLogin profile closed outside SynaBun): no replacement, no create advice.
+      const needsUser = (refreshed as { needsUser?: boolean }).needsUser === true;
+      const refusedCode = needsUser ? (refreshed as { code?: string }).code : undefined;
       if (guarded) {
         // Every later step of this tool would find the same dead route: the call stops here and says what happened
-        // (routeLossMessage: still starting, or create a tab of your own).
+        // (routeLossMessage: still starting, refused until the user acts, or create a tab of your own).
         // The loss message says what to do; the hint the recovery's error carries would say it twice.
         const why = refreshed.error.replace(`\n${LOST_ROUTE_HINT}`, '').trim();
-        flow!.loss = { reason: 'gone', step: stepOf(), from: routeOf(), recovery: { error: why, ...(starting && { starting: true }) } };
+        flow!.loss = { reason: 'gone', step: stepOf(), from: routeOf(), recovery: { error: why, ...(starting && { starting: true }), ...(needsUser && { needsUser: true, ...(refusedCode && { code: refusedCode }) }) } };
         throw new BrowserRouteLost(flow!.loss);
       }
-      return { ...result, error: refreshed.error, recoveryFailed: true, ...(starting && { starting: true }) };
+      return { ...result, error: refreshed.error, recoveryFailed: true, ...(starting && { starting: true }), ...(needsUser && { needsUser: true, ...(refusedCode && { code: refusedCode }) }) };
     }
   }
   if (guarded && !context && missingRoute && opts.recover !== false) {
@@ -484,16 +502,20 @@ export async function reportRuntimeTools(
 
 // Join the ONE shared browser with a dedicated, owned tab (instead of launching a
 // second browser on a persistent profile, which fails with "profile is locked").
-async function acquireInteractive(id: CallerIdentity, url?: string): Promise<RouteOrError> {
+async function acquireInteractive(id: CallerIdentity, url?: string, takeOverTab?: string): Promise<RouteOrError & { openedUrl?: string }> {
   // The tab is owned by the id this caller routes as (X-Synabun-Terminal): the server checks an explicit tab against
   // that header, so a tab filed under the process's client id was refused to a run with a terminal pin and no browser
   // pin (a native run without a browser, a brain's MCP child) as "another owner's".
   const resp = await request('POST', '/api/browser/acquire', {
     clientId: terminalIdFor(id),
     url: url || 'about:blank',
+    ...(takeOverTab && { takeOverTab }),
   }, SESSION_CREATE_TIMEOUT);
   // Still starting (a cold MoreLogin start): nothing failed, and the tab is kept for this caller's next request.
   if (isBrowserStarting(resp)) return { error: String(resp.error || 'The browser is still starting. Call the browser tool again in a moment.'), starting: true };
+  // Refused until the user acts (a profile closed outside SynaBun): said as it is, and no replacement is announced.
+  const blocked = userBlockedStart(resp);
+  if (blocked) return blocked;
   if (resp.error || !resp.sessionId) {
     return { error: `Failed to acquire a shared browser tab: ${resp.error || 'no session returned'}` };
   }
@@ -502,7 +524,7 @@ async function acquireInteractive(id: CallerIdentity, url?: string): Promise<Rou
   id.state.affinitySessionId = id.state.interactiveSessionId;
   // A tab of its own again, after the one it had went away: the call says so.
   if (id.state.lostRoute) announceReplacement(id, { sessionId: id.state.interactiveSessionId, tabId: id.state.interactiveTabId });
-  return { sessionId: id.state.interactiveSessionId, tabId: id.state.interactiveTabId || undefined };
+  return { sessionId: id.state.interactiveSessionId, tabId: id.state.interactiveTabId || undefined, ...(resp.profileMode === 'extension' && typeof resp.url === 'string' ? { openedUrl: resp.url } : {}) };
 }
 
 function adoptCreatedSession(id: CallerIdentity, created: NiResponse, tabId?: string): { sessionId: string; tabId?: string } {
@@ -590,7 +612,9 @@ function ownedTabIn(listing: NiResponse, sessionId: string, id: CallerIdentity, 
   const session = ((listing.sessions || []) as BrowserSessionInfo[]).find(s => s.id === sessionId);
   if (!session || !servesDefault(session)) return null;
   const owners = session.tabOwners || {};
-  const mine = [owners[terminalIdFor(id)], owners[id.clientId]].filter((t): t is string => typeof t === 'string' && t.length > 0);
+  const mine = session.profileMode === 'extension' && session.ownTabsOnly === true
+    ? (session.tabs || []).map(t => t.id)
+    : [owners[terminalIdFor(id)], owners[id.clientId]].filter((t): t is string => typeof t === 'string' && t.length > 0);
   const open = (t: string) => !session.tabs || session.tabs.some(x => x.id === t);
   if (tabId && mine.includes(tabId) && open(tabId)) return tabId;
   return mine.find(open) || null;
@@ -621,12 +645,15 @@ async function recoverRunBrowser(
   id: CallerIdentity,
   lost: { sessionId?: string; tabId?: string } | null,
   reason?: 'create',
+  takeOverTab?: string,
 ): Promise<NiResponse> {
   const pins = effectivePins(id);
   const terminalSessionId = pins.terminalSessionId || id.state.ancestorPinnedTerminal || undefined;
   const body: Record<string, unknown> = {};
   if (terminalSessionId) body.terminalSessionId = terminalSessionId;
   if (reason) body.reason = reason;
+  // A create that takes over one of the owner's tabs in the everyday browser (extension mode, full control).
+  if (reason === 'create' && takeOverTab) body.takeOverTab = takeOverTab;
   if (lost?.sessionId) body.lost = { sessionId: lost.sessionId, tabId: lost.tabId || null };
   const recovered = await request('POST', '/api/loop/recover-browser', body, SESSION_CREATE_TIMEOUT);
   if (!recovered.error && typeof recovered.sessionId === 'string' && !isBrowserStarting(recovered)) {
@@ -830,6 +857,18 @@ async function resolveSessionUncached(
   // this caller to a specific browser session (multi-session isolation).
   // If pinned session died, check recovery cache first, then auto-create.
   const pinnedSession = pins.browserSessionId || id.state.ancestorPinnedSession || undefined;
+  // Extension ownership is per tab, even for a pinned run. Reuse its normal liveness read to verify explicit ids.
+  const explicitExtensionTab = async (listing: NiResponse): Promise<RouteOrError | null> => {
+    if (!pinnedSession || !tabId) return null;
+    const targetSession = sessionId || id.state.recoveredSessionId || pinnedSession;
+    const target = ((listing.sessions || []) as BrowserSessionInfo[]).find(s => s.id === targetSession);
+    if (target?.profileMode !== 'extension' || target.ownTabsOnly !== true) return null;
+    if (!target.tabs?.some(t => t.id === tabId)) return { error: 'NOT_OWNED: This is not an open tab owned by this caller.' };
+    repin(id, targetSession, tabId);
+    await recordOwnRoute(id, listing, targetSession, tabId);
+    return { sessionId: targetSession, tabId };
+  };
+  if (namedListing) { const explicit = await explicitExtensionTab(namedListing); if (explicit) return explicit; }
   // A pinned run that names a session of its own by hand (the one its browser_session create returned, or one it
   // recovered into in an earlier process): that session and its own open tab there, never the dead pinned tab paired
   // with it. The run's route moves there, here and on the server (recordOwnRoute). A session that is not the run's
@@ -859,6 +898,7 @@ async function resolveSessionUncached(
     // Return the RECOVERED tab, never the stale pinned tab (which 404s).
     if (id.state.recoveredSessionId) {
       const recheck = await request('GET', '/api/browser/sessions');
+      const explicit = await explicitExtensionTab(recheck); if (explicit) return explicit;
       const alive = ((recheck.sessions || []) as BrowserSessionInfo[]).find(s => s.id === id.state.recoveredSessionId);
       // The recovered TAB must still be there too: one closed while its session lives was returned forever
       // ("Tab … not found in session" on every call, 2026-10-04).
@@ -870,7 +910,12 @@ async function resolveSessionUncached(
     }
 
     const check = await request('GET', '/api/browser/sessions');
+    const explicit = await explicitExtensionTab(check); if (explicit) return explicit;
     const listed = (check.sessions || []) as BrowserSessionInfo[];
+    // Extension tabs are never silently replaced after close/revoke/browser restart. The adapter returns TAB_CLOSED.
+    if ((check.defaultBrowser as { connectMode?: string } | undefined)?.connectMode === 'extension') {
+      return { sessionId: id.state.recoveredSessionId || pinnedSession, tabId: id.state.recoveredTabId || resolvedTabId };
+    }
     // The route the server recorded for this run (yourRoute): where a recovery or the run's own browser_session
     // create moved it, also when that happened in an earlier MCP process of the run (a Codex turn, a restarted
     // stdio child) that this one never heard of. Used while its tab is open; the pin otherwise.
@@ -907,6 +952,7 @@ async function resolveSessionUncached(
       // left. It gets a tab of its own in the profile it works in now, and the server records that as its route.
       const recovered = await recoverRunBrowser(id, { sessionId: pinnedSession, tabId: resolvedTabId });
       if (isBrowserStarting(recovered)) return { error: String(recovered.error), starting: true };
+      if (userBlockedStart(recovered)) return userBlockedStart(recovered)!;
       if (!recovered.error && recovered.sessionId) {
         return { sessionId: recovered.sessionId as string, tabId: (recovered.tabId as string) || undefined };
       }
@@ -923,6 +969,7 @@ async function resolveSessionUncached(
       console.error(`[MCP] Pinned tab ${resolvedTabId} not found in active session ${pinnedSession} — recovering`);
       const recovered = await recoverRunBrowser(id, { sessionId: pinnedSession, tabId: resolvedTabId });
       if (isBrowserStarting(recovered)) return { error: String(recovered.error), starting: true };
+      if (userBlockedStart(recovered)) return userBlockedStart(recovered)!;
       if (!recovered.error && recovered.sessionId) {
         return { sessionId: recovered.sessionId as string, tabId: (recovered.tabId as string) || undefined };
       }
@@ -937,6 +984,7 @@ async function resolveSessionUncached(
     console.error(`[MCP] Pinned browser session ${pinnedSession} is gone — recovering via shared loop browser`);
     const recovered = await recoverRunBrowser(id, { sessionId: pinnedSession, tabId: resolvedTabId });
     if (isBrowserStarting(recovered)) return { error: String(recovered.error), starting: true };
+    if (userBlockedStart(recovered)) return userBlockedStart(recovered)!;
     if (recovered.error || !recovered.sessionId) {
       return { error: `Pinned browser session ${pinnedSession} is no longer available and recovery failed: ${recovered.error || 'no session returned'}\n${LOST_ROUTE_HINT}` };
     }
@@ -975,6 +1023,9 @@ async function resolveSessionUncached(
     }
     const check = await request('GET', '/api/browser/sessions');
     const alive = ((check.sessions || []) as BrowserSessionInfo[]).find(s => s.id === id.state.interactiveSessionId);
+    if ((check.defaultBrowser as { connectMode?: string } | undefined)?.connectMode === 'extension') {
+      return { sessionId: id.state.interactiveSessionId, tabId: resolvedTabId || id.state.interactiveTabId || undefined };
+    }
     if (alive && servesDefault(alive)) return { sessionId: id.state.interactiveSessionId, tabId: resolvedTabId || id.state.interactiveTabId || undefined };
     id.state.lostRoute = { sessionId: id.state.interactiveSessionId, tabId: id.state.interactiveTabId };
     id.state.interactiveSessionId = null;
@@ -991,6 +1042,7 @@ async function resolveSessionUncached(
     }, SESSION_CREATE_TIMEOUT);
     // Still starting: not a failure (the server keeps the start for this caller's next call).
     if (isBrowserStarting(created)) return { error: AUTO_CREATE_STARTING, starting: true };
+    if (userBlockedStart(created)) return userBlockedStart(created)!;
     if (created.error) {
       if (/lock/i.test(created.error)) return acquireInteractive(id, autoCreate.url);
       return { error: `Failed to auto-create session: ${created.error}` };
@@ -1030,6 +1082,7 @@ async function resolveSessionUncached(
     }, SESSION_CREATE_TIMEOUT);
     // Still starting: not a failure (the server keeps the start for this caller's next call).
     if (isBrowserStarting(created)) return { error: AUTO_CREATE_STARTING, starting: true };
+    if (userBlockedStart(created)) return userBlockedStart(created)!;
     if (created.error) {
       if (/lock/i.test(created.error)) return acquireInteractive(id, autoCreate?.url);
       return { error: `Failed to auto-create session: ${created.error}` };
@@ -1143,7 +1196,9 @@ export async function resolveBatchRoute(sessionId?: string, tabId?: string): Pro
   if (result.error) return { error: result.error };
   const session = (result.sessions as BrowserSessionInfo[] | undefined)?.find(s => s.id === resolved.sessionId);
   const id = getIdentity();
-  const ownedTabs = [session?.tabOwners?.[terminalIdFor(id)], session?.tabOwners?.[id.clientId]].filter(Boolean);
+  const ownedTabs = session?.profileMode === 'extension' && session.ownTabsOnly === true
+    ? (session.tabs || []).map(t => t.id)
+    : [session?.tabOwners?.[terminalIdFor(id)], session?.tabOwners?.[id.clientId]].filter(Boolean);
   const ownedTab = resolved.tabId || ownedTabs[0];
   if (!ownedTab || !ownedTabs.includes(ownedTab)) {
     return { error: 'browser_batch requires a tab owned by this caller. Use browser_navigate to acquire a tab first.' };
@@ -1169,7 +1224,7 @@ export async function listSessions(): Promise<NiResponse> {
   return request('GET', '/api/browser/sessions');
 }
 
-export interface OwnBrowserTab { id: string; url: string; title: string }
+export interface OwnBrowserTab { id: string; url: string; title: string; owner?: string | null }
 export interface OwnBrowserSession {
   id: string;
   /** This caller's own open tabs there (never another automation's or the owner's). */
@@ -1195,6 +1250,9 @@ export interface BrowserRouteStatus {
   movedFrom?: { sessionId: string; tabId: string | null } | null;
   /** The MoreLogin profile this caller works in when it is not the default (its launch's, or its own choice). */
   profile?: { envId: string; name: string | null } | null;
+  /** The everyday browser through the extension, in full control: the owner's open tabs no agent holds, which
+   *  browser_session create with that tabId takes over. Absent in every other setup. */
+  ownerTabs?: OwnBrowserTab[];
 }
 
 /**
@@ -1210,12 +1268,16 @@ export async function browserRouteStatus(): Promise<BrowserRouteStatus> {
   const empty: BrowserRouteStatus = { sessions: [], current: null, replacedTabs: [], lost: id.state.lostRoute, movedFromPin: false };
   if (listing.error) return { ...empty, error: listing.error };
   const raw = (listing.sessions || []) as Array<BrowserSessionInfo & { otherTabs?: number }>;
+  const extensionTabs = listing.extensionTabs as { tabs?: Array<{ id?: unknown; url?: unknown; title?: unknown; owner?: unknown }> } | undefined;
+  const ownerTabs: OwnBrowserTab[] | undefined = Array.isArray(extensionTabs?.tabs)
+    ? extensionTabs!.tabs!.filter(t => typeof t?.id === 'string').map(t => ({ id: t.id as string, url: typeof t.url === 'string' ? t.url : '', title: typeof t.title === 'string' ? t.title : '', ...(t.owner === null || typeof t.owner === 'string' ? { owner: t.owner } : {}) }))
+    : undefined;
   const keys = [terminalIdFor(id), id.clientId];
   const sessions: OwnBrowserSession[] = raw.map((s) => {
     const owners = s.tabOwners || {};
     const mine = new Set(keys.map(k => owners[k]).filter((t): t is string => typeof t === 'string' && t.length > 0));
     const all = s.tabs || [];
-    const tabs = all.filter(t => mine.has(t.id)).map(t => ({ id: t.id, url: t.url || '', title: t.title || '' }));
+    const tabs = all.filter(t => s.ownTabsOnly === true || mine.has(t.id)).map(t => ({ id: t.id, url: t.url || '', title: t.title || '' }));
     const otherTabs = typeof s.otherTabs === 'number' ? s.otherTabs : all.length - tabs.length;
     return { id: s.id, tabs, otherTabs, servesDefault: servesDefault(s), profile: describeSession(s) };
   });
@@ -1261,7 +1323,7 @@ export async function browserRouteStatus(): Promise<BrowserRouteStatus> {
   const yourProfile = listing.yourProfile as { envId?: unknown; name?: unknown } | undefined;
   const profile = yourProfile && typeof yourProfile.envId === 'string'
     ? { envId: yourProfile.envId, name: typeof yourProfile.name === 'string' ? yourProfile.name : null } : null;
-  return { sessions, current, replacedTabs, lost: id.state.lostRoute, movedFromPin, movedFrom, profile };
+  return { sessions, current, replacedTabs, lost: id.state.lostRoute, movedFromPin, movedFrom, profile, ...(ownerTabs && { ownerTabs }) };
 }
 
 /**
@@ -1275,7 +1337,11 @@ export async function browserRouteStatus(): Promise<BrowserRouteStatus> {
  * A url other than about:blank is opened in the new tab. A start the server is still running answers
  * BROWSER_STARTING (isBrowserStarting): the next create gets that same start, never a second browser.
  */
-export async function createSession(url?: string): Promise<NiResponse> {
+/**
+ * `takeOverTab`: the id of one of the owner's open tabs in the everyday browser (browser_session list shows them in
+ * full control). The new route is that tab instead of a new one; the server refuses it in any other setup.
+ */
+export async function createSession(url?: string, takeOverTab?: string): Promise<NiResponse> {
   const id = getIdentity();
   const pins = effectivePins(id);
   const target = url || 'about:blank';
@@ -1286,7 +1352,7 @@ export async function createSession(url?: string): Promise<NiResponse> {
   let created: NiResponse;
   let opened = false; // the new tab is already at `target`
   if (pinned) {
-    created = await recoverRunBrowser(id, null, 'create');
+    created = await recoverRunBrowser(id, null, 'create', takeOverTab);
     if (created.error || isBrowserStarting(created) || typeof created.sessionId !== 'string') return created;
     created = { ...created, repinned: true };
   } else {
@@ -1297,7 +1363,7 @@ export async function createSession(url?: string): Promise<NiResponse> {
     let shared = lockRisk;
     created = {};
     if (!lockRisk) {
-      created = await request('POST', '/api/browser/sessions', { url: target }, SESSION_CREATE_TIMEOUT);
+      created = await request('POST', '/api/browser/sessions', { url: target, ...(takeOverTab && { takeOverTab }) }, SESSION_CREATE_TIMEOUT);
       if (isBrowserStarting(created)) return created;
       if (created.error && /lock/i.test(created.error)) shared = true;
       else if (created.error || typeof created.sessionId !== 'string') return created;
@@ -1313,10 +1379,11 @@ export async function createSession(url?: string): Promise<NiResponse> {
       }
     }
     if (shared) {
-      const acquired = await acquireInteractive(id, target);
+      const acquired = await acquireInteractive(id, target, takeOverTab);
       if ('error' in acquired) return { error: acquired.error, ...(acquired.starting && { starting: true, code: 'BROWSER_STARTING' }) };
       resolvedRoutes.delete(id);
-      created = { ok: true, sessionId: acquired.sessionId, tabId: acquired.tabId || null, shared: true };
+      opened = typeof acquired.openedUrl === 'string';
+      created = { ok: true, sessionId: acquired.sessionId, tabId: acquired.tabId || null, shared: true, ...(opened ? { url: acquired.openedUrl } : {}) };
     }
   }
   const sessionId = created.sessionId as string;
@@ -1334,13 +1401,16 @@ export async function createSession(url?: string): Promise<NiResponse> {
  * caller's own tab there (`sessionKept`). Either way this caller's cached route to it is forgotten: the next call
  * resolves again (a pinned run gets a tab back through its recovery).
  */
-export async function closeSession(sessionId: string): Promise<NiResponse> {
-  const result = await request('DELETE', `/api/browser/sessions/${sessionId}`);
+export async function closeSession(sessionId: string, tabId?: string): Promise<NiResponse> {
+  const qs = tabId ? `?tabId=${encodeURIComponent(tabId)}` : '';
+  const result = await request('DELETE', `/api/browser/sessions/${sessionId}${qs}`);
   if (!result.error) {
     const id = getIdentity();
     // The tab that went (the server's releasedTabId, else the one this caller routed to there): the next call that
     // opens a tab for this caller says it replaced this one.
     const cachedRoute = resolvedRoutes.get(id)?.route;
+    const currentTab = cachedRoute?.tabId || id.state.recoveredTabId || id.state.interactiveTabId;
+    if (tabId && result.releasedTabId === tabId && result.sessionKept === true && currentTab && currentTab !== tabId) return result;
     const closedTab = typeof result.releasedTabId === 'string' ? result.releasedTabId
       : cachedRoute?.sessionId === sessionId ? cachedRoute.tabId || null
         : id.state.recoveredSessionId === sessionId ? id.state.recoveredTabId
@@ -1920,7 +1990,7 @@ export async function moreloginStop(envId: string): Promise<NiResponse> {
 
 /**
  * This caller works in a MoreLogin profile of its own from now on (POST /api/morelogin/use): `envId`, `name` or
- * `profile` (either) of a profile MoreLogin lists, or `default: true` for the default of Settings → Browser. Only this
+ * `profile` (either) of a profile MoreLogin lists, or `default: true` for the default AI browser (Settings → Connected tools → MoreLogin). Only this
  * caller moves: the default AI browser and every other session stay where they are. The server releases what the
  * caller owned in the browser it leaves; here every route this process knew is forgotten, so its next browser call
  * resolves again and gets a tab of its own in the new profile (started then). The route it left is kept as its lost
@@ -1974,6 +2044,17 @@ export async function skillsV2(method: 'GET' | 'POST' | 'PATCH', path: string, b
   return requestOnce(method, `/api/skills-studio/v2${path}`, body, timeout, credential ? { 'X-Synabun-Brain-Token': credential } : {});
 }
 
+// ── agents-p6 BEGIN: agent definitions (the `agent_definition` tool of the role-gated `skills` group) ──
+// One thin call over /api/agents-studio/v1 (neural-interface/lib/agents-studio-api.js), which owns every rule: the
+// Assistant reads, drafts, checks and submits for review; approving, deleting and writing a native export are the
+// owner's, from the app's own page, and those routes refuse a request that carries the agent headers requestOnce
+// sends. The brain credential rides along as for skillsV2: the server knows the Assistant by it, never by the role.
+export async function agentsStudio(method: 'GET' | 'POST' | 'PATCH', path: string, body?: Record<string, unknown>, timeout = LONG_TIMEOUT): Promise<NiResponse> {
+  const credential = callerBrainCredential();
+  return requestOnce(method, `/api/agents-studio/v1${path}`, body, timeout, credential ? { 'X-Synabun-Brain-Token': credential } : {});
+}
+// ── agents-p6 END ──
+
 // ── SynaBun assistant orchestration (role-gated `agents` tool group) ──
 // Thin proxies over /api/assistant/* (neural-interface/lib/assistant-api.js),
 // which owns dispatch state, rails and authorization. requestOnce already
@@ -1992,9 +2073,12 @@ export type AssistantDispatchBody = {
   effort?: string;
   tools?: string[];
   routeId?: string;
+  workerIndex?: number;
   taskClass?: string;
   confidence?: number;
   usesComputer?: boolean;
+  /** A SynaBun agent to run as (`<id>`, `<id>@<revision>`, `global:<id>`, `project:<id>`); not OpenCode's `agent`. */
+  agentRef?: string;
   agent?: string;
   accountId?: string;
   codexAccountId?: string;
@@ -2048,12 +2132,16 @@ const ASSISTANT_ROUTE_TIMEOUT = 115_000;
 
 export async function assistantRoute(body: {
   assistantSessionId: string;
+  task_key?: string;
   task_class: string;
   summary: string;
   confidence: number;
+  planned_split?: { workers: number; slices: string[]; reason?: string };
   needs_vision?: boolean;
-  proposals: Array<{ kind: 'direct' | 'dispatch'; provider?: string; model?: string; effort?: string; reason?: string }>;
+  proposals: Array<{ kind: 'direct' | 'dispatch'; provider?: string; model?: string; effort?: string; reason?: string; agent_ref?: string }>;
   independent?: boolean;
+  /** The project directory a proposal's agent_ref is resolved for (a project's own agent wins over the global one). */
+  cwd?: string;
 }): Promise<NiResponse> {
   return request('POST', '/api/assistant/route', body as unknown as Record<string, unknown>, ASSISTANT_ROUTE_TIMEOUT);
 }
@@ -2095,8 +2183,8 @@ export async function assistantResult(runId: string): Promise<NiResponse> {
   return request('GET', assistantRunPath(runId, '/result'));
 }
 
-export async function assistantTranscript(runId: string, opts: { format?: string; tail?: number; maxChars?: number } = {}): Promise<NiResponse> {
-  return request('GET', assistantRunPath(runId, `/transcript${queryString({ format: opts.format, tail: opts.tail, maxChars: opts.maxChars })}`), undefined, LONG_TIMEOUT);
+export async function assistantTranscript(runId: string, opts: { format?: string; tail?: number; maxChars?: number; offset?: number } = {}): Promise<NiResponse> {
+  return request('GET', assistantRunPath(runId, `/transcript${queryString({ format: opts.format, tail: opts.tail, maxChars: opts.maxChars, offset: opts.offset })}`), undefined, LONG_TIMEOUT);
 }
 
 export async function assistantSend(runId: string, body: { text: string; queue?: boolean }): Promise<NiResponse> {
@@ -2107,11 +2195,12 @@ export async function assistantPermission(runId: string, body: { requestId: stri
   return request('POST', assistantRunPath(runId, '/permission'), body, LONG_TIMEOUT);
 }
 
-export async function assistantWaitRun(runId: string, opts: { until?: string; timeoutMs: number }): Promise<NiResponse> {
-  return request('GET', assistantRunPath(runId, `/wait${queryString({ until: opts.until, timeout: opts.timeoutMs })}`), undefined, opts.timeoutMs + ASSISTANT_WAIT_MARGIN_MS);
+export async function assistantWaitRun(runId: string, opts: { until?: string; timeoutMs: number; afterSeq?: number; kinds?: string[] }): Promise<NiResponse> {
+  const query = queryString({ until: opts.until, timeout: opts.timeoutMs, afterSeq: opts.afterSeq, kinds: opts.kinds && opts.kinds.length ? opts.kinds.join(',') : undefined });
+  return request('GET', assistantRunPath(runId, `/wait${query}`), undefined, opts.timeoutMs + ASSISTANT_WAIT_MARGIN_MS);
 }
 
-export async function assistantWaitMany(body: { runIds?: string[]; workflowId?: string; mode?: string; until?: string; timeoutMs: number }): Promise<NiResponse> {
+export async function assistantWaitMany(body: { runIds?: string[]; workflowId?: string; mode?: string; until?: string; timeoutMs: number; afterSeq?: number; kinds?: string[] }): Promise<NiResponse> {
   return request('POST', '/api/assistant/wait', body, body.timeoutMs + ASSISTANT_WAIT_MARGIN_MS);
 }
 
@@ -2125,6 +2214,78 @@ export async function assistantKillAll(body: { assistantSessionId?: string; work
 
 export async function assistantFocus(runId: string, focus: boolean): Promise<NiResponse> {
   return request('POST', assistantRunPath(runId, '/focus'), { focus });
+}
+
+// ── agents-p4: teams ──
+// agent_team (the Assistant's own: /api/assistant/teams/*) and a worker's `team` tool (/api/assistant/team/*, where
+// the Neural Interface takes the team from the caller's proven run, never from the request).
+const ASSISTANT_TEAM_TIMEOUT = 120_000;
+
+function assistantTeamPath(teamId: string, suffix = ''): string {
+  return `/api/assistant/teams/${encodeURIComponent(teamId)}${suffix}`;
+}
+
+export async function assistantTeamList(opts: { assistantSessionId?: string; open?: boolean } = {}): Promise<NiResponse> {
+  return request('GET', `/api/assistant/teams${queryString({ assistantSessionId: opts.assistantSessionId, open: opts.open ? '1' : undefined })}`, undefined, LONG_TIMEOUT);
+}
+
+export async function assistantTeamPlan(body: Record<string, unknown>): Promise<NiResponse> {
+  return request('POST', '/api/assistant/teams/plan', body, LONG_TIMEOUT);
+}
+
+/** Creates the worktrees and dispatches the first workers: as long as a dispatch may take, and more. */
+export async function assistantTeamStart(body: Record<string, unknown>): Promise<NiResponse> {
+  return request('POST', '/api/assistant/teams/start', body, ASSISTANT_TEAM_TIMEOUT);
+}
+
+export async function assistantTeamStatus(teamId: string): Promise<NiResponse> {
+  return request('GET', assistantTeamPath(teamId), undefined, LONG_TIMEOUT);
+}
+
+/** A join runs the team's test command on the integration branch: the answer may take as long as the tests. */
+export async function assistantTeamIntegrate(teamId: string, body: { sliceId?: string } = {}): Promise<NiResponse> {
+  return request('POST', assistantTeamPath(teamId, '/integrate'), body, ASSISTANT_TEAM_TIMEOUT);
+}
+
+export async function assistantTeamLand(teamId: string, body: { targetBranch?: string; mode?: string } = {}): Promise<NiResponse> {
+  return request('POST', assistantTeamPath(teamId, '/land'), body, ASSISTANT_TEAM_TIMEOUT);
+}
+
+export async function assistantTeamCleanup(teamId: string, body: { targetBranch?: string; mode?: string; user_confirmed: boolean }): Promise<NiResponse> {
+  return request('POST', assistantTeamPath(teamId, '/cleanup'), body, ASSISTANT_TEAM_TIMEOUT, { preserveJson: true });
+}
+
+export async function assistantTeamDiscard(teamId: string, body: { reason?: string } = {}): Promise<NiResponse> {
+  return request('POST', assistantTeamPath(teamId, '/discard'), body, ASSISTANT_TEAM_TIMEOUT);
+}
+
+/** Does the calling run work a team slice now? `{ ok: true, team: true, teamId, sliceId }`, or a refusal. */
+export async function teamContext(timeoutMs = 2500): Promise<NiResponse> {
+  return requestOnce('GET', '/api/assistant/team/context', undefined, timeoutMs);
+}
+
+export async function teamPost(body: { to?: string; kind?: string; text?: string; path?: string; id?: string }): Promise<NiResponse> {
+  return request('POST', '/api/assistant/team/post', body as Record<string, unknown>, LONG_TIMEOUT);
+}
+
+export async function teamRead(body: { afterSeq?: number; kinds?: string[]; limit?: number }): Promise<NiResponse> {
+  return request('POST', '/api/assistant/team/read', body as Record<string, unknown>, LONG_TIMEOUT);
+}
+
+export async function teamWait(body: { afterSeq?: number; kinds?: string[]; timeoutMs: number }): Promise<NiResponse> {
+  return request('POST', '/api/assistant/team/wait', body as Record<string, unknown>, body.timeoutMs + ASSISTANT_WAIT_MARGIN_MS);
+}
+
+export async function teamAck(body: { ids?: string[]; throughSeq?: number }): Promise<NiResponse> {
+  return request('POST', '/api/assistant/team/ack', body as Record<string, unknown>, LONG_TIMEOUT);
+}
+
+export async function teamClaims(body: { path?: string } = {}): Promise<NiResponse> {
+  return request('POST', '/api/assistant/team/claims', body as Record<string, unknown>, LONG_TIMEOUT);
+}
+
+export async function teamRequest(body: { path: string; text: string }): Promise<NiResponse> {
+  return request('POST', '/api/assistant/team/request', body as Record<string, unknown>, LONG_TIMEOUT);
 }
 
 // whatsapp_send_file: the server's own deadline for the send is 120 s (lib/whatsapp/manager.js); this

@@ -119,9 +119,12 @@ export async function readProcessIdentityAsync(pid, { platform = process.platfor
   }
 }
 
-function runFile(file, args, options) {
+function runFile(file, args, { rejectStderr = false, ...options }) {
   return new Promise((resolve, reject) => {
-    execFile(file, args, options, (error, stdout, stderr) => (error ? reject(Object.assign(error, { stdout, stderr })) : resolve(stdout)));
+    execFile(file, args, options, (error, stdout, stderr) => {
+      if (error || (rejectStderr && String(stderr || '').trim())) reject(Object.assign(error || new Error('OS query warning'), { stdout, stderr }));
+      else resolve(stdout);
+    });
   });
 }
 
@@ -494,11 +497,62 @@ export async function readProcessExecutableAsync(pid, { platform = process.platf
   } catch { return null; }
 }
 
+// Evidence: peer-identity.js / peer-identity.test.mjs identify MoreLogin.app and MoreLogin Helper under
+// Application Support/MoreLogin/env-kit/Core/chrome_64_*. morelogin-kernel.test.mjs also records Windows
+// AppData/Roaming/MoreLogin/env-kit/Core/{chrome,firefox}_64_* driver paths. isMoreLoginInstalled uses the
+// MoreLogin directory on Linux. Match those directory components and kernel names, never arbitrary arguments
+// (a node test runner's arguments often contain "morelogin"). Include the desktop/helpers conservatively.
+const MORELOGIN_EXECUTABLE = /(?:^|\/)morelogin(?: [^/]*)?\.app(?:\/|$)|(?:^|\/)morelogin(?:\/|$)|\/env-kit\/core\/(?:chrome|firefox)_/i;
+const MORELOGIN_NAME = /^morelogin(?:[ ._-]|$)/i;
+const POSSIBLE_PROFILE_BROWSER = /^(?:chrome|chromium|firefox|morelogin)(?:[ ._-]|$)/i;
+
+/**
+ * true when a MoreLogin process survives its API, false only after a readable process snapshot excludes it,
+ * null on unreadable/partial output. No process is signalled. macOS reports full executable paths via ps;
+ * Windows uses CIM Name/ExecutablePath; Linux resolves browser names through /proc/<pid>/exe because ps comm
+ * may be only a basename. Missing paths for a possible profile browser are unknown, never evidence of absence.
+ */
+export async function moreLoginProcessesRunning({ platform = process.platform, run = runFile,
+  executable = (pid) => readProcessExecutableAsync(pid, { platform, run }) } = {}) {
+  if (!['darwin', 'linux', 'win32'].includes(platform)) return null;
+  let rows;
+  try {
+    if (platform === 'win32') {
+      const query = powershell("$WarningPreference = 'Stop'; try { $rows = @(Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object ProcessId,Name,ExecutablePath); ConvertTo-Json -Compress -InputObject $rows } catch { exit 1 }");
+      const data = JSON.parse(await run(query.file, query.args, { ...query.options, rejectStderr: true, maxBuffer: 16 * 1024 * 1024 }));
+      if (!Array.isArray(data) || !data.length || data.some(p => !Number.isInteger(p?.ProcessId) || p.ProcessId < 0
+        || typeof p.Name !== 'string' || !p.Name.trim() || (p.ExecutablePath != null && typeof p.ExecutablePath !== 'string'))) return null;
+      rows = data.map(p => ({ pid: p.ProcessId, name: p.Name.trim(), path: p.ExecutablePath?.trim() || '' }));
+    } else {
+      const out = await run('ps', ['-A', '-ww', '-o', 'pid=', '-o', 'comm='],
+        { encoding: 'utf8', timeout: 5000, env: C_ENV(), rejectStderr: true, maxBuffer: 16 * 1024 * 1024 });
+      const lines = String(out ?? '').trim().split(/\r?\n/);
+      rows = [];
+      for (const line of lines) {
+        const m = /^\s*(\d+)\s+(\S.*)$/.exec(line);
+        if (!m || !pidOf(m[1])) return null;
+        const path = m[2].trim();
+        rows.push({ pid: Number(m[1]), name: path.split('/').at(-1), path: path.startsWith('/') ? path : '' });
+      }
+    }
+    let unknown = false;
+    for (const row of rows) {
+      if (MORELOGIN_NAME.test(row.name) || MORELOGIN_EXECUTABLE.test(row.path.replaceAll('\\', '/'))) return true;
+      if (!POSSIBLE_PROFILE_BROWSER.test(row.name)) continue;
+      let path = row.path;
+      if (!path && platform === 'linux') path = await executable(row.pid);
+      if (!path) { unknown = true; continue; }
+      if (MORELOGIN_EXECUTABLE.test(path.replaceAll('\\', '/'))) return true;
+    }
+    return unknown ? null : false;
+  } catch { return null; }
+}
+
 /**
  * The pids that listen on a local TCP port: a list (empty: nothing listens that the user may see), or null when the
  * OS could not be asked. macOS and Linux: lsof (exit 1 with nothing printed is "none"; no lsof is null); Windows:
- * Get-NetTCPConnection, where an empty answer is null too (it lists every user's listeners: something answered on
- * the port a moment ago).
+ * Get-NetTCPConnection, with an explicit JSON array after a successful query. [] confirms the listener is gone;
+ * missing output, a failed query or malformed data is still unknown (null).
  * @param {number} port
  * @param {{ platform?: string, run?: (file: string, args: string[], options: object) => Promise<string> }} [o]
  */
@@ -508,10 +562,17 @@ export async function listPortListenersAsync(port, { platform = process.platform
   const pidsIn = (out) => [...new Set(String(out ?? '').split(/\r?\n/).map((l) => l.trim()).filter((l) => /^\d+$/.test(l)).map(Number))]
     .filter((n) => n > 0 && n !== selfPid);
   if (platform === 'win32') {
-    const query = powershell(`Get-NetTCPConnection -LocalPort ${p} -State Listen -ErrorAction SilentlyContinue | ForEach-Object { $_.OwningProcess }`);
+    // Filter in CIM: querying all TCP connections on every gone() poll is expensive on a busy machine. Only
+    // the cmdlet's specific CIM "no matching objects" error proves absence. Denials/timeouts/warnings do not.
+    const query = powershell(`$WarningPreference = 'Stop'; try { $listeners = @(Get-NetTCPConnection -LocalPort ${p} -State Listen -ErrorAction Stop); ConvertTo-Json -Compress -InputObject @($listeners | ForEach-Object { $_.OwningProcess }) } catch { ConvertTo-Json -Compress -InputObject @{ category = [string]$_.CategoryInfo.Category; reason = [string]$_.CategoryInfo.Reason; id = [string]$_.FullyQualifiedErrorId } }`);
     try {
-      const pids = pidsIn(await run(query.file, query.args, query.options));
-      return pids.length ? pids : null;
+      const pids = JSON.parse(await run(query.file, query.args, { ...query.options, rejectStderr: true }));
+      // Get-NetTCPConnection's no-match exception is CimJobException (some CIM versions report CimException).
+      // Do not use localized error text or a generic ObjectNotFound: a missing command/module is not absence.
+      if (pids?.category === 'ObjectNotFound' && ['CimJobException', 'CimException'].includes(pids.reason)
+        && /^CmdletizationQuery_NotFound(?:_[A-Za-z]+)?,Get-NetTCPConnection$/.test(pids.id)) return [];
+      if (!Array.isArray(pids) || pids.some(n => !Number.isSafeInteger(n) || n <= 0)) return null;
+      return [...new Set(pids)].filter(n => n !== selfPid);
     } catch {
       return null;
     }

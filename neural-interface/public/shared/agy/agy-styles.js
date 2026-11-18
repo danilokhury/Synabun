@@ -7,7 +7,11 @@
 // value to the block first. The tokens are declared on everything the panel puts outside itself too (popovers,
 // the tray pill).
 
+import { installCodeCopy } from '../ui-code-copy.js';
+
 export function injectAntigravityStyles() {
+  // The Copy button of every code block: its stylesheet and its one click listener, in this document.
+  installCodeCopy(document);
   if (document.getElementById('antigravity-panel-styles')) return;
   const style = document.createElement('style');
   style.id = 'antigravity-panel-styles';
@@ -94,10 +98,6 @@ export function injectAntigravityStyles() {
       color: var(--agy-text);
     }
     .agy-panel.open { transform: translateX(0); opacity: 1; overflow: visible; }
-    /* Windows: the shell is 92% opaque, so the blur behind it barely shows, yet Chromium recomputes it on every
-       repaint inside the panel (a transcript rendering, a stream). There it goes; the colour stays. */
-    html.platform-win32 .agy-panel,
-    html.desktop-titlebar--win32 .agy-panel { backdrop-filter: none; -webkit-backdrop-filter: none; }
     .agy-panel:has(.cc-dropdown.open) { z-index: 99999; }
     .agy-panel :is(a, button, input, textarea, summary, [tabindex]):focus-visible,
     .agy-pop :is(a, button, input, textarea, summary, [tabindex]):focus-visible,
@@ -225,7 +225,7 @@ export function injectAntigravityStyles() {
     .agy-md table { border-collapse: collapse; display: block; overflow-x: auto; }
     .agy-md :is(th, td) { border: 1px solid var(--agy-border); padding: 3px 8px; text-align: left; }
     .agy-attach-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-    .agy-msg-image { display: block; width: min(220px, 100%); max-height: 180px; object-fit: cover; border-radius: var(--agy-radius-sm); }
+    .agy-msg-image { display: block; width: auto; height: auto; max-width: min(220px, 100%); max-height: 180px; object-fit: contain; border-radius: var(--agy-radius-sm); }
     .agy-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 220px; padding: 2px 6px; border-radius: var(--agy-radius-sm); background: var(--agy-surface-2); color: var(--agy-text-2); font-size: var(--agy-fs-sm); }
     .agy-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .agy-chip img { width: 18px; height: 18px; object-fit: cover; border-radius: 3px; }
@@ -271,6 +271,26 @@ export function injectAntigravityStyles() {
     .agy-status-pill[data-tone="error"] { color: var(--agy-danger); }
     .agy-status-pill[data-tone="success"] { color: var(--agy-success); }
     .agy-request { box-shadow: inset 2px 0 0 var(--agy-warning); }
+    /* A dispatched worker's end (ui-worker-end.js): the card's frame in the tone's colour (complete is green, the other
+       ends the panel's amber, red or neutral); the title says the state in words. */
+    .agy-worker-end-slot { flex-shrink: 0; min-width: 0; }
+    .agy-worker-end {
+      display: flex; flex-direction: column; gap: var(--agy-space-2); min-width: 0; margin: var(--agy-space-2); padding: var(--agy-space-3);
+      border: 1px solid var(--agy-border-strong); border-radius: var(--agy-radius-md); background: var(--agy-surface-1); font-family: var(--agy-font);
+    }
+    .agy-worker-end .agy-card-title { white-space: normal; overflow-wrap: anywhere; }
+    .agy-worker-end .agy-card-text { overflow-wrap: anywhere; }
+    .agy-worker-end .worker-end-meta { font-family: var(--agy-mono); font-size: var(--agy-fs-xs); color: var(--agy-text-3); }
+    .agy-worker-end .worker-end-note { font-size: var(--agy-fs-sm); line-height: var(--agy-lh-tight); color: var(--agy-text-3); }
+    .agy-worker-end[data-tone="ok"] { border-color: color-mix(in srgb, var(--agy-success) 40%, transparent); background: color-mix(in srgb, var(--agy-success) 6%, transparent); }
+    .agy-worker-end[data-tone="ok"] .agy-card-title { color: var(--agy-success); }
+    .agy-worker-end[data-tone="ok"] .agy-btn-primary { background: color-mix(in srgb, var(--agy-success) 24%, transparent); border-color: color-mix(in srgb, var(--agy-success) 55%, transparent); color: var(--agy-text); }
+    .agy-worker-end[data-tone="ok"] .agy-btn-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--agy-success) 34%, transparent); border-color: color-mix(in srgb, var(--agy-success) 75%, transparent); }
+    .agy-worker-end[data-tone="warn"] { border-color: color-mix(in srgb, var(--agy-warning) 35%, transparent); background: color-mix(in srgb, var(--agy-warning) 5%, transparent); }
+    .agy-worker-end[data-tone="warn"] .agy-card-title { color: var(--agy-warning); }
+    .agy-worker-end[data-tone="err"] { border-color: color-mix(in srgb, var(--agy-danger) 35%, transparent); background: color-mix(in srgb, var(--agy-danger) 5%, transparent); }
+    .agy-worker-end[data-tone="err"] .agy-card-title { color: var(--agy-danger); }
+    .agy-worker-end[data-tone="off"] .agy-card-title { color: var(--agy-text-2); }
     .agy-request .agy-card-title { white-space: normal; overflow-wrap: anywhere; }
     .agy-request.agy-request-done { box-shadow: none; opacity: 0.7; }
     /* SynaBun tools: the logo and a thin accent at the edge, as in the Codex panel (not a filled box). */

@@ -16,10 +16,13 @@ import { storage } from '../storage.js';
 import { frameRect } from '../app-frame.js';
 import { fetchProjects } from '../api.js';
 import { injectStyles } from './ocp-v2-styles.js';
-import { connect, api, hasSessionStore, onSessionCompacted, onEvent, onReconnect, supports, isDescendantSession } from './ocp-v2-ws.js';
+import {
+  connect, api, hasSessionStore, onSessionCompacted, onEvent, onReconnect, supports, isDescendantSession,
+  sessionHasOpenAsks, onAsksChanged, trackTabAsks,
+} from './ocp-v2-ws.js';
 import {
   menuSessions, pickReusableEmptySession, createPendingRenames,
-  sessionBusyFromEvent, sessionBusyFromStatus, tabPillState, automationTurnPhase,
+  sessionBusyFromEvent, sessionBusyFromStatus, tabPillState as classifyTabPill, automationTurnPhase, readSavedTabs,
 } from './ocp-v2-sessions-logic.js';
 import {
   forkSession, undoLastTurn, restoreReverted,
@@ -57,7 +60,7 @@ import { nativeLoopWindowId } from '../ui-native-window-id.js';
 import { requestGeneratedSessionTitle } from '../session-title.js';
 import { wireFileLinks } from '../ui-file-links.js';
 import { mountCliBanner } from '../ui-cli-banner.js';
-import { backToAssistant, buildWorkerEndCard, endWorkerRunOnClose, forgetWorkerEnd, trackWorkerEnd } from '../ui-worker-end.js';
+import { buildWorkerEndCard, endWorkerRunOnClose, forgetWorkerEnd, leaveWorkerTab, trackWorkerEnd } from '../ui-worker-end.js';
 import { isDispatchedRun } from '../worker-end.js';
 import {
   registerAutomationSession, unregisterAutomationSession, stopAutomationRun, isAutomationSession, liveAutomationSessions,
@@ -65,6 +68,7 @@ import {
 import {
   registerPrimaryPanel, bindPrimarySession, isChildPanelOpen, getVisibleChildPanel, openChildSession,
   registerMainView, requestOpencodeView, MAIN_VIEW, releaseSubagentPanels, subagentPromptsWaiting, syncSubagentTray,
+  subagentNeedsYou,
 } from './ocp-v2-manager.js';
 
 const PANEL_ID = 'ocp-v2-panel';
@@ -112,6 +116,7 @@ const _automationTurn = new Map();
 // and session:status answers say it (noteSessionBusy); the session on screen leaves its own run state
 // here when the user moves on (renderPill), so its pill keeps moving while its turn goes on.
 const _sessionBusy = new Map();
+let _savedTabWaiting = new Map();
 const _automationContinuedManually = new Set();
 const _automationManualSendInFlight = new Set();
 const _foreignActiveAutomationSessions = new Set();
@@ -166,16 +171,16 @@ function forkClonedOpenCodePersistence() {
       .filter((row) => row?.running && row?.sessionId && row.ownerId !== nativeLoopWindowId)
       .map((row) => row.sessionId));
     if (!foreignActiveIds.size) return;
-    const savedTabs = JSON.parse(storage.getItem(STOR_TABS) || '[]');
-    const transferableTabs = (Array.isArray(savedTabs) ? savedTabs : [])
-      .filter((sessionId) => !foreignActiveIds.has(sessionId));
+    const transferableTabs = readSavedTabs(JSON.parse(storage.getItem(STOR_TABS) || '[]'))
+      .filter(({ sessionId }) => !foreignActiveIds.has(sessionId));
+    const transferableIds = new Set(transferableTabs.map(({ sessionId }) => sessionId));
     const transferableRows = (Array.isArray(rows) ? rows : [])
       .filter((row) => !foreignActiveIds.has(row?.sessionId));
     let transferableTitleStates = {};
     try {
       const savedTitleStates = JSON.parse(storage.getItem(STOR_TITLE_STATES) || '{}');
       transferableTitleStates = Object.fromEntries(Object.entries(savedTitleStates)
-        .filter(([sessionId]) => transferableTabs.includes(sessionId)));
+        .filter(([sessionId]) => transferableIds.has(sessionId)));
     } catch {}
     OCP_WINDOW_ID = crypto.randomUUID();
     sessionStorage.setItem('ocp-window-id', OCP_WINDOW_ID);
@@ -651,6 +656,7 @@ function buildPanel() {
 
   // Header reflects state
   _unsubHeader = subscribe(handleStoreEvent);
+  onAsksChanged(queueHeaderSync);
   syncHeader();
 
   // Sessions change outside this panel too (another window, the CLI, a title
@@ -660,6 +666,8 @@ function buildPanel() {
     const run = sessionBusyFromEvent(eventType, ev);
     if (run && run.sessionId !== getState().sessionId && _tabSessionIds.includes(run.sessionId)) noteSessionBusy(run.sessionId, run.busy);
     if (eventType !== 'session.updated' && eventType !== 'session.deleted' && eventType !== 'session.created') return;
+    // The session event can be the first one linking an already-waiting child to its parent.
+    queueHeaderSync();
     if (eventType === 'session.deleted') {
       const sid = ev?.info?.id || ev?.sessionID || ev?.sessionId;
       if (sid && _tabSessionIds.includes(sid)) {
@@ -712,8 +720,26 @@ function handleStoreEvent(event, stateSnapshot) {
     _titleNeedsReassert(nextState.sessionId);
   }
   if (event?.type === 'session:info') keepOwnSessionTitle(nextState);
-  syncHeader();
+  if (TRANSCRIPT_EVENTS.has(event?.type)) queueHeaderSync();
+  else syncHeader();
   maybeScheduleAutoHeal(event, nextState);
+}
+
+// A message, a part or a streamed chunk changes nothing the header or the pills show (headerStatus and the tab
+// states read the run state, the requests and the session, never the transcript). Opening a session puts its
+// whole transcript into the store one item at a time, and each item is an event: the header and every pill of
+// the tray were redrawn once per message and per part, and once per chunk of a stream. For these events one
+// pass per frame is enough; every other event still redraws at once.
+const TRANSCRIPT_EVENTS = new Set(['message:upsert', 'message:remove', 'part:upsert', 'part:delta', 'part:remove']);
+let _headerSyncQueued = false;
+function queueHeaderSync() {
+  if (_headerSyncQueued) return;
+  _headerSyncQueued = true;
+  const run = () => { _headerSyncQueued = false; syncHeader(); };
+  // A hidden page draws no frame: there the pass runs at the end of the task.
+  const framed = typeof requestAnimationFrame === 'function' && !(typeof document !== 'undefined' && document.hidden);
+  if (framed) requestAnimationFrame(run);
+  else queueMicrotask(run);
 }
 
 function syncHeader() {
@@ -737,6 +763,7 @@ function syncHeader() {
     _renameBtnEl.disabled = !s.sessionId;
   }
   renderPill();
+  syncSavedTabWaiting();
 }
 
 function maybeScheduleAutoHeal(event, s) {
@@ -1576,6 +1603,7 @@ async function boot() {
         ownsSession: (sessionId) => _tabSessionIds.includes(sessionId),
         // Prompts of a sub-agent panel that went away with its session.
         keepPrompts: (items, label) => _composer?.keep?.(items, label),
+        onChildWaitingChange: queueHeaderSync,
       });
       // 3. Kick off project load in parallel — used by promptNameNewSession modal
       loadProjectsOnce().catch(() => {});
@@ -1677,7 +1705,7 @@ function otherWindowTabIds() {
     for (const windowId of Object.keys(registry)) {
       if (windowId === OCP_WINDOW_ID) continue;
       const tabs = JSON.parse(storage.getItem(`opencode-v2-tabs-${windowId}`) || '[]');
-      if (Array.isArray(tabs)) ids.push(...tabs);
+      ids.push(...readSavedTabs(tabs).map(({ sessionId }) => sessionId));
     }
   } catch {}
   return ids;
@@ -2124,25 +2152,50 @@ function loadTabSessions() {
   try {
     const raw = storage.getItem(STOR_TABS);
     if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed)
-      ? parsed.filter((s) => typeof s === 'string' && s && !_foreignActiveAutomationSessions.has(s))
-      : [];
+    return readSavedTabs(JSON.parse(raw))
+      .map(({ sessionId }) => sessionId)
+      .filter((sessionId) => !_foreignActiveAutomationSessions.has(sessionId));
   } catch { return []; }
 }
 
 function saveTabSessions() {
+  trackTabAsks(new Map(_tabSessionIds.map((sid) => [sid, _tabInfoCache.get(sid)?.directory])));
   try {
-    const existingIds = JSON.parse(storage.getItem(STOR_TABS) || '[]');
+    const existing = readSavedTabs(JSON.parse(storage.getItem(STOR_TABS) || '[]'));
+    const savedById = new Map(existing.map((row) => [row.sessionId, row]));
     const automationRows = JSON.parse(storage.getItem(STOR_AUTOMATIONS) || '[]');
     const foreignSessionIds = new Set((Array.isArray(automationRows) ? automationRows : [])
       .filter((row) => row?.sessionId && row.ownerId !== nativeLoopWindowId)
       .map((row) => row.sessionId));
-    const preserved = (Array.isArray(existingIds) ? existingIds : [])
-      .filter((sessionId) => foreignSessionIds.has(sessionId) && !_tabSessionIds.includes(sessionId));
-    storage.setItem(STOR_TABS, JSON.stringify([..._tabSessionIds, ...preserved]));
+    const preserved = existing.filter(({ sessionId }) => foreignSessionIds.has(sessionId) && !_tabSessionIds.includes(sessionId));
+    const tabs = _tabSessionIds.map((sessionId) => ({
+      ...savedById.get(sessionId), sessionId, needsYou: tabNeedsYou(sessionId),
+    }));
+    storage.setItem(STOR_TABS, JSON.stringify([...tabs, ...preserved]));
+    _savedTabWaiting = new Map(tabs.map(({ sessionId, needsYou }) => [sessionId, needsYou]));
     touchOpenCodeWindow();
   } catch {}
+}
+
+function tabPillState(options) {
+  const { sessionId, activeSessionId } = options;
+  const active = sessionId === activeSessionId ? getState() : null;
+  return classifyTabPill({
+    ...options,
+    pendingPermissions: active?.pendingPermissions,
+    pendingQuestions: active?.pendingQuestions,
+    familyWaiting: sessionHasOpenAsks(sessionId) || subagentNeedsYou(sessionId),
+  });
+}
+
+function tabNeedsYou(sessionId) {
+  return tabPillState({
+    sessionId, activeSessionId: getState().sessionId, automation: _automationTurn.get(sessionId),
+  }) === 'waiting';
+}
+
+function syncSavedTabWaiting() {
+  if (_tabSessionIds.some((sid) => _savedTabWaiting.get(sid) !== tabNeedsYou(sid))) saveTabSessions();
 }
 
 function ensureTab(sessionId, info = null) {
@@ -2334,11 +2387,7 @@ function workerEndCard(sessionId) {
         card: 'ocpv2-post-plan-card ocpv2-worker-end', title: 'ocpv2-post-plan-header', detail: 'ocpv2-post-plan-body',
         meta: 'ocpv2-post-plan-saved', note: 'ocpv2-post-plan-note', actions: 'ocpv2-post-plan-actions', button: 'ocpv2-post-plan-btn primary',
       },
-      onBack: async () => {
-        if (!(await closeTabByUser(sessionId, 'worker end close'))) return false;
-        backToAssistant(view.assistantSessionId);
-        return true;
-      },
+      onBack: () => leaveWorkerTab(view, () => closeTabByUser(sessionId, 'worker end close')),
     }),
   };
 }
@@ -2377,7 +2426,10 @@ function renderPill() {
       _tabPills.set(sid, pill);
     }
     const labelEl = pill.querySelector('.term-minimized-pill-label');
-    if (labelEl) labelEl.textContent = tabLabelFor(sid);
+    // Written only when it changed: the same text again is still a new text node, which the tray's
+    // observer (ui-navbar.js) answers by going through every pill.
+    const label = tabLabelFor(sid);
+    if (labelEl && labelEl.textContent !== label) labelEl.textContent = label;
     const isActive = sid === activeSid;
     pill.classList.toggle('ocpv2-pill-active', isActive);
     // One pill per session, each with its own state: a tab the user left goes on showing its turn, an
@@ -2589,6 +2641,7 @@ export async function attachOpenCodeAutomation(run, { focus = !!run?.focus, isCa
     return { ok: true, sessionId, released: true };
   }
   ensureTab(sessionId, info);
+  if (getState().sessionId === sessionId && info.directory && info.directory !== getState().cwd) setCwd(info.directory);
   if (focus && _nav.latest() === attachBegan) {
     // (Its own navigation, observed after boot landed: a click made while the
     // panel opens still wins.)
@@ -2613,6 +2666,7 @@ export async function attachOpenCodeAutomation(run, { focus = !!run?.focus, isCa
   }
   trackWorkerEnd(run, { apply: (view) => showWorkerEnd(sessionId, view) });
   renderPill();
+  syncSavedTabWaiting();
   return { ok: true, sessionId };
 }
 

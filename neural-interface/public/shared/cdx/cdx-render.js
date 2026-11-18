@@ -20,6 +20,9 @@ import { renderReadableOutput, renderReadableBlock, cleanOutputBlocks, hydrateOu
 import { fileLinkTitle, fillFileLinkCopy, isInsideRoots, parseFileLinkTarget, readFileLink } from '../file-links.js';
 import { sanitizeHtmlString } from '../assistant/asst-sanitize.js';
 import { createTextCache } from '../text-cache.js';
+import { morphChildren } from '../dom-morph.js';
+import { withCodeCopyButtons } from '../code-copy.js';
+import { decorateCodeBlocks, installCodeCopy } from '../ui-code-copy.js';
 import { isSynabunServer, synabunToolKey, synabunToolLabel, synabunToolSummary } from '../synabun-tools.js';
 export { setCardExpanded } from './cdx-cards.js';
 
@@ -84,7 +87,12 @@ let _ctx = {
   itemOwnershipBelongsToBoundThread() { return false; },
 };
 
-export function setRenderContext(ctx) { _ctx = ctx; }
+export function setRenderContext(ctx) {
+  _ctx = ctx;
+  // The Copy button of every code block works in this document (its stylesheet and one click listener). Here, not
+  // in injectStyles: cdx-styles.js is also run as a plain script (tests/provider-panel-terminal-auth-fixture.mjs).
+  if (typeof document !== 'undefined') installCodeCopy(document);
+}
 
 // ═══════════════════════════════════════════
 // Text Utilities
@@ -134,7 +142,7 @@ export function md(text) {
     _mdParser = parser;
   }
   const key = String(text || '');
-  if (key.length > OUTPUT_LIMITS.input) return `<pre class="cxp-card-pre cxp-output-raw"><code>${esc(boundedText(key))}</code></pre>`;
+  if (key.length > OUTPUT_LIMITS.input) return withCodeCopyButtons(`<pre class="cxp-card-pre cxp-output-raw"><code>${esc(boundedText(key))}</code></pre>`);
   const cached = _mdCache.get(key);
   if (cached !== undefined) return cached;
   let html;
@@ -147,6 +155,8 @@ export function md(text) {
   // A page with no DOM to sanitise in, or a sanitiser that fails, gets escaped text: never raw HTML.
   try { html = sanitizeHtmlString(html); }
   catch { html = markdownFallback(key); }
+  // Every code block carries the shared Copy button, written in after the sanitiser (../code-copy.js).
+  html = withCodeCopyButtons(html);
   _mdCache.set(key, html);
   return html;
 }
@@ -351,26 +361,14 @@ export function convertInlineChoices(container) {
 // Post-processing & HTML utilities
 // ═══════════════════════════════════════════
 
+// A block with a copy control of its own (a structured output, an output's source, a diff) keeps no shared button.
+const codexOwnCopy = (pre) => !!(pre.closest('.cxp-readable, .cxp-output-source, .cxp-diff-view') || pre.querySelector('.cxp-readable'));
+
 export function postProcessRenderedHtml(container) {
   if (!container) return;
   cleanOutputBlocks(container);
   hydrateOutputControls(container);
-  container.querySelectorAll('pre').forEach((pre) => {
-    if (pre.closest('.cxp-readable, .cxp-output-source, .cxp-diff-view') || pre.querySelector('.cxp-readable')) return;
-    if (pre.querySelector('.cxp-copy-btn')) return;
-    const btn = document.createElement('button');
-    btn.className = 'cxp-copy-btn';
-    btn.textContent = 'Copy';
-    const copyText = (pre.querySelector('code') || pre).textContent || '';
-    btn.addEventListener('click', () => {
-      navigator.clipboard.writeText(copyText).then(() => {
-        btn.textContent = 'Copied!';
-        setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
-      }).catch(() => {});
-    });
-    pre.style.position = 'relative';
-    pre.appendChild(btn);
-  });
+  decorateCodeBlocks(container, { skip: codexOwnCopy });
   if (_ctx.hljs) {
     container.querySelectorAll('pre code[class*="language-"]').forEach((block) => {
       if (block.dataset.highlighted) return;
@@ -434,7 +432,7 @@ export function linkifyFilePaths(container) {
   if (!container) return;
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
     acceptNode: (node) => {
-      if (node.parentElement?.closest('pre, code, a, .cxp-copy-btn, .cxp-file-link')) return NodeFilter.FILTER_REJECT;
+      if (node.parentElement?.closest('pre, code, a, .sb-code-copy, .cxp-file-link')) return NodeFilter.FILTER_REJECT;
       return NodeFilter.FILTER_ACCEPT;
     }
   });
@@ -838,6 +836,8 @@ export function sanitizeStoredTranscriptDom(container) {
     if (card.dataset.userCollapsed !== '1') setCardExpanded(card, true);
   });
   restoreDiffViews(container, { cwd: _ctx.boundTab?.project || _ctx.project });
+  // A snapshot's blocks get the shared Copy button; an older one's own button (.cxp-copy-btn) is replaced.
+  decorateCodeBlocks(container, { skip: codexOwnCopy });
 }
 
 // ═══════════════════════════════════════════
@@ -1502,7 +1502,7 @@ function renderRecoverablePlanDraft(tab) {
 
 export function renderPostPlanActions(tab = _ctx.boundTab, headerText = null) {
   if (!tab?.messagesEl) return;
-  syncPlanMirrors(tab);
+  (_ctx.syncCanonicalPlan || syncPlanMirrors)(tab);
   syncMessagePlanActions(tab);
   tab.postPlanHeader = headerText || tab.postPlanHeader || 'PLAN COMPLETE';
   if (_ctx.boundTab === tab) {
@@ -2266,6 +2266,24 @@ export function setOptionalText(el, text) {
   }
 }
 
+/**
+ * Put rendered markdown into `target`, replacing only what changed.
+ *
+ * The markup is built and post-processed exactly as before, in a copy of `target` that is not in the page;
+ * then the children of `target` that already equal the copy's, counted from the start, stay, and the rest
+ * is replaced (../dom-morph.js). A message that streams was written whole on every tick: every paragraph,
+ * list and code block of it made, styled, laid out and highlighted again 30 times a second, and a selection
+ * in it lost. Now a tick replaces the paragraph being written. The result is node for node the same.
+ */
+function paintMarkdown(target, html) {
+  const stage = target.cloneNode(false);
+  stage.innerHTML = html;
+  postProcessRenderedHtml(stage);
+  morphChildren(target, stage);
+  // The output controls' click listener and the height caps belong to the element in the page.
+  hydrateOutputControls(target);
+}
+
 export function queueMarkdownRender(state) {
   if (state.renderTimer) return;
   state.renderTimer = setTimeout(() => {
@@ -2274,12 +2292,41 @@ export function queueMarkdownRender(state) {
     if (state.type === 'agentMessage') {
       renderAssistantMessage(state);
     } else {
-      state.bodyEl.innerHTML = md(state.buffer || '');
-      postProcessRenderedHtml(state.bodyEl);
+      paintMarkdown(state.bodyEl, md(state.buffer || ''));
     }
     _ctx.scrollEnd();
     _ctx.scheduleThreadSnapshotSave(_ctx.boundTab);
   }, 32);
+}
+
+// ── One paint per frame for a card that streams ──
+// Reasoning and command output arrive in many small deltas, several per frame; each one used to write the
+// card's whole text again, scroll the transcript and schedule a snapshot. The delta is kept in the card's
+// state at once, as before; the card is painted from that state once, on the next frame. The paint reads
+// the state as it is then, so whatever else wrote the card meanwhile (the item completing) is what shows.
+const _streamPaints = new Map();
+let _streamPaintQueued = false;
+
+function runStreamPaints() {
+  _streamPaintQueued = false;
+  const paints = [..._streamPaints.values()];
+  _streamPaints.clear();
+  for (const paint of paints) {
+    try { paint(); } catch (err) { console.error('[codex] a stream paint failed', err); }
+  }
+}
+
+function paintOnFrame(state, paint) {
+  _streamPaints.set(state, paint); // one per card: the latest
+  if (_streamPaintQueued) return;
+  _streamPaintQueued = true;
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(runStreamPaints);
+  else setTimeout(runStreamPaints, 16);
+}
+
+/** Paint now what waits for the next frame (a caller that reads the transcript right after a delta). */
+export function flushStreamPaints() {
+  if (_streamPaints.size) runStreamPaints();
 }
 
 function planMessageModels(tab) {
@@ -2293,8 +2340,28 @@ function planMessageModels(tab) {
   });
 }
 
+// Rebuilding a transcript from history draws every item in one go, and each agent message ends in
+// syncMessagePlanActions, which reads the whole transcript three times: a rebuild cost the square of its
+// length. While `fn` runs the sync is only noted; it runs once, for each tab that asked, when `fn` is done.
+let _planSyncHeld = 0;
+const _planSyncWaiting = new Set();
+export function holdPlanActionSync(fn) {
+  _planSyncHeld += 1;
+  try {
+    return fn();
+  } finally {
+    _planSyncHeld -= 1;
+    if (!_planSyncHeld && _planSyncWaiting.size) {
+      const tabs = [..._planSyncWaiting];
+      _planSyncWaiting.clear();
+      for (const tab of tabs) syncMessagePlanActions(tab);
+    }
+  }
+}
+
 export function syncMessagePlanActions(tab = _ctx.boundTab) {
   if (!tab?.messagesEl) return;
+  if (_planSyncHeld) { _planSyncWaiting.add(tab); return; }
   const messages = planMessageModels(tab);
   const nativePlans = [...tab.messagesEl.querySelectorAll('[data-item-type="plan"]')].map(el => ({ itemId: el.dataset.itemId, turnId: el.dataset.codexTurnId || '' }));
   const selected = selectPlanAdoptionMessage(tab, messages, nativePlans);
@@ -2361,12 +2428,11 @@ function renderAssistantMessage(state) {
   let hasContent = false;
   if (target) {
     target.hidden = false;
-    if (renderReadableOutput(target, text, { streaming })) hasContent = true;
+    if (renderReadableOutput(target, text, { streaming })) { hasContent = true; postProcessRenderedHtml(target); }
     else {
       const rendered = renderAssistantMarkdown(text, { streaming });
-      target.innerHTML = rendered.html; hasContent = rendered.hasContent;
+      paintMarkdown(target, rendered.html); hasContent = rendered.hasContent;
     }
-    postProcessRenderedHtml(target);
   }
   if (state.summaryBodyEl) {
     state.summaryBodyEl.hidden = true;
@@ -2389,8 +2455,7 @@ export function setMarkdownBuffer(state, text, final = false) {
       if (state.type === 'agentMessage') {
         renderAssistantMessage(state);
       } else {
-        state.bodyEl.innerHTML = md(state.buffer);
-        postProcessRenderedHtml(state.bodyEl);
+        paintMarkdown(state.bodyEl, md(state.buffer));
       }
     }
     _ctx.scrollEnd();
@@ -3219,9 +3284,14 @@ export function appendReasoningDelta(itemId, delta, isSummary = false, summaryIn
     state.contentLines.push(delta || '');
   }
   updateReasoningChrome(state, { complete: false });
-  state.bodyEl.textContent = getReasoningBodyText(state);
-  _ctx.scrollEnd();
-  _ctx.scheduleThreadSnapshotSave(_ctx.boundTab);
+  const tab = _ctx.boundTab;
+  paintOnFrame(state, () => {
+    // Completed meanwhile: its text is the completed one (what the completion wrote).
+    const complete = !!state.el?.classList.contains('cxp-reasoning-done');
+    if (state.bodyEl) state.bodyEl.textContent = getReasoningBodyText(state, { complete });
+    _ctx.scrollEnd();
+    _ctx.scheduleThreadSnapshotSave(tab);
+  });
 }
 
 export function appendReasoningSummaryPart(itemId, summaryIndex) {
@@ -3239,10 +3309,15 @@ export function appendOutputDelta(itemId, delta, fallbackType = 'commandExecutio
   if (!state.outputEl) return;
   state.outputBuf = (state.outputBuf || '') + (delta || '');
   if (isCardBodyHidden(state)) { state._bodyDirty = true; return; }
-  if (state.type === 'fileChange') refreshFileChangeView(state);
-  else setOptionalSection(state.outputSectionEl, state.outputEl, state.outputBuf);
-  _ctx.scrollEnd();
-  _ctx.scheduleThreadSnapshotSave(_ctx.boundTab);
+  const tab = _ctx.boundTab;
+  paintOnFrame(state, () => {
+    // Folded meanwhile: it is drawn when it is opened, like a delta that arrives folded.
+    if (isCardBodyHidden(state)) { state._bodyDirty = true; return; }
+    if (state.type === 'fileChange') refreshFileChangeView(state);
+    else setOptionalSection(state.outputSectionEl, state.outputEl, state.outputBuf);
+    _ctx.scrollEnd();
+    _ctx.scheduleThreadSnapshotSave(tab);
+  });
 }
 
 export function appendToolProgress(itemId, message) {
@@ -3368,17 +3443,19 @@ export function renderHistory(thread, fallbackItems = null, { authoritative = fa
     return;
   }
   const historyTurns = new Map((thread.turns || []).flatMap(turn => (turn.items || []).map(item => [item?.id, turn.id])));
-  for (const item of historySource.items) {
-    updateItemFromData({
-      ...item,
-      _synabunOwnership: {
-        accountId: _ctx.accountId || 'default',
-        threadId: thread.id,
-        turnId: item.turnId || historyTurns.get(item.id) || '',
-        source: 'history',
-      },
-    });
-  }
+  holdPlanActionSync(() => {
+    for (const item of historySource.items) {
+      updateItemFromData({
+        ...item,
+        _synabunOwnership: {
+          accountId: _ctx.accountId || 'default',
+          threadId: thread.id,
+          turnId: item.turnId || historyTurns.get(item.id) || '',
+          source: 'history',
+        },
+      });
+    }
+  });
   // Native items do not include the aggregated shell-edit diff. Retain only
   // locally saved turn-diff text with the same ownership manifest, rebuilding
   // it through the normal renderer after authoritative items have been shown.

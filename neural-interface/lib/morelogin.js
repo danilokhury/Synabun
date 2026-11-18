@@ -22,6 +22,17 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { registerBrowserNetworkEndpoint } from './browser-network-guard.js';
+import { activeStartCooldown, clearStartCooldown, formatLocalTime, noteStartRefusal } from './morelogin-start-cooldown.js';
+import { clearOutsideClose, outsideCloseError, outsideCloseFor } from './morelogin-outside-close.js';
+export { listStartCooldowns, activeStartCooldown } from './morelogin-start-cooldown.js';
+export { noteOutsideClose, outsideCloseFor, listOutsideCloses, clearOutsideClose, outsideCloseError, outsideCloseUntil } from './morelogin-outside-close.js';
+
+/**
+ * Who may start a profile closed outside SynaBun (lib/morelogin-outside-close.js) while its mark holds:
+ * `'owner'` (the owner's own action that is not Settings' Start: a session the owner's page creates) and
+ * `'schedule'` (a new scheduled firing's launch acquisition). Settings' Start is `opts.owner === true`. Nobody else.
+ */
+export const OUTSIDE_CLOSE_LIFTS = Object.freeze(['owner', 'schedule']);
 
 export const DEFAULT_MORELOGIN_PORT = 40000;
 // MoreLogin's documented local-API ports. 40000 is the HTTP API SynaBun drives; 15523 is the companion port its
@@ -140,7 +151,7 @@ const NEVER_CONNECTED_CODES = new Set([
 export function _neverConnected(err) {
   for (let e = err, i = 0; e && i < 4; e = e.cause, i++) {
     if (NEVER_CONNECTED_CODES.has(e.code)) return true;
-    if (Array.isArray(e.errors) && e.errors.some(x => NEVER_CONNECTED_CODES.has(x?.code))) return true;
+    if (Array.isArray(e.errors) && e.errors.length && e.errors.every(x => NEVER_CONNECTED_CODES.has(x?.code))) return true;
   }
   return false;
 }
@@ -161,6 +172,7 @@ async function request(path, body, opts = {}) {
   const hosts = [_preferredHost, ...LOOPBACK_HOSTS.filter(h => h !== _preferredHost)];
   let res;
   let lastErr = null;
+  const failures = [];
   for (const host of hosts) {
     const left = deadline - Date.now();
     if (left <= 0) break;
@@ -176,6 +188,7 @@ async function request(path, body, opts = {}) {
       break;
     } catch (err) {
       lastErr = err;
+      failures.push(err);
       const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError';
       const retry = _neverConnected(err) || (timedOut && idempotent);
       if (!retry) break;
@@ -186,6 +199,10 @@ async function request(path, body, opts = {}) {
     const reason = !err ? `no time left of ${budget} ms` : (err?.cause?.code || err?.code || err?.message || err);
     const e = new Error(`MoreLogin API unreachable on :${port} (${reason})`);
     e.code = 'MORELOGIN_UNREACHABLE';
+    // A response/abort deadline says nothing about whether a browser is live. Both loopback hosts must have
+    // provably never connected (UND_ERR_CONNECT_TIMEOUT is connect-only); even one ambiguous attempt, or a
+    // deadline that left a host untested, keeps the OpenCode pre-flight closed.
+    e.unavailable = failures.length === hosts.length && failures.every(_neverConnected);
     throw e;
   }
   let json = null;
@@ -288,7 +305,15 @@ export async function listCompleteProfiles(opts = {}) {
   const out = [], seen = new Set();
   let total;
   for (let pageNo = 1; pageNo <= 1000; pageNo++) {
-    const data = await request('/api/env/page', { pageNo, pageSize: 100 }, opts);
+    let data;
+    // OpenCode can bound the first offline lookup without shortening later pages of a reachable account.
+    try { data = await request('/api/env/page', { pageNo, pageSize: 100 },
+      pageNo === 1 && opts.firstPageTimeout ? { ...opts, timeout: opts.firstPageTimeout } : opts); }
+    catch (error) {
+      // A partial live listing is unreadable, never evidence that MoreLogin was absent at pre-flight.
+      if (pageNo > 1) error.apiAnswered = true;
+      throw error;
+    }
     if (!Array.isArray(data) && !PROFILE_LIST_KEYS.some(k => Array.isArray(data?.[k]))) throw shapeError(data);
     const rows = profileRows(data);
     if (data?.total != null && !/^(0|[1-9][0-9]*)$/.test(String(data.total))) throw shapeError(data);
@@ -473,7 +498,8 @@ export async function profileKernelOf(envId, opts = {}) {
   const id = String(envId);
   if (_chromiumProfiles.has(id)) return 'chromium';
   let kernel = null;
-  try { kernel = profileKernel(statusRow(await profileStatus(id, opts))); }
+  // `opts.knownStatus`: the status row the caller has just read (startProfile asks it first): not asked again.
+  try { kernel = profileKernel(opts.knownStatus !== undefined ? opts.knownStatus : statusRow(await profileStatus(id, opts))); }
   catch { /* unreachable: the start says so itself */ }
   if (!kernel) {
     try { kernel = profileKernel(await profileDetail(id, opts)); } catch { /* a MoreLogin without the call */ }
@@ -615,24 +641,139 @@ export function notDevToolsError(envId, port, seen = {}) {
   return e;
 }
 
+/** MoreLogin's answer to a start over its plan's daily start quota ("The daily startup limit is exceeded…"). */
+export const MORELOGIN_DAILY_START_LIMIT = 19124;
+
+/** A refusal that names the plan's limits (the daily start quota, or another "upgrade the package" answer). */
+export function isPlanLimitRefusal(apiCode, msg) {
+  return Number(apiCode) === MORELOGIN_DAILY_START_LIMIT
+    || /\b(daily|startup|start(?:ing)?)\b[^.]*\blimit\b|\bupgrade (?:the|your) (?:package|plan)\b/i.test(String(msg || ''));
+}
+
 /**
- * Start (launch) a profile and return { debugPort, webdriver, kernel, raw }.
- * Recovers the debugPort via status when the env is already running.
+ * The error of a start MoreLogin refused (its `/api/env/start` answered a non-zero code and the profile has no
+ * debug port either). It carries MoreLogin's own reason, `code` MORELOGIN_START_REFUSED, `apiCode`, and
+ * `needsUser` true: retrying, another model or another run hits the same answer until the user acts (a plan limit
+ * resets or is raised, the profile is fixed in MoreLogin).
+ */
+export function startRefusedError(envId, err, { resetAt = null, held = false } = {}) {
+  const apiCode = err?.apiCode ?? null;
+  const reason = String(err?.reason || err?.message || err || 'no reason given').replace(/^MoreLogin API \/api\/env\/start:\s*/, '');
+  const planLimit = err?.planLimit ?? isPlanLimitRefusal(apiCode, reason);
+  const advice = planLimit
+    ? 'This is a limit of the MoreLogin plan, not a fault in SynaBun or the profile: starts work again after MoreLogin\'s daily reset or once the plan is upgraded in MoreLogin. Retrying now fails the same way; a profile that is already open does not need a start'
+    : 'Retrying fails the same way until this is fixed in MoreLogin';
+  // `resetAt` (ms): when MoreLogin's day starts again (lib/morelogin-start-cooldown.js). `held`: this start was not
+  // asked of MoreLogin at all, because the refusal is still in force.
+  const reset = resetAt
+    ? `. MoreLogin's daily starts reset at ${formatLocalTime(resetAt)}; ${held ? 'SynaBun did not ask MoreLogin again: until then every start of this profile fails at once' : 'until then SynaBun does not ask MoreLogin to start this profile again'}`
+    : '';
+  const e = new Error(`MoreLogin refused to start profile ${envId}: ${reason}${apiCode != null ? ` (MoreLogin code ${apiCode})` : ''}. ${advice}${reset}`);
+  e.code = 'MORELOGIN_START_REFUSED';
+  e.apiCode = apiCode;
+  e.planLimit = !!planLimit;
+  e.needsUser = true;
+  e.reason = reason;
+  if (resetAt) e.resetAt = new Date(resetAt).toISOString();
+  if (held) e.cooldown = true;
+  return e;
+}
+
+/** Whether a status row says the profile's browser is up with a DevTools port SynaBun can attach to. */
+function runningWithPort(row) {
+  if (!extractDebugPort(row)) return false;
+  const state = String(row?.status ?? row?.localStatus ?? '');
+  return !/stop|clos|fail|error/i.test(state);
+}
+
+// One start per profile at a time: a second caller waits for the first and then looks again (it then finds the
+// profile running and attaches, or finds the refusal held), so two runs never spend two launches on one profile.
+const _startsInFlight = new Map(); // envId → promise
+
+/**
+ * Start (launch) a profile and return { debugPort, webdriver, kernel, raw, alreadyRunning? }.
+ * Asks the status first and attaches to a profile that is already running (`alreadyRunning: true`, no launch
+ * spent); recovers the debugPort via status when MoreLogin answers a start with "already running".
+ * A start MoreLogin refused for the plan's daily limit is held until MoreLogin's day resets
+ * (lib/morelogin-start-cooldown.js): meanwhile every start of that profile fails at once, without asking MoreLogin.
  *
  * `opts.requireCdp` (a start SynaBun will drive, never the Settings Start button): a Firefox-type profile is
  * refused with MORELOGIN_NOT_CHROMIUM before it is started when MoreLogin says what it is up front, and right
  * after the start when only the start's answer says it. It is never closed here: it may be the user's own window.
+ *
+ * `opts.refuseStart(envId)` (the caller's own reasons not to spend a launch): asked only when a launch would be
+ * needed, after the status said the profile is not running; an Error it returns is thrown and MoreLogin is not asked.
+ * A running profile is attached to whatever it says. The owner's own Start (`opts.owner`) is never asked it.
+ *
+ * A profile closed outside SynaBun (lib/morelogin-outside-close.js) is refused here for every caller, with
+ * MORELOGIN_CLOSED_OUTSIDE, before MoreLogin is asked, unless `opts.owner` or `opts.allowAfterOutsideClose` is
+ * `'owner'` / `'schedule'` (OUTSIDE_CLOSE_LIFTS). `opts.profileLabel(envId, name)` names the profile in the refusal.
  */
 export async function startProfile(envId, opts = {}) {
-  if (opts.requireCdp && await profileKernelOf(envId, opts) === 'firefox') {
+  const id = String(envId);
+  for (;;) {
+    const running = _startsInFlight.get(id);
+    if (!running) break;
+    try { await running; } catch { /* its own caller reports it; this one looks again below */ }
+  }
+  // Reuse before start: MoreLogin spends a launch of the plan's daily quota on every start of a profile that is
+  // not running. A running profile with a DevTools port is attached to as it is: no /api/env/start.
+  let st = null;
+  try { st = await profileStatus(id, opts); }
+  catch (err) { if (err?.code === 'MORELOGIN_UNREACHABLE') throw err; }
+  const row = statusRow(st);
+  if (runningWithPort(row)) {
+    const webdriver = row.webdriver || null;
+    const kernel = profileKernel({ webdriver });
+    if (opts.requireCdp && kernel === 'firefox') {
+      throw notChromiumError(id, { started: false, evidence: 'MoreLogin lists it as a Firefox profile' });
+    }
+    if (kernel === 'chromium') _chromiumProfiles.add(id);
+    return { debugPort: extractDebugPort(row), webdriver, kernel, raw: row, alreadyRunning: true };
+  }
+  // The caller's own reason not to start it: refused before anything else is asked of MoreLogin. Never for the
+  // owner's own Start.
+  if (opts.owner !== true && typeof opts.refuseStart === 'function') {
+    const refusal = opts.refuseStart(id);
+    if (refusal) throw refusal;
+  }
+  // Closed outside SynaBun (lib/morelogin-outside-close.js): no automatic path starts it again, whoever asks (a
+  // browser call, a loop's recovery, an agent's start, a script). Only the owner's start and a new scheduled firing go
+  // past it; a running profile was attached to above, whatever the mark says.
+  if (opts.owner !== true && !OUTSIDE_CLOSE_LIFTS.includes(opts.allowAfterOutsideClose)) {
+    const closed = outsideCloseFor(id);
+    if (closed) {
+      const label = typeof opts.profileLabel === 'function' ? opts.profileLabel(id, closed.name) : null;
+      throw outsideCloseError(id, closed, { label: label || null });
+    }
+  }
+  // MoreLogin refused this profile's start for the plan's daily limit, and its day has not reset yet: fail at once,
+  // without asking. The owner's own Start (Settings, `opts.owner`) still asks once: the plan may have been raised.
+  const held = opts.owner === true ? null : activeStartCooldown(id);
+  if (held) {
+    throw startRefusedError(id, { apiCode: held.apiCode, reason: held.reason || 'The daily startup limit is exceeded', planLimit: true }, { resetAt: held.until, held: true });
+  }
+  // Another start of this profile began while the status was asked: wait for it, then look again.
+  if (_startsInFlight.has(id)) return startProfile(id, opts);
+  const start = launchProfile(id, { ...opts, knownStatus: row ?? null });
+  _startsInFlight.set(id, start);
+  try { return await start; }
+  finally { if (_startsInFlight.get(id) === start) _startsInFlight.delete(id); }
+}
+
+async function launchProfile(envId, { knownStatus, ...opts }) {
+  if (opts.requireCdp && await profileKernelOf(envId, { ...opts, knownStatus }) === 'firefox') {
     throw notChromiumError(envId, { evidence: 'MoreLogin lists it as a Firefox profile' });
   }
   let data = null;
+  let startErr = null;
   try {
     data = await request('/api/env/start', { envId: String(envId), ...(opts.startArgs || {}) }, opts);
   } catch (err) {
     if (err?.code === 'MORELOGIN_UNREACHABLE' || err?.code === 'MORELOGIN_HTTP' || err?.code === 'MORELOGIN_SHAPE') throw err;
-    // MORELOGIN_API (e.g. "already running") → fall through to status recovery.
+    // MORELOGIN_API (e.g. "already running") → fall through to status recovery. Kept: when the status has no
+    // port either, MoreLogin refused the start, and its own reason is the one to report.
+    startErr = err;
   }
   let port = extractDebugPort(data);
   let webdriver = data && data.webdriver;
@@ -648,8 +789,18 @@ export async function startProfile(envId, opts = {}) {
   if (opts.requireCdp && kernel === 'firefox') {
     throw notChromiumError(envId, { started: true, evidence: `its browser is ${webdriver}` });
   }
+  if (!port && startErr) {
+    const refused = startRefusedError(envId, startErr);
+    // The plan's daily limit: remembered until MoreLogin's day resets, so no other run asks again before then.
+    const held = noteStartRefusal(envId, refused);
+    throw held ? startRefusedError(envId, refused, { resetAt: held.until }) : refused;
+  }
   if (!port) throw new Error(`MoreLogin started env ${envId} but returned no debugPort`);
   if (kernel === 'chromium') _chromiumProfiles.add(String(envId));
+  // A start that worked: whatever refusal was held for this profile is over (the quota was reset or raised), and so is
+  // a close outside SynaBun (the profile runs again).
+  clearStartCooldown(envId);
+  clearOutsideClose(envId);
   return { debugPort: port, webdriver: webdriver || null, kernel, raw: data };
 }
 
@@ -661,7 +812,13 @@ export async function startProfile(envId, opts = {}) {
  * close only this connectOverCDP transport; MoreLogin owns the running browser.
  */
 export async function attachProfileBrowser(chromium, endpoint, openPage) {
-  const browser = await chromium.connectOverCDP(endpoint);
+  let browser;
+  try { browser = await chromium.connectOverCDP(endpoint); } catch (error) {
+    // The DevTools port answers but the browser holds no profile (its window was closed and its process lives on):
+    // said as that, with its own code, never as "open the MoreLogin app".
+    if (isWindowlessCdpError(error)) throw windowlessProfileError(null, endpoint, error);
+    throw error;
+  }
   try {
     const context = browser.contexts()[0];
     if (!context) {
@@ -676,6 +833,35 @@ export async function attachProfileBrowser(chromium, endpoint, openPage) {
     try { await browser.close(); } catch { /* retain the original setup error */ }
     throw error;
   }
+}
+
+/**
+ * Chromium's answer to Playwright's first command over CDP (Browser.setDownloadBehavior for the default context) when
+ * the browser process has no default browser context: "Browser context management is not supported". Seen
+ * 2026-11-15 21:13:36 / 21:13:40 for P-4 (2120294461317124096): its window had been closed at 21:13:30.47 (MoreLogin's
+ * envkit log: close_click + CloseBrowser), but its kernel process (pid 82177) did not exit and MoreLogin logged no
+ * OnCloseBrowser for it, so MoreLogin's status still listed it running on DevTools port 63119 (the same port P-4 was
+ * attached on at 21:00:41): the port answered /json/version and the websocket, and the browser had no profile left.
+ * Both P-1 and P-4 run the same kernel (chrome_64_154.0): not a kernel difference. At 21:15:46 the same pid opened a
+ * window again ("kernel-> start success", no OpenBrowser), and the profile worked as before.
+ */
+export function isWindowlessCdpError(error) {
+  return /Browser context management is not supported/i.test(String(error?.message || error || ''));
+}
+
+/**
+ * The error of a profile MoreLogin lists as running whose browser has no open window or profile (closing, or not
+ * fully started). Code MORELOGIN_PROFILE_WINDOWLESS, needsUser: SynaBun did not start it (no launch was spent) and
+ * does not close it.
+ */
+export function windowlessProfileError(envId, endpoint, cause = null) {
+  const port = (() => { try { return new URL(String(endpoint)).port || null; } catch { return null; } })();
+  const e = new Error(`MoreLogin lists ${envId ? `profile ${envId}` : 'the profile'} as running${port ? ` (DevTools port ${port})` : ''}, but its browser has no open window or profile: it was closed and its process did not end, or it is still starting. SynaBun attached to nothing, started nothing (no launch was spent) and closed nothing. Open the profile's window again in MoreLogin, or close it fully there and start it again`);
+  e.code = 'MORELOGIN_PROFILE_WINDOWLESS';
+  e.needsUser = true;
+  if (envId) e.envId = String(envId);
+  if (cause) e.cause = cause;
+  return e;
 }
 
 /** Stop (close) a profile. */

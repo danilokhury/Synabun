@@ -342,6 +342,9 @@ function mountTab({ sessionId, meta = null, brain = null, label = '', userRename
   } else if (_activeIdx < 0) {
     _activeIdx = _tabs.length - 1;
     markActive();
+    // It became the tab that shows without being shown: in an open panel its conversation does not wait
+    // for idle time (asst-panel.js loadConversation).
+    if (_visible) { try { tab.ctl?.wake?.(); } catch { /* ignore */ } }
   }
   renderHeader();
   renderPills();
@@ -409,8 +412,12 @@ function closeTab(idx, { closeServer = true } = {}) {
 function focusSession(sessionId, { prompt = '' } = {}) {
   const idx = _tabs.findIndex(tab => tab.sessionId === sessionId);
   if (idx < 0) return;
-  if (!_visible) setVisible(true);
-  if (idx !== _activeIdx || !_tabs[idx].viewport.classList.contains('active')) switchTo(idx);
+  if (!_visible) {
+    // A closed panel goes to this session first and is shown after: showing it first woke the session it was
+    // left on (onShown, the focus note) before the one that was clicked. applyVisibility shows the new one.
+    switchTo(idx);
+    setVisible(true);
+  } else if (idx !== _activeIdx || !_tabs[idx].viewport.classList.contains('active')) switchTo(idx);
   else { try { _tabs[idx].ctl?.onShown(); } catch { /* ignore */ } }
   focusSidepanel(PANEL_OWNER);
   noteAssistantFocus(sessionId, HOST_ID);
@@ -793,6 +800,9 @@ async function restoreSavedTabs(saved, retries) {
     const shown = _tabs.findIndex(tab => tab.sessionId === shownId);
     _activeIdx = shown >= 0 ? shown : Math.min(Math.max(0, saved.activeIdx), _tabs.length - 1);
     markActive();
+    // The tabs were made before any was the active one, so each put its conversation off to idle time
+    // (asst-panel.js loadConversation). The one that is on screen now does not wait.
+    if (_visible) { try { activeTab()?.ctl?.wake?.(); } catch { /* ignore */ } }
     renderHeader();
     renderPills();
     // Paths that were sent while the sessions were being asked about go to the one that is showing again.

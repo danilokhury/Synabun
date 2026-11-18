@@ -5,6 +5,8 @@
 // so the renderer doesn't change.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { installCodeCopy } from '../ui-code-copy.js';
+
 const STYLE_ID = 'ocp-v2-styles';
 
 const CSS = `
@@ -45,10 +47,6 @@ const CSS = `
   opacity: 1;
   overflow: visible;
 }
-/* Windows: the shell is 92% opaque, so the blur behind it barely shows, yet Chromium recomputes it on every
-   repaint inside the panel (a transcript rendering, a stream). There it goes; the colour stays. */
-html.platform-win32 .ocpv2-panel,
-html.desktop-titlebar--win32 .ocpv2-panel { backdrop-filter: none; -webkit-backdrop-filter: none; }
 /* Keep footer menus above focused floating terminal windows. */
 .ocpv2-panel:has(.ocpv2-dropdown.open) {
   z-index: 99999;
@@ -469,18 +467,8 @@ html.desktop-titlebar--win32 .ocpv2-panel { backdrop-filter: none; -webkit-backd
     rgba(232,224,220,0.0) 100%
   );
 }
-html.platform-win32 .ocpv2-session-pill.ocpv2-pill-running,
-html.desktop-titlebar--win32 .ocpv2-session-pill.ocpv2-pill-running {
-  border-color: rgba(232, 224, 220, 0.38);
-}
-html.platform-win32 .ocpv2-session-pill.ocpv2-pill-running:hover,
-html.desktop-titlebar--win32 .ocpv2-session-pill.ocpv2-pill-running:hover {
-  border-color: rgba(232, 224, 220, 0.58);
-}
-html.platform-win32 .ocpv2-session-pill.ocpv2-pill-running .ocpv2-pill-ring,
-html.desktop-titlebar--win32 .ocpv2-session-pill.ocpv2-pill-running .ocpv2-pill-ring {
-  display: none;
-}
+/* The ring turns on Windows as everywhere (it was a still border there until 2026-11-15): the turn is the
+   compositor's, nothing is restyled or repainted per frame (tests/windows-visuals.test.mjs). */
 body.ui-interacting .ocpv2-pill-ring > i { animation-play-state: paused; }
 .ocpv2-session-pill.ocpv2-pill-running .term-minimized-pill-label::before {
   content: '';
@@ -2073,7 +2061,7 @@ body.ui-interacting .ocpv2-spin-ring > i { animation-play-state: paused !importa
 .ocpv2-image-chip img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
   display: block;
 }
 .ocpv2-image-chip-remove {
@@ -2104,7 +2092,8 @@ body.ui-interacting .ocpv2-spin-ring > i { animation-play-state: paused !importa
 }
 .ocpv2-part-image-wrap img,
 img.ocpv2-part-image {
-  max-width: 240px;
+  box-sizing: border-box;
+  max-width: min(240px, 100%);
   max-height: 200px;
   width: auto;
   height: auto;
@@ -2116,7 +2105,7 @@ img.ocpv2-part-image {
 }
 .ocpv2-msg-user .ocpv2-part-image-wrap { margin-top: 6px; }
 .ocpv2-msg-user img.ocpv2-part-image {
-  max-width: 240px;
+  max-width: min(240px, 100%);
   max-height: 200px;
 }
 
@@ -2127,6 +2116,7 @@ img.ocpv2-part-image {
 }
 img.ocpv2-tool-screenshot {
   display: block;
+  box-sizing: border-box;
   max-width: 100%;
   max-height: 320px;
   width: auto;
@@ -2906,6 +2896,11 @@ const CHILD_CSS = `
   display: flex;
   flex-direction: column;
   align-items: flex-end;
+  align-self: start;
+  justify-self: stretch;
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   gap: 4px;
   max-height: min(310px, 45vh);
   overflow-y: auto;
@@ -2919,12 +2914,18 @@ const CHILD_CSS = `
   margin-top: -5px;
   padding-top: 0;
 }
-.ocpv2-subagent-pills > .term-minimized-pill { flex-shrink: 0; }
+.ocpv2-subagent-pills > .term-minimized-pill {
+  flex-shrink: 0;
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: calc(100% - var(--ocpv2-child-inset, 0px));
+  margin-right: var(--ocpv2-child-inset, 0px);
+}
 .ocpv2-subagent-pills .ocpv2-session-pill-child:hover { transform: none; }
 /* A sub-agent of a sub-agent sits a step in from the edge. */
-.ocpv2-session-pill-child[data-depth="1"] { margin-right: 10px; }
-.ocpv2-session-pill-child[data-depth="2"] { margin-right: 20px; }
-.ocpv2-session-pill-child[data-depth="3"] { margin-right: 30px; }
+.ocpv2-session-pill-child[data-depth="1"] { --ocpv2-child-inset: 10px; }
+.ocpv2-session-pill-child[data-depth="2"] { --ocpv2-child-inset: 20px; }
+.ocpv2-session-pill-child[data-depth="3"] { --ocpv2-child-inset: 30px; }
 /* How many there are and how many need attention: shown once the group scrolls. */
 .ocpv2-subagent-summary {
   position: sticky;
@@ -3223,26 +3224,7 @@ const PARITY_CSS = `
 .ocpv2-msg-action:disabled { opacity: 0.4; cursor: default; }
 .ocpv2-msg-action[data-action="delete"]:hover:not(:disabled) { color: rgba(255,166,166,0.92); }
 
-/* ── Copy button on code blocks ───────────────────────────────────────── */
-.ocpv2-code-block { position: relative; }
-.ocpv2-code-copy {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  background: rgba(22, 22, 26, 0.95);
-  border: 1px solid rgba(255,255,255,0.08);
-  color: rgba(255,255,255,0.55);
-  border-radius: 6px;
-  padding: 1px 6px;
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-size: 9px;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.15s, color 0.15s;
-}
-.ocpv2-code-block:hover .ocpv2-code-copy,
-.ocpv2-code-copy:focus { opacity: 1; }
-.ocpv2-code-copy:hover { color: rgba(255,255,255,0.9); }
+/* A code block's Copy button is the shared one (../code-copy.js, ../ui-code-copy.js), styled there. */
 
 /* ── Reverted (undone) banner: the retry banner in neutral tones ──────── */
 .ocpv2-revert-banner {
@@ -3778,6 +3760,8 @@ const PARITY_CSS = `
 `;
 
 export function injectStyles() {
+  // The Copy button of every code block: its stylesheet and its one click listener, in this document.
+  installCodeCopy(document);
   const full = CSS + '\n' + PARITY_CSS + '\n' + CHILD_CSS;
   const existing = document.getElementById(STYLE_ID);
   if (existing) {

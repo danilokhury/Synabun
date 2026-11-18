@@ -16,11 +16,10 @@ import { sendToFocusedSession } from './ui-sidepanel-windows.js';
 import { KEYS } from './constants.js';
 import { registerAction } from './ui-keybinds.js';
 import { storage } from './storage.js';
-import { sendToPanel as sendToClaudePanel } from './ui-claude-panel.js';
+import { sendToPanel as sendToClaudePanel } from './claude-panel-lazy.js';
 import { attachPathToOpencode } from './ui-opencode-panel-v2.js';
 import { attachPathToAntigravity, isAntigravityPanelOpen, toggleAntigravityPanel } from './ui-antigravity-panel.js';
-import { isCodexPanelOpen, toggleCodexPanel } from './cdx/cdx-panel.js';
-import { addPathChip as addCodexPathChip } from './cdx/cdx-tabs.js';
+import { isCodexPanelOpen, toggleCodexPanel, addPathChip as addCodexPathChip } from './ui-codex-panel.js';
 import { on, emit, state } from './state.js';
 import {
   closeEditorPanel, initEditorPanel, isEditorPanelOpen,

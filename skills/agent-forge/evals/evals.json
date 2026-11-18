@@ -1,0 +1,56 @@
+{
+  "schema": "synabun-evals/1",
+  "skill_name": "agent-forge",
+  "evals": [
+    {
+      "id": "reviewer-for-pricing-scripts",
+      "group": "new-reviewer",
+      "split": "train",
+      "prompt": "I need a reviewer for the pricing scripts in the alpha repo. It should catch rounding mistakes before we merge.",
+      "expected_output": "A draft agent for that project, read-only, offered for review tasks, linted clean and submitted to the owner's review queue with a rationale; nothing approved or installed.",
+      "files": [],
+      "assertions": [
+        "Looks at the existing agents before drafting a new one",
+        "Sets the capability to read-only and adds no browser, computer use or MCP server",
+        "Writes instructions with a scope, a method and an output contract instead of a persona",
+        "Submits the draft with a purpose and a reason for its privileges",
+        "Says the agent waits for the owner's approval in Agents Studio and does not call it usable"
+      ]
+    },
+    {
+      "id": "improve-existing-agent",
+      "group": "improve",
+      "split": "validation",
+      "prompt": "Our release-notes agent keeps mixing fixes with features. Make it group them, like we do by hand.",
+      "expected_output": "A new draft over the existing approved agent (not a second agent), with the instructions changed, a diff that shows nothing wider, submitted for review.",
+      "files": [],
+      "assertions": [
+        "Changes the existing agent instead of creating a near duplicate",
+        "Patches the draft with the etag it read",
+        "Reports that no privilege is wider than the approved revision",
+        "Leaves the approved revision running until the owner approves the new one"
+      ]
+    },
+    {
+      "id": "unattended-browser-watcher",
+      "group": "unattended",
+      "split": "test",
+      "prompt": "Unattended run: draft an agent that reads a list of public status pages and reports which services are degraded.",
+      "expected_output": "A complete draft with the browser switched on, read-only capability, the assumptions written down instead of questions, and status done or blocked with a concrete reason.",
+      "files": [],
+      "assertions": [
+        "Asks no question and does not wait for approval",
+        "Switches the browser on without choosing full capability",
+        "Names only values the catalog lists for provider, model and tool groups",
+        "Records its assumptions and reports the privilege summary"
+      ]
+    }
+  ],
+  "triggers": [
+    { "id": "pos-make-agent", "group": "pos-make-agent", "split": "train", "query": "make me an agent that triages new support tickets every morning", "should_trigger": true },
+    { "id": "pos-workflow-to-agent", "group": "pos-workflow-to-agent", "split": "validation", "query": "turn the way we do database migration reviews into an agent I can hand tasks to", "should_trigger": true },
+    { "id": "pos-import-agent-file", "group": "pos-import-agent-file", "split": "test", "query": "I have a code-reviewer agent file for Claude Code, bring it into SynaBun and tighten what it can touch", "should_trigger": true },
+    { "id": "near-run-agent", "group": "near-run-agent", "split": "train", "query": "run the pricing reviewer on my current branch", "should_trigger": false },
+    { "id": "near-make-skill", "group": "near-make-skill", "split": "test", "query": "write a skill with the steps for cutting a release", "should_trigger": false }
+  ]
+}

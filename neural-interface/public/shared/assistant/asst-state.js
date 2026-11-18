@@ -98,6 +98,7 @@ export const DEFAULT_BRAIN = Object.freeze({
   project: null,
   tools: Object.freeze(['all']),
   accountId: null,
+  accountPolicy: 'manual',
   permissionMode: 'default',
   planMode: false,
 });
@@ -183,6 +184,7 @@ export function normalizeBrain(raw, fallback = DEFAULT_BRAIN) {
     project: str(src.project ?? src.cwd) || null,
     tools: provider === 'opencode' ? (Array.isArray(src.tools) ? [...src.tools] : null) : ['all'],
     accountId: ACCOUNT_PROVIDERS.has(provider) ? (str(src.accountId) || null) : null,
+    accountPolicy: ACCOUNT_PROVIDERS.has(provider) && (src.accountId === 'auto' || src.accountPolicy === 'auto') ? 'auto' : 'manual',
     permissionMode: modes.some(m => m.id === mode) ? mode : 'default',
     planMode: PLAN_MODE_PROVIDERS.has(provider) && (src.planMode === true || legacyPlan),
   };
@@ -516,6 +518,28 @@ export function sessionStatus(own, workers = {}) {
   return own === 'done' ? 'done' : 'idle';
 }
 
+// Statuses of a session record in which nothing is going on.
+const QUIET_STATUSES = new Set(['', 'idle', 'done', 'ended']);
+
+/**
+ * May a tab's conversation be read and drawn later (in the page's idle time, or when the tab is shown)
+ * instead of as the tab is made?
+ *
+ * Only for a tab nobody is looking at whose session is known and known to be quiet. On screen: now. No
+ * record of the session (a new one, a host that passes none): now, as before. At work, waiting on an answer,
+ * or in a state this page does not know: now, so its pill and its agents say at once what it does.
+ *
+ * @param {{ visible: boolean, session?: object | null }} tab
+ */
+export function conversationCanWait({ visible, session } = {}) {
+  if (visible !== false) return false;
+  if (!session || typeof session !== 'object') return false;
+  if (session.running || session.busy || session.pending) return false;
+  if (Number(session.activeRuns) > 0 || Number(session.waiting) > 0) return false;
+  const status = session.status == null ? '' : String(session.status);
+  return QUIET_STATUSES.has(status);
+}
+
 function toMs(value) {
   if (value == null || value === '') return 0;
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
@@ -606,6 +630,29 @@ export function testDensityBars(level) {
   return TEST_DENSITIES.indexOf(normalizeTestDensity(level));
 }
 
+// agents-p4: Agent density: how many workers ONE task may get (server: lib/agents/density.js; the numbers and the
+// default are copies, tests/agents-density-wiring.test.mjs fails when one drifts). `null` means "server default"
+// in a tab's own state; a missing or unknown value reads as the default level, Solo.
+export const AGENT_DENSITIES = ['solo', 'pair', 'team', 'swarm'];
+export const DEFAULT_AGENT_DENSITY = 'solo';
+export const AGENT_DENSITY_WORKERS = { solo: 1, pair: 2, team: 4, swarm: 6 };
+
+/** A known level, else `fallback` (the default level; pass null to tell "not set" apart). */
+export function normalizeAgentDensity(value, fallback = DEFAULT_AGENT_DENSITY) {
+  const key = str(value).toLowerCase();
+  return AGENT_DENSITIES.includes(key) ? key : fallback;
+}
+
+/** The most workers one task gets at a level: solo 1 · pair 2 · team 4 · swarm 6. */
+export function agentDensityWorkers(level) {
+  return AGENT_DENSITY_WORKERS[normalizeAgentDensity(level)];
+}
+
+/** Figures of the composer's glyph that are drawn at full strength at a level: solo 1 · pair 2 · team 3 · swarm 4. */
+export function agentDensityFigures(level) {
+  return AGENT_DENSITIES.indexOf(normalizeAgentDensity(level)) + 1;
+}
+
 const COMPUTER_ON = new Set(['on', 'true', '1', 'yes', 'enable', 'enabled']);
 const COMPUTER_OFF = new Set(['off', 'false', '0', 'no', 'disable', 'disabled']);
 
@@ -634,7 +681,22 @@ export function routeTargetLabel(target, { effort = false } = {}) {
   const label = str(target.label) || modelShortName(target.model) || providerShortLabel(provider);
   if (!effort) return label;
   const level = str(target.effort);
-  return level && level !== 'off' ? `${label} · ${routeEffortWord(level)}` : label;
+  if (!level || level === 'off') return label;
+  // A router label of a worker already ends in its effort ("Claude Code · Sonnet 5 · high", "… · thinking off"): once.
+  return routeLabelEffortWord(label, level) ? label : `${label} · ${routeEffortWord(level)}`;
+}
+
+/**
+ * The effort word `label` ends in (" · high", " · off", or the router's " · thinking off" for `none`),
+ * as written there, else ''. No effort, or the auto "off": ''.
+ */
+export function routeLabelEffortWord(label, effort) {
+  const level = str(effort);
+  if (!level || level === 'off') return '';
+  const text = str(label).toLowerCase();
+  const words = level.toLowerCase() === ROUTE_EFFORT_OFF ? ['thinking off', routeEffortWord(level)] : [routeEffortWord(level)];
+  const word = words.find((w) => text.endsWith(` · ${w.toLowerCase()}`)) || '';
+  return word ? str(label).slice(-word.length) : '';
 }
 
 /** Off for a route is the effort id `none` (no thinking); shown as "off". Other ids as they are. */
@@ -877,6 +939,7 @@ export function createTabState(sessionId, brain, extra = {}) {
     routeMode: null,     // explicit per-session route mode; null = server default
     computerUse: null,   // explicit per-session computer use; null = server default
     testDensity: null,   // explicit per-session test density; null = server default
+    agentDensity: null,  // agents-p4: explicit per-session Agent density; null = server default (Solo)
     usageView: null,
     limit: null,         // the provider's usage limit notice (applyLimit); never persisted, the server re-sends it on attach
     ...extra,
@@ -898,6 +961,7 @@ export function serializeTabState(state) {
     routeMode: normalizeRouteMode(state.routeMode, null),
     computerUse: normalizeComputerMode(state.computerUse, null),
     testDensity: normalizeTestDensity(state.testDensity, null),
+    agentDensity: normalizeAgentDensity(state.agentDensity, null), // agents-p4
     usageView: compactUsageView(state.usageView),
     updatedAt: Date.now(),
   };
@@ -921,6 +985,7 @@ export function deserializeTabState(raw) {
     routeMode: normalizeRouteMode(data.routeMode, null),
     computerUse: normalizeComputerMode(data.computerUse, null),
     testDensity: normalizeTestDensity(data.testDensity, null),
+    agentDensity: normalizeAgentDensity(data.agentDensity, null), // agents-p4: an older payload reads as the server default
     usageView: compactUsageView(data.usageView),
   };
 }

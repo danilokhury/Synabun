@@ -7,6 +7,17 @@ import { boundsForPoint, frameRect } from './app-frame.js';
 import { isWindowsPlatform } from './desktop-bridge.js';
 
 /**
+ * Whether a scroll of `scroller` (a scroll event's target) can move `control`: the document's own scroll moves
+ * everything, an element's scroll moves what is inside it. Anything that is not an element counts as the page.
+ */
+export function scrollCanMove(scroller, control) {
+  if (!control) return false;
+  if (!scroller || scroller.nodeType !== 1) return true;
+  if (scroller === control) return true;
+  try { return scroller.contains(control); } catch { return true; }
+}
+
+/**
  * Initialize the tooltip system.
  * Creates a body-appended tooltip element and delegates
  * mouseover/mouseout on any [data-tooltip] elements.
@@ -27,6 +38,7 @@ export function initTooltip() {
   let showTimer = null;
   let hideTimer = null;
   let currentTarget = null;
+  let pendingTarget = null; // the control whose tooltip is due (showTimer)
   let repositionRunHandler = null;
   let repositionEndHandler = null;
   let repositionRafId = 0;
@@ -227,6 +239,7 @@ export function initTooltip() {
     clearTimeout(showTimer);
     clearTimeout(hideTimer);
     showTimer = null;
+    pendingTarget = null;
     if (repositionRafId) {
       cancelAnimationFrame(repositionRafId);
       repositionRafId = 0;
@@ -253,12 +266,10 @@ export function initTooltip() {
     if (el === currentTarget) { clearTimeout(hideTimer); return; }
     clearTimeout(showTimer);
     clearTimeout(hideTimer);
-    if (currentTarget) {
-      hide();
-      showTimer = setTimeout(() => show(el), 16);
-    } else {
-      showTimer = setTimeout(() => show(el), 20);
-    }
+    const delay = currentTarget ? 16 : 20;
+    if (currentTarget) hide();
+    pendingTarget = el;
+    showTimer = setTimeout(() => { pendingTarget = null; show(el); }, delay);
   });
 
   document.addEventListener('mouseout', (e) => {
@@ -270,7 +281,17 @@ export function initTooltip() {
     hide();
   });
 
-  document.addEventListener('scroll', hide, true);
+  // A scroll takes the tooltip away when it can move the control the tooltip is for: the page itself, or a
+  // scroller that holds the control. Any other scroller leaves the control where it is. Hiding on every scroll
+  // of the document meant that a transcript following a streaming session (one scroll per frame, in any open
+  // panel) cancelled each tooltip before its 20 ms delay ran out: a session pill hovered meanwhile showed its
+  // name late, in flashes or not at all. With nothing shown or due, there is nothing to do.
+  document.addEventListener('scroll', (e) => {
+    const target = currentTarget || pendingTarget;
+    if (!target) return;
+    if (!scrollCanMove(e.target, target)) return;
+    hide();
+  }, true);
   document.addEventListener('pointerdown', hide, true);
 
   // Keyboard focus shows the tooltip too, but only inside the Assistant

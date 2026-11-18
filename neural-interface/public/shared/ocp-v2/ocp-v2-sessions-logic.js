@@ -254,17 +254,31 @@ export function automationTurnPhase(run) {
 
 /**
  * A tab's tray pill: 'waiting' while its session waits on the user, 'working'
- * while a turn of it runs, else 'idle'. A live automation run's own phase
+ * while a turn of it runs, else 'idle'. Pending asks take priority over turn state.
+ * A live automation run's own phase
  * (`automation`, automationTurnPhase) decides: an idle warm worker rests,
  * whatever its run (and the store of the session on screen, which follows the
  * run) says; nobody else can start a turn in it meanwhile (canSend). Otherwise
  * the session on screen reads its store (`running`) and another tab what
  * OpenCode said of it (`busy`).
  */
-export function tabPillState({ sessionId, activeSessionId, running = false, busy = false, automation = null } = {}) {
+export function tabPillState({
+  sessionId, activeSessionId, running = false, busy = false, automation = null,
+  pendingPermissions = [], pendingQuestions = [], familyWaiting = false,
+} = {}) {
+  if (pendingPermissions.length || pendingQuestions.length || familyWaiting) return 'waiting';
   if (automation === 'working' || automation === 'waiting' || automation === 'idle') return automation;
   const turn = sessionId && sessionId === activeSessionId ? !!running : !!busy;
   return turn ? 'working' : 'idle';
+}
+
+/** OpenCode stored bare session IDs before tab records included attention state. */
+export function readSavedTabs(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((row) => typeof row === 'string' ? { sessionId: row } : row)
+    .filter((row) => typeof row?.sessionId === 'string' && row.sessionId)
+    .map((row) => ({ ...row, needsYou: row.needsYou === true }));
 }
 
 // ── Renames that are waiting for their answer ───────────────────────────────

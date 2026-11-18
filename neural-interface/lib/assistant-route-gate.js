@@ -29,7 +29,7 @@ export const ROUTE_GATE_EXEMPT = Object.freeze([
   // Memory
   'recall', 'remember', 'reflect', 'memories', 'forget', 'restore', 'category', 'sync',
   // Orchestration (agent_dispatch is gated by the router and the clarifier itself)
-  'agent_route', 'agent_clarify', 'agent_catalog', 'agent_list', 'agent_status', 'agent_read', 'agent_send', 'agent_wait', 'agent_stop', 'agent_focus', 'agent_usage', 'agent_dispatch',
+  'agent_route', 'agent_clarify', 'agent_catalog', 'agent_list', 'agent_status', 'agent_read', 'agent_send', 'agent_wait', 'agent_stop', 'agent_focus', 'agent_usage', 'agent_dispatch', 'agent_team',
   // Asking the user (OpenCode's own tool is `question`)
   'AskUserQuestion', 'choice', 'question',
   // Tool groups, the images the user attached, the desktop lease
@@ -85,9 +85,9 @@ export function gateStateFor(result, { taskClass = null } = {}) {
   const target = result.target || null;
   switch (result.status) {
     case 'approved':
-      if (String(taskClass || '').toLowerCase() === 'chat') return { state: 'held', text: 'A chat route unlocks no tools: answer in text, or route this task again with its real task_class (quick, research, code, browser, …).' };
-      if (result.continuation || target?.continuation) return { state: 'held', text: `Continuing on ${targetLabel(target)}: end your turn now with one short line; SynaBun runs the task on that model next.` };
-      if (target?.kind === 'dispatch') return { state: 'held', text: `Routed to ${targetLabel(target)}: call agent_dispatch with route_id ${result.routeId}; do not do this task here.` };
+      if (String(result.taskClass || taskClass || '').toLowerCase() === 'chat') return { state: 'held', text: 'A chat route unlocks no tools: answer in text, or route this task again with its real task_class (quick, research, code, browser, …).' };
+      if (result.continuation || target?.continuation) return { state: 'held', text: `Continuing on ${targetLabel(target)}: end your turn now with one short line; SynaBun queued the continuation and will report a delivery delay.` };
+      if (target?.kind === 'dispatch') return { state: 'held', text: result.next || `Routed to ${targetLabel(target)}: call agent_dispatch with route_id ${result.routeId}; do not do this task here.` };
       return { state: 'open', text: null };
     case 'pending':
       return { state: 'held', text: 'Waiting for the user\'s route choice: end your turn now with one short line. The choice arrives as a [SynaBun Mailbox] route_decided event.' };
@@ -95,10 +95,12 @@ export function gateStateFor(result, { taskClass = null } = {}) {
       // Image / video creation with no model that makes the medium (design: none that can see): nothing can run it.
       if (result.reason === 'no_capable_model' && result.needs === 'vision') return { state: 'held', text: 'No model in the catalog can see images, which this task needs: do not start or dispatch it; tell the user which Model routes row needs a model.' };
       if (result.reason === 'no_capable_model') return { state: 'held', text: 'No model in the catalog can make what this task creates: do not start or dispatch it; tell the user which Model routes row needs a model.' };
-      return { state: 'held', text: 'The user declined this route: do not start the task; ask what they would like instead.' };
+      return { state: 'held', text: result.next || 'This route was declined. Check its source and reason before proceeding.' };
     case 'expired':
     case 'cancelled':
       return { state: 'held', text: 'This route is no longer valid: do not start the task; ask the user how to proceed.' };
+    case 'plan_required':
+      return { state: 'held', text: result.next || 'Plan the whole task and route it once before starting workers.' };
     case 'clarifying':
       return { state: 'held', text: CLARIFY_HOLD_TEXT };
     default:
@@ -165,11 +167,20 @@ export function createRouteGate({ sessionId = null, routeTool = () => 'agent_rou
   let turn = 0;
   let aborted = false;
   let routeId = null;
+  let taskId = null;
+  let taskKey = '';
   let unavailable = null;
+  let cli = false;
 
-  /** `carry` keeps the refusal count (the reactive fallback's follow-up turn still counts toward the loop guard). */
-  function startTurn({ open = false, carry = false } = {}) {
+  /**
+   * `carry` keeps the refusal count (the reactive fallback's follow-up turn still counts toward the loop guard).
+   * `cli`: Claude Code started this turn by itself (a background task, agent or wakeup reported back).
+   */
+  function startTurn({ open = false, carry = false, taskId: currentTask = taskId, cli: byCli = false } = {}) {
     turn += 1;
+    cli = byCli === true;
+    taskId = currentTask;
+    taskKey = '';
     state = open ? 'open' : 'unrouted';
     heldText = null;
     if (!carry) { refusals = 0; aborted = false; }
@@ -177,6 +188,8 @@ export function createRouteGate({ sessionId = null, routeTool = () => 'agent_rou
   }
   /** `meta.taskClass`: the class the brain routed (a chat route holds). */
   function onRouteResult(result, meta = {}) {
+    if (taskId && result?.taskId && result.taskId !== taskId) return snapshot();
+    taskKey = result?.taskKey || '';
     const next = gateStateFor(result, meta);
     state = next.state;
     heldText = next.text;
@@ -202,9 +215,11 @@ export function createRouteGate({ sessionId = null, routeTool = () => 'agent_rou
   function refusalText(tool) {
     const name = toolBaseName(tool) || 'this tool';
     if (state === 'held' && heldText) return `SynaBun route gate: ${name} was refused. ${heldText}`;
+    // A turn nobody typed: the brain is there to pick up a job it started, and must not open a new task for it.
+    const cliNote = cli ? ' This turn was started by Claude Code itself (a background task, agent or wakeup reported back): route the task it belongs to again with its task_key, then read that job\'s output and carry the task on.' : '';
     // OpenCode's Code Mode tool: a model that went looking for SynaBun's tools inside it is told where they are.
     const codeMode = name.toLowerCase() === 'execute' ? ` SynaBun's own tools, ${routeTool()} included, are separate tools in your tool list: call them directly, never through execute.` : '';
-    return `SynaBun route gate: ${name} was refused because this turn is not routed. Call ${routeTool()} first (task_class, one-line summary, confidence, 1-3 proposals${sessionId ? `, assistant_session_id "${sessionId}"` : ''}) and follow its status: approved + direct opens every tool for this turn. Memory tools, agent_* tools and asking the user work without routing. For plain conversation, just answer in text.${codeMode}`;
+    return `SynaBun route gate: ${name} was refused because this turn is not routed. Call ${routeTool()} first (task_class, one-line summary, confidence, 1-3 proposals${sessionId ? `, assistant_session_id "${sessionId}"` : ''}) and follow its status: approved + direct opens every tool for this turn. To resume an approved task, route again with the same task_key; a consumed continuation returns approved with continuation:false. Memory tools, agent_* tools and asking the user work without routing. For plain conversation, just answer in text.${cliNote}${codeMode}`;
   }
   /**
    * The brain cannot reach agent_route (reason), or can again (null). While
@@ -222,7 +237,7 @@ export function createRouteGate({ sessionId = null, routeTool = () => 'agent_rou
     if (abort) aborted = true;
     return { allow: false, state, refusals, abort, reason: refusalText(tool) };
   }
-  function snapshot() { return { state, turn, refusals, routeId, held: heldText, aborted, unavailable }; }
+  function snapshot() { return { state, turn, refusals, routeId, taskId, taskKey, held: heldText, aborted, unavailable, cli }; }
 
   return { startTurn, onRouteResult, onRouteError, onClarify, setUnavailable, check, snapshot, isOpen: () => !!unavailable || state === 'open' || state === 'failed' };
 }

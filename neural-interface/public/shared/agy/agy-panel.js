@@ -45,11 +45,13 @@ import { registerSidepanel, setSidepanelVisible, sidepanelAcceptsKeyboard, focus
 import { hostedSidepanelId } from '../ui-sidepanel-runtime.js';
 import { dropdownHTML, setDropdownDisabled, setDropdownItems, wireDropdowns, closeDropdowns } from '../cc-dropdown.js';
 import { renderMarkdown } from '../cp/cp-markdown.js';
+import { createKeyedHtmlList } from '../dom-morph.js';
+import { watchTranscriptRows } from '../transcript-rows.js';
 import { fetchProjects } from '../api.js';
 import { createCliInstallController } from '../cli-install-controller.js';
 import { setCliInstallTranslator } from '../cli-install-view.js';
 import { workerRestart } from '../worker-restart.js';
-import { endWorkerRunOnClose, forgetWorkerEnd, trackWorkerEnd } from '../ui-worker-end.js';
+import { buildWorkerEndCard, endWorkerRunOnClose, forgetWorkerEnd, leaveWorkerTab, trackWorkerEnd } from '../ui-worker-end.js';
 import { nativeLoopWindowId } from '../ui-native-window-id.js';
 import { runAwaitsAnswer, runTurnLive } from '../sidepanel-session-status.js';
 import { wireFileLinks } from '../ui-file-links.js';
@@ -182,7 +184,9 @@ function ensureMarked() {
 function md(text) {
   const key = String(text ?? '');
   const hit = _mdCache.get(key);
-  if (hit !== undefined) return hit;
+  // Used again: it goes to the back of the line. A stream adds one text per frame, and those, not the
+  // finished rows read on every pass, are the ones to forget first.
+  if (hit !== undefined) { _mdCache.delete(key); _mdCache.set(key, hit); return hit; }
   const html = renderMarkdown(key, { parse: _marked ? (src) => _marked.parse(src) : null });
   _mdCache.set(key, html);
   if (_mdCache.size > 400) _mdCache.delete(_mdCache.keys().next().value);
@@ -598,6 +602,9 @@ async function send({ text: given = null, staged: givenStaged = null, fromQueue 
     tab.releasedRunId = releasedRunId;
     tab.automationRunId = null;
     tab.automationAwaits = false;
+    // The tab is the user's now: the run's end card goes, and nothing of the run draws it again.
+    forgetWorkerEnd(releasedRunId);
+    tab.workerEnd = null;
     rt.loaded = false;
     rt.openedInPanel = false;
     saveTabs();
@@ -1036,6 +1043,10 @@ function closeTab(idx, { closeSession = true } = {}) {
 function scheduleRender(tab = null, { follow = false } = {}) {
   if (tab && tab !== activeTab()) { renderPills(); return; }
   if (follow) { const rt = runtimeOf(activeTab()); if (rt) rt.scrolledUp = false; }
+  // A closed panel draws nothing: a pass rebuilds the whole transcript and reads its layout, once per frame
+  // for as long as a session streams there. Its pill says what the session does; showing the panel draws
+  // everything (setVisible → renderAll), from the same state.
+  if (!_visible) { renderPills(); return; }
   if (_renderQueued) return;
   _renderQueued = true;
   requestAnimationFrame(() => {
@@ -1262,12 +1273,28 @@ function renderQueue() {
     + queue.map((item, idx) => `<div class="agy-queue-item"><span class="agy-queue-text" title="${esc(item.text)}">${esc(item.text || item.staged.map((f) => f.name).join(', '))}</span><button type="button" class="agy-icon-btn" data-queue-edit="${idx}" title="${esc(T('queueEdit'))}" aria-label="${esc(T('queueEdit'))}">${SVG.edit}</button><button type="button" class="agy-icon-btn" data-queue-remove="${idx}" title="${esc(T('queueRemove'))}" aria-label="${esc(T('queueRemove'))}">&times;</button></div>`).join('');
 }
 
-/** innerHTML, keeping the focused field, its selection and what was typed into question forms. */
-function replaceKeepingFocus(box, html, rt) {
+// The transcript's rows as a keyed list (../dom-morph.js): a pass builds the markup of every row as it
+// always did, and only the rows whose markup changed are made again. A session that streams used to have
+// its whole transcript replaced on every frame; now it is the row being written.
+let _transcriptList = null;
+let _transcriptListBox = null;
+function transcriptList(box) {
+  if (_transcriptListBox !== box) { _transcriptList = createKeyedHtmlList(box); _transcriptListBox = box; }
+  return _transcriptList;
+}
+
+/**
+ * The transcript's pieces ([{ key, html }]) on screen, keeping the focused field, its selection and what was
+ * typed into question forms. A piece that did not change keeps its nodes, so its field keeps all of that by
+ * itself; what follows is for the pieces that were made again.
+ */
+function replaceKeepingFocus(box, pieces, rt) {
   const active = document.activeElement;
   const keep = active && box.contains(active) && active.id ? { id: active.id, start: active.selectionStart, end: active.selectionEnd } : null;
-  box.innerHTML = html;
+  const { built } = transcriptList(box).patch(pieces);
   for (const [requestId, values] of Object.entries(rt?.elicitDrafts || {})) {
+    // A form that stayed holds what was typed, caret included: writing its values again would move the caret.
+    if (![...built].some((key) => key.endsWith(`elicit:${requestId}`))) continue;
     const form = box.querySelector(`[data-elicit-form="${CSS.escape(requestId)}"]`);
     if (!form) continue;
     for (const [name, value] of Object.entries(values)) {
@@ -1277,7 +1304,8 @@ function replaceKeepingFocus(box, html, rt) {
       }
     }
   }
-  if (keep) {
+  // The focused field was in a piece that was made again: focus and selection go to its new self.
+  if (keep && !box.contains(active)) {
     const again = box.querySelector(`#${CSS.escape(keep.id)}`);
     if (again) { again.focus(); try { if (keep.start !== null && keep.start !== undefined) again.setSelectionRange(keep.start, keep.end); } catch { /* not a text field */ } }
   }
@@ -1288,7 +1316,7 @@ function renderTranscript() {
   if (!box) return;
   const tab = activeTab();
   const rt = runtimeOf(tab);
-  if (!tab || !rt) { box.innerHTML = ''; return; }
+  if (!tab || !rt) { box.innerHTML = ''; transcriptList(box).forget(); return; }
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
   const setup = currentSetup();
   const rows = rt.transcript.rows;
@@ -1298,29 +1326,37 @@ function renderTranscript() {
   };
   const footers = turnFooters(rt.transcript);
   const lastTurnId = rt.transcript.turns.length ? rt.transcript.turns[rt.transcript.turns.length - 1].id : null;
+  // The same markup, in the same order, as one string used to hold; each piece under a key of its own (the
+  // tab's id first: another tab's rows are never taken for these).
   const parts = [];
+  const piece = (key, html) => { if (html) parts.push({ key: `${tab.id}:${key}`, html }); };
   for (const row of rows) {
-    parts.push(rowHtml(row, ctx));
+    piece(`row:${row.id}`, rowHtml(row, ctx));
     const turn = footers.get(row.id);
-    if (turn && !(tab.running && turn.id === lastTurnId)) parts.push(turnFooterHtml(turn, { T, last: turn.id === lastTurnId && !tab.running && !tab.automationRunId, answer: answerOfTurn(rt.transcript, turn.id) }));
+    if (turn && !(tab.running && turn.id === lastTurnId)) piece(`foot:${row.id}`, turnFooterHtml(turn, { T, last: turn.id === lastTurnId && !tab.running && !tab.automationRunId, answer: answerOfTurn(rt.transcript, turn.id) }));
   }
-  for (const [requestId, entry] of rt.permissions) if (entry.state !== 'gone') parts.push(permissionHtml(requestId, entry, { T, cwd: tab.project }));
-  for (const [requestId, entry] of rt.elicitations) parts.push(elicitationHtml(requestId, entry, { T }));
-  if (tab.running && _prefs.detail === 'compact' && !rows.some((row) => row.kind === 'thought' && !row.closed)) parts.push(`<div class="agy-system working">${esc(T('working'))}</div>`);
-  if (rt.notice) parts.push(`<div class="agy-system${rt.notice.severity === 'error' ? ' error' : rt.notice.severity === 'warning' ? ' warning' : ''}">${esc(rt.notice.text)}</div>`);
-  const body = parts.filter(Boolean).join('');
-  const setupBlock = setup.show ? setupHtml({ ...setup, logOpen: _setup.logOpen }, { T, centered: !body }) : '';
-  if (!body && !setupBlock) {
+  for (const [requestId, entry] of rt.permissions) if (entry.state !== 'gone') piece(`perm:${requestId}`, permissionHtml(requestId, entry, { T, cwd: tab.project }));
+  for (const [requestId, entry] of rt.elicitations) piece(`elicit:${requestId}`, elicitationHtml(requestId, entry, { T }));
+  if (tab.running && _prefs.detail === 'compact' && !rows.some((row) => row.kind === 'thought' && !row.closed)) piece('working', `<div class="agy-system working">${esc(T('working'))}</div>`);
+  if (rt.notice) piece('notice', `<div class="agy-system${rt.notice.severity === 'error' ? ' error' : rt.notice.severity === 'warning' ? ' warning' : ''}">${esc(rt.notice.text)}</div>`);
+  // The end of a dispatched worker: an empty slot keyed by what the card says, the card mounted in it (placeWorkerEnd).
+  if (tab.workerEnd && tab.automationRunId) piece(`worker-end:${tab.workerEnd.sig || ''}`, '<div class="agy-worker-end-slot"></div>');
+  const hasBody = parts.length > 0;
+  const setupBlock = setup.show ? setupHtml({ ...setup, logOpen: _setup.logOpen }, { T, centered: !hasBody }) : '';
+  if (!hasBody && !setupBlock) {
     // Drawn again only when it changes: the greeting card mounted in it stays (and keeps its disclosure).
     const empty = emptyHtml({ T, project: tab.project });
     const key = `${tab.id}\n${empty}`;
-    if (box._agyEmpty !== key || !box.querySelector(':scope > .agy-empty')) { box.innerHTML = empty; box._agyEmpty = key; }
+    if (box._agyEmpty !== key || !box.querySelector(':scope > .agy-empty')) { box.innerHTML = empty; box._agyEmpty = key; transcriptList(box).forget(); }
     offerGreeting(tab, box.querySelector(':scope > .agy-empty'));
     return;
   }
   box._agyEmpty = null;
-  replaceKeepingFocus(box, setupBlock + body, rt);
-  if (_setup.nudge) { box.querySelector('.agy-setup')?.classList.add('agy-nudge'); }
+  if (setupBlock) parts.unshift({ key: `${tab.id}:setup`, html: setupBlock });
+  replaceKeepingFocus(box, parts, rt);
+  placeWorkerEnd(box, tab);
+  // A kept setup block keeps its classes: the nudge is set to what it is now, not only added.
+  box.querySelector('.agy-setup')?.classList.toggle('agy-nudge', !!_setup.nudge);
   if (nearBottom || !rt.scrolledUp) box.scrollTop = box.scrollHeight;
   const jump = $('.agy-jump');
   if (jump) jump.hidden = !rt.scrolledUp;
@@ -1392,7 +1428,8 @@ function renderBanner() {
   } else if (_conn.phase === 'retrying' || _conn.phase === 'offline') {
     tone = 'warn';
     html = `<span class="agy-banner-text">${esc(T(_conn.phase === 'offline' ? 'connOffline' : 'disconnected'))}</span><button type="button" class="agy-action" data-conn="retry">${esc(T('connRetryNow'))}</button>`;
-  } else if (tab?.automationRunId) {
+  } else if (tab?.automationRunId && !(tab.workerEnd && !tab.automationActive)) {
+    // A dispatched worker's end card says how the run ended; the banner says it only for a run without one.
     tone = '';
     html = `<span class="agy-banner-text">${esc(tab.automationActive ? T('automationBanner') : T('automationEnded'))}</span>`;
   }
@@ -1540,8 +1577,14 @@ function renderPills() {
       const openIt = () => {
         const idx = _tabs.indexOf(tab);
         if (idx < 0) return;
-        if (!_visible) setVisible(true);
-        switchTab(idx);
+        // A closed panel goes to this tab first and is shown after: showing it first drew, and loaded the
+        // session of, the tab it was left on before the one that was clicked.
+        if (!_visible) {
+          switchTab(idx);
+          setVisible(true);
+        } else {
+          switchTab(idx);
+        }
         try { focusSidepanel(PANEL_OWNER); } catch { /* not hosted */ }
       };
       pill.addEventListener('click', openIt);
@@ -2226,6 +2269,9 @@ function wire() {
   });
   const transcript = $('.agy-transcript');
   wireFileLinks(transcript, { cwd: () => activeTab()?.project || '' });
+  // Rows far from the screen are skipped by the engine, at their exact size (transcript-rows.js). The rows
+  // stay the same nodes from one pass to the next now (transcriptList), so what is known of them holds.
+  watchTranscriptRows(transcript);
   transcript.addEventListener('scroll', () => {
     const rt = runtimeOf(activeTab());
     if (!rt) return;
@@ -2366,6 +2412,7 @@ function ensurePanel() {
   wire();
   setupController();
   renderAll();
+  for (const tab of _tabs) if (tab.automationRunId) settleRestoredAutomation(tab);
   on('antigravity-panel:show', ({ tabId } = {}) => {
     const idx = _tabs.findIndex((tab) => tab.id === tabId);
     if (!_visible) setVisible(true);
@@ -2478,6 +2525,9 @@ export async function attachAntigravityAutomation(run, { focus = !!run?.focus, i
     if (run.providerSessionId && tab.sessionId !== run.providerSessionId) tab.sessionId = run.providerSessionId;
     if (geminiDir) tab.geminiDir = geminiDir;
   }
+  const projectChanged = !!run.cwd && run.cwd !== tab.project;
+  tab.project = run.cwd || tab.project;
+  if (projectChanged && tab === activeTab()) renderProjectBar();
   const restart = workerRestart(run);
   tab.automationActive = !!restart?.active || running;
   tab.automationOwnerId = nativeLoopWindowId;
@@ -2489,18 +2539,82 @@ export async function attachAntigravityAutomation(run, { focus = !!run?.focus, i
     close: (id) => { rt.elicitations.delete(id); delete rt.elicitDrafts[id]; },
   });
   refreshNeedsYou(tab);
+  tab.automationAttached = true; // the router has it: a restored tab's own check (settleRestoredAutomation) steps aside
   try {
-    trackWorkerEnd(run, {
-      apply: (view) => {
-        if (view) { tab.automationActive = false; tab.running = false; const rt = runtimeOf(tab); rt.notice = { text: T('automationEnded'), severity: 'info' }; scheduleRender(tab); renderTabs(); renderBanner(); renderComposer(); }
-      },
-    });
+    trackWorkerEnd(run, { apply: (view) => showWorkerEnd(tab, view) });
   } catch { /* the end card is optional */ }
+  // The router attaches again on every change of the run; a card drawn earlier (unchanged, so not applied again)
+  // still says the run is over for this tab, whatever the run's own status reads (a warm worker stays `running`).
+  if (tab.workerEnd) { tab.automationActive = false; tab.automationAwaits = false; tab.running = false; }
   saveTabs();
   if (focus) { setVisible(true); switchTab(_tabs.indexOf(tab)); }
   scheduleRender(tab);
   renderBanner();
   return { ok: true, tabId: tab.id };
+}
+
+/**
+ * The end of a worker the Assistant dispatched (ui-worker-end.js), as `tab.workerEnd` says it (never saved: the
+ * router's attach, or a restored tab's check, brings it back). A card means the run is over for this tab: it is no
+ * longer held, and the composer takes a message (which lets the run go and the card with it).
+ */
+function showWorkerEnd(tab, view) {
+  if (!view && !tab.workerEnd) return;
+  tab.workerEnd = view || null;
+  if (view) { tab.automationActive = false; tab.automationAwaits = false; tab.running = false; }
+  if (!_tabs.includes(tab)) return;
+  saveTabs();
+  scheduleRender(tab);
+  renderTabs();
+  renderBanner();
+  renderComposer();
+}
+
+/**
+ * The card in its slot, the transcript's last piece: made again only when what it says changes (the slot's key).
+ * Its button closes the tab with the X's own close (a warm worker that finished its task is completed, one still at
+ * work is stopped; its record stays for the Assistant; the panel hides with its last tab, at once) and then shows the
+ * Assistant session that dispatched the run.
+ */
+function placeWorkerEnd(box, tab) {
+  const slot = box.querySelector(':scope > .agy-worker-end-slot');
+  const view = tab?.workerEnd;
+  if (!slot || !view || slot.firstChild) return;
+  slot.appendChild(buildWorkerEndCard(view, {
+    classes: { card: 'agy-worker-end', title: 'agy-card-title', detail: 'agy-card-text', actions: 'agy-card-actions', button: 'agy-action agy-btn-primary' },
+    onBack: () => leaveWorkerTab(view, () => {
+      const idx = _tabs.indexOf(tab);
+      if (idx >= 0) closeTab(idx);
+    }),
+  }));
+}
+
+/**
+ * A tab restored from storage that a dispatched run held: the router re-attaches live runs and recent ended ones;
+ * one that ended while no window had it (or that the server no longer knows) is let go here, with its end card when
+ * the dispatcher has one, so the tab never stays "held by a dispatched run" for a run that is over.
+ */
+async function settleRestoredAutomation(tab) {
+  const runId = tab?.automationRunId;
+  if (!runId || typeof fetch !== 'function') return;
+  let run = null;
+  try {
+    const response = await fetch(`/api/sidepanel-runs/${encodeURIComponent(runId)}`);
+    if (response.status === 404) run = { runId, missing: true };
+    else if (response.ok) run = (await response.json())?.run || null;
+  } catch { /* the router's own reconcile is the other way back */ }
+  if (!run || !_tabs.includes(tab) || tab.automationRunId !== runId || tab.automationAttached) return;
+  if (!run.missing && (run.status === 'starting' || run.status === 'running' || run.status === 'suspended')) return;
+  tab.automationActive = false;
+  tab.automationAwaits = false;
+  tab.running = false;
+  if (!run.missing) {
+    try { trackWorkerEnd(run, { apply: (view) => showWorkerEnd(tab, view) }); } catch { /* the end card is optional */ }
+  }
+  saveTabs();
+  renderTabs();
+  renderBanner();
+  renderComposer();
 }
 
 function applyAutomationEvent(tab, payload) {

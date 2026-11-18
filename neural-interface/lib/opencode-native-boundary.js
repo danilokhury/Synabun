@@ -16,9 +16,10 @@
 //     A new native attachment still waits for every actual serve's process-bound probe, including startup races.
 //   - A serve that fails its check is stopped: SIGTERM, then SIGKILL after a bounded wait, until the OS confirms its
 //     process and its listener are gone. Until then (and for good when that cannot be confirmed) every native
-//     attachment is refused, and contexts already attached are revoked (their pages closed, the browser
-//     disconnected). A failure that is only a missing answer (a timeout) stops the serve when a native context is
-//     held; otherwise it blocks native attachment and is asked again.
+//     attachment is refused, and contexts already attached are revoked (one page emptied to about:blank, every other
+//     page closed, the browser disconnected: the profile's window is kept, revokeNativeContext). A failure that is only
+//     a missing answer (a timeout) stops the serve when a native context is held; otherwise it blocks native
+//     attachment and is asked again.
 //   - Serves SynaBun did not start (a terminal, another app, an earlier SynaBun), on any port: found by the processes
 //     listening on TCP (lib/opencode-serve-scan.js) whenever a context is attached and every NATIVE_WATCH_MS while one
 //     is. SynaBun holds no password for them, so the probe asks them as `foreign`: loopback only, every route of the
@@ -44,6 +45,8 @@ export const NATIVE_SERVE_VERSIONS = NATIVE_SERVE_KNOWN_GOOD;
 export const NATIVE_SERVE_MIN_VERSION = '2.1.0';
 // How often the OpenCode serves of this computer are looked at again while a native context is attached.
 export const NATIVE_WATCH_MS = 15_000;
+// How long a watch pass waits for a foreign serve that failed only by not answering to be confirmed gone (ensureWatch).
+export const NATIVE_EXIT_GRACE_MS = 3_000;
 
 /** "2.3.0", "v2.3.0", "opencode v2.3.0" → "2.3.0"; null for anything else (a prerelease, four parts, extra words). */
 export function nativeServeVersionOf(version) {
@@ -242,16 +245,44 @@ export async function readServeGeneration(pid, { identity = readProcessIdentityA
   return { pid, startedAt: id.startedAt, executable: exe || null, addresses: socks, key: listenerGenerationKey({ pid, startedAt: id.startedAt, addresses: socks }) };
 }
 
+// Contexts this process revoked: context → { at, why }. server.js reads it when the context's close event comes, so a
+// revocation is never reported as a profile "closed outside SynaBun" and never blocks the runs that worked there.
+const _revoked = new WeakMap();
+
+/** When and why SynaBun revoked `context` ({ at, why }), or null. */
+export function nativeContextRevocation(context) {
+  if (!context || (typeof context !== 'object' && typeof context !== 'function')) return null;
+  return _revoked.get(context) || null;
+}
+
 /**
- * Take a native context's pages away from a serve that failed: every page closed (a page closed in the browser runs no
- * more script), then the browser connection closed, so SynaBun's session must attach again (through the boundary).
- * Bounded; never throws.
+ * Take a native context's pages away from a serve that failed: no page of it runs a site's script any more, then the
+ * browser connection is closed, so SynaBun's session must attach again (through the boundary). Bounded; never throws.
+ *
+ * The browser's window is kept (2026-11-15). Before, every page was closed: closing the last tab of a MoreLogin
+ * profile closes its window, MoreLogin then closes the whole profile (envkit log: close_click + CloseBrowser), and the
+ * runs' next browser call started it again, which spends one of the plan's daily launches. On 2026-11-15 at 21:13:30
+ * one revocation (a foreign OpenCode serve, pid 21487, failed "http-anonymous" while it was exiting) closed P-1 and P-4
+ * 37 ms apart, and one at 21:14:22 (pid 54472, exiting too) closed P-1 again. Now one page is emptied
+ * (about:blank: the page that was there runs no more script) and every other page is closed; only when the emptying
+ * fails is that page closed too (the window may then go: the boundary's protection comes first).
  */
-export async function revokeNativeContext(context, { timeoutMs = 5_000 } = {}) {
+export async function revokeNativeContext(context, { timeoutMs = 5_000, why = null, stepMs = 2_000 } = {}) {
+  try { if (context && typeof context === 'object') _revoked.set(context, { at: Date.now(), why: why ? String(why).slice(0, 500) : null }); } catch { /* not markable */ }
   const work = (async () => {
     let pages = [];
-    try { pages = context?.pages?.() || []; } catch { pages = []; }
-    await Promise.all(pages.map((page) => Promise.resolve().then(() => page.close({ runBeforeUnload: false })).catch(() => {})));
+    try { pages = (context?.pages?.() || []).filter((page) => !page?.isClosed?.()); } catch { pages = []; }
+    const [keep, ...rest] = pages;
+    const close = (page) => Promise.resolve().then(() => page.close({ runBeforeUnload: false })).catch(() => {});
+    // The kept page: emptied within `stepMs`, else (an error, no answer) closed after all.
+    const empty = async (page) => {
+      let timer;
+      const late = new Promise((resolve) => { timer = setTimeout(() => resolve('late'), stepMs); timer.unref?.(); });
+      const done = await Promise.race([Promise.resolve().then(() => page.goto('about:blank')).then(() => 'empty', () => 'failed'), late])
+        .finally(() => clearTimeout(timer));
+      if (done !== 'empty') await close(page);
+    };
+    await Promise.all([...rest.map(close), keep ? empty(keep) : null]);
     try { await context?.browser?.()?.close?.(); } catch { /* already gone */ }
   })();
   await within(work, timeoutMs);
@@ -283,7 +314,7 @@ export function createNativeServeBoundary({ probe = probeOpencodeServe, identify
   scan = scanOpencodeServes, readGeneration = readServeGeneration, portListeners = listPortListenersAsync, pidAlive = pidExists,
   signalPid = (pid, signal) => process.kill(pid, signal), revoke = revokeNativeContext, platform = process.platform,
   now = Date.now, retryMs = 5_000, termMs = 3_000, killMs = 3_000, gonePollMs = 100, refreshMs = 8_000, foreignTtlMs = 5 * 60_000,
-  watchMs = NATIVE_WATCH_MS, preflight = null, log = () => {} } = {}) {
+  watchMs = NATIVE_WATCH_MS, exitGraceMs = NATIVE_EXIT_GRACE_MS, exitPollMs = 250, preflight = null, log = () => {} } = {}) {
   const processes = new Map();
   // Process-local admission evidence: persisted diagnostic verdicts and ordinary runtime passes cannot grant it.
   const builds = new Map(), buildChecks = new Map();
@@ -314,7 +345,7 @@ export function createNativeServeBoundary({ probe = probeOpencodeServe, identify
       if (rec.revoking) continue;
       rec.revoking = true;
       log(`revoking a native browser context: ${why}`);
-      Promise.resolve().then(() => revoke(context)).catch(() => {}).finally(() => rec.release());
+      Promise.resolve().then(() => revoke(context, { why })).catch(() => {}).finally(() => rec.release());
     }
   }
 
@@ -577,13 +608,52 @@ export function createNativeServeBoundary({ probe = probeOpencodeServe, identify
     await within(Promise.allSettled(jobs), refreshMs);
   }
 
+  // ── A foreign serve that is going away ──
+  // On 2026-11-15 two revocations (21:13:30, 21:14:22 local) came from foreign serves that were exiting: the probe got no
+  // answer (pid 21487: "GET /api/session did not answer", its exit handler ran at 21:13:29.03) or a reset (pid 54472:
+  // ECONNRESET, exit handler at 21:14:22.60). A serve that answered nothing gave nothing away; once the OS confirms its
+  // process ended, or that it no longer listens on that port, no page can reach it. So when EVERY offender of a watch
+  // pass is such a failure (a foreign serve, `transient`, nothing `exposed`), the pass waits up to `exitGraceMs` for the
+  // OS to confirm them gone, and revokes only for those that are not. Anything else (an exposed answer, a serve still
+  // being checked, a scan that failed, a serve SynaBun started) is revoked at once, as before.
+  const foreignVerdictOf = (o) => {
+    const serve = (foreign.result?.serves || []).find((s) => s.pid === o.pid);
+    return serve ? foreign.verdicts.get(listenerGenerationKey(serve))?.verdict || null : null;
+  };
+  const settlingForeign = (o) => {
+    if (o?.reason !== 'foreign' || !Number.isInteger(o.pid) || !(o.pid > 0) || !(Number(o.port) > 0)) return false;
+    const v = foreignVerdictOf(o);
+    return !!v && !v.ok && v.transient === true && v.exposed !== true;
+  };
+  async function foreignGone(o) {
+    let alive;
+    try { alive = pidAlive(o.pid); } catch { alive = null; }
+    if (alive === false) return true;
+    let pids;
+    try { pids = await portListeners(Number(o.port)); } catch { pids = null; }
+    return Array.isArray(pids) && !pids.includes(o.pid);
+  }
+  async function withoutExitingForeign(bad) {
+    if (!(exitGraceMs > 0) || !bad.length || !bad.every(settlingForeign)) return bad;
+    const end = now() + exitGraceMs;
+    let left = bad;
+    for (;;) {
+      const gone = await Promise.all(left.map((o) => foreignGone(o).catch(() => false)));
+      const settled = left.filter((_, i) => gone[i]);
+      for (const o of settled) log(`OpenCode serve pid ${o.pid} port ${o.port}, not started by SynaBun, failed "${o.check}" while it was going away and is gone now: no browser context revoked for it`);
+      left = left.filter((_, i) => !gone[i]);
+      if (!left.length || now() >= end) return left;
+      await defaultSleep(Math.max(1, Math.min(exitPollMs, end - now())));
+    }
+  }
+
   function ensureWatch() {
     if (watchTimer || !(watchMs > 0)) return;
     watchTimer = setInterval(() => {
       if (!attachedContexts().length) { clearInterval(watchTimer); watchTimer = null; return; }
-      refresh().then(() => {
+      refresh().then(async () => {
         if (!foreign.result?.ok) { revokeAll('the OpenCode listening processes could not be verified'); return; }
-        const bad = foreignOffenders(new Set());
+        const bad = await withoutExitingForeign(foreignOffenders(new Set()));
         if (bad.length) revokeAll(`an OpenCode serve SynaBun did not start could not be verified (pid ${bad[0].pid || '?'}, port ${bad[0].port || '?'}, check "${bad[0].check || bad[0].reason}")`);
       }).catch(() => {});
     }, watchMs);

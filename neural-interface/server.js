@@ -37,6 +37,7 @@ import { createProviderPanelTerminalAuth, providerLoginSpec, registerProviderPan
 import { claudeLegacyPricing, claudeUsageCostUsd } from './lib/assistant-pricing.js';
 import { HOOK_SCRIPTS, hookDefinitionsForEvent, hookCommandString, hookInstallBlocker, hookInstallPlan, isSynaBunHookCommand, sweepSettingsHooks, ensureHookRoot } from '../lib/claude-hooks.js';
 import { claudeHooksStatus } from './lib/claude-hooks-status.js';
+import { createToolPermissionChoices, reconcileToolPermissions, TOOL_CHOICES_FILE } from './lib/tool-permission-choices.js';
 import { createBrowserStartHandoff, startWaitMs } from './lib/browser-start-handoff.js';
 import { browserRequestDeadline, browserV2Enabled, browserRequestMiddleware, assertBrowserRequestActive, browserActionTimeout, markBrowserActionStarted, runBrowserRequest, cancellableBrowserDelay, measureBrowserPhase, createEngagementScheduler, engagementTargetSelector, isEngagementWriteSelector, isXShortcutPublish, isXScriptedWrite } from './lib/browser-execution.js';
 import { sessionCloseDecision, profileStopDecision, otherSessionOwners } from './lib/browser-session-close.js';
@@ -44,6 +45,7 @@ import { isAutomationBrowserRoute, ownerOnlyCreateFields } from './lib/browser-a
 import { withOnDeviceModelBlocked } from './lib/chromium-on-device-model.js';
 import { browserOwnerId, listedOwners } from './lib/browser-owner.js';
 import { createProfileChoiceStore, resolveProfileRef } from './lib/browser-profile-choices.js';
+import { createProfileFailureStore, namesFailedProfile, profileSwitchBarError, profileSwitchDecision } from './lib/morelogin-profile-failures.js';
 import { scheduleReview, templateReview, sameDigest, scheduleMarked, templateMarked, clearScheduleMark, clearTemplateMark, markRecordsUnreviewed, REVIEW_CHANGED, UNREVIEWED_SOURCES } from './lib/automation-approval.js';
 import { AGENT_PROFILES_KEY, PROFILE_NOT_ALLOWED, normalizeAgentProfiles, agentProfileAllowed, withAgentProfile, profileNotAllowedError, pinUseRefusal, scheduleProfileAuthority, scheduleProfileRefusalText, describeProfile, profileKindLabel } from './lib/morelogin-agent-profiles.js';
 import { createTerminalTokenRegistry, TERMINAL_TOKEN_ENV, TERMINAL_TOKEN_HEADER, BRAIN_CREDENTIAL_HEADER, redactTerminalSecrets, logIdOf } from './lib/terminal-tokens.js';
@@ -194,6 +196,7 @@ import { OPENCODE_MIN_VERSION, basicAuthHeader, checkPrivateOpencodeServer as ch
 import { SERVE_TOKEN_ENV } from './lib/process-identity.js';
 import { commandArgs, createServeRecords } from './lib/opencode-serve-records.js';
 import { opencode2Proxy } from './lib/opencode2-proxy.js';
+import { macScreenshotDir } from './lib/screenshot-location.js';
 import { integrationCredentialIds, integrationsWithCredentials } from './lib/opencode2-translate.js';
 import { OPENCODE_SESSION_TABLES, hasOpencodeSessionTables } from './lib/opencode-db-schema.js';
 import {
@@ -226,7 +229,7 @@ import {
 } from './lib/native-loop-providers.js';
 import { createOpenCodeActivityRelay } from './lib/opencode-worker-activity.js';
 import { browserServePortDenial, browserSessionLossRule } from './lib/browser-tool-policy.js';
-import { createNativeServeBoundary, createVerdictFile, nativeServeCapability, nativeServeReason, nativeServeVersionPolicy, narrowOffenders } from './lib/opencode-native-boundary.js';
+import { createNativeServeBoundary, createVerdictFile, nativeContextRevocation, nativeServeCapability, nativeServeReason, nativeServeVersionPolicy, narrowOffenders } from './lib/opencode-native-boundary.js';
 import { isolatedServeFailure } from './lib/opencode-launch-error.js';
 import { reconcilePreflightProfiles, preflightExcludedPorts, runOpencodeBuildPreflight } from './lib/opencode-build-preflight.js';
 import { binaryIdentity as opencodeBinaryIdentity, binaryKey as opencodeBinaryKey } from './lib/opencode-serve-probe.js';
@@ -244,8 +247,8 @@ const nativeServeBoundary = createNativeServeBoundary({
     for (const envId of nativePreflightProfiles) profiles.set(envId, { envId });
     const remote = [...profiles.values()].filter(p => !moreLogin.isLocalProfileId(p.envId));
     const liveProfiles = remote.length ? await reconcilePreflightProfiles(remote,
-      () => moreLogin.listCompleteProfiles({ savedCfg: cfg, timeout: 5000 }),
-      { log: line => { if (!nativeStaleProfilesLogged.has(line)) { nativeStaleProfilesLogged.add(line); console.warn(`[opencode] ${line}`); } } }) : [];
+      () => moreLogin.listCompleteProfiles({ savedCfg: cfg, firstPageTimeout: 5000 }),
+      { allowUnavailable: true, log: line => { if (!nativeStaleProfilesLogged.has(line)) { nativeStaleProfilesLogged.add(line); console.warn(`[opencode] ${line}`); } } }) : [];
     const excludedPorts = await preflightExcludedPorts(liveProfiles,
       envId => moreLogin.profileDetail(envId, { savedCfg: cfg, timeout: 5000 }));
     const token = opencodeServeRecords.newToken();
@@ -254,7 +257,7 @@ const nativeServeBoundary = createNativeServeBoundary({
       track: (proc, detail) => {
         operations.track(proc, { ...detail, kill: signal => signalOpencodeServeProcess(proc, signal) });
         // A crash must leave the throwaway serve on the same ownership record as every normal serve.
-        trackOpencodeServe(proc, { kind: 'isolated', id: 'build-preflight', port: detail.port, token, boundaryTracked: true });
+        trackOpencodeServe(proc, { kind: 'isolated', id: 'build-preflight', port: detail.port, token, boundaryTracked: true, recordOnAnswer: false });
       },
     });
   },
@@ -442,10 +445,13 @@ import { applyPackagedChildPath, durableEntry, mcpStdioCommand, npmGlobalBinFor,
 import { dataHomeId } from '../lib/desktop-app.js';
 import { pruneExternalTools } from '../lib/external-tools.js';
 import { renderOfflinePage } from './lib/offline-page.js';
+import { logUnexpectedProfileClose } from './lib/browser-close-evidence.js';
+import { etagMatches, memoryListEtag, memoryListStamp } from './lib/memory-list-stamp.js';
+import { parseMemoryPage, pageEtagPart, describePage, isLastPage } from './lib/memory-list-page.js';
 import {
   getDb, closeDb, getDbPath, getEmbedding, getEmbeddingBatch, getEmbeddingDims, warmupEmbeddings,
   encodeVector, decodeVector, cosineSimilarity,
-  searchMemories as dbSearchMemories, getAllMemories, getAllMemoriesWithVectors,
+  searchMemories as dbSearchMemories, getAllMemories, getMemoriesPage, getAllMemoriesWithVectors,
   getMemoryById, getMemoryWithVector, updateMemoryPayload,
   softDeleteMemory, hardDeleteMemory, restoreMemory as dbRestoreMemory,
   getTrashedMemories, purgeTrash, countMemories, getMemoryStats,
@@ -527,6 +533,11 @@ let _greeting = null;
 let _greetingRouter = null;
 let _greetingError = null;
 let _assistantDispatcher = null;
+// The server's one coordination service (lib/coordination/service.js, DATA_HOME/data/coordination.db), once the
+// Assistant's block made and shared it: the dispatcher, the runtime, and later a team scheduler (its `.store` is what
+// lib/teams takes) all use this instance. Kept here so that every stop path closes it (runGracefulShutdown).
+let _assistantCoordination = null;
+let _assistantTeamScheduler = null;
 // The Assistant's settings store (assistant-config.json), once the Assistant is built: Skills Studio's AI drafting reads
 // the owner's saved route for Coding from it (skillDraftDefaultTarget).
 let _assistantConfigStore = null;
@@ -652,6 +663,12 @@ import {
 import { createOpencodeCompletionEngine } from './lib/editor-completion-opencode.js';
 import { createEndpointCompletionEngine } from './lib/editor-completion-endpoint.js';
 import { ownerRouteGuard } from './lib/http-guards.js';
+import { createBridgeStore, createExtensionBridge } from './lib/browser-extension-bridge.js';
+import { createExtensionAdapter, EXTENSION_FOLDER } from './lib/browser-extension-adapter.js';
+import { detectBrowsers } from './lib/browser-default.js';
+import { extensionFolderState, prepareExtensionFolder } from './lib/browser-extension-folder.js';
+import { createExtensionSetup, setupError as extensionSetupError } from './lib/browser-extension-setup.js';
+import { safeError as extensionSafeError } from '../browser-extension/protocol.js';
 import { setUntrustedFileHeaders } from './lib/untrusted-file-headers.js';
 import { BUNDLED_LOGO_FILES, UPLOADED_IMAGE_PATH } from './lib/request-gate.js';
 import { createCloudflaredManager } from './lib/cloudflared/manager.js';
@@ -1070,6 +1087,11 @@ function peerLookupWanted(req) {
 app.use(_pageSession.serviceWorker); // GET /sw.js: a worker that takes itself away, for a browser refused the secret
 app.use(_pageSession.pages);
 app.get('/api/page-session', (req, res) => _pageSession.refresh(req, res)); // PAGE_SECRET_REFRESH_PATH
+// The extension's "Connect your browser" page, opened by the one-button setup in the owner's everyday browser. One of
+// the app's pages (PAGE_SECRET_PATHS): it gets this boot's page secret like any of them, so its reads of the setup's
+// status and its one ticket are the owner's, under the same owner guard; an automation browser and an agent's process
+// never get the secret (lib/page-session.js). The extension's content script runs on this exact origin and path only.
+app.get('/extension-setup', (_req, res) => { res.setHeader('Cache-Control', 'no-store'); res.sendFile(join(__dirname, 'public', 'extension-setup.html')); });
 // Retired 2D bookmarks and explicit variant links always enter the 3D page. Keep their other URL state.
 app.get(['/', '/index.html', '/index2d.html'], (req, res, next) => {
   const target = normalizeViewUrl(req.originalUrl);
@@ -1453,10 +1475,39 @@ app.get('/api/memories', async (req, res) => {
     // metadata columns dropped. ~4x smaller JSON for large graphs.
     const slim = req.query.fields === 'graph';
     const SLIM_CONTENT_CHARS = 500;
+    // One page of the list (lib/memory-list-page.js), only without links: `offset` / `limit`. Without `limit`,
+    // every memory, as always (the same body and the same ETag).
+    const page = includeLinks ? null : parseMemoryPage(req.query);
+    if (page?.error) return res.status(400).json({ error: page.error });
+
+    // The list without links (the page's first load): a page that still holds this very answer is told
+    // so before a row is read (lib/memory-list-stamp.js). 32 MB were read, built and serialised on every
+    // load only to find out, from the finished body, that nothing had changed.
+    let listVersion = null;
+    if (!includeLinks) {
+      const ocBridgeNow = loadBridgeConfig('openclaw');
+      if (_openclawNodes !== _openclawNodesSeen) { _openclawNodesSeen = _openclawNodes; _openclawNodesRev += 1; }
+      let listStamp = null;
+      try { listStamp = memoryListStamp(getDb()); } catch { /* no stamp: the full answer, as before */ }
+      const listParts = [
+        listStamp, slim ? 'graph' : 'full', SLIM_CONTENT_CHARS,
+        ocBridgeNow?.enabled ? `openclaw:${_openclawNodesRev}:${_openclawNodes.length}` : 'openclaw:off',
+      ];
+      listVersion = memoryListEtag(listParts);
+      // A page's ETag is the list's plus the page's place: an unchanged list is a 304 page by page.
+      const listEtag = page ? memoryListEtag([...listParts, pageEtagPart(page)]) : listVersion;
+      if (listEtag) {
+        res.set('ETag', listEtag);
+        res.set('Cache-Control', 'no-cache');
+        if (etagMatches(req.headers['if-none-match'], listEtag)) return res.status(304).end();
+      }
+    }
 
     const cachedLinks = includeLinks ? getValidLinkCache() : null;
     const needVectors = includeLinks && !cachedLinks;
-    const allPoints = needVectors ? getAllMemoriesWithVectors() : getAllMemories();
+    // A page reads its own rows only (and how many there are); the whole list reads them all.
+    const pageRead = page ? getMemoriesPage(page) : null;
+    const allPoints = pageRead ? pageRead.rows : (needVectors ? getAllMemoriesWithVectors() : getAllMemories());
 
     // Build nodes
     const nodes = allPoints.map(p => ({
@@ -1465,9 +1516,9 @@ app.get('/api/memories', async (req, res) => {
       vector: p.vector || null,
     }));
 
-    // Merge OpenClaw bridge nodes
+    // Merge OpenClaw bridge nodes (after the stored memories: in a paged list, on the last page)
     const ocBridge = loadBridgeConfig('openclaw');
-    if (ocBridge?.enabled && _openclawNodes.length > 0) {
+    if (ocBridge?.enabled && _openclawNodes.length > 0 && (!page || isLastPage({ ...page, total: pageRead.total }))) {
       for (const ocNode of _openclawNodes) {
         nodes.push({ ...ocNode, vector: null });
       }
@@ -1504,7 +1555,9 @@ app.get('/api/memories', async (req, res) => {
       return { ...rest, payload: slimPayload };
     });
 
-    res.json({ nodes: clientNodes, links, totalVectors: allPoints.length, openclawNodes: ocBridge?.enabled ? _openclawNodes.length : 0 });
+    const body = { nodes: clientNodes, links, totalVectors: pageRead ? pageRead.total : allPoints.length, openclawNodes: ocBridge?.enabled ? _openclawNodes.length : 0 };
+    if (page) body.page = describePage({ ...page, total: pageRead.total, count: clientNodes.length, version: listVersion });
+    res.json(body);
   } catch (err) {
     console.error('GET /api/memories error:', err.message);
     res.status(500).json({ error: err.message });
@@ -2487,6 +2540,8 @@ async function runGracefulShutdown(reason) {
   // Assistant's Claude Code workers that can continue are suspended (they resume
   // on the next start, lib/assistant-dispatch.js), and the runtime keeps them;
   // every other run is stopped. Either way each worker's CLI is ended now.
+  // Stop team work on every exit path before the workers and the shared store close.
+  try { await _assistantTeamScheduler?.shutdown(); } catch (err) { console.warn('  team scheduler stop err:', err?.message); }
   let keepRuns = [];
   try { keepRuns = _assistantDispatcher?.suspendForShutdown?.(reason) || []; } catch (err) { console.warn('  assistant suspend err:', err?.message); }
   try { await _nativeLoopRuntime?.shutdown(reason, { keep: keepRuns }); } catch (err) { console.warn('  native loop stop err:', err?.message); }
@@ -2552,6 +2607,10 @@ async function runGracefulShutdown(reason) {
   // The judge backfill flushes its last counters and releases its lease so
   // the respawned server resumes immediately instead of waiting out the lease.
   try { stopJudgeBackfill(); } catch {}
+  // The coordination store (agent events, the Assistant's mailbox, the follow-up outbox): closed once the workers
+  // are stopped or suspended and what that changed is recorded. Every open wait is answered, the write-ahead log is
+  // folded into the file. Signals and the restart/update/shutdown routes all use this teardown.
+  try { _assistantCoordination?.close(); } catch (err) { console.warn('  coordination close err:', err?.message); }
   try { closeDb(); } catch {}
   try { closeBlobStore(); } catch {}
 
@@ -4152,9 +4211,10 @@ async function resolveOpenCodeMcpDirectory(entry, sessionIds) {
 
 // ── Multi-account Codex (per-tab CODEX_HOME) ────────────────────────────────
 // Each ChatGPT account gets its own CODEX_HOME directory holding its own
-// auth.json + sessions/ + state DB, while config.toml and prompts/ are
-// symlinked back to the canonical ~/.codex so model/MCP/tool-permission config
-// and custom prompts stay shared. The "default" account IS ~/.codex itself.
+// auth.json + sessions/ + state DB, while config.toml, AGENTS.md and prompts/ are
+// linked back to the canonical ~/.codex so model/MCP/tool-permission config
+// and custom prompts stay shared (how, on each system: lib/claude-account-links.js).
+// The "default" account IS ~/.codex itself.
 const CODEX_DEFAULT_HOME = resolve(process.env.CODEX_HOME || resolve(getHomePath(), '.codex'));
 const CODEX_ACCOUNTS_ROOT = resolve(getHomePath(), '.codex-accounts');
 
@@ -4486,6 +4546,13 @@ function _codexAccounts() {
     });
   }
   return _codexAccountsInstance;
+}
+
+// Default's config.toml was written (by SynaBun, or by Codex for a panel's settings): every named account
+// reads the same again. Only where an account shares it by a hard link or a copy (Windows without symbolic
+// links, lib/claude-account-links.js): a symbolic link has nothing to bring in step. Never stops a write.
+function codexSharedFilesChanged() {
+  try { _codexAccounts().syncShared?.(); } catch { /* the next launch of an account puts it in step */ }
 }
 
 // The registry rows (id, label, home, …) for readers that only need where an account lives.
@@ -7435,6 +7502,8 @@ CRITICAL — When you need clarification during planning:
           const nextConfig = validateCodexConfigRequirements(supported, await readCodexRequirements());
           const edits = buildCodexConfigEdits(nextConfig);
           await request('config/batchWrite', { edits, reloadUserConfig: true }, 10000);
+          // Codex wrote this account's config.toml as a new file: Default and the other accounts get it too.
+          try { codexSharedFilesChanged(); } catch { /* never stops a save */ }
           const config = await readConfigState(msg.cwd || PACKAGE_ROOT);
           codexContextModels = [];
           // config.toml is every account's (shared): their kept model lists are read again.
@@ -8416,7 +8485,7 @@ function noteOpencodeServePort(port, delta) {
   if (next > 0) _opencodeServePortCounts.set(p, next); else _opencodeServePortCounts.delete(p);
 }
 
-function trackOpencodeServe(proc, { kind, id = null, port, token, nativeWebSocketSafe = false, nativeServe = null, boundaryTracked = false }) {
+function trackOpencodeServe(proc, { kind, id = null, port, token, nativeWebSocketSafe = false, nativeServe = null, boundaryTracked = false, recordOnAnswer = true }) {
   // A serve that fails its runtime check while a native context is attached is stopped (its pages could reach it).
   // A serve that fails its runtime check is stopped by the boundary: SIGTERM, then SIGKILL, until the OS confirms
   // its process and its listener are gone (lib/opencode-native-boundary.js terminate).
@@ -8432,7 +8501,10 @@ function trackOpencodeServe(proc, { kind, id = null, port, token, nativeWebSocke
     // A spawn that failed (no pid) may never exit; a failed kill leaves the process running.
     proc.once?.('error', () => { if (!proc.pid || exited()) release(); });
   }
-  const spawned = pid ? opencodeServeRecords.record({ kind, id, port, pid, token }).catch(() => null) : Promise.resolve(null);
+  // Right after the spawn the process may not show its environment yet (its token): a miss here is expected when
+  // answering() records it again once it answers, and only that second try says why (recordOnAnswer: the caller
+  // calls answering(); the build pre-flight does not, so its one try says it).
+  const spawned = pid ? opencodeServeRecords.record({ kind, id, port, pid, token, quiet: recordOnAnswer }).catch(() => null) : Promise.resolve(null);
   let started = Promise.resolve(null);
   const forget = () => {
     spawned.then((record) => { if (record) opencodeServeRecords.remove(record); }).catch(() => {});
@@ -8952,6 +9024,11 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, c
     const wanted = () => _ocpIsoServes.get(termId) === entry;
     let check = null;
     let started = 'cancelled';
+    // Validate this run's pin once, before taking the global start lock. An offline API must not delay every
+    // other start, nor be listed again for each port collision. Later live pages retain the normal 15s budget.
+    const pin = runMoreLoginPin(termId);
+    if (pin?.envId && !moreLogin.isLocalProfileId(pin.envId)) await reconcilePreflightProfiles([],
+      () => moreLogin.listCompleteProfiles({ ..._moreLoginOpts(), firstPageTimeout: 5000 }), { requested: [pin.envId], allowUnavailable: true });
     // Another server that takes the port while this serve boots is a start collision: it is left running (and never
     // put on record), this start's own process is ended, and the start tries the next free port (three at most).
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -8962,9 +9039,6 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, c
         const token = opencodeServeRecords.newToken();
         // A protected worker's serve (hidePassword): no password variable in any environment, its own shell's
         // included; the serve prints the password it made, read here from its output (and never logged).
-        const pin = runMoreLoginPin(termId);
-        if (pin?.envId && !moreLogin.isLocalProfileId(pin.envId)) await reconcilePreflightProfiles([],
-          () => moreLogin.listCompleteProfiles(_moreLoginOpts()), { requested: [pin.envId] });
         const launch = await opencodeServeLaunch(port, { env: { ...isolatedEnv, [SERVE_TOKEN_ENV]: token }, passwordFrom: 'stdout' });
         const readPassword = launch.passwordFrom === 'stdout' ? servePasswordReader() : null;
         // A guarded worker's serve (macOS): run the whole serve tree under the run's Seatbelt profile, so its shell
@@ -13868,6 +13942,10 @@ function parseDailyLogs(memoryDir) {
 // --- OpenClaw Bridge: In-Memory Store ---
 
 let _openclawNodes = [];
+// The list above is replaced whole when the bridge syncs: which one GET /api/memories last saw, and how
+// many times it has changed (part of that route's ETag).
+let _openclawNodesSeen = null;
+let _openclawNodesRev = 0;
 let _openclawCategories = [];
 let _openclawLastSync = null;
 
@@ -14201,6 +14279,7 @@ function writeLoopTemplates(templates) {
   for (const [path, fileTemplates] of byPath) {
     writeLoopTemplateFile(path, fileTemplates, formatByPath.get(path) || 'array');
   }
+  if (!_scheduleFilesWatcher) broadcastSync({ type: 'assistant:automation-records-changed', templates: true });
 }
 
 function readLoopFolders() {
@@ -14900,7 +14979,7 @@ app.post('/api/loop/launch', async (req, res) => {
     const loopTerminalToken = nativeRuntime ? null : _terminalTokens.issue(terminalSessionId);
     if (loopTerminalToken) issuedLoopTerminal = terminalSessionId;
     // The launch's MoreLogin profile (decided above) becomes the run's pin, as a schedule's does. None: the default
-    // browser of Settings → Browser, as before.
+    // AI browser (Settings → Connected tools → MoreLogin), as before.
     if (launchMoreLogin) {
       pinRunMoreLoginProfile(terminalSessionId, launchMoreLogin.moreloginEnvId, launchMoreLogin.moreloginEnvName, launchMoreLogin.moreloginEnvBy);
       pinnedLoopTerminal = terminalSessionId;
@@ -15293,6 +15372,9 @@ app.post('/api/loop/recover-browser', async (req, res) => {
     // token, so naming a run (or routing as it) moves nothing without it (403 TERMINAL_TOKEN_REQUIRED / _INVALID).
     const who = browserCaller(req);
     if (!who.accepted) return refuseBrowserCaller(res, who);
+    if (loadBrowserConfig().connectMode === 'extension' && !runMoreLoginPin(who.id) && who.status !== 'verified') {
+      return res.status(403).json(extensionSafeError({ code: 'AUTH_FAILED' }));
+    }
     const caller = browserOwnerId(who.id);
     if (!caller) {
       return res.status(403).json({ error: 'A browser recovery says who asks (X-Synabun-Terminal, sent by SynaBun\'s MCP on every request); this request did not.', code: 'TERMINAL_REQUIRED' });
@@ -15320,6 +15402,11 @@ app.post('/api/loop/recover-browser', async (req, res) => {
       return res.json({ ok: true, sessionId, tabId, adopted: true });
     }
     const fresh = req.body?.reason === 'create';
+    // A create that takes over one of the owner's tabs in the everyday browser (extension mode only).
+    const takeOverTab = fresh && typeof req.body?.takeOverTab === 'string' && loadBrowserConfig().connectMode === 'extension' ? req.body.takeOverTab : null;
+    if (loadBrowserConfig().connectMode === 'extension' && !runMoreLoginPin(who.id) && !fresh) {
+      return res.status(410).json(extensionSafeError({ code: 'TAB_CLOSED' }));
+    }
     const lost = req.body?.lost && typeof req.body.lost === 'object' ? req.body.lost : null;
     if (named && !fresh) {
       const current = liveAutomationRoute(named, { files: true });
@@ -15328,7 +15415,10 @@ app.post('/api/loop/recover-browser', async (req, res) => {
       }
     }
     const start = async () => {
-      const acq = await acquireLoopBrowserAndTab({ terminalSessionId: owner, logTag: fresh ? 'create:browser' : 'recover:browser' });
+      const acq = await acquireLoopBrowserAndTab({ terminalSessionId: owner, logTag: fresh ? 'create:browser' : 'recover:browser', takeOverTab });
+      // Its profile was closed outside SynaBun under it and is not started again for it: the loop ends when its turn
+      // ends, never asking again iteration after iteration.
+      if (acq.code === 'MORELOGIN_CLOSED_OUTSIDE') finishBlockedLoop(owner, acq);
       if (acq.error) throw Object.assign(new Error(acq.error), { acquisition: acq });
       // The run ended while its tab was being opened (a cold start): the tab goes at once, never left to a dead run.
       if (named && automationRunState(named, { files: true }) === 'ended') {
@@ -15342,7 +15432,7 @@ app.post('/api/loop/recover-browser', async (req, res) => {
       if (named) noteAutomationBrowserRoute(named, acq, fresh ? 'created' : 'recovered');
       return acq;
     };
-    const outcome = await browserStartHandoff.run(`run:${owner}`, start, {
+    const outcome = await browserStartHandoff.run(takeOverTab ? `run:${owner}:take:${takeOverTab}` : `run:${owner}`, start, {
       gone: browserCallerGone(req, res),
       waitMs: startWaitMs(browserRequestDeadline(req)),
       alive: (acq) => startedTabAlive(acq.browserSessionId, acq.browserTabId, owner),
@@ -15354,10 +15444,56 @@ app.post('/api/loop/recover-browser', async (req, res) => {
     res.json({ ok: true, sessionId: acq.browserSessionId, tabId: acq.browserTabId || null, ...(outcome.from !== 'started' && { handedOver: outcome.from }) });
   } catch (err) {
     const acq = err?.acquisition;
-    if (acq) return res.status(500).json({ error: acq.error, ...(acq.code ? { code: acq.code, offenders: acq.offenders } : {}) });
+    // A run blocked by a close outside SynaBun: 409 (nothing is wrong with the server, the run is refused on purpose).
+    if (acq?.code === 'MORELOGIN_CLOSED_OUTSIDE') {
+      return res.status(409).json(closedOutsideAnswer(acq));
+    }
+    if (acq) return res.status(500).json({ error: acq.error, ...(acq.code ? { code: acq.code, offenders: acq.offenders } : {}), ...(acq.needsUser ? { needsUser: true } : {}) });
     res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
 });
+
+/**
+ * A loop whose browser was refused because its MoreLogin profile was closed outside SynaBun under it
+ * (lib/morelogin-outside-close.js): it ends when its current turn ends, stoppedReason 'browser_closed_outside', in
+ * place of starting its next iteration and asking again. A native loop through NativeLoopRuntime.finishAfterTurn
+ * (the turn under way reports the refusal it got); a terminal loop's state file is marked inactive the way a PTY
+ * exit marks it, which its driver reads before the next iteration. A dispatched task run is left to its brain (it
+ * gets the refusal, needsUser). Once per run. Returns whether the loop was set to end.
+ */
+const _blockedLoopsEnded = new Set();
+function finishBlockedLoop(ownerKey, acq = null) {
+  if (!ownerKey || _blockedLoopsEnded.has(ownerKey)) return false;
+  let ended = false;
+  try {
+    if (_nativeLoopRuntime?.isAlive?.(ownerKey)) {
+      ended = !!_nativeLoopRuntime.finishAfterTurn?.(ownerKey, 'browser_closed_outside');
+    } else {
+      const loopFile = findLoopFileForTerminal(ownerKey);
+      if (loopFile) {
+        const loopPath = resolve(LOOP_DIR, loopFile);
+        const ls = JSON.parse(readFileSync(loopPath, 'utf-8'));
+        if (ls.active && ls.runtimeType !== 'native' && ls.driverType !== 'native' && ls.runMode !== 'task') {
+          ls.active = false;
+          ls.pending = false;
+          ls.completedAt = new Date().toISOString();
+          ls.stoppedReason = 'browser_closed_outside';
+          writeFileSync(loopPath, JSON.stringify(ls, null, 2));
+          if (ls.driverType === 'exec' && ls.scheduledBy) persistExecScheduleOutcome(ls, 'stopped', 'browser_closed_outside');
+          ended = true;
+        }
+      }
+    }
+  } catch (err) {
+    loopLog(ownerKey, 'browser:blocked', 'could not set the loop to end after its turn', { err: err?.message || String(err) });
+  }
+  if (ended) {
+    if (_blockedLoopsEnded.size > 2000) _blockedLoopsEnded.delete(_blockedLoopsEnded.values().next().value);
+    _blockedLoopsEnded.add(ownerKey);
+    loopLog(ownerKey, 'browser:blocked', 'the loop ends when this turn ends: its MoreLogin profile was closed outside SynaBun and is not started again for it', { closedAt: acq?.closedAt || null });
+  }
+  return ended;
+}
 
 // GET /api/loop/history — no history keeping, always empty
 app.get('/api/loop/history', (_req, res) => { res.json([]); });
@@ -15419,8 +15555,10 @@ function _armScheduleFilesWatcher() {
   if (_scheduleFilesWatcher) return true;
   try {
     const w = fsWatch(LOOP_DATA_DIR, (eventType, filename) => {
-      if (filename && !LOOP_SCHEDULES_PATTERN.test(filename)) return;
-      _scheduleFilesCache = null;
+      const schedules = !filename || LOOP_SCHEDULES_PATTERN.test(filename);
+      const templates = !filename || LOOP_TEMPLATES_PATTERN.test(filename);
+      if (schedules) _scheduleFilesCache = null;
+      if (schedules || templates) broadcastSync({ type: 'assistant:automation-records-changed', schedules, templates });
     });
     w.unref?.();
     w.on('error', () => {
@@ -15538,6 +15676,7 @@ function saveScheduleStore(store) {
   for (const [path, schedules] of byPath) {
     writeLoopScheduleFile(path, schedules, path === LOOP_SCHEDULES_PATH ? groups : [], formatByPath.get(path) || 'object', files);
   }
+  if (!_scheduleFilesWatcher) broadcastSync({ type: 'assistant:automation-records-changed', schedules: true });
 }
 
 function loadSchedules() {
@@ -15584,7 +15723,7 @@ function applyScheduleLaunchOverrides(schedule, source) {
 }
 
 // A schedule's or a schedule group's own MoreLogin profile (optional). Empty / null clears it: the run then opens the
-// default browser of Settings → Browser, as every record without the field does. The name is kept for display only.
+// default AI browser (Settings → Connected tools → MoreLogin), as every record without the field does. The name is kept for display only.
 // At launch a schedule's own profile wins, then its group's (scheduleMoreLoginProfile); nothing is copied from a group
 // onto its schedules.
 function applyScheduleMoreLoginProfile(schedule, source) {
@@ -16131,8 +16270,9 @@ async function launchScheduledLoop(schedule) {
       console.log(`[schedule] "${schedule.name}" runs in ${describeMoreLoginPin(runMoreLoginPin(terminalSessionId))}${scheduledMoreLogin.source === 'group' ? ' (its group\'s profile)' : ''}`);
     }
     if (scheduledUsesBrowser) {
-      // Same serialized shared-browser + dedicated-tab acquisition as manual loops.
-      const acq = await acquireLoopBrowserAndTab({ terminalSessionId, logTag: 'schedule:browser' });
+      // Same serialized shared-browser + dedicated-tab acquisition as manual loops. A new firing may start a profile
+      // closed outside SynaBun (lib/morelogin-outside-close.js): that is what the schedule is for.
+      const acq = await acquireLoopBrowserAndTab({ terminalSessionId, logTag: 'schedule:browser', scheduledFiring: true });
       if (acq.error) {
         throw new Error(acq.error);
       }
@@ -20250,7 +20390,7 @@ function moreLoginAutomationProfileCheck(req, envId) {
 function refuseDefaultBrowserChange(res) {
   return res.status(403).json({
     ok: false, code: 'MORELOGIN_DEFAULT_OWNER_ONLY',
-    error: 'The default AI browser (the default MoreLogin profile and the browser connect mode) is the owner\'s choice, made in SynaBun → Settings → Browser; no agent, run, session or program can change it, whatever the profile. Nothing was changed. To work in another MoreLogin profile yourself, call morelogin with action "use" (envId or name): only your own browser tools move there. Tell the user: if every automation should use that profile by default, set it in Settings → Browser.',
+    error: 'The default AI browser (the default MoreLogin profile and the browser connect mode) is the owner\'s choice, made in SynaBun → Settings → Connected tools → MoreLogin (Default AI browser). No agent, run, session or program can change it, whatever the profile. Nothing was changed. To work in another MoreLogin profile yourself, call morelogin with action "use" (envId or name): only your own browser tools move there. Tell the user: if every automation should use that profile by default, set it in Settings → Connected tools → MoreLogin (Default AI browser).',
   });
 }
 /** Whether a write of the browser settings would change the default (connect mode or default profile) and its caller may not. */
@@ -20273,21 +20413,21 @@ function moreLoginGate(req, res, next) {
   if (browserOwnerPageOnly(req)) return next();
   if (caller.id && MORELOGIN_AUTOMATION_ROUTES.has(key)) {
     if (MORELOGIN_VERIFIED_ROUTES.has(key) && caller.status !== 'verified') {
-      return res.status(403).json({ ok: false, code: 'VERIFIED_RUN_REQUIRED', error: `Starting a MoreLogin profile, working in one, or making one the default AI browser is for a session that proves its id: a run SynaBun started (its terminal token), or a CLI window's own session of SynaBun's HTTP MCP (working in a profile only), or the owner in Settings → Browser. ${String(caller.id).slice(0, 128)} is an id SynaBun gave no proof (a stdio MCP server's own id, for one).` });
+      return res.status(403).json({ ok: false, code: 'VERIFIED_RUN_REQUIRED', error: `Starting a MoreLogin profile, working in one, or making one the default AI browser is for a session that proves its id: a run SynaBun started (its terminal token), or a CLI window's own session of SynaBun's HTTP MCP (working in a profile only), or the owner in the MoreLogin tab in Settings. ${String(caller.id).slice(0, 128)} is an id SynaBun gave no proof (a stdio MCP server's own id, for one).` });
     }
     // An id that holds a profile pin and was not proven by this request reaches no MoreLogin route (finding 2). A pin
     // off the owner's list does not close these routes: the session needs status, list and `use` to go back.
     const pinRefused = callerProfileRefusal(caller);
     if (pinRefused && pinRefused.code === 'PROFILE_PIN_UNVERIFIED') return res.status(pinRefused.status).json({ ok: false, code: pinRefused.code, error: pinRefused.error });
     if (MORELOGIN_RUN_ONLY_ROUTES.has(key) && isMcpSessionOwner(caller.id)) {
-      return res.status(403).json({ ok: false, code: 'VERIFIED_RUN_REQUIRED', error: 'Starting a MoreLogin profile by itself or changing the default AI browser is for a run SynaBun started, or the owner in Settings → Browser. This session can work in a profile of its own: call morelogin with action "use" (the profile is started by your next browser call).' });
+      return res.status(403).json({ ok: false, code: 'VERIFIED_RUN_REQUIRED', error: 'Starting a MoreLogin profile by itself or changing the default AI browser is for a run SynaBun started, or the owner in Settings → Connected tools → MoreLogin (Default AI browser). This session can work in a profile of its own: call morelogin with action "use" (the profile is started by your next browser call).' });
     }
     return next();
   }
   let guest = false;
   try { guest = !!isGuestRequest(req); } catch { guest = true; }
   if (caller.id || guest) {
-    return res.status(403).json({ ok: false, code: 'OWNER_ROUTE', error: 'This MoreLogin route is the owner\'s (SynaBun\'s page, Settings → Browser).' });
+    return res.status(403).json({ ok: false, code: 'OWNER_ROUTE', error: 'This MoreLogin route is the owner\'s (SynaBun\'s page, Settings → Connected tools → MoreLogin).' });
   }
   if (caller.automation) {
     return res.status(403).json({ ok: false, code: 'TERMINAL_REQUIRED', error: 'An automation says which run it is (X-Synabun-Terminal, sent by SynaBun\'s MCP on every request); an agent header alone is not the owner\'s page.' });
@@ -20362,7 +20502,7 @@ app.delete('/api/morelogin/local-profiles/:id', async (req, res) => {
     const id = String(req.params.id);
     const cfg = loadBrowserConfig();
     if (cfg.connectMode === 'morelogin' && String(cfg.moreloginEnvId || '') === id) {
-      return res.status(409).json({ ok: false, code: 'LOCAL_PROFILE_IS_DEFAULT', error: 'This local profile is the default AI browser: choose another default first (Settings → Browser, or "Use as default" on another profile), then delete it.' });
+      return res.status(409).json({ ok: false, code: 'LOCAL_PROFILE_IS_DEFAULT', error: 'This local profile is the default AI browser: choose another default first (Settings → Connected tools → MoreLogin (Default AI browser), or "Use as default" on another profile), then delete it.' });
     }
     const removed = await moreLogin.deleteLocalProfile(id);
     _moreLoginStartedBy.delete(id);
@@ -20395,6 +20535,13 @@ app.get('/api/morelogin/status', async (req, res) => {
       defaultEnvId: cfg.moreloginEnvId || null,
       // SynaBun's own local profiles (lib/local-profiles.js): `installed`, `running` and `profileCount` are MoreLogin's.
       localProfileCount: moreLogin.localProfileCount(),
+      // Profiles MoreLogin refused to start for its plan's daily limit, until its day resets (lib/morelogin-start-cooldown.js):
+      // meanwhile SynaBun does not ask MoreLogin to start them. [{ envId, name, resetAt, resetLocal, since, apiCode }]
+      startCooldowns: moreLoginStartCooldowns(),
+      // Profiles closed outside SynaBun (lib/morelogin-outside-close.js): no automatic path starts them again until the
+      // owner starts them, a new scheduled run fires, or MoreLogin's daily reset (`holdUntil`).
+      // [{ envId, name, closedAt, closedLocal, holdUntil, holdUntilLocal, runs }] (the orphaned runs counted, not listed).
+      closedOutside: moreLoginClosedOutside(),
       // The profile the calling session's own browser tools work in (POST /api/morelogin/use, or the profile its run
       // was launched with), when that is not the default.
       // Only for a caller this request proved (finding 2): an id merely said learns nothing about a pin.
@@ -20467,6 +20614,7 @@ app.get('/api/morelogin/profiles', async (req, res) => {
     // listed, and `moreloginError` says why MoreLogin's are missing.
     const rows = await moreLogin.listProfiles({ ..._moreLoginOpts(), complete: true });
     const listed = await withMoreLoginBrowsers(rows, _moreLoginOpts());
+    rememberMoreLoginEnvNames(rows);
     // `agentsMayChoose`: on the owner's list (the Settings toggle, and what the `morelogin` tool's "list" shows).
     const allowed = moreLoginAgentProfiles();
     res.json({
@@ -20507,9 +20655,33 @@ app.post('/api/morelogin/start', async (req, res) => {
     // Only that may end a running local profile to start it again (lib/local-profiles.js startNow); an automation
     // gets LOCAL_PROFILE_RESTART_NEEDED / LOCAL_PROFILE_BUSY by name below, and no browser.
     const who = browserCaller(req);
+    // A profile closed outside SynaBun (lib/morelogin-outside-close.js) is not started here for an automation (a run's
+    // or an agent's morelogin "start") or anybody else; the owner's own Start lifts the mark (it starts the profile).
+    const startOwner = who.automation && who.id ? browserOwnerId(who.id) : null;
+    // A run whose own profile failed in this run does not start another one either (each start spends one of
+    // MoreLogin's daily launches, and it may not move there: lib/morelogin-profile-failures.js). A start of the failed
+    // profile itself is how it is fixed, and goes on. The owner's Start is never asked.
+    const failedBar = startOwner ? runProfileSwitchRefusal(startOwner, { envId: String(envId), name: _moreLoginEnvNames.get(String(envId)) || null, resolved: true }, { action: 'start' }) : null;
+    if (failedBar) return refuseProfileSwitchAfterFailure(res, failedBar);
     nativePreflightProfiles.add(String(envId));
-    const out = await moreLogin.startProfile(envId, { ..._moreLoginOpts(), owner: !who.automation && moreLoginOwnerPageCall(req) });
+    // The run's own profile (its pin, else the MoreLogin default) that fails to start here bars it from switching, as a
+    // failed browser start does (acquireSharedBrowserTab).
+    const ownProfile = startOwner ? runEffectiveProfile(startOwner) : null;
+    let out;
+    try {
+      out = await moreLogin.startProfile(envId, { ..._moreLoginOpts(), owner: !who.automation && moreLoginOwnerPageCall(req),
+        ...(startOwner ? { refuseStart: moreLoginStartGuardFor(startOwner) } : {}), profileLabel: moreLoginProfileLabel });
+    } catch (err) {
+      if (ownProfile && ownProfile.envId === String(envId)) noteRunProfileFailure(startOwner, ownProfile, err);
+      throw err;
+    }
+    // Running now: a close outside SynaBun is over. Started (by the owner, or by an automation the mark did not hold),
+    // or found running by the owner. An automation that only found it running has not attached to it yet: its browser
+    // call clears the mark when it attaches (a profile MoreLogin still lists while it closes must not lose it here).
+    if (!out.alreadyRunning || !who.automation) { try { moreLogin.clearOutsideClose(String(envId)); } catch { /* nothing held */ } }
     if (!who.automation) return res.json({ ok: true, ...out });
+    // Already running (MoreLogin's status said so, nothing was started): the profile is not the caller's to stop.
+    if (out.alreadyRunning) return res.json({ ok: true, started: false, alreadyRunning: true, envId: String(envId) });
     // An automation's start: the profile is the caller's to stop later (POST /api/morelogin/stop), and the answer
     // carries no CDP port (a raw debugging connection drives the profile's browser past every check SynaBun makes;
     // SynaBun's browser tools reach the caller's own profile without it: POST /api/morelogin/use).
@@ -20521,7 +20693,8 @@ app.post('/api/morelogin/start', async (req, res) => {
     }
     res.json({ ok: true, started: true, envId: String(envId) });
   } catch (err) {
-    res.status(err.status || 500).json({ ok: false, error: err.message, ...(err.code ? { code: err.code } : {}) });
+    res.status(err.status || 500).json({ ok: false, error: err.message, ...(err.code ? { code: err.code } : {}),
+      ...(err.needsUser ? { needsUser: true } : {}), ...(err.closedAt ? { closedAt: err.closedAt } : {}), ...(err.holdUntil ? { holdUntil: err.holdUntil } : {}) });
   }
 });
 
@@ -20540,7 +20713,7 @@ app.post('/api/morelogin/stop', async (req, res) => {
     const decision = profileStopDecision(browserSessions, envId, caller, { startedBy: (id) => _moreLoginStartedBy.get(id) || [] });
     if (decision.action === 'refuse' && decision.reason === 'not_owned') {
       console.warn(`[morelogin] stop of env ${envId} by ${logOwnerId(caller)} refused: it holds nothing on that profile`);
-      return res.status(403).json({ ok: false, code: 'NOT_OWNED', error: `MoreLogin profile ${envId} was not stopped: you did not start it and have no tab in it. Stop only a profile you started; the owner stops the others in Settings → Browser.` });
+      return res.status(403).json({ ok: false, code: 'NOT_OWNED', error: `MoreLogin profile ${envId} was not stopped: you did not start it and have no tab in it. Stop only a profile you started; the owner stops the others in the MoreLogin tab in Settings.` });
     }
     if (decision.action === 'refuse') {
       console.warn(`[morelogin] stop of env ${envId} by ${logOwnerId(caller)} refused: ${decision.others.length} other automation(s) work in it (${decision.others.map(logOwnerId).join(', ')})`);
@@ -20549,6 +20722,8 @@ app.post('/api/morelogin/stop', async (req, res) => {
         error: `MoreLogin profile ${envId} was not stopped: ${decision.others.length} other automation(s) have a tab in it, and stopping the profile would close their tabs. To start over in a fresh tab, close only your own (browser_session close, which keeps a shared session for the others); to stop the profile, ask the owner or wait until the other runs end.`,
       });
     }
+    // SynaBun's own stop: the sessions in that profile see their browser go, and that is not a close by someone else.
+    _moreLoginStoppedBySynaBun.set(String(envId), Date.now());
     await moreLogin.stopProfile(envId, _moreLoginOpts());
     _moreLoginStartedBy.delete(String(envId));
     res.json({ ok: true });
@@ -20585,8 +20760,8 @@ app.post('/api/morelogin/use-default', async (req, res) => {
 
 // ── A session's own MoreLogin profile (2026-11-10) ──
 // POST /api/morelogin/use — the calling session works in a MoreLogin profile of its own from now on:
-// { envId }, { name } or { profile } (either; a profile MoreLogin lists), or { default: true } to go back to the default of Settings →
-// Browser. The choice is the caller's pin (pinRunMoreLoginProfile, the pin a schedule's run is launched with), so its
+// { envId }, { name } or { profile } (either; a profile MoreLogin lists), or { default: true } to go back to the default AI
+// browser (Settings → Connected tools → MoreLogin). The choice is the caller's pin (pinRunMoreLoginProfile, the pin a schedule's run is launched with), so its
 // acquisitions, its recoveries, the per-request gate and its view of GET /api/browser/sessions all follow it. Nothing
 // else changes: not the default AI browser, not another session's pin, tab or route. This is what an agent uses to
 // work in a second profile while other automations work in the default one; use-default (which moves everybody) keeps
@@ -20597,9 +20772,15 @@ app.post('/api/morelogin/use-default', async (req, res) => {
 // Chrome). A Firefox-type profile is refused (400 MORELOGIN_NOT_CHROMIUM) and the choice stays what it was.
 // For a session that proves its id (moreLoginGate: a run's terminal token, a brain's credential, or a plain CLI MCP
 // session's own proof, MCP_SESSION_PROOFS), never the owner's page (which has no session: the
-// owner picks in Settings → Browser or where the run is set up).
+// owner picks in Settings → Connected tools → MoreLogin (Default AI browser) or where the run is set up).
 const _profileChoiceStore = createProfileChoiceStore({
   file: resolve(LOOP_DATA_DIR, 'browser-profile-choices.json'),
+  log: (line) => console.warn(`[morelogin] ${line}`),
+});
+// A run whose own profile failed to start or connect in this run (lib/morelogin-profile-failures.js): it may not move to
+// another profile until that profile connects again for it, the owner moves it, or it ends (runProfileSwitchRefusal).
+const _runProfileFailures = createProfileFailureStore({
+  file: resolve(LOOP_DATA_DIR, 'morelogin-profile-failures.json'),
   log: (line) => console.warn(`[morelogin] ${line}`),
 });
 
@@ -20647,8 +20828,8 @@ async function resolveMoreLoginProfileChoice(ref) {
 async function chooseSessionMoreLoginProfile(ownerKey, choice) {
   const previous = runMoreLoginPin(ownerKey);
   // A session's own choice is always an agent's ('agent'): held to the owner's list when it is set (the route) and at
-  // every use (moreLoginPinRefusal).
-  pinRunMoreLoginProfile(ownerKey, choice?.envId || null, choice?.name || null, 'agent');
+  // every use (moreLoginPinRefusal). Not locked: the session chose it, and may choose again.
+  pinRunMoreLoginProfile(ownerKey, choice?.envId || null, choice?.name || null, 'agent', { locked: false });
   // A plain MCP session's id dies with this server: its choice is never kept for a restart (MCP_SESSION_PROOFS).
   if (!isMcpSessionOwner(ownerKey)) _profileChoiceStore.set(ownerKey, choice?.envId ? choice : null);
   const cfg = loadBrowserConfig();
@@ -20669,28 +20850,62 @@ async function chooseSessionMoreLoginProfile(ownerKey, choice) {
   return { previous, released };
 }
 
+/**
+ * 409 PROFILE_PINNED: `owner`'s profile was set up with the run (`pin.locked`), and it asked to move to `choice` (a
+ * profile { envId, name }, or null for the default browser). Nothing changes.
+ */
+function refusePinnedProfileMove(res, owner, pin, choice) {
+  const here = describeMoreLoginPin(pin);
+  const there = choice?.envId ? describeMoreLoginPin(choice) : 'the default browser';
+  console.warn(`[morelogin] ${logOwnerId(owner)} is pinned to ${here}: its move to ${there} was refused`);
+  loopLog(owner, 'browser:profile', `refused: this run is pinned to ${here} and cannot move to ${there}`, { pinned: pin.envId, asked: choice?.envId || null });
+  return res.status(409).json({
+    ok: false, code: 'PROFILE_PINNED', envId: pin.envId, name: pin.name || null,
+    error: `This run is pinned to ${here} (set where the run is set up: its schedule, group, launch or dispatch); it cannot move to ${there}. Nothing was changed: it still works in ${here}. A pinned run never switches profiles by itself: if its profile cannot be used (closed, not running, refused by MoreLogin), report that to the user and stop. The owner changes a run's profile where the run is set up.`,
+  });
+}
+
 app.post('/api/morelogin/use', async (req, res) => {
   try {
     const who = browserCaller(req);
     if (!who.accepted) return refuseBrowserCaller(res, who);
     const owner = who.automation ? browserOwnerId(who.id) : null;
     if (!owner) {
-      return res.status(400).json({ ok: false, code: 'SESSION_REQUIRED', error: 'This picks the MoreLogin profile of the calling agent session (the morelogin tool\'s "use" action). The owner picks the default in Settings → Browser, and a run\'s profile where the run is set up.' });
+      return res.status(400).json({ ok: false, code: 'SESSION_REQUIRED', error: 'This picks the MoreLogin profile of the calling agent session (the morelogin tool\'s "use" action). The owner picks the default in Settings → Connected tools → MoreLogin (Default AI browser), and a run\'s profile where the run is set up.' });
     }
     if (automationRunState(owner) === 'ended') {
       return res.status(409).json({ ok: false, code: 'RUN_ENDED', error: `Run ${owner} has ended: its browser profile is not changed.` });
     }
     const body = req.body || {};
     const toDefault = body.default === true || body.default === 'true';
+    // A run whose own profile failed to start or connect in this run does not move to another profile or browser, even
+    // one it chose itself (2026-11-15 21:13:43: run 8d50b030 had chosen P-4 with `use`, P-4 failed to connect, it moved
+    // itself to P-1 and its next browser call started P-1, one of MoreLogin's daily launches). Refused here, before
+    // MoreLogin is asked for anything; naming the failed profile itself is no move and goes on below. Lifted when that
+    // profile connects again for the run, the owner moves the run, or it ends (lib/morelogin-profile-failures.js).
+    const failedBar = runProfileSwitchRefusal(owner, toDefault ? { toDefault: true } : { envId: body.envId, name: body.name, profile: body.profile });
+    if (failedBar) return refuseProfileSwitchAfterFailure(res, failedBar);
+    // A run whose setup pinned its profile (a schedule, a group, a timer, a launch, a dispatch's morelogin_profile)
+    // stays there: it is refused before anything is resolved or changed when it asks for the default browser, and
+    // below when it names another profile (2026-11-15: a run on P-4 whose profile had gone moved itself to P-1, and
+    // its recovery started P-1, one of MoreLogin's daily launches). A session that chose its profile itself may still
+    // choose again (today's behaviour).
+    const pinnedBefore = runMoreLoginPin(owner);
+    if (pinnedBefore?.locked && toDefault) return refusePinnedProfileMove(res, owner, pinnedBefore, null);
     // The owner's list (review b6631e9d, finding 1): a session works only in a profile the owner allowed agents to
     // choose. Going back to the default needs no entry. Whoever calls this is never the owner's page (SESSION_REQUIRED
     // above), so there is no exception here. The gate in front proved the caller's id (MORELOGIN_VERIFIED_ROUTES).
     const choice = toDefault ? null : await agentMoreLoginProfileChoice({ envId: body.envId, name: body.name, profile: body.profile });
+    // Asked again with what the name resolved to (a name the failed profile had may now be another profile's).
+    const resolvedBar = choice ? runProfileSwitchRefusal(owner, { envId: choice.envId, name: choice.name, resolved: true }) : null;
+    if (resolvedBar) return refuseProfileSwitchAfterFailure(res, resolvedBar);
     const before = runMoreLoginPin(owner);
-    // Asked again for what it already has: nothing is released (its tab there stays its tab), and a pin the owner's
-    // page set at launch stays the owner's (it is not rewritten as the session's own).
+    if (before?.locked && (before.envId || null) !== (choice?.envId || null)) return refusePinnedProfileMove(res, owner, before, choice);
+    // Asked again for what it already has: nothing is released (its tab there stays its tab), a pin the owner's
+    // page set at launch stays the owner's (it is not rewritten as the session's own), and a pin its setup made stays
+    // locked.
     if ((before?.envId || null) === (choice?.envId || null)) {
-      if (choice && before?.by !== 'owner') { pinRunMoreLoginProfile(owner, choice.envId, choice.name, 'agent'); if (!isMcpSessionOwner(owner)) _profileChoiceStore.set(owner, choice); }
+      if (choice && before?.by !== 'owner' && !before?.locked) { pinRunMoreLoginProfile(owner, choice.envId, choice.name, 'agent', { locked: false }); if (!isMcpSessionOwner(owner)) _profileChoiceStore.set(owner, choice); }
       return res.json({ ok: true, changed: false, envId: choice?.envId || null, name: choice?.name || null, default: !choice, released: [] });
     }
     const { previous, released } = await chooseSessionMoreLoginProfile(owner, choice);
@@ -21213,16 +21428,31 @@ function readClaudeSettingsForWrite(filePath) {
 function writeClaudeSettings(filePath, data) {
   const dir = dirname(filePath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  // The settings file may be a link (dotfiles, a synced folder): the file behind it is the one written, and the
+  // link stays. A rename over the link would leave a plain file here and the linked one as it was, so whatever
+  // makes the link again later brings the old content back, without anything changed through SynaBun.
+  let target = filePath;
+  try { if (existsSync(filePath)) target = realpathSync(filePath); } catch { /* written where it was asked */ }
   // Write atomically. A half-written settings.json (crash or full disk during
   // writeFileSync) is what makes the corrupt-read path reachable to begin with.
-  const tmpPath = `${filePath}.tmp-${process.pid}`;
+  const tmpPath = `${target}.tmp-${process.pid}`;
+  // A file with other names (a named Claude account on Windows shares settings.json by a hard link,
+  // lib/claude-account-links.js) is written in place: a rename would leave the other names the old file.
+  let names = 1;
+  try { names = Number(statSync(target).nlink) || 1; } catch {}
   try {
     writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
-    renameSync(tmpPath, filePath);
+    if (names > 1) { writeFileSync(target, readFileSync(tmpPath)); unlinkSync(tmpPath); } else renameSync(tmpPath, target);
   } catch (err) {
     try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch {}
     throw err;
   }
+  // The default's settings changed: every named account reads the same (a hard link that Claude Code's own
+  // rename-write split, or a copy, is brought back in step). Never stops a write.
+  try {
+    const accounts = _panelClaudeAccounts();
+    if ([getGlobalClaudeSettingsPath(), join(accounts.defaultHome, 'settings.json')].some((path) => resolve(path) === resolve(filePath))) accounts.syncShared();
+  } catch {}
 }
 
 function isHookInstalled(settings, targetProjectPath) {
@@ -21599,11 +21829,51 @@ const SYNABUN_TOOL_CATEGORIES = [
   },
 ];
 
+// ── The owner's tool-permission choices (lib/tool-permission-choices.js) ──
+// The switches of Settings → Tool permissions are drawn from, and change, the allow list of the user's
+// ~/.claude/settings.json: Claude Code's own file, which other things rewrite and replace. SynaBun keeps what the
+// owner chose in its data home too (DATA_HOME/data/tool-permissions.json, never touched by an install or an
+// update) and puts back what went missing: every saved tool at a start (an update is a start), and at a read
+// only when all of them are gone at once. A tool the owner switched off is never allowed by SynaBun itself; a
+// tool nobody chose (one that is new in an update) keeps the default: off until it is switched on.
+const TOOL_PERMISSION_KEYS = new Set(SYNABUN_TOOL_CATEGORIES.flatMap(cat => cat.tools.map(t => t.key)));
+const toolChoices = createToolPermissionChoices({
+  path: resolve(DATA_HOME, 'data', TOOL_CHOICES_FILE),
+  appVersion: SERVER_VERSION,
+  log: (line) => console.log(line),
+});
+/** Bring the allow list in line with the saved choices. `reason`: 'start' | 'read'. Never throws. */
+function reconcileSavedToolPermissions(reason) {
+  try {
+    const result = reconcileToolPermissions({
+      store: toolChoices, settingsPath: getGlobalClaudeSettingsPath(), known: TOOL_PERMISSION_KEYS, reason,
+      read: readClaudeSettingsForWrite, write: writeClaudeSettings, log: (line) => console.log(line),
+    });
+    if (result.state === 'error' && reason === 'start') console.warn(`[tool-permissions] the saved choices were not applied: ${result.message}`);
+    // Codex reads its own copy of the list (config.toml): it gets what was put back.
+    if (result.state === 'restored') { try { syncCodexToolPermissions(result.allow); } catch { /* Codex's file is its own matter */ } }
+    return result;
+  } catch (err) {
+    console.warn(`[tool-permissions] the saved choices were not applied: ${err.message}`);
+    return { state: 'error', restored: [], adopted: [], allow: [], message: err.message };
+  }
+}
+/** The on / off state of every tool, as the allow list has it. */
+function toolPermissionStates(allow) {
+  const allowed = new Set(Array.isArray(allow) ? allow : []);
+  const tools = {};
+  for (const cat of SYNABUN_TOOL_CATEGORIES) {
+    for (const t of cat.tools) tools[t.key] = allowed.has(t.key);
+  }
+  return tools;
+}
+
 // ── Memory-tool permission auto-injection ──
-// On MCP enable for any provider, force-allow the 7 SynaBun memory tools
+// On MCP enable for any provider, allow the 7 SynaBun memory tools
 // (recall/remember/reflect/forget/memories/restore/sync) so PTY/CLI sessions
 // can use SynaBun memory without per-call permission prompts. Inject-only,
-// never overwrites existing entries. Falls back to project-scoped settings
+// never overwrites existing entries, and never a tool the owner switched off
+// in Settings → Tool permissions. Falls back to project-scoped settings
 // when the user has no global settings file.
 function getMemoryToolKeys() {
   const cat = SYNABUN_TOOL_CATEGORIES.find(c => c.id === 'memory');
@@ -21623,7 +21893,7 @@ function ensureOpenCodeCoreMcpPermissions(config) {
 }
 
 function injectClaudeMemoryPerms() {
-  const keys = getMemoryToolKeys();
+  const keys = getMemoryToolKeys().filter(k => !toolChoices.isOff(k));
   const globalPath = getGlobalClaudeSettingsPath();
 
   if (existsSync(globalPath)) {
@@ -21634,6 +21904,7 @@ function injectClaudeMemoryPerms() {
     for (const k of keys) set.add(k);
     settings.permissions.allow = [...set];
     writeClaudeSettings(globalPath, settings);
+    toolChoices.adopt(settings.permissions.allow, TOOL_PERMISSION_KEYS);
     return { scope: 'global', paths: [globalPath] };
   }
 
@@ -23589,19 +23860,20 @@ app.get('/api/claude-code/tool-categories', (req, res) => {
 });
 
 // GET /api/claude-code/tool-permissions — current permission state for all SynaBun tools
+// `capabilities`: what the PUT below takes beyond one tool or one category (`categories`: several groups in one
+// request), so a page that was reloaded before this server was restarted knows what it can ask.
 app.get('/api/claude-code/tool-permissions', (req, res) => {
   try {
+    // A file that lost every saved tool at once was replaced: the saved choices go back before it is read.
+    const reconciled = reconcileSavedToolPermissions('read');
     const globalPath = getGlobalClaudeSettingsPath();
     const settings = readClaudeSettings(globalPath) || {};
-    const allowed = new Set(settings.permissions?.allow || []);
-
-    const tools = {};
-    for (const cat of SYNABUN_TOOL_CATEGORIES) {
-      for (const t of cat.tools) {
-        tools[t.key] = allowed.has(t.key);
-      }
-    }
-    res.json({ ok: true, tools });
+    res.json({
+      ok: true,
+      tools: toolPermissionStates(settings.permissions?.allow),
+      capabilities: ['categories'],
+      ...(reconciled.restored.length ? { restored: reconciled.restored.length } : {}),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -23686,30 +23958,48 @@ app.delete('/api/claude-code/permission-rules', express.json(), (req, res) => {
     // The user scope of a tab under a named account is that account's file.
     const accountHome = panelAccountHome(req.body?.account);
     const result = removePermissionRule({ home: process.env.USERPROFILE || process.env.HOME, accountHome, project, scope, list, rule });
+    // An allow rule of one of SynaBun's tools, taken out of the user's own settings: that tool is off by the owner's
+    // choice from now on, so a start does not put it back (lib/tool-permission-choices.js).
+    if (result.removed && scope === 'user' && list === 'allow' && TOOL_PERMISSION_KEYS.has(rule)
+        && (!accountHome || userSettingsFile({ home: process.env.USERPROFILE || process.env.HOME, accountHome }).shared)) {
+      toolChoices.note([rule], false);
+    }
     res.json({ ok: true, removed: result.removed });
   } catch (err) {
     res.status(err?.status || 500).json({ ok: false, error: err.message, ...(err?.code ? { code: err.code } : {}) });
   }
 });
 
-// PUT /api/claude-code/tool-permissions — toggle individual tool or category group
+// PUT /api/claude-code/tool-permissions — toggle one tool, one category group, or several groups at once
+// (`categories`: the switch in the section's header sends the groups it shows). What is switched is also
+// written down as the owner's choice (toolChoices), which is what a later start puts back.
 app.put('/api/claude-code/tool-permissions', (req, res) => {
   try {
-    const { tool, category, enabled } = req.body;
+    const { tool, category, categories, enabled } = req.body || {};
     if (typeof enabled !== 'boolean') {
       return res.status(400).json({ error: 'enabled (boolean) is required.' });
     }
-    if (!tool && !category) {
-      return res.status(400).json({ error: 'Provide tool (string) or category (string).' });
+    if (categories !== undefined && (!Array.isArray(categories) || !categories.length || categories.some(id => typeof id !== 'string'))) {
+      return res.status(400).json({ error: 'categories must be a list of category ids.' });
+    }
+    if (!tool && !category && !categories) {
+      return res.status(400).json({ error: 'Provide tool (string), category (string) or categories (list).' });
     }
 
     // Resolve which tool keys to toggle
     let keys = [];
-    if (category) {
+    if (categories) {
+      for (const id of new Set(categories)) {
+        const cat = SYNABUN_TOOL_CATEGORIES.find(c => c.id === id);
+        if (!cat) return res.status(400).json({ error: `Unknown category: ${id}` });
+        keys.push(...cat.tools.map(t => t.key));
+      }
+    } else if (category) {
       const cat = SYNABUN_TOOL_CATEGORIES.find(c => c.id === category);
       if (!cat) return res.status(400).json({ error: `Unknown category: ${category}` });
       keys = cat.tools.map(t => t.key);
     } else {
+      if (typeof tool !== 'string') return res.status(400).json({ error: 'tool must be a string.' });
       keys = [tool];
     }
 
@@ -23726,6 +24016,8 @@ app.put('/api/claude-code/tool-permissions', (req, res) => {
     }
     settings.permissions.allow = [...allowSet];
     writeClaudeSettings(globalPath, settings);
+    // The owner's choice, in SynaBun's own data home: what an update, a restore or a replaced file cannot take.
+    toolChoices.note(keys, enabled);
 
     // Cascade to registered projects
     const projects = loadHookProjects();
@@ -23749,14 +24041,7 @@ app.put('/api/claude-code/tool-permissions', (req, res) => {
     syncCodexToolPermissions(settings.permissions.allow);
 
     // Return updated state
-    const updatedAllowed = new Set(settings.permissions.allow);
-    const tools = {};
-    for (const cat of SYNABUN_TOOL_CATEGORIES) {
-      for (const t of cat.tools) {
-        tools[t.key] = updatedAllowed.has(t.key);
-      }
-    }
-    res.json({ ok: true, tools });
+    res.json({ ok: true, tools: toolPermissionStates(settings.permissions.allow) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -23978,6 +24263,7 @@ function syncCodexToolPermissions(allowedKeys, codexHome = CODEX_DEFAULT_HOME) {
     }
 
     writeFileSync(configPath, content, 'utf-8');
+    try { codexSharedFilesChanged(); } catch { /* never stops the write */ }
   } catch (err) {
     console.error('[codex-perm-sync] Failed to sync Codex tool permissions:', err.message);
   }
@@ -24101,6 +24387,7 @@ app.post('/api/setup/codex/mcp', (req, res) => {
     const health = upsertCodexMcpConfig(configPath, buildCodexMcpDefinition());
     // Force-allow the 7 SynaBun memory tools so CLI sessions skip prompts.
     injectCodexMemoryPerms();
+    codexSharedFilesChanged();
     res.json({ ok: true, ...health, message: 'SynaBun MCP registered in Codex CLI. Restart Codex to connect.', rules: syncRulesWithMcp('codex', 'install', req.body) });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -24112,6 +24399,7 @@ app.delete('/api/setup/codex/mcp', (req, res) => {
     const configPath = join(CODEX_DEFAULT_HOME, 'config.toml');
     if (!existsSync(configPath)) return res.json({ ok: true, rules: syncRulesWithMcp('codex', 'remove') });
     const health = removeCodexMcpConfig(configPath);
+    codexSharedFilesChanged();
     res.json({ ok: true, ...health, message: 'SynaBun MCP removed from Codex CLI.', rules: syncRulesWithMcp('codex', 'remove') });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -24344,6 +24632,70 @@ registerSkillEvalRoutes(app, {
   pageSession: _pageSession,
 });
 
+// ════ agents-p1 BEGIN: the Agents system's registry, resolver and API (docs/agents.md, lib/coordination/README.md) ════
+// The one block of the Agents system's phase P1 in this file. The registry of agent definitions
+// (DATA_HOME/data/agents: one editable draft and immutable approved revisions per agent and scope, lib/agents/registry.js),
+// the resolver that turns a dispatch's `agent_ref` into a run (lib/agents/resolve.js: the dispatcher's intake and the
+// Assistant's /route ask the resolver of the process, which is set here, so nothing else in this file hands it over),
+// and the routes of Agents Studio under /api/agents-studio/v1 (lib/agents-studio-api.js: approving, deleting and test
+// runs are the owner's page only, as the Skills Service's installs are). The older /api/agents routes above (isolated
+// agent processes) are another thing and stay as they are.
+import { createAgentRegistry } from './lib/agents/registry.js';
+import { createAgentResolver, setAgentResolver } from './lib/agents/resolve.js';
+import { registerStudioAttention } from './lib/studio-attention.js';
+import { registerAgentsStudioRoutes } from './lib/agents-studio-api.js';
+const agentDefinitions = createAgentRegistry({
+  dir: resolve(DATA_HOME, 'data', 'agents'),
+  // Every page of the owner hears of a change; invite guests do not (broadcastSync keeps `assistant:` to the owner).
+  emit: (event) => { try { broadcastSync({ type: 'assistant:agents-changed', event }); } catch { /* no page is listening */ } },
+});
+registerStudioAttention(app, {
+  ownerPage: (req, res, next) => ownerPageApprovalCall(req) ? next() : refuseNotOwnerPage(req, res, 'The Studio attention indicator is available on the owner’s page.'),
+  agents: () => agentDefinitions.list({ status: 'in_review' }),
+  teams: () => _assistantTeamScheduler?.list({ open: true }) || [],
+  reviews: () => skillReviews.list({ state: 'pending' }),
+  // Only the marks and schedule state are used. No tool resolution or approval evidence is needed.
+  templates: () => mergeLoopItemsById(readLoopTemplateFiles(), 'templates'),
+  schedules: () => mergeLoopItemsById(readLoopScheduleFiles(), 'schedules'),
+  workers: () => _assistantDispatcher?.hasRunAwaitingOwner() || false,
+  nativeRuns: () => _nativeLoopRuntime?.list({ activeOnly: true }) || [],
+});
+const agentDefinitionResolver = setAgentResolver(createAgentResolver({ registry: agentDefinitions }));
+// ── agents-p6 BEGIN: what agent-forge and native export read from this server (lib/agents/forge-host.js) ──
+// The guide is the shipped skill skills/agent-forge; the catalog a definition is filled from is asked of the parts
+// that own it (the Assistant's model catalog, the tool catalog, the project's style guide, the MoreLogin profiles
+// the owner lets agents choose); a native export goes where Skills Studio's own agent files go (Claude Code's config
+// dir, OpenCode's configuration folder, or a registered project), and only the owner's page writes one.
+import { createAgentForgeHost } from './lib/agents/forge-host.js';
+const agentForgeHost = createAgentForgeHost({
+  skillsDir: SKILLS_SOURCE_DIR,
+  catalog: async ({ provider = null, q = null } = {}) => (_assistantCatalog ? _assistantCatalog.get({ view: 'brain', provider, q }) : null),
+  styleGuide: (projectPath) => { const guide = styleGuideStore.load(projectPath); return guide?.saved ? guide.config : null; },
+  moreloginProfiles: () => moreLoginAgentProfiles(),
+  projects: () => { try { return loadHookProjects().filter((p) => p?.path).map((p) => ({ path: p.path, label: p.label || basename(p.path) })); } catch { return []; } },
+  claudeHome: () => studioClaudeHome(),
+  claudeHomes: () => { try { return _panelClaudeAccounts().list().map((row) => ({ id: row.id, home: row.home })); } catch { return []; } },
+  opencodeConfigDir: () => getOpencodeConfigDir(),
+  homeDir: getHomePath(),
+  onExport: (event) => { try { broadcastSync({ type: 'assistant:agents-changed', event }); } catch { /* no page is listening */ } },
+});
+// ── agents-p6 END ──
+registerAgentsStudioRoutes(app, {
+  registry: agentDefinitions, resolver: agentDefinitionResolver, isGuestRequest,
+  forge: agentForgeHost, // agents-p6
+  // The runs of an agent and the owner's test run (the dispatcher is made later, with the Assistant).
+  dispatcher: () => _assistantDispatcher,
+  ownerGuard: ownerRouteGuard({ isGuestRequest, port: PORT, allowedOrigins: publicWebOrigins, refuseCrossSite: true, ownOriginsOnly: true, requireOrigin: true }),
+  // The owner's writes carry the page secret (lib/page-session.js): a local process without it is refused.
+  pageSession: _pageSession,
+  // An agent is the Assistant only by its brain's launch credential (never by X-Synabun-Role alone).
+  assistantOf: (req) => skillsAssistantOf(req),
+  // An agent's X-Synabun-Terminal (its author's name) counts only with its proof (browserCaller).
+  terminalRefusal: (req) => { const who = browserCaller(req); return who.accepted ? null : { status: who.httpStatus || 403, code: who.code, error: who.error }; },
+  projects: () => { try { return loadHookProjects().filter((p) => p?.path).map((p) => ({ path: p.path, label: p.label || basename(p.path) })); } catch { return []; } },
+});
+// ════ agents-p1 END ════
+
 /**
  * Each runtime an evaluation can run on here: found (the same answer as drafting's), held to its folder, and whether
  * a case that needs a shell can have one (Codex: its own sandbox, always, and Codex is the owner's opt-in per skill
@@ -24465,7 +24817,7 @@ function skillDraftingAvailability() {
   return { available: !!any, reason: any ? null : (claude?.reason || 'No provider that can draft was found on this computer.'), providers };
 }
 
-/** Whether the SynaBun browser (the one Settings → Browser chose) can open a page for a draft now, and if not why. */
+/** Whether the SynaBun browser (the default AI browser: a MoreLogin tab profile, else SynaBun's own) can open a page for a draft now, and if not why. */
 function skillBrowserAvailability() {
   try {
     const cfg = loadBrowserConfig();
@@ -24475,14 +24827,14 @@ function skillBrowserAvailability() {
       // The default is one of SynaBun's own local profiles: MoreLogin is not needed for it.
       return moreLogin.localProfileName(String(cfg.moreloginEnvId))
         ? { available: true, reason: null }
-        : { available: false, reason: 'The default browser (Settings → Browser) is a local profile that no longer exists: choose another one.' };
+        : { available: false, reason: 'The default AI browser (Settings → Connected tools → MoreLogin) is a local profile that no longer exists: choose another one.' };
     }
     if (cfg.connectMode === 'morelogin') {
       // The exe in a known folder, or the local API answered lately (an install in a custom folder). This is read
       // synchronously, so a miss refreshes the answer in the background for the next call.
       const installed = moreLogin.isMoreLoginPresent();
       if (!installed) moreLogin.probeMoreLoginApi({ savedCfg: cfg, timeout: 1500 }).catch(() => {});
-      return installed ? { available: true, reason: null } : { available: false, reason: 'MoreLogin is the default browser (Settings → Browser) and it was not found: its app is in no known folder and its local API does not answer.' };
+      return installed ? { available: true, reason: null } : { available: false, reason: 'MoreLogin is the default AI browser (Settings → Connected tools → MoreLogin) and it was not found: its app is in no known folder and its local API does not answer.' };
     }
     if ([...browserSessions.values()].some((s) => s?.context)) return { available: true, reason: null };
     if (findBrowserExecutable(cfg.channel)) return { available: true, reason: null };
@@ -29059,6 +29411,48 @@ _nativeLoopRuntime = new NativeLoopRuntime({
   },
 });
 
+// What the computer-use service says about who holds the desktop now (its `status().control`), once it exists: read by
+// the evidence line of a MoreLogin profile closed outside SynaBun (lib/browser-close-evidence.js). null until then.
+let _desktopControlProbe = null;
+// MoreLogin profiles SynaBun itself stopped (POST /api/morelogin/stop): envId → when. A browser that goes within
+// a minute of that is not reported as closed outside SynaBun.
+const _moreLoginStoppedBySynaBun = new Map();
+
+/**
+ * A MoreLogin profile session's browser context closed (createBrowserSession's context 'close' handler): who closed
+ * it, said once. Returns what it decided:
+ *   'revoked' — SynaBun's OpenCode serve boundary let go of the context (lib/opencode-native-boundary.js
+ *               revokeNativeContext: the profile's window is kept). Never "outside SynaBun", never a mark.
+ *   'synabun' — SynaBun closed it: its own teardown (destroyBrowserSession took the session out of the map first) or
+ *               POST /api/morelogin/stop in the last minute.
+ *   'outside' — nobody in SynaBun: the evidence line (lib/browser-close-evidence.js), and the close is remembered for
+ *               the profile (lib/morelogin-outside-close.js): no automatic path starts it again (each start spends one
+ *               of MoreLogin's daily launches) until the owner starts it, a new scheduled run fires, or MoreLogin's
+ *               daily reset. The runs it orphaned are kept on the mark (their loops end after their turn).
+ *   null      — not a MoreLogin profile (a local profile, another browser).
+ * Before 2026-11-15 a revocation was reported as closed outside SynaBun: the 21:13:30 and 21:14:22 lines of that night
+ * were SynaBun's own (a foreign OpenCode serve failed its check while it was exiting, and the revocation closed every
+ * page of P-1 and P-4).
+ */
+function noteMoreLoginContextClose(session, sessionId, context = session?.context) {
+  if (session?._profileMode !== 'morelogin' || !session._mlEnvId || moreLogin.isLocalProfileId(String(session._mlEnvId))) return null;
+  const envId = String(session._mlEnvId);
+  const revoked = nativeContextRevocation(context);
+  if (revoked) {
+    console.log(`[morelogin] SynaBun let go of profile ${envId} (session ${sessionId}): the OpenCode serve check revoked its browser context (${revoked.why || 'no reason given'}). Its window was kept open; nobody else closed it, and the runs there attach again without a new start`);
+    return 'revoked';
+  }
+  if (browserSessions.get(sessionId) !== session || session._tearingDown
+    || Date.now() - (_moreLoginStoppedBySynaBun.get(envId) || 0) < 60_000) return 'synabun';
+  const owners = [...(session._loopOwned || [])];
+  logUnexpectedProfileClose({ envId, sessionId, desktopControl: () => _desktopControlProbe?.() || null }).catch(() => {});
+  let mark = null;
+  try { mark = moreLogin.noteOutsideClose(envId, { at: Date.now(), sessionId, owners, name: _moreLoginEnvNames.get(envId) || null }); }
+  catch (err) { console.warn(`[morelogin] the close of profile ${envId} outside SynaBun was not remembered: ${err?.message || err}`); }
+  if (mark) console.log(`[morelogin] profile ${envId} is not started again by SynaBun for anybody (${owners.length ? `it served ${owners.map(logOwnerId).join(', ')}` : 'it served no run'}) until the owner starts it, a new scheduled run fires, or MoreLogin's daily reset at ${new Date(mark.until).toISOString()}`);
+  return 'outside';
+}
+
 // ── Main assistant: brains + orchestration (lib/assistant-*.js) ──
 // Everything lives in lib/; this block only wires dependencies and mounts the
 // router + WebSocket handler. Failure here degrades to "assistant unavailable"
@@ -29526,10 +29920,26 @@ _nativeLoopRuntime = new NativeLoopRuntime({
         log: (tag, message) => assistantLog(tag, message),
       });
       app.use('/api/desktop', createDesktopApi({ desktop: assistantDesktop, isGuestRequest, log: (tag, message) => assistantLog(tag, message) }));
+      { const desktop = assistantDesktop; _desktopControlProbe = () => desktop.status()?.control || null; }
     } catch (err) {
       console.warn('[assistant] computer use unavailable:', err.message);
       assistantDesktop = null;
     }
+    // ══ Agents P2: durable agent messaging ═════════════════════════════════════════════════════════════════════
+    // This server's one coordination store (DATA_HOME/data/coordination.db; lib/coordination/README.md): the run
+    // events the dispatcher records, the Assistant's mailbox, the follow-up outbox. The dispatcher and the Assistant
+    // runtime made right below take the shared service by themselves, so this block is the only place in this file
+    // that creates it. runGracefulShutdown closes it after the scheduler and workers stop, including on signals;
+    // an abrupt exit leaves the write-ahead log, which the next start reads back.
+    {
+      const { createCoordinationService, shareCoordinationService } = await import('./lib/coordination/service.js');
+      const assistantCoordination = shareCoordinationService(createCoordinationService({ dataDir: LOOP_DATA_DIR, log: (tag, message) => assistantLog(tag, message) }));
+      // The one instance of this server (never a second createCoordinationService in this file): a stop that is not
+      // a signal (Restart Server, /api/server/shutdown, an update) closes it at the end of runGracefulShutdown.
+      _assistantCoordination = assistantCoordination;
+      if (assistantCoordination.degraded) console.warn(`[assistant] coordination store unavailable (${assistantCoordination.degraded.message}): agent events are kept in memory until the next start`);
+    }
+    // ══ end Agents P2 ══════════════════════════════════════════════════════════════════════════════════════════
     _assistantDispatcher = createAssistantDispatcher({
       resolveExternalTools: (spec, tools) => spec.provider
         ? selectExternalServers(tools, externalInventory(spec.provider, spec.cwd || PACKAGE_ROOT, { readProject: spec.provider !== 'opencode' || !openCodeProtectedWorker({ ...spec, cwd: spec.cwd || PACKAGE_ROOT, guardMode: _workerGuard.mode() }) }))
@@ -29559,8 +29969,13 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       // Held to the owner's list of profiles agents may choose (agentMoreLoginProfileChoice: 403
       // MORELOGIN_PROFILE_NOT_ALLOWED), whoever dispatches; the pin is an agent's, so the list is asked again when the
       // worker's tab is acquired (a start, a resume) and at each of its browser calls.
+      // pinBrowserProfile: a dispatch's morelogin_profile is the run's setup, locked (POST /api/morelogin/use refuses a
+      // move). A resume re-pins the run's record, which a worker's own `use` rewrote (noteBrowserProfile): that one
+      // stays the worker's own choice, as its saved choice says (_profileChoiceStore), and is not locked.
       resolveBrowserProfile: (ref) => agentMoreLoginProfileChoice(ref),
-      pinBrowserProfile: (runId, envId, name) => pinRunMoreLoginProfile(runId, envId, name, 'agent'),
+      pinBrowserProfile: (runId, envId, name) => pinRunMoreLoginProfile(runId, envId, name, 'agent', {
+        locked: (() => { try { return String(_profileChoiceStore.get(runId)?.envId || '') !== String(envId || ''); } catch { return true; } })(),
+      }),
       memory: assistantMemory, detectProject: assistantDetectProject,
       // Limits are read live from assistant-config.json `limits`; the money is the session budget (the planner).
       limits: {},
@@ -29576,6 +29991,8 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       clarifier: assistantClarifier,
       // The session's Test density, read when a worker's prompt is composed (assistant-test-density.js).
       testDensity: (sessionId) => _assistantRuntime?.testDensityFor?.(sessionId) ?? null,
+      // agents-p4: the session's Agent density (lib/agents/density.js): the cap the team scheduler enforces.
+      agentDensity: (sessionId) => _assistantRuntime?.agentDensityFor?.(sessionId) ?? null,
       // After a restart, workers are resumed once this server listens and the worker-only MCP channel (a sandboxed
       // worker's) is up or known to be off: a resumed CLI connects to SynaBun's MCP as it starts. 15 s at most.
       serverReady: () => new Promise((resolveReady) => {
@@ -29635,6 +30052,57 @@ _nativeLoopRuntime = new NativeLoopRuntime({
       // A brain's pin is proven by its launch credential (lib/terminal-tokens.js bind), revoked with the brain.
       terminalTokens: _terminalTokens,
     });
+    // ════ agents-p4 BEGIN: the team scheduler (lib/teams/scheduler.js; docs/agents.md → Teams) ════
+    // One task given to several workers, each in its own git worktree (lib/teams/, phase P3), within the session's
+    // Agent density. The one scheduler of this server: it takes the coordination service's own store (claims, the
+    // journal, the team channel and the run events are one file), dispatches through the Assistant's dispatcher and
+    // is shared (shareTeamScheduler) for the Assistant's API (agent_team, a worker's team tool) and Agents Studio's
+    // routes. The integration tests run under the worker sandbox where the platform has one (lib/teams/test-sandbox.js);
+    // ignored node_modules folders are cloned into each worktree where the file system can (cloneNodeModules).
+    // In its own try/catch: the Assistant runs without teams when this fails, and the team routes then answer 503.
+    try {
+      const { createTeams, createGitRunner, cloneNodeModules } = await import('./lib/teams/index.js');
+      const { createTeamScheduler, shareTeamScheduler } = await import('./lib/teams/scheduler.js');
+      const { createSandboxedTestRunner } = await import('./lib/teams/test-sandbox.js');
+      const teamGit = createGitRunner();
+      const teamScheduler = shareTeamScheduler(createTeamScheduler({
+        teams: createTeams({
+          store: _assistantCoordination.store, git: teamGit, setup: cloneNodeModules(),
+          runTests: createSandboxedTestRunner({
+            serverPort: () => Number(PORT) || null,
+            reservedPortRange: () => ({ from: OCP_SHARED_PORT_MIN, to: OCP_ISO_PORT_MAX }),
+            denyPaths: () => workerSecretTrees(),
+            profileDir: resolve(LOOP_DATA_DIR, 'teams', 'sandbox'),
+            log: (tag, message) => assistantLog(tag, message),
+          }),
+          log: (tag, detail) => assistantLog(tag, typeof detail === 'string' ? detail : JSON.stringify(detail)),
+        }),
+        coordination: _assistantCoordination,
+        dispatcher: () => _assistantDispatcher,
+        router: assistantRouter,
+        // A remote conversation (WhatsApp) starts no team: one approved route covers one worker there.
+        session: (sessionId) => ({ remote: !!_assistantRuntime?.sessionPolicy?.(sessionId), taskId: _assistantRuntime?.currentTask?.(sessionId) }),
+        // The owner's latest UI turn: cleanup needs one after the team landed, so a worktree is never deleted on the model's word alone.
+        lastOwnerTurnAt: (sessionId) => _assistantRuntime?.lastOwnerTurnAt?.(sessionId) ?? null,
+        git: teamGit,
+        dataDir: LOOP_DATA_DIR,
+        // Every team event, to the owner's pages (broadcastSync keeps `assistant:` messages to the owner).
+        broadcast: (message) => { try { broadcastSync(message); } catch { /* no page is listening */ } },
+        log: (tag, detail) => assistantLog(tag, typeof detail === 'string' ? detail : JSON.stringify(detail)),
+      }));
+      // The `team` tool is advertised to a run that works a team slice (mcp-server/src/services/team-context.ts):
+      // this server's answer for a run id, asked by its own /mcp mount and the worker-only channel.
+      import('../mcp-server/dist/services/team-context.js')
+        .then((m) => m.setTeamContextResolver((runId) => !!teamScheduler.member(runId)))
+        .catch((err) => console.warn('[assistant] team tool unavailable (mcp-server needs a build):', err?.message || err));
+      // After a restart: the library's own recovery, then every team under way is taken up again. Never awaited here.
+      teamScheduler.recover().catch((err) => console.warn('[assistant] team recovery failed:', err?.message || err))
+        .finally(() => broadcastSync({ type: 'assistant:team-changed', event: 'recovered' }));
+      _assistantTeamScheduler = teamScheduler;
+    } catch (err) {
+      console.warn('[assistant] teams unavailable:', err?.message || err);
+    }
+    // ════ agents-p4 END ════
     assistantDesktop?.attach?.({ runtime: _assistantRuntime, dispatcher: _assistantDispatcher });
     // Warm the catalog so brain capabilities (vision, tier) are known on first attach,
     // then repair saved routes whose effort their model does not run (idempotent;
@@ -32300,6 +32768,69 @@ app.post('/api/terminal/links/:id/nudge', (req, res) => {
 // Exposes CDP endpoint so Claude Code's Playwright MCP can connect.
 
 const browserSessions = new Map(); // sessionId → { browser, context, page, clients, cdpSession, screencastActive, ... }
+// The listener is lazy: the owner's pairing action opens its loopback port, and so does a pairing a previous process
+// stored (restore() below), so the extension reconnects by itself after a restart.
+const extensionUploadRoot = resolve(DATA_HOME, 'data/extension-uploads');
+// SynaBun's own ports, which no agent reaches through the owner's browser (docs/browser-extension-bridge.md): this
+// server and its launch beacon unless the owner lets the automation browser act as owner (Settings → Browser), and
+// always the browser-control ports (the CDP port, MoreLogin's local API) and SynaBun's live OpenCode serves.
+function extensionBlockedPorts() {
+  const ports = new Set([CDP_PORT, ...moreLogin.MORELOGIN_FIXED_API_PORTS]);
+  try { for (const p of liveOpencodeServePorts()) ports.add(Number(p)); } catch {}
+  if (!_automationBrowserOwnerAccess.enabled()) { ports.add(Number(PORT) || 3344); ports.add(workerBeaconPort()); }
+  return [...ports].filter(p => Number.isInteger(p) && p > 0 && p <= 65535);
+}
+// This computer's names and interface addresses: one of SynaBun's ports on any of them is SynaBun.
+function extensionSelfHosts() {
+  const hosts = new Set(machineNames.names().flatMap(name => [name, `${name}.local`]));
+  try { for (const list of Object.values(os.networkInterfaces())) for (const entry of list || []) if (entry?.address) hosts.add(entry.address.split('%')[0]); } catch {}
+  return [...hosts];
+}
+const extensionBridge = createExtensionBridge({
+  forbiddenOrigins: publicWebOrigins,
+  blockedPorts: extensionBlockedPorts,
+  selfHosts: extensionSelfHosts,
+  // The pairing and the owner's mode, across restarts: outside data/ (no backup carries the credential), 0600.
+  store: createBridgeStore(resolve(DATA_HOME, 'browser-extension', 'bridge.json')),
+  log: record => console.log('[extension-bridge]', JSON.stringify(record)),
+  onInventory: state => extensionAdapter.sync(state),
+});
+const extensionAdapter = createExtensionAdapter({
+  bridge: extensionBridge, sessions: browserSessions, uploadRoot: extensionUploadRoot, dataHome: DATA_HOME,
+  caller: browserCaller, ownerPage: browserOwnerPageOnly,
+  selected: req => loadBrowserConfig().connectMode === 'extension' && !runMoreLoginPin(browserCaller(req).id),
+});
+// The extension folder the owner loads (DATA_HOME/browser-extension/unpacked): refreshed at start when the bundled
+// extension changed and is not older (lib/browser-extension-folder.js). The browser then needs the extension's Reload,
+// which Settings and the setup page say (`reloadNeeded`). Never fatal: a folder that cannot be written is prepared
+// again by the one-button setup, which says so.
+const prepareOwnerExtensionFolder = () => prepareExtensionFolder({ source: EXTENSION_FOLDER, home: DATA_HOME, appPort: Number(PORT) || 3344 });
+try { const prepared = prepareOwnerExtensionFolder(); if (prepared.changed) console.log(`[extension-bridge] extension folder ${prepared.previousVersion ? `refreshed ${prepared.previousVersion} → ${prepared.version}` : `prepared (${prepared.version})`}; reload the extension in the browser`); }
+catch (error) { console.warn(`[extension-bridge] extension folder not prepared (${error?.code || 'error'})`); }
+// The one-button setup (Settings → Browser → "Connect your browser"; docs/browser-extension-bridge.md → One-button
+// setup). Programs are started with execFile/spawn and argument arrays, never a shell; reads time out.
+const extensionSetup = createExtensionSetup({
+  bridge: extensionBridge,
+  detect: () => detectBrowsers({
+    platform: process.platform, home: os.homedir(),
+    run: (cmd, args) => new Promise((resolveRun, rejectRun) => execFile(cmd, args, { timeout: 5000, windowsHide: true, maxBuffer: 1024 * 1024, encoding: 'utf8' }, (error, stdout) => error ? rejectRun(error) : resolveRun({ stdout }))),
+    exists: path => { try { return existsSync(path); } catch { return false; } },
+    list: dir => { try { return readdirSync(dir); } catch { return []; } },
+  }),
+  prepare: () => prepareOwnerExtensionFolder(),
+  exec: (cmd, args) => new Promise((resolveExec, rejectExec) => {
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true, shell: false });
+    child.once('error', rejectExec); child.once('spawn', () => { child.unref(); resolveExec(); });
+  }),
+  appOrigin: () => `http://127.0.0.1:${Number(PORT) || 3344}`,
+  folderVersion: () => extensionFolderState(DATA_HOME).version,
+});
+{
+  const restored = extensionBridge.restore();
+  restored.listening?.then(
+    port => console.log(`[extension-bridge] pairing restored; listening on 127.0.0.1:${port}`),
+    error => console.warn(`[extension-bridge] pairing restored, but the bridge port could not open (${error?.code || 'error'})`));
+}
 const BROWSER_GRACE_PERIOD_MS = 5 * 60 * 1000; // 5 min before orphaned browser is killed
 
 /** Check if a browser session is actively used by a running automation loop or agent.
@@ -32331,7 +32862,7 @@ setInterval(() => {
   for (const [id, session] of browserSessions) {
     // Never reap an attach (CDP) session — it backs a live Chrome window the user is
     // using; reaping would disconnect it and a later call would spawn a 2nd debug Chrome.
-    if (session._profileMode === 'cdp' || session._profileMode === 'morelogin') { session._idleSince = null; continue; }
+    if (['cdp', 'morelogin', 'extension'].includes(session._profileMode)) { session._idleSince = null; continue; }
     const idle = (session.clients?.size || 0) === 0
       && sessionOwnerCount(session) === 0
       && !isSessionUsedByActiveLoop(id);
@@ -32395,8 +32926,11 @@ const RUN_MORELOGIN_SESSION_PINS_MAX = 200;
  * `ownerKey` works in MoreLogin profile `envId` from now on, or (no envId) in the default browser by its own choice.
  * Only for code that decided it: a launch, POST /api/morelogin/use after its checks, a dispatch. `by`: 'owner' when
  * the owner's page chose the profile, else 'agent'. Throws 503 PROFILE_PINS_FULL in place of evicting another pin.
+ * `locked` (the default): the run's setup chose the profile (a schedule, a group, a timer, a launch, an agent's
+ * spawn, a dispatch's morelogin_profile), and the run cannot move to another one (POST /api/morelogin/use answers 409
+ * PROFILE_PINNED, 2026-11-15). Only a session's own choice (`use`) is not locked: such a session may choose again.
  */
-function pinRunMoreLoginProfile(ownerKey, envId, name = null, by = 'agent') {
+function pinRunMoreLoginProfile(ownerKey, envId, name = null, by = 'agent', { locked = true } = {}) {
   if (!ownerKey) return;
   _runMoreLoginNoPin.delete(ownerKey);
   if (!_runMoreLoginPins.has(ownerKey)) {
@@ -32406,7 +32940,7 @@ function pinRunMoreLoginProfile(ownerKey, envId, name = null, by = 'agent') {
       throw Object.assign(new Error('Too many sessions hold a browser profile of their own right now; nothing was changed. Try again when some have ended.'), { status: 503, code: 'PROFILE_PINS_FULL' });
     }
   }
-  _runMoreLoginPins.set(ownerKey, envId ? { envId: String(envId), name: name ? String(name) : null, by: by === 'owner' ? 'owner' : 'agent' } : null);
+  _runMoreLoginPins.set(ownerKey, envId ? { envId: String(envId), name: name ? String(name) : null, by: by === 'owner' ? 'owner' : 'agent', locked: locked !== false } : null);
 }
 
 /** `ownerKey` ended, or its launch failed: its pin and its saved choice are forgotten (nothing outlives its owner). */
@@ -32415,6 +32949,93 @@ function forgetRunMoreLoginProfile(ownerKey) {
   _runMoreLoginPins.delete(ownerKey);
   _runMoreLoginNoPin.delete(ownerKey);
   _profileChoiceStore.delete(ownerKey);
+  // A failure of its profile bars nothing once it has ended (lib/morelogin-profile-failures.js).
+  _runProfileFailures.clear(ownerKey);
+}
+
+// ── A run's own profile failed in this run: it does not move to another one (lib/morelogin-profile-failures.js) ──
+// Noted where a run's start or connection fails (acquireSharedBrowserTab, an automation's POST /api/browser/sessions,
+// its own POST /api/morelogin/start of its profile); asked by POST /api/morelogin/use and an automation's POST
+// /api/morelogin/start of another profile (409 PROFILE_FAILED_NO_SWITCH). Lifted by a connection of the run to that
+// profile again (noteRunProfileConnected), by the owner moving the run (its effective profile changed: `lifted`), or by
+// the run's end (forgetRunMoreLoginProfile).
+/**
+ * The profile `ownerKey` works in now ({ envId, name, pinned }): its pin, else the MoreLogin (or local) profile that is
+ * the default AI browser (Settings → Connected tools → MoreLogin); null when that default is no profile (Chrome, the
+ * mirror, the extension).
+ */
+function runEffectiveProfile(ownerKey, cfg = loadBrowserConfig()) {
+  const pin = runMoreLoginPin(ownerKey);
+  if (pin?.envId) return { envId: String(pin.envId), name: pin.name || null, pinned: true };
+  const defaultEnv = cfg?.connectMode === 'morelogin' ? moreLoginDefaultEnvId(cfg) : null;
+  return defaultEnv ? { envId: String(defaultEnv), name: _moreLoginEnvNames.get(String(defaultEnv)) || null, pinned: false } : null;
+}
+
+/**
+ * `ownerKey`'s own profile (`profile`: { envId, name }) failed to start or connect in this run (`failure`: what the
+ * start answered, { code, error } or an Error). From now on the run may not move to another profile. Never throws.
+ */
+function noteRunProfileFailure(ownerKey, profile, failure) {
+  if (!ownerKey || !profile?.envId) return null;
+  try {
+    const entry = _runProfileFailures.note(ownerKey, {
+      envId: String(profile.envId), name: profile.name || _moreLoginEnvNames.get(String(profile.envId)) || null,
+      code: failure?.code || null, reason: failure?.error || failure?.message || null,
+    });
+    if (entry) console.warn(`[morelogin] ${logOwnerId(ownerKey)}: its own profile ${describeProfile(entry.envId, entry.name)} failed to start or connect (${entry.code || 'no code'}); it may not move to another profile until that one connects again for it, the owner moves it, or it ends`);
+    return entry;
+  } catch { return null; }
+}
+
+/** `ownerKey` is connected to profile `envId`: a failure noted for that profile in this run is over. Never throws. */
+function noteRunProfileConnected(ownerKey, envId) {
+  if (!ownerKey || !envId) return null;
+  try {
+    const dropped = _runProfileFailures.clear(ownerKey, { envId: String(envId) });
+    if (dropped) console.log(`[morelogin] ${logOwnerId(ownerKey)}: ${describeProfile(dropped.envId, dropped.name)} connects again in this run: it may switch profiles again`);
+    return dropped;
+  } catch { return null; }
+}
+
+/**
+ * Why `ownerKey` may not switch now, or null. `target`: `{ toDefault: true }` (back to the default AI browser,
+ * Settings → Connected tools → MoreLogin), or the profile it names ({ envId, name, profile }, resolved or as a request said it). `action`: 'use' (a
+ * move, POST /api/morelogin/use) or 'start' (an automation's start of a profile). → an Error with code
+ * PROFILE_FAILED_NO_SWITCH, status 409 (refuseProfileSwitchAfterFailure answers it). A failure of a profile the run no
+ * longer works in (the owner moved it) is dropped here; naming the failed profile itself is no move.
+ */
+function runProfileSwitchRefusal(ownerKey, target = {}, { action = 'use', cfg = loadBrowserConfig() } = {}) {
+  let failure = null;
+  try { failure = _runProfileFailures.get(ownerKey); } catch { failure = null; }
+  if (!failure) return null;
+  const defaultEnv = cfg?.connectMode === 'morelogin' ? moreLoginDefaultEnvId(cfg) : null;
+  // A resolved profile is compared by its id alone; a request's words by id or name (namesFailedProfile).
+  const sameTarget = target?.toDefault ? String(defaultEnv || '') === failure.envId
+    : target?.resolved ? String(target.envId || '') === failure.envId : namesFailedProfile(target, failure);
+  const decision = profileSwitchDecision({ failure, current: runEffectiveProfile(ownerKey, cfg)?.envId || null, sameTarget });
+  if (decision === 'lifted') {
+    _runProfileFailures.clear(ownerKey, { envId: failure.envId });
+    console.log(`[morelogin] ${logOwnerId(ownerKey)} no longer works in ${describeProfile(failure.envId, failure.name)} (the owner moved it): its failure there no longer bars a switch`);
+    return null;
+  }
+  if (decision !== 'barred') return null;
+  const named = target?.toDefault
+    ? (defaultEnv ? `the default browser, ${describeProfile(String(defaultEnv), _moreLoginEnvNames.get(String(defaultEnv)) || null)}` : 'the default browser')
+    : target?.envId ? describeProfile(String(target.envId), target.name || _moreLoginEnvNames.get(String(target.envId)) || null)
+    : (target?.name || target?.profile) ? `the profile "${String(target.name || target.profile).slice(0, 64)}"` : 'another profile';
+  const err = profileSwitchBarError(failure, { label: describeProfile(failure.envId, failure.name), targetLabel: named, action });
+  console.warn(`[morelogin] ${logOwnerId(ownerKey)}: its ${action === 'start' ? 'start of' : 'move to'} ${named} was refused: its own profile ${describeProfile(failure.envId, failure.name)} failed in this run (${failure.code || 'no code'})`);
+  loopLog(ownerKey, 'browser:profile', `refused: its own profile failed in this run, so it does not ${action === 'start' ? 'start' : 'move to'} ${named}`, { failed: failure.envId, failedAt: err.failedAt || null, code: failure.code || null, asked: target?.toDefault ? 'default' : (target?.envId || target?.name || target?.profile || null) });
+  return err;
+}
+
+/** 409 PROFILE_FAILED_NO_SWITCH: the answer of a refusal from runProfileSwitchRefusal. Nothing was changed or started. */
+function refuseProfileSwitchAfterFailure(res, err) {
+  return res.status(err.status || 409).json({
+    ok: false, code: err.code, envId: err.envId, needsUser: true,
+    ...(err.failedAt ? { failedAt: err.failedAt } : {}), ...(err.failedCode ? { failedCode: err.failedCode } : {}),
+    error: err.message,
+  });
 }
 
 /**
@@ -32433,12 +33054,14 @@ function runMoreLoginPin(ownerKey) {
     const chosen = _profileChoiceStore.get(ownerKey);
     if (chosen !== undefined) {
       decided = true;
-      pin = chosen.envId ? { envId: String(chosen.envId), name: chosen.name || null, by: 'agent' } : null;
+      // The session's own choice (`use`): it may choose again.
+      pin = chosen.envId ? { envId: String(chosen.envId), name: chosen.name || null, by: 'agent', locked: false } : null;
     } else {
       const loopFile = findLoopFileForTerminal(ownerKey);
       if (loopFile) {
         const data = JSON.parse(readFileSync(resolve(LOOP_DIR, loopFile), 'utf-8'));
-        if (data.moreloginEnvId) pin = { envId: String(data.moreloginEnvId), name: data.moreloginEnvName ? String(data.moreloginEnvName) : null, by: data.moreloginEnvBy === 'owner' ? 'owner' : 'agent' };
+        // The run was launched with this profile (its schedule, group, timer or launch): it stays there.
+        if (data.moreloginEnvId) pin = { envId: String(data.moreloginEnvId), name: data.moreloginEnvName ? String(data.moreloginEnvName) : null, by: data.moreloginEnvBy === 'owner' ? 'owner' : 'agent', locked: true };
       }
     }
   } catch { /* no pin */ }
@@ -32450,6 +33073,34 @@ function runMoreLoginPin(ownerKey) {
     while (_runMoreLoginNoPin.size > RUN_MORELOGIN_NO_PIN_MAX) _runMoreLoginNoPin.delete(_runMoreLoginNoPin.keys().next().value);
   }
   return pin;
+}
+
+// MoreLogin profile names last read from its list (GET /api/browser/morelogin-envs, /api/morelogin/profiles): what the
+// start cooldowns are called by. id → name, bounded.
+const _moreLoginEnvNames = new Map();
+function rememberMoreLoginEnvNames(envs) {
+  for (const env of envs || []) {
+    if (env?.id == null || !env.name || env.kind === 'local') continue;
+    _moreLoginEnvNames.delete(String(env.id));
+    _moreLoginEnvNames.set(String(env.id), String(env.name));
+  }
+  while (_moreLoginEnvNames.size > 500) _moreLoginEnvNames.delete(_moreLoginEnvNames.keys().next().value);
+}
+/**
+ * The profiles MoreLogin refused to start for its plan's daily limit, held until its day resets
+ * (lib/morelogin-start-cooldown.js): [{ envId, name, since, resetAt, resetLocal, apiCode }]. Never throws.
+ */
+function moreLoginStartCooldowns(envs = null) {
+  let list = [];
+  try { list = moreLogin.listStartCooldowns(); } catch { return []; }
+  if (!list.length) return [];
+  if (envs) rememberMoreLoginEnvNames(envs);
+  const names = new Map(_moreLoginEnvNames);
+  try { for (const p of moreLoginAgentProfiles()) if (p?.envId && p.name && !names.has(String(p.envId))) names.set(String(p.envId), p.name); } catch { /* unreadable config: ids only */ }
+  return list.map((c) => ({
+    envId: c.envId, name: names.get(c.envId) || null,
+    since: c.since ? new Date(c.since).toISOString() : null, resetAt: c.resetAt, resetLocal: c.resetLocal, apiCode: c.apiCode ?? null,
+  }));
 }
 
 function describeMoreLoginPin(pin) {
@@ -32503,6 +33154,7 @@ function sessionServesRun(session, cfg, ownerKey) {
   // A pin that may not be used (an agent's, its profile off the owner's list) serves in no session at all: not its
   // profile's, and never the default browser's.
   if (pin) return !pinUseRefusal(pin, cfg) && sessionServesMoreLoginEnv(session, pin.envId);
+  if (cfg.connectMode === 'extension' || session?._profileMode === 'extension') return cfg.connectMode === 'extension' && session?._profileMode === 'extension';
   return cfg.connectMode !== 'morelogin' || sessionServesMoreLoginDefault(session, cfg);
 }
 
@@ -32528,6 +33180,10 @@ async function findReusableBrowserSession(opts = {}) {
   const normalize = (p) => (p || '').replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
   const selectedNorm = normalize(selectedPath);
   for (const [id, session] of browserSessions) {
+    if (session._profileMode === 'extension' || cfg.connectMode === 'extension' && !moreloginEnvId) {
+      if (session._profileMode === 'extension' && cfg.connectMode === 'extension' && extensionBridge.status().connected && !moreloginEnvId) return { id, session };
+      continue;
+    }
     if (excludeAgentOwned && session._agentOwnedSet?.size > 0) continue;
     if (excludeLoopOwned && session._loopOwned?.size > 0) continue;
     // Belt-and-suspenders: also check agent registry in case the ownership set
@@ -32661,10 +33317,15 @@ function loopBrowserLockKey(ownerKey, requestedBrowserSessionId, cfg) {
  *
  * Returns { browserSessionId, browserTabId } on success, or { error } on failure.
  */
-async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, ownerKey, ownerType = 'loop', logTag = 'launch:browser' }) {
+async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, ownerKey, ownerType = 'loop', logTag = 'launch:browser', takeOverTab = null, scheduledFiring = false }) {
+  if (loadBrowserConfig().connectMode === 'extension' && !runMoreLoginPin(ownerKey)) {
+    // takeOverTab: one of the owner's open tabs in the everyday browser (full control), named by browser_session create.
+    try { return await extensionAdapter.acquire(ownerKey, ownerType, { adopt: takeOverTab || undefined }); }
+    catch (error) { return extensionSafeError(error); }
+  }
   const lockKey = loopBrowserLockKey(ownerKey, requestedBrowserSessionId, loadBrowserConfig());
   const acquired = await withLoopBrowserLock(lockKey, async () => {
-    // The browser this owner gets changed while it waited (Settings → Browser, a requested session that went away):
+    // The browser this owner gets changed while it waited (the owner's settings, a requested session that went away):
     // it queues again for the right one, outside this turn.
     if (loopBrowserLockKey(ownerKey, requestedBrowserSessionId, loadBrowserConfig()) !== lockKey) return { requeue: true };
     let browserSessionId = null;
@@ -32733,9 +33394,14 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
     let createError = null;
     if (!browserSessionId) {
       try {
+        // The start guard: a profile closed outside SynaBun is not started again by this acquisition (an attach to the
+        // profile running again is always allowed). Only a new scheduled firing's launch may start it
+        // (`scheduledFiring`, the schedule:browser acquisition; never a recovery or a create of a run under way).
+        const moreloginStartGuard = moreLoginStartGuardFor(ownerKey, pin, { scheduled: scheduledFiring === true });
+        const moreloginAfterOutsideClose = scheduledFiring === true ? 'schedule' : null;
         const result = await createBrowserSession(pin
-          ? { url: 'about:blank', connectMode: 'morelogin', moreloginEnvId: pin.envId, _mlPinned: true }
-          : { url: 'about:blank' });
+          ? { url: 'about:blank', connectMode: 'morelogin', moreloginEnvId: pin.envId, _mlPinned: true, moreloginStartGuard, moreloginAfterOutsideClose }
+          : { url: 'about:blank', moreloginStartGuard, moreloginAfterOutsideClose });
         browserSessionId = result.sessionId;
         loopLog(ownerKey, logTag, 'strategy 2: created shared browser session', {
           browserSessionId, profileMode: result.profileMode, profileSource: result.profileSource,
@@ -32752,6 +33418,19 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
     }
 
     if (!browserSessionId) {
+      // The run's own profile (its pin, else the MoreLogin default) failed to start or connect in this run: from now on
+      // it may not move to another profile (POST /api/morelogin/use answers 409 PROFILE_FAILED_NO_SWITCH) until that
+      // profile connects again for it (below), the owner moves it, or it ends (lib/morelogin-profile-failures.js).
+      if (createError) {
+        const own = pin || (moreLoginDefault && moreLoginDefaultEnvId(policyCfg) ? { envId: String(moreLoginDefaultEnvId(policyCfg)), name: null } : null);
+        noteRunProfileFailure(ownerKey, own, createError);
+      }
+      // The profile was closed outside SynaBun: the sentence says it all (which profile, when, that SynaBun does not
+      // reopen it, how to go on); no "could not start" around it.
+      if (createError?.code === 'MORELOGIN_CLOSED_OUTSIDE') {
+        loopLog(ownerKey, logTag, 'BLOCKED: the MoreLogin profile was closed outside SynaBun; SynaBun does not reopen it', { closedAt: createError.closedAt || null, holdUntil: createError.holdUntil || null });
+        return { error: createError.error, code: createError.code, needsUser: true, blocked: true, ...(createError.closedAt ? { closedAt: createError.closedAt } : {}), ...(createError.holdUntil ? { holdUntil: createError.holdUntil } : {}) };
+      }
       // Carry the real reason (e.g. "MoreLogin connect failed: … unreachable") into the
       // run's log, lastRunResult and the schedule:failed toast.
       return {
@@ -32760,11 +33439,17 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
           ? `Could not start ${describeMoreLoginPin(pin)} for this run${createError ? `: ${createError.error}` : '.'} The run was not started in another profile or browser: ${
             createError?.code === 'MORELOGIN_NOT_CHROMIUM' || createError?.code === 'MORELOGIN_NOT_DEVTOOLS'
               ? 'pick a Chrome-type profile where this run is set up.'
+              : createError?.code === 'MORELOGIN_START_REFUSED'
+              ? `this needs the user, not a retry: ${createError.planLimit ? 'wait for MoreLogin\'s daily reset, upgrade the MoreLogin plan, or keep the profile open so runs need no new start' : 'fix what MoreLogin names in the MoreLogin app'}.`
+              : createError?.code === 'MORELOGIN_PROFILE_WINDOWLESS'
+              ? 'this needs the user, not a retry: open the profile\'s window again in MoreLogin (or close it fully there and start it again).'
               : 'check that MoreLogin is open and that the profile still exists, or pick another profile where this run is set up.'}`
           : createError
           ? `Could not start the shared browser session: ${createError.error}`
           : 'Could not start the shared browser session. Open Browser Settings and verify the selected profile can launch.',
         ...(createError?.code ? { code: createError.code, offenders: createError.offenders } : {}),
+        ...(createError?.needsUser ? { needsUser: true } : {}),
+        ...(createError?.resetAt ? { resetAt: createError.resetAt } : {}),
       };
     }
 
@@ -32848,17 +33533,56 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
       return { requeue: true };
     }
 
+    // Connected to its profile: a failure of that profile noted earlier in this run is over (it may switch again).
+    if (claimedSession._mlEnvId) noteRunProfileConnected(ownerKey, claimedSession._mlEnvId);
     return { browserSessionId, browserTabId };
   });
-  return acquired?.requeue ? acquireSharedBrowserTab({ requestedBrowserSessionId, ownerKey, ownerType, logTag }) : acquired;
+  return acquired?.requeue ? acquireSharedBrowserTab({ requestedBrowserSessionId, ownerKey, ownerType, logTag, scheduledFiring }) : acquired;
+}
+
+/**
+ * The start guard of `ownerKey`'s acquisition (createBrowserSession `moreloginStartGuard` → lib/morelogin.js
+ * startProfile `refuseStart`, asked only when MoreLogin says the profile is not running): a profile closed outside
+ * SynaBun (lib/morelogin-outside-close.js) is not started again, for this run or any other, named the way the run
+ * knows it. `scheduled`: the launch acquisition of a new scheduled firing, which may start it (startProfile is told
+ * the same through `allowAfterOutsideClose`). → (envId) => Error | null.
+ */
+function moreLoginStartGuardFor(ownerKey, pin = null, { scheduled = false } = {}) {
+  return (envId) => {
+    if (scheduled) return null;
+    const held = moreLogin.outsideCloseFor(String(envId));
+    if (!held) return null;
+    const name = (pin && String(pin.envId) === String(envId) ? pin.name : null) || _moreLoginEnvNames.get(String(envId)) || held.name || null;
+    return moreLogin.outsideCloseError(String(envId), held, { label: describeProfile(String(envId), name) });
+  };
+}
+
+/**
+ * The profiles closed outside SynaBun that SynaBun does not reopen (lib/morelogin-outside-close.js), for the status
+ * answers and Settings: [{ envId, name, closedAt, closedLocal, holdUntil, holdUntilLocal, runs }] (the orphaned runs
+ * counted, never listed). `envs`: a list just read, for names. Never throws.
+ */
+function moreLoginClosedOutside(envs = null) {
+  try {
+    const listed = new Map((envs || []).filter((e) => e?.id != null && e.name).map((e) => [String(e.id), String(e.name)]));
+    return moreLogin.listOutsideCloses().map((c) => ({
+      envId: c.envId, name: listed.get(c.envId) || _moreLoginEnvNames.get(c.envId) || c.name || null,
+      closedAt: c.closedAt, closedLocal: c.closedLocal, holdUntil: c.holdUntil, holdUntilLocal: c.holdUntilLocal, runs: c.owners.length,
+    }));
+  } catch { return []; }
+}
+
+/** A profile as a refusal names it (lib/morelogin.js startProfile `profileLabel`): its name as MoreLogin last listed it. */
+function moreLoginProfileLabel(envId, name = null) {
+  return describeProfile(String(envId), _moreLoginEnvNames.get(String(envId)) || name || null);
 }
 
 /**
  * Backward-compatible loop wrapper around acquireSharedBrowserTab. Existing callers
  * pass { terminalSessionId } and expect loop-owned semantics.
  */
-async function acquireLoopBrowserAndTab({ requestedBrowserSessionId = null, terminalSessionId, logTag = 'launch:browser' }) {
-  return acquireSharedBrowserTab({ requestedBrowserSessionId, ownerKey: terminalSessionId, ownerType: 'loop', logTag });
+async function acquireLoopBrowserAndTab({ requestedBrowserSessionId = null, terminalSessionId, logTag = 'launch:browser', takeOverTab = null, scheduledFiring = false }) {
+  return acquireSharedBrowserTab({ requestedBrowserSessionId, ownerKey: terminalSessionId, ownerType: 'loop', logTag, takeOverTab, scheduledFiring });
 }
 
 /**
@@ -32869,6 +33593,7 @@ async function acquireLoopBrowserAndTab({ requestedBrowserSessionId = null, term
  */
 async function releaseSharedBrowserTab(sessionId, ownerKey) {
   const session = browserSessions.get(sessionId);
+  if (session?._profileMode === 'extension') return extensionAdapter.release(sessionId, ownerKey);
   if (!session) return;
   session._interactiveOwned?.delete(ownerKey);
   session._loopOwned?.delete(ownerKey);
@@ -32923,7 +33648,7 @@ function startedTabAlive(sessionId, tabId, ownerKey) {
   const session = sessionId ? browserSessions.get(sessionId) : null;
   if (!session) return false;
   if (tabId && session.tabs && !session.tabs.has(tabId)) return false;
-  if (ownerKey && tabId && session._tabOwners?.get(ownerKey) !== tabId) return false;
+  if (ownerKey && tabId && !(session._profileMode === 'extension' ? extensionAdapter.ownsTab(session, ownerKey, tabId) : session._tabOwners?.get(ownerKey) === tabId)) return false;
   return true;
 }
 
@@ -34218,6 +34943,22 @@ function browserStartFailure(err) {
   const out = { error: err?.message || String(err) };
   if (err?.code === 'NATIVE_SERVE_UNVERIFIED') { out.code = err.code; out.offenders = narrowOffenders(err.offenders); }
   if (err?.code === 'MORELOGIN_NOT_CHROMIUM' || err?.code === 'MORELOGIN_NOT_DEVTOOLS') out.code = err.code;
+  // MoreLogin refused the start (a plan limit, …): the user has to act, a retry or another run hits the same answer.
+  if (err?.code === 'MORELOGIN_START_REFUSED') {
+    out.code = err.code;
+    out.needsUser = true;
+    if (err.apiCode != null) out.apiCode = err.apiCode;
+    if (err.planLimit) out.planLimit = true;
+    if (err.resetAt) out.resetAt = err.resetAt;
+  }
+  // The run's profile was closed outside SynaBun and is not started again for it (lib/morelogin-outside-close.js), or
+  // MoreLogin lists it running with no window: the user acts (starts or reopens it), a retry gets the same answer.
+  if (err?.code === 'MORELOGIN_CLOSED_OUTSIDE' || err?.code === 'MORELOGIN_PROFILE_WINDOWLESS') {
+    out.code = err.code;
+    out.needsUser = true;
+    if (err.closedAt) out.closedAt = err.closedAt;
+    if (err.holdUntil) out.holdUntil = err.holdUntil;
+  }
   return out;
 }
 
@@ -34326,6 +35067,10 @@ function moreLoginBlockError(session, requestedUrl, landedUrl) {
 async function createBrowserSession(options = {}) {
   const sessionId = randomBytes(16).toString('hex');
   const savedCfg = loadBrowserConfig();
+  if (savedCfg.connectMode === 'extension' && options.connectMode !== 'morelogin') {
+    const acquired = await extensionAdapter.acquire(options._extensionOwner || 'owner-page');
+    return { sessionId: acquired.browserSessionId, tabId: acquired.browserTabId, profileMode: 'extension', wsEndpoint: null };
+  }
   // Settings that exist but cannot be read are not "no settings": never fall back to Chrome.
   const unreadableCfg = browserConfigUnreadable(savedCfg);
   if (unreadableCfg) throw new Error(`browser-config.json is unreadable; fix it in Settings → Browser (${unreadableCfg})`);
@@ -34588,7 +35333,7 @@ async function createBrowserSession(options = {}) {
   let _launchProfileDirectory = _profileDirectory || (userDataDir ? 'Default' : null);
 
   // ── MoreLogin connect mode ──
-  // When configured (Settings → Browser → MoreLogin, or an explicit per-session
+  // When configured (Settings → Connected tools → MoreLogin → Default AI browser, or an explicit per-session
   // moreloginEnvId), launch/attach a MoreLogin anti-detect profile and drive it
   // over CDP. MoreLogin's /api/env/start returns a debugPort — the exact same CDP
   // path as "attach" mode, so we reuse connectOverCDP + probeCdpEndpoint here.
@@ -34642,27 +35387,48 @@ async function createBrowserSession(options = {}) {
       // requireCdp: a Firefox-type profile has no DevTools endpoint and is refused, before it is started when
       // MoreLogin says what it is up front.
       nativePreflightProfiles.add(String(envId));
-      const { debugPort } = await moreLogin.startProfile(envId, { ...mlOpts, requireCdp: true });
-      // Wait for MoreLogin's Chromium DevTools endpoint to come up.
+      // `moreloginStartGuard` (acquireSharedBrowserTab): the run's own reason not to spend a launch. Asked only when
+      // MoreLogin says the profile is not running. A profile closed outside SynaBun is refused by startProfile for
+      // everybody but `moreloginAfterOutsideClose` ('owner': the owner's page; 'schedule': a new scheduled firing).
+      const startOpts = { ...mlOpts, requireCdp: true, ...(typeof options.moreloginStartGuard === 'function' ? { refuseStart: options.moreloginStartGuard } : {}),
+        ...(options.moreloginAfterOutsideClose ? { allowAfterOutsideClose: options.moreloginAfterOutsideClose } : {}), profileLabel: moreLoginProfileLabel };
+      let { debugPort } = await moreLogin.startProfile(envId, startOpts);
       let endpoint = null;
-      for (let i = 0; i < 40; i++) {
-        const probed = await probeCdpEndpoint(debugPort);
-        if (probed.ok) { endpoint = probed.httpEndpoint; break; }
-        await new Promise(r => setTimeout(r, 250));
+      let attached = null;
+      for (let attempt = 0; !attached; attempt++) {
+        // Wait for MoreLogin's Chromium DevTools endpoint to come up.
+        endpoint = null;
+        for (let i = 0; i < 40; i++) {
+          const probed = await probeCdpEndpoint(debugPort);
+          if (probed.ok) { endpoint = probed.httpEndpoint; break; }
+          await new Promise(r => setTimeout(r, 250));
+        }
+        if (!endpoint) {
+          // Ten seconds without a DevTools answer. A port that answers HTTP as something else will never become
+          // one: say what it is, in place of Playwright's "Unexpected status 404 … try connecting via ws://". A
+          // port nothing listens on yet still gets the connect attempt below.
+          const seen = await moreLogin.describeDebugEndpoint(debugPort);
+          if (seen.kind === 'not-devtools') throw moreLogin.notDevToolsError(envId, debugPort, seen);
+          endpoint = `http://127.0.0.1:${debugPort}`;
+        }
+        try {
+          attached = await moreLogin.attachProfileBrowser(
+            chromium, endpoint,
+            (cdpBrowser, cdpContext) => newSessionPage({ browser: cdpBrowser, context: cdpContext, _profileMode: 'morelogin' }),
+          ); // fresh tab in the real profile; never substitute an incognito context
+        } catch (attachError) {
+          // MoreLogin lists the profile running, but its browser holds no profile (its window was closed and the
+          // process lives on, or it is still starting: P-4 at 21:13:36 on 2026-11-15). Asked once more after a short
+          // wait, through the status again (a profile that finished closing is then started only as startProfile and
+          // the run's guard allow); never a start of a profile MoreLogin still lists as running.
+          if (attachError?.code !== 'MORELOGIN_PROFILE_WINDOWLESS') throw attachError;
+          if (attempt >= 1) throw moreLogin.windowlessProfileError(envId, endpoint, attachError.cause || attachError);
+          console.warn(`[browser] MoreLogin profile ${envId}: DevTools port ${debugPort} answers but its browser has no profile (closing or still starting); asking MoreLogin again in 2 s`);
+          await new Promise(r => setTimeout(r, 2000));
+          ({ debugPort } = await moreLogin.startProfile(envId, startOpts));
+        }
       }
-      if (!endpoint) {
-        // Ten seconds without a DevTools answer. A port that answers HTTP as something else will never become
-        // one: say what it is, in place of Playwright's "Unexpected status 404 … try connecting via ws://". A
-        // port nothing listens on yet still gets the connect attempt below.
-        const seen = await moreLogin.describeDebugEndpoint(debugPort);
-        if (seen.kind === 'not-devtools') throw moreLogin.notDevToolsError(envId, debugPort, seen);
-        endpoint = `http://127.0.0.1:${debugPort}`;
-      }
-
-      const { browser: cdpBrowser, context: cdpContext, page: cdpPage } = await moreLogin.attachProfileBrowser(
-        chromium, endpoint,
-        (cdpBrowser, cdpContext) => newSessionPage({ browser: cdpBrowser, context: cdpContext, _profileMode: 'morelogin' }),
-      ); // fresh tab in the real profile; never substitute an incognito context
+      const { browser: cdpBrowser, context: cdpContext, page: cdpPage } = attached;
       // A local profile's timezone on this first tab (every later tab gets it in newSessionPage, from the session).
       if (_localProfileInfo?.timezone) await applyPageTimezone(cdpContext, cdpPage, _localProfileInfo.timezone);
 
@@ -34677,6 +35443,8 @@ async function createBrowserSession(options = {}) {
       _profileSourceName = _localProfile ? `Local · ${_localProfileInfo?.name || envId}` : `MoreLogin · ${envId}`;
       _localProfileTimezone = _localProfile ? (_localProfileInfo?.timezone || null) : null;
       _moreLoginConnected = true;
+      // The profile runs and SynaBun is attached: a close outside SynaBun remembered for it is over, for every run.
+      if (!_localProfile) { try { moreLogin.clearOutsideClose(String(envId)); } catch { /* nothing held */ } }
       console.log(`[browser] Connected to ${_localProfile ? `local profile ${envId}` : `MoreLogin env ${envId}`} via CDP at ${endpoint}`);
     } catch (err) {
       if (_localProfile) {
@@ -34686,14 +35454,27 @@ async function createBrowserSession(options = {}) {
         throw refused;
       }
       const port = moreLogin.getMoreLoginPort(savedCfg);
-      if (err?.code === 'MORELOGIN_NOT_CHROMIUM' || err?.code === 'MORELOGIN_NOT_DEVTOOLS') {
-        // MoreLogin is open and the profile exists: it is the profile's browser SynaBun cannot drive. No "open the
-        // MoreLogin app" advice, and the code travels so the run's message does not add it either.
+      if (err?.code === 'MORELOGIN_NOT_CHROMIUM' || err?.code === 'MORELOGIN_NOT_DEVTOOLS' || err?.code === 'MORELOGIN_START_REFUSED'
+        || err?.code === 'MORELOGIN_CLOSED_OUTSIDE' || err?.code === 'MORELOGIN_PROFILE_WINDOWLESS') {
+        // MoreLogin is open and the profile exists: it is the profile's browser SynaBun cannot drive, MoreLogin
+        // itself refused the start (a plan limit, …), the run's profile was closed outside SynaBun and is not started
+        // again for it, or MoreLogin lists it running with no window. No "open the MoreLogin app" advice, and the code
+        // travels so the run's message does not add it either.
         const rule = options.moreloginEnvId
           ? 'a session asked for a MoreLogin profile never falls back to another profile or to Chrome'
           : 'sessions will not fall back to Chrome while MoreLogin is the default browser';
-        const refused = new Error(`MoreLogin connect failed: ${err.message}. Nothing was opened elsewhere: ${rule}.`);
+        // A run whose profile was closed outside SynaBun: nothing failed to connect, SynaBun chose not to start it, and
+        // the sentence (lib/morelogin-outside-close.js outsideCloseError) already says all of it.
+        const refused = new Error(err.code === 'MORELOGIN_CLOSED_OUTSIDE'
+          ? `${err.message}.`
+          : `MoreLogin connect failed: ${err.message}. Nothing was opened elsewhere: ${rule}.`);
         refused.code = err.code;
+        if (err.needsUser) refused.needsUser = true;
+        if (err.apiCode != null) refused.apiCode = err.apiCode;
+        if (err.planLimit) refused.planLimit = true;
+        if (err.resetAt) refused.resetAt = err.resetAt;
+        if (err.closedAt) refused.closedAt = err.closedAt;
+        if (err.holdUntil) refused.holdUntil = err.holdUntil;
         throw refused;
       }
       if (options.moreloginEnvId) {
@@ -35149,6 +35930,10 @@ async function createBrowserSession(options = {}) {
     context.on('close', () => {
       const orphanedLoops = session._loopOwned?.size > 0 ? [...session._loopOwned] : [];
       console.log(`Browser context closed for session ${sessionId}${session._agentOwnedSet?.size ? ` (agent-owned: ${[...session._agentOwnedSet].join(',')})` : ''}${orphanedLoops.length ? ` (orphaning loops: ${orphanedLoops.map(logOwnerId).join(', ')})` : ''}`);
+      // A MoreLogin profile's browser went away: who closed it (SynaBun's own revocation or teardown, or somebody
+      // else: then one line of evidence, and the runs it orphaned do not start it again). The profile is never
+      // reopened from here (each start spends one of MoreLogin's daily launches).
+      try { noteMoreLoginContextClose(session, sessionId, context); } catch { /* the close goes on */ }
       session.screencastActive = false;
       detachScreencastFrameHandler(session);
       // Stop autosave interval
@@ -35335,6 +36120,7 @@ async function stopScreencast(session) {
  * of such a session closes those, and only those (closeOwnTabsBeforeDisconnect).
  */
 async function newSessionPage(session, { timeoutMs } = {}) {
+  if (session._profileMode === 'extension') throw Object.assign(new Error('Use the extension adapter to create tabs.'), { code: 'UNSUPPORTED_IN_EXTENSION_MODE' });
   let page;
   if (backgroundTabsEnabled(loadBrowserConfig())) {
     page = await openBackgroundPageStrict(session.browser, session.context, {
@@ -35686,6 +36472,11 @@ async function _switchSessionTab(session, sessionId, tabId) {
  * Close a single tab in a session. If it's the last tab, destroys the whole session.
  */
 async function closeSessionTab(session, sessionId, tabId) {
+  if (session._profileMode === 'extension') {
+    const owner = [...session._tabOwners.keys()].find(key => extensionAdapter.ownsTab(session, key, tabId));
+    if (owner) await extensionAdapter.release(sessionId, owner, tabId);
+    return;
+  }
   const tabEntry = session.tabs.get(tabId);
   if (!tabEntry) return;
 
@@ -35743,6 +36534,7 @@ async function closeSessionTab(session, sessionId, tabId) {
  */
 async function destroyBrowserSession(sessionId, { closeOwnTabs = false, closingPage = null } = {}) {
   const session = browserSessions.get(sessionId);
+  if (session?._profileMode === 'extension') return extensionAdapter.destroy(sessionId);
   if (!session) return;
 
   try {
@@ -36280,7 +37072,47 @@ app.use('/api/browser/sessions/:id', (req, res, next) => {
   }
   return gate();
 });
-// Read-only semantic context for the browser judgments (the judgments themselves run in the MCP layer).
+// Read-only semantic context for the browser judgments and extension backend dispatch.
+// All extension endpoints terminate here; none falls through to Playwright or raw CDP.
+app.use('/api/browser', extensionAdapter.middleware);
+const extensionOwnerGuard = ownerRouteGuard({ isGuestRequest, port: PORT, allowedOrigins: publicWebOrigins, refuseCrossSite: true, ownOriginsOnly: true, requireOrigin: true });
+app.use('/api/browser/extension', extensionOwnerGuard, (req, res, next) => {
+  if (browserCaller(req).automation || !browserOwnerPageOnly(req)) return res.status(403).json({ code: 'OWNER_ROUTE', error: 'Extension pairing and approval belong to the owner.' });
+  res.setHeader('Cache-Control', 'no-store'); next();
+});
+app.get('/api/browser/extension', (_req, res) => {
+  const folderState = extensionFolderState(DATA_HOME), status = extensionBridge.status();
+  // `folder`: the folder the owner loads (the prepared copy; the bundled one only when none could be prepared).
+  res.json({ ...status, folder: folderState.prepared ? folderState.folder : EXTENSION_FOLDER, bundledFolder: EXTENSION_FOLDER, uploadFolder: extensionUploadRoot,
+    folderVersion: folderState.version, reloadNeeded: !!(status.connected && folderState.version && status.extensionVersion !== folderState.version),
+    setup: extensionSetup.status().state });
+});
+// The one-button setup. Owner only: these sit under the guard above (ownerRouteGuard, the page secret, no automation
+// caller), like pairing and the mode. The token (ticket) goes to SynaBun's own setup page only, never into a log or URL.
+const sendSetup = (res, run) => Promise.resolve().then(run).then(value => res.json({ ok: true, ...value }),
+  error => res.status(400).json(extensionSetupError(error) || extensionSafeError(error)));
+app.get('/api/browser/extension/setup/status', (_req, res) => sendSetup(res, () => extensionSetup.status()));
+app.post('/api/browser/extension/setup/start', (req, res) => sendSetup(res, () => extensionSetup.start({ browserId: typeof req.body?.browser === 'string' ? req.body.browser : undefined })));
+app.post('/api/browser/extension/setup/ticket', (_req, res) => { res.setHeader('Cache-Control', 'no-store'); return sendSetup(res, () => extensionSetup.ticket()); });
+app.post('/api/browser/extension/setup/cancel', (_req, res) => sendSetup(res, () => extensionSetup.cancel()));
+app.post('/api/browser/extension/setup/reveal', (_req, res) => sendSetup(res, () => extensionSetup.reveal()));
+app.post('/api/browser/extension/setup/reopen', (_req, res) => sendSetup(res, () => extensionSetup.reopen()));
+app.post('/api/browser/extension/:action', async (req, res) => {
+  try {
+    const action = req.params.action;
+    if (action === 'pair') return res.json(await extensionBridge.beginPairing(Number(req.body?.port || 3345)));
+    if (action === 'disconnect') extensionBridge.disconnect();
+    else if (action === 'resume') extensionBridge.resume();
+    else if (action === 'revoke') extensionBridge.revoke();
+    else if (action === 'revoke-tab') await extensionBridge.revokeTab(req.body?.tab);
+    else if (action === 'revoke-site') await extensionBridge.revokeSite(req.body?.site);
+    // The owner's mode: full control (any site and tab of the paired browser) or only what the owner shares.
+    else if (action === 'mode') await extensionBridge.setMode(req.body?.fullControl);
+    else return res.status(400).json({ code: 'INVALID_MESSAGE', error: 'Unknown extension action.' });
+    return res.json({ ok: true, ...extensionBridge.status() });
+  } catch (error) { return res.status(400).json(extensionSafeError(error)); }
+});
+// Semantic context itself runs only on Playwright sessions; the extension adapter has already answered.
 app.use('/api/browser', createBrowserAssistRouter({ browserSessions, getTargetPage, normalizeSelector }));
 
 app.get('/api/browser/sessions', (req, res) => {
@@ -36310,7 +37142,7 @@ app.get('/api/browser/sessions', (req, res) => {
   const sessions = [...browserSessions.entries()].map(([id, s]) => {
     const allTabs = s.tabs ? [...s.tabs.entries()] : [];
     const ownTabId = automationView && caller ? (s._tabOwners?.get(caller) || null) : null;
-    const shownTabs = automationView ? allTabs.filter(([tid]) => tid === ownTabId) : allTabs;
+    const shownTabs = automationView ? allTabs.filter(([tid]) => s._profileMode === 'extension' ? extensionAdapter.ownsTab(s, caller, tid) : tid === ownTabId) : allTabs;
     const ownTab = automationView && shownTabs.length ? shownTabs[0][1] : null;
     return {
     id,
@@ -36323,9 +37155,9 @@ app.get('/api/browser/sessions', (req, res) => {
     profileSource: s._profileSourceName || null,
     moreloginEnvId: s._mlEnvId || null,
     // For a run pinned to a MoreLogin profile of its own, "the default" is that profile's session (sessionServesRun).
-    servesDefault: callerPin ? sessionServesMoreLoginEnv(s, callerPin.envId) : (moreLoginDefault ? sessionServesMoreLoginDefault(s, policyCfg) : true),
+    servesDefault: sessionServesRun(s, policyCfg, caller),
     // The browser's own CDP endpoint drives every tab past every check here: the owner's page's only.
-    wsEndpoint: who.automation || s._isPersistent ? null : (s.browser.wsEndpoint?.() || null),
+    wsEndpoint: who.automation || s._isPersistent ? null : (s.browser?.wsEndpoint?.() || null),
     activeTabId: automationView ? (ownTabId && s.activeTabId === ownTabId ? ownTabId : null) : (s.activeTabId || null),
     loopOwned: (s._loopOwned?.size || 0) > 0,
     interactiveOwned: (s._interactiveOwned?.size || 0) > 0,
@@ -36364,12 +37196,18 @@ app.get('/api/browser/sessions', (req, res) => {
     // POST /api/loop/recover-browser records a run's move to a tab of its own (`adopt`): an MCP asks it only of a
     // server that says so (an older one reads the request as a recovery and opens a tab).
     adoptRoute: true,
+    // The everyday browser through the extension, in full control: the owner's open tabs no agent holds, which an
+    // agent may take over (browser_session create with that tabId). Only for a verified run or the owner's page.
+    ...(policyCfg.connectMode === 'extension' && !callerPin && (who.automation ? who.status === 'verified' : browserOwnerPageOnly(req))
+      ? (() => { const tabs = extensionAdapter.ownerTabs({ caller, includeOwned: true }); return tabs ? { extensionTabs: { fullControl: true, tabs } } : {}; })()
+      : {}),
   });
 });
 
 app.post('/api/browser/sessions', async (req, res) => {
   const { url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone, connectMode, moreloginEnvId } = req.body;
-  // Which browser or MoreLogin profile a session starts on is the owner's choice (Settings → Browser): an automation's
+  // Which browser or MoreLogin profile a session starts on is the owner's choice (Settings → Browser for SynaBun's own
+  // browser, Settings → Connected tools → MoreLogin for the default AI browser profile): an automation's
   // create opens the default browser and names neither (lib/browser-automation-routes.js; review 972afb74, finding 1).
   // N1 (re-review of 2026-11-10): the check asked `creator.automation` only, so an invite guest with the `browser`
   // permission (browserTerminalGate lets a guest reach this route: browserPageOwner) who knew a profile's id opened
@@ -36379,7 +37217,12 @@ app.post('/api/browser/sessions', async (req, res) => {
   const ownerFields = (creator.automation || !browserOwnerPageOnly(req)) ? ownerOnlyCreateFields(req.body) : [];
   if (ownerFields.length) {
     const guestCreate = !creator.automation;
-    return res.status(403).json({ ok: false, code: 'OWNER_ONLY_FIELDS', fields: ownerFields, error: `${guestCreate ? 'A guest' : 'An automation'} opens the default browser: ${ownerFields.join(' and ')} ${ownerFields.length === 1 ? 'is' : 'are'} the owner's choice (Settings → Browser). Leave ${ownerFields.length === 1 ? 'it' : 'them'} out.` });
+    // Where the owner makes each choice: a MoreLogin profile (the default AI browser) in the MoreLogin tab, SynaBun's
+    // own browser (connect mode, folders, executable) in Settings → Browser.
+    const profileFields = ownerFields.some((f) => /^morelogin/i.test(f));
+    const browserFields = ownerFields.some((f) => !/^morelogin/i.test(f));
+    const where = [profileFields && 'Settings → Connected tools → MoreLogin (Default AI browser)', browserFields && 'Settings → Browser'].filter(Boolean).join('; ');
+    return res.status(403).json({ ok: false, code: 'OWNER_ONLY_FIELDS', fields: ownerFields, error: `${guestCreate ? 'A guest' : 'An automation'} opens the default browser: ${ownerFields.join(' and ')} ${ownerFields.length === 1 ? 'is' : 'are'} the owner's choice (${where}). Leave ${ownerFields.length === 1 ? 'it' : 'them'} out.` });
   }
   // A create-session startUrl that points at one of SynaBun's own live OpenCode serve ports is refused up front, like
   // navigate and new-tab: the serve's API can change what a worker session may do, and createBrowserSession navigates
@@ -36427,15 +37270,28 @@ app.post('/api/browser/sessions', async (req, res) => {
     }
     // The start, its owner and its broadcast: once per start, whoever ends up with it.
     const start = async () => {
-      const result = await createBrowserSession({
-        url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone, _realHeaders,
-        // Its deadline bounds the native serve check (installServePortGuard) inside the caller's timeout.
-        browserRequest: req.browserRequest,
-        // Optional per-session override to target a specific MoreLogin env (multi-identity)
-        ...(connectMode === 'morelogin' ? { connectMode } : {}),
-        ...(moreloginEnvId ? { moreloginEnvId: String(moreloginEnvId) } : {}),
-      });
+      let result;
+      try {
+        result = await createBrowserSession({
+          url, width, height, screenWidth, screenHeight, deviceScaleFactor, timezone, _realHeaders,
+          // Its deadline bounds the native serve check (installServePortGuard) inside the caller's timeout.
+          browserRequest: req.browserRequest,
+          // Optional per-session override to target a specific MoreLogin env (multi-identity)
+          ...(connectMode === 'morelogin' ? { connectMode } : {}),
+          ...(moreloginEnvId ? { moreloginEnvId: String(moreloginEnvId) } : {}),
+          // The owner's own page (its page secret, no run or agent header) opening a session is the owner starting
+          // the profile: it may start one closed outside SynaBun (lib/morelogin-outside-close.js). Nobody else may.
+          ...(!creator.automation && browserOwnerPageOnly(req) ? { moreloginAfterOutsideClose: 'owner' } : {}),
+        });
+      } catch (err) {
+        // An automation's own profile here is the MoreLogin default: when it fails to start or connect, the run may not
+        // move to another profile (lib/morelogin-profile-failures.js). The owner's page has no run to bar.
+        if (who.automation && creatorTerminalId) noteRunProfileFailure(creatorTerminalId, runEffectiveProfile(creatorTerminalId), browserStartFailure(err));
+        throw err;
+      }
       const createdSession = browserSessions.get(result.sessionId);
+      // Connected to the profile: a failure of it noted earlier in this run is over.
+      if (who.automation && creatorTerminalId && createdSession?._mlEnvId) noteRunProfileConnected(creatorTerminalId, createdSession._mlEnvId);
       if (creatorTerminalId && createdSession) {
         if (!createdSession._tabOwners) createdSession._tabOwners = new Map();
         createdSession._tabOwners.set(creatorTerminalId, createdSession.activeTabId);
@@ -36468,8 +37324,11 @@ app.post('/api/browser/sessions', async (req, res) => {
   } catch (err) {
     console.error('Browser session create error:', err.message);
     const acq = err?.acquisition;
-    if (acq) return res.status(500).json({ error: acq.error, ...(acq.code ? { code: acq.code, offenders: acq.offenders } : {}) });
-    res.status(500).json(browserStartFailure(err));
+    if (acq?.code === 'MORELOGIN_CLOSED_OUTSIDE') return res.status(409).json(closedOutsideAnswer(acq));
+    if (acq) return res.status(500).json({ error: acq.error, ...(acq.code ? { code: acq.code, offenders: acq.offenders } : {}), ...(acq.needsUser ? { needsUser: true } : {}) });
+    const failure = browserStartFailure(err);
+    if (failure.code === 'MORELOGIN_CLOSED_OUTSIDE') return res.status(409).json(closedOutsideAnswer(failure));
+    res.status(500).json(failure);
   }
 });
 
@@ -36536,10 +37395,18 @@ app.post('/api/browser/acquire', async (req, res) => {
     res.json({ ok: true, sessionId: acq.browserSessionId, tabId: acq.browserTabId || null, ...(outcome.from !== 'started' && { handedOver: outcome.from }) });
   } catch (err) {
     const acq = err?.acquisition;
-    if (acq) return res.status(500).json({ error: acq.error, ...(acq.code ? { code: acq.code, offenders: acq.offenders } : {}) });
+    // The profile was closed outside SynaBun and SynaBun does not reopen it: 409, the user acts (never a replacement).
+    if (acq?.code === 'MORELOGIN_CLOSED_OUTSIDE') return res.status(409).json(closedOutsideAnswer(acq));
+    if (acq) return res.status(500).json({ error: acq.error, ...(acq.code ? { code: acq.code, offenders: acq.offenders } : {}), ...(acq.needsUser ? { needsUser: true } : {}) });
     res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code } : {}) });
   }
 });
+
+/** The answer of a browser route refused because its MoreLogin profile was closed outside SynaBun (409). */
+function closedOutsideAnswer(acq) {
+  return { ok: false, error: acq.error, code: 'MORELOGIN_CLOSED_OUTSIDE', needsUser: true, blocked: true,
+    ...(acq.closedAt ? { closedAt: acq.closedAt } : {}), ...(acq.holdUntil ? { holdUntil: acq.holdUntil } : {}) };
+}
 
 // POST /api/browser/release — interactive MCP process relinquishes its owned tab on
 // exit. Closes the dedicated tab and drops the ownership/routing entries so the shared
@@ -38384,7 +39251,7 @@ app.put('/api/browser/config', async (req, res) => {
     // Finding 1 of the re-review of 2026-11-11: only the owner's page changes the default AI browser (connect mode,
     // default MoreLogin profile). browserTerminalGate already keeps this route from automations; this is the route's own.
     if (browserDefaultChangeRefused(req, body, loadBrowserConfig())) return refuseDefaultBrowserChange(res);
-    if (body.connectMode !== undefined) body.connectMode = ['attach', 'morelogin'].includes(body.connectMode) ? body.connectMode : 'mirror';
+    if (body.connectMode !== undefined) body.connectMode = ['attach', 'morelogin', 'extension'].includes(body.connectMode) ? body.connectMode : 'mirror';
     if (body.attachSeed !== undefined) body.attachSeed = body.attachSeed === 'fresh' ? 'fresh' : 'real';
     if (body.moreloginEnvId !== undefined && body.moreloginEnvId !== null && body.moreloginEnvId !== '') body.moreloginEnvId = String(body.moreloginEnvId);
     // The default MoreLogin profile is driven over CDP: a newly chosen one known to be Firefox-type is refused. The
@@ -38428,7 +39295,7 @@ app.get('/api/browser/detect-profiles', (req, res) => {
   }
 });
 
-// List MoreLogin profiles (environments) for the Browser settings profile picker
+// List MoreLogin profiles (environments) for the profile pickers (the MoreLogin tab's Default AI browser, schedules)
 app.get('/api/browser/morelogin-envs', async (req, res) => {
   try {
     const cfg = loadBrowserConfig();
@@ -38443,19 +39310,25 @@ app.get('/api/browser/morelogin-envs', async (req, res) => {
     try { localEnvs = (await moreLogin.listLocalProfiles()).map((env) => ({ ...env, browser: 'chromium' })); }
     catch (err) { localError = err.message; }
     const local = { count: localEnvs.length, ...(localError ? { error: localError } : {}) };
+    // Profiles whose start MoreLogin refused for its plan's daily limit, until its day resets (SynaBun's own record:
+    // said whatever state MoreLogin is in). Named from the list below when it is read.
+    const startCooldowns = moreLoginStartCooldowns();
+    // Profiles closed outside SynaBun that SynaBun does not reopen (lib/morelogin-outside-close.js), said in every
+    // answer too: [{ envId, name, closedAt, closedLocal, holdUntil, holdUntilLocal, runs }].
+    const closedOutside = moreLoginClosedOutside();
     // Probe first: the install-folder check knows only the default folders, and an
     // answering local API proves the app is there wherever it was installed.
     const probe = await moreLogin.probeMoreLoginApi({ savedCfg: cfg, port });
     const installed = probe.running || moreLogin.isMoreLoginInstalled().installed;
-    if (!installed) return res.json({ connectMode, ok: true, installed: false, running: false, port, envs: localEnvs, local, error: probe.error || null });
-    if (!probe.running) return res.json({ connectMode, ok: true, installed: true, running: false, port, envs: localEnvs, local, error: probe.error || null });
+    if (!installed) return res.json({ connectMode, ok: true, installed: false, running: false, port, envs: localEnvs, local, startCooldowns, closedOutside, error: probe.error || null });
+    if (!probe.running) return res.json({ connectMode, ok: true, installed: true, running: false, port, envs: localEnvs, local, startCooldowns, closedOutside, error: probe.error || null });
     // The API answered with an error (signature required, API off): say why, never an empty list.
-    if (probe.apiError) return res.json({ connectMode, ok: false, installed: true, running: true, port, envs: localEnvs, local, error: probe.apiError });
+    if (probe.apiError) return res.json({ connectMode, ok: false, installed: true, running: true, port, envs: localEnvs, local, startCooldowns, closedOutside, error: probe.apiError });
     // MoreLogin's own rows (the list holds the local ones too: they are added once, below).
     const listedEnvs = (await moreLogin.listProfiles({ savedCfg: cfg, port })).filter((env) => env.kind !== 'local');
     // The API counted profiles but none could be read: a shape problem, never "no profiles yet".
     if (probe.count > 0 && !listedEnvs.length) {
-      return res.json({ connectMode, ok: false, installed: true, running: true, port, envs: localEnvs, local, error: `MoreLogin reports ${probe.count} profile(s) but SynaBun could not read them from its answer; a newer MoreLogin may have changed its API.` });
+      return res.json({ connectMode, ok: false, installed: true, running: true, port, envs: localEnvs, local, startCooldowns, closedOutside, error: `MoreLogin reports ${probe.count} profile(s) but SynaBun could not read them from its answer; a newer MoreLogin may have changed its API.` });
     }
     // Each profile with the browser it runs (`browser`: 'chromium' | 'firefox' | null = not known): the list call
     // does not say it, so it is looked up per profile, kept, and never waited for longer than the lookup's budget.
@@ -38463,6 +39336,8 @@ app.get('/api/browser/morelogin-envs', async (req, res) => {
     const { envs, browsersPending } = await withMoreLoginBrowsers(listedEnvs, { savedCfg: cfg, port });
     res.json({
       connectMode, ok: true, installed: true, running: true, port, envs: [...envs, ...localEnvs], local, browsersPending,
+      startCooldowns: moreLoginStartCooldowns(listedEnvs),
+      closedOutside: moreLoginClosedOutside(listedEnvs),
       // Observed website-policy blocks — MoreLogin's local API never exposes the
       // blacklist/whitelist itself, so the picker reports what actually happened.
       blockedNavigations: moreLoginBlockStats.count,
@@ -38723,7 +39598,7 @@ const httpServer = app.listen(PORT, async () => {
   }, 200);
 
   // Detect MoreLogin (anti-detect browser) — DETECTION ONLY, never auto-activates.
-  // Activation is an explicit user choice via Settings → Browser / the MoreLogin tab.
+  // Activation is an explicit user choice in the MoreLogin tab (Default AI browser).
   setTimeout(async () => {
     try {
       const mlBootCfg = loadBrowserConfig();
@@ -38864,6 +39739,39 @@ const httpServer = app.listen(PORT, async () => {
     if (rules.optedOut.length) console.log(`  Rules:     no longer managed for ${rules.optedOut.join(', ')} (the installed copy was removed)`);
   } catch (err) {
     console.warn('  Rules reconcile warning:', err.message);
+  }
+
+  // The owner's tool permissions (Settings → Tool permissions): what was switched on and is missing from the
+  // allow list of ~/.claude/settings.json is put back, and what the list allows is written down as chosen
+  // (lib/tool-permission-choices.js). An update is a start, so this is what keeps the choices across one.
+  {
+    const kept = reconcileSavedToolPermissions('start');
+    if (kept.restored.length) console.log(`  Tools:     ${kept.restored.length} saved tool permission${kept.restored.length === 1 ? '' : 's'} put back in ${getGlobalClaudeSettingsPath()}`);
+  }
+
+  // Every named Claude account reads the default's settings.json (allow list, hooks), CLAUDE.md, rules and skills
+  // (lib/claude-account-links.js): a missing link is made, the junction to a file that an older SynaBun made
+  // on Windows (it opens as a broken folder, so the account read no settings at all) is replaced, and a hard
+  // link or copy two writes apart is brought back in step. Never stops the boot.
+  try {
+    const shared = _panelClaudeAccounts().syncShared();
+    const repaired = shared.filter((row) => row.repaired.length);
+    if (repaired.length) console.log(`  Accounts:  shared Claude settings put back in order for ${repaired.length} account${repaired.length === 1 ? '' : 's'} (${[...new Set(repaired.flatMap((row) => row.repaired))].join(', ')})`);
+  } catch (err) {
+    console.warn('  Claude accounts warning:', err.message);
+  }
+
+  // Every named Codex account reads Default's config.toml (model, MCP servers, tool settings), AGENTS.md and
+  // prompts/ the same way (lib/codex-accounts.js syncShared). On Windows SynaBun linked the two files with a
+  // symbolic link only, which Windows refuses without Developer Mode or administrator rights: such an account
+  // ran on a config.toml of its own and without AGENTS.md. Put in order once here; a hard link or a copy two
+  // writes apart is brought back in step at every start. Never stops the boot.
+  try {
+    const shared = _codexAccounts().syncShared();
+    const changed = shared.filter((row) => row.repaired.length || row.linked.length);
+    if (changed.length) console.log(`  Accounts:  shared Codex files put back in order for ${changed.length} account${changed.length === 1 ? '' : 's'} (${[...new Set(changed.flatMap((row) => [...row.repaired, ...row.linked]))].join(', ')})`);
+  } catch (err) {
+    console.warn('  Codex accounts warning:', err.message);
   }
 
   // SynaBun's Antigravity homes (lib/antigravity/home.js): a run's home lives a week past its last use (a run resumes
@@ -39277,10 +40185,8 @@ function handleWhiteboardWebSocket(ws, req) {
   let _screenshotPattern = null;
 
   if (process.platform === 'darwin') {
-    try {
-      _screenshotDir = execSync('defaults read com.apple.screencapture location', { encoding: 'utf8' }).trim();
-    } catch { /* not set — use default */ }
-    if (!_screenshotDir || !existsSync(_screenshotDir)) _screenshotDir = join(os.homedir(), 'Desktop');
+    // The Screenshot app's folder, else ~/Desktop (lib/screenshot-location.js: quiet when none was ever set).
+    _screenshotDir = macScreenshotDir();
     // macOS screenshot filenames: "Screenshot ..." (EN), "Captura de..." (ES/PT)
     _screenshotPattern = /^(Screenshot\b|Captura de).*\.png$/i;
   } else if (process.platform === 'win32') {
@@ -39455,6 +40361,10 @@ function handleCardsWebSocket(ws) {
 async function handleBrowserWebSocket(ws, url) {
   const sessionId = url.pathname.replace('/ws/browser/', '');
   const session = browserSessions.get(sessionId);
+  if (session?._profileMode === 'extension') {
+    ws.send(JSON.stringify({ type: 'error', code: 'UNSUPPORTED_IN_EXTENSION_MODE', message: 'Use the everyday browser window. Extension mode has no CDP screencast or remote input socket.' }));
+    ws.close(); return;
+  }
 
   if (!session) {
     ws.send(JSON.stringify({ type: 'error', message: 'Browser session not found' }));

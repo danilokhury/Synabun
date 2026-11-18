@@ -29,8 +29,11 @@
 // It validates targets against the catalog, remembers per-class preferences,
 // holds un-routed dispatches until the user picks (dispatcher `awaiting_route`)
 // and suggests one-tier escalations when a run fails or reports blocked.
-// All I/O is injected (catalog, config store, sinks into the runtime/dispatcher).
+// Catalog, config and runtime I/O are injected. The split planner checks git before worktree approval.
 
+import { routeTaskIdentity } from '../public/shared/assistant/route-identity.js';
+import { planRouteSplit } from './agents/split.js';
+import { normalizeAgentDensity } from './agents/density.js';
 import { randomBytes } from 'node:crypto';
 import { CATALOG_PROVIDERS, TIERS, defaultIsHidden, defaultModelRow, findModel, hiddenModelId, priceText, providerAllHidden, providerEmpty, rowIsHidden, rowMakes } from './assistant-catalog.js';
 import { effectiveRouting, normalizeRouteMode } from './assistant-config.js';
@@ -92,6 +95,11 @@ export function runContract(taskClass) { return requiredOutput(taskClass) || cla
 const TIER_RANK = { small: 0, medium: 1, large: 2 };
 const MAX_ESCALATION_DEPTH = 2;
 const DECIDED_TTL_MS = 60 * 60_000;
+// A queued "do it here" continuation not started after this is delivered once more; still not started after the
+// same again, the brain and the panel are told (maybeContinuation's watchdog).
+export const CONTINUATION_WATCH_MS = 30_000;
+const CONTINUATION_WATCH_S = CONTINUATION_WATCH_MS / 1000;
+const CONTINUATIONS_KEPT = 200;
 
 function clip(value, max = 200) {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -274,12 +282,17 @@ export function describeTarget(target, { catalog = null, brain = {}, brainInfo =
 /**
  * `target` with its effort checked against its model (effort-levels.js): an
  * unsupported level becomes the nearest one the model runs, and the change is
- * pushed onto `corrections` as { field: 'effort', from, to, reason: 'effort_unsupported' }.
+ * pushed onto `corrections` as { field: 'effort', from, to, reason: 'effort_unsupported' }. Off (`none`) on a
+ * Claude model whose thinking cannot be turned off runs at the lowest level, reason 'thinking_always_on', with a
+ * text that says so: no route claims "thinking off" while the request carries adaptive thinking.
  */
 export function effortChecked(target, catalog, corrections = null) {
   if (!target?.effort) return target;
   const { effort, corrected } = normalizeEffort({ provider: target.provider, model: target.model || null, effort: target.effort, catalog });
-  if (corrected) corrections?.push({ field: 'effort', from: corrected.from, to: corrected.to, reason: 'effort_unsupported' });
+  if (corrected?.reason === 'thinking_always_on') {
+    corrections?.push({ field: 'effort', from: corrected.from, to: corrected.to, reason: 'thinking_always_on',
+      text: `effort none (thinking off) runs as ${corrected.to}: ${target.model || 'this model'} cannot turn its thinking off` });
+  } else if (corrected) corrections?.push({ field: 'effort', from: corrected.from, to: corrected.to, reason: 'effort_unsupported' });
   return effort === target.effort ? target : { ...target, effort };
 }
 
@@ -894,7 +907,7 @@ export function routeSides({ options = [], request = {}, defaultOptionId = null 
   const label = request.taskClassLabel || TASK_CLASS_META[request.taskClass]?.label || 'This task';
   const side = (kind) => {
     if (firstOf(kind)) return { available: true, reason: null, code: null };
-    if (kind === 'direct' && request.dispatchOnly) return { available: false, code: 'worker_only', reason: `${label} always runs on a worker.` };
+    if (kind === 'direct' && request.dispatchOnly) return { available: false, code: 'worker_only', reason: request.plannedSplit ? 'This task uses the approved worker plan.' : `${label} always runs on a worker.` };
     if (kind === 'direct' && options.some((o) => o.kind === 'dispatch' && o.accountKind === 'direct')) {
       return { available: false, code: 'account_worker', reason: "This conversation's account cannot take it, so it runs on a worker." };
     }
@@ -1060,6 +1073,7 @@ export function createAssistantRouter({
   getSession = () => null,
   sinks = {},
   now = Date.now,
+  continuationTimers = { setTimeout, clearTimeout },
   randomId = () => randomBytes(6).toString('hex'),
   log = () => {},
   clarifier = null,
@@ -1073,6 +1087,7 @@ export function createAssistantRouter({
   // routeId → decided route (reusable by agent_dispatch route_id; a remote session's is
   // used up by the first dispatch that starts a run: `consumed`).
   const decided = new Map();
+  const continuations = new Map();
   const stamps = new Map();    // sessionId → last stamp shown to the brain
   const lastClosed = new Map(); // routeId → { routeId, settled } of recently closed cards
   const call = (name, ...args) => { try { return sinks[name]?.(...args); } catch (error) { log('router:sink-error', `${name}: ${error?.message || error}`); return undefined; } };
@@ -1144,7 +1159,7 @@ export function createAssistantRouter({
     };
     call('routeEvent', sessionId, 'declined', routeView(route, { catalog: cat, brain, brainInfo }));
     return {
-      ok: true, status: 'declined', reason: 'budget_exhausted', dry, routeId, mode, source: 'budget', target: null,
+      ok: true, status: 'declined', reason: 'budget_exhausted', reasonCode: 'budget_exhausted', dry, routeId, mode, source: 'budget', target: null,
       remembered: false, continuation: false, corrections: evaluation.corrections || [], runIds: [], expiresAt: null,
       budget: compactBudget(sessionId), next: budgetDeclinedText(sessionId, dry),
     };
@@ -1196,13 +1211,16 @@ export function createAssistantRouter({
   }
   function pruneDecided() {
     const cutoff = now();
-    for (const [id, route] of decided) if (route.expiresAt < cutoff) decided.delete(id);
+    // A later mailbox turn can revisit an older task. Keep its identity for the live session,
+    // including closed tombstones; TTL only evicts legacy routes or sessions that are gone.
+    for (const [id, route] of decided) if (route.expiresAt < cutoff && (!route.taskId || !getSession(route.sessionId))) decided.delete(id);
   }
 
   function routeView(source, { catalog: cat = null, brain = {}, brainInfo = null } = {}) {
     const target = source.target ? describeTarget(source.target, { catalog: cat, brain, brainInfo }) : null;
     return {
       routeId: source.routeId, runIds: [...(source.runIds || [])], taskClass: source.taskClass, taskClassLabel: TASK_CLASS_META[source.taskClass]?.label || source.taskClass,
+      plannedSplit: source.plannedSplit || null, sessionId: source.sessionId || null, taskId: source.taskId || null, taskKey: source.taskKey || '',
       summary: source.summary || '', confidence: source.confidence ?? null, reason: source.reason || null,
       target, alternatives: (source.alternatives || []).slice(0, 4), decidedBy: source.decidedBy || null, remembered: !!source.remembered,
       optionId: source.optionId || null, corrections: source.corrections || [], mode: source.mode || null, status: source.status || null,
@@ -1217,7 +1235,7 @@ export function createAssistantRouter({
 
   function nextText(status, target, { routeId, label } = {}) {
     if (status === 'pending') return 'The user has not picked a model yet. End your turn now with one short line saying you are waiting for their choice. Their decision arrives as a [SynaBun Mailbox] route_decided event; do not start the task before it.';
-    if (status === 'declined') return 'The user declined this route. Do not start the task; ask what they would like instead.';
+    if (status === 'declined') return label === 'dismissed' ? 'The route card was dismissed. Do not start the task; route again when ready.' : label === 'cancelled' ? 'The user cancelled this route. Do not start the task; ask what they would like instead.' : 'This route was declined by the routing system. Do not start the task; check the route reason.';
     // The user wrote something else instead of choosing (cancel 'superseded'): their message is next, so nothing is asked here.
     if (status === 'moved_on') return 'The user did not pick a model: they sent a new message instead, which you get next. Nothing was approved, so do not start this task. End your turn now, with no text unless you have a result to report.';
     if (status === 'expired' || status === 'cancelled') return 'This route is no longer valid. Do not start the task; ask the user how to proceed.';
@@ -1225,21 +1243,182 @@ export function createAssistantRouter({
     if (target.kind === 'dispatch') {
       return `Dispatch now with agent_dispatch route_id="${routeId}" (provider ${target.provider}${target.model ? `, model ${target.model}` : ', provider default model'}${target.effort ? `, effort ${target.effort}` : ''}). Do not ask the user again about the model.`;
     }
-    if (target.continuation) return `The user chose to run this here on ${label || target.model}. End your turn now with one short line; SynaBun continues this task on that model immediately after.`;
+    if (target.continuation) return `The user chose to run this here on ${label || target.model}${target.effort ? ` (${effortWord(target.effort)})` : ''}. End your turn now with one short line; SynaBun has queued a continuation on that model and effort; if it has not started within ${CONTINUATION_WATCH_S} seconds it is delivered once more, and you are told if that one does not start either.`;
     return 'Proceed here yourself now.';
   }
 
-  /** A "do it here" pick on another model or effort: the runtime continues the task on it. */
-  function continuesHere(target, brain) {
+  /**
+   * An effort as `model` runs it, for comparing two of them: corrected to a level the model supports
+   * (effort-levels.js normalizeEffort), lower case; none / no setting -> the row's `defaultEffort`
+   * when the catalog names one, else null (the model's default).
+   */
+  function runEffort(provider, model, effort) {
+    const cat = catalog.peek?.() || null;
+    const kept = normalizeEffort({ provider, model, effort, catalog: cat }).effort;
+    if (kept) return String(kept).toLowerCase();
+    let row = null;
+    try { row = model ? findModel(cat, provider, model)?.row || null : defaultModelRow(cat, provider); } catch { row = null; }
+    return row?.defaultEffort ? String(row.defaultEffort).toLowerCase() : null;
+  }
+  /**
+   * Does a direct `target` ask for another effort than `turn` runs on? A target with no effort (null, Auto /
+   * default, or a model that takes no effort) is the session's own: no. An effort that clamps to the turn's is
+   * the same; Off (`none`) and a level always differ.
+   */
+  function effortDiffers(target, turn = {}) {
+    if (!target?.effort) return false;
+    const provider = target.provider || turn.provider || null;
+    const model = target.model || turn.model || null;
+    if (!normalizeEffort({ provider, model, effort: target.effort, catalog: catalog.peek?.() || null }).effort) return false;
+    return runEffort(provider, model, target.effort) !== runEffort(provider, model, turn.effort ?? null);
+  }
+  /**
+   * A "do it here" pick hands off to a continuation turn when it switches the model (or provider) away from
+   * `brain`, or asks for another effort than the brain's running turn is on (`turn`, turnBrain: a continuation's
+   * effort, which a turn the CLI starts by itself afterwards keeps). The continuation runs that one task on the
+   * pick; the session's own effort is not changed, so the turns after it are back on it.
+   */
+  function continuesHere(target, brain, turn = brain) {
     if (!target || target.kind !== 'direct') return false;
-    if (String(target.model || '') === String(brain.model || '') && !target.effort) return false;
-    if (String(target.model || '') === String(brain.model || '') && String(target.effort || '') === String(brain.effort || '')) return false;
+    if (String(target.provider || brain.provider) !== String(brain.provider)
+      || String(target.model || brain.model || '') !== String(brain.model || '')) return true;
+    return effortDiffers(target, turn);
+  }
+  /**
+   * Off (`none`) to or from a level is a start-up option of Claude Code: the switch restarts the CLI, which ends
+   * the background work it runs (a background Bash, an agent, a wakeup), so the bridge defers it while there is
+   * any (claude-agent-bridge.js _thinkingDeferred), and a continuation then would not run on the pick. An
+   * effort-only pick that needs that switch while the session reports background work (routerSession
+   * `pendingWork`) carries on in place, as the turn runs; the correction says so, and that the task, routed again
+   * once the work has reported (its task-notification turn), continues on the pick. -> the correction, or null.
+   */
+  function thinkingWaits(sessionId, target, brain, turn) {
+    if (!target || target.kind !== 'direct') return null;
+    const provider = String(target.provider || brain.provider || '');
+    if (provider !== 'claude-code' || provider !== String(brain.provider || '')) return null;
+    if (String(target.model || brain.model || '') !== String(brain.model || '')) return null;
+    if (!effortDiffers(target, turn) || getSession(sessionId)?.pendingWork !== true) return null;
+    const model = target.model || brain.model || null;
+    const want = runEffort(provider, model, target.effort);
+    const have = runEffort(provider, model, turn.effort ?? null);
+    if ((want === EFFORT_OFF) === (have === EFFORT_OFF)) return null;
+    const off = want === EFFORT_OFF;
+    const asIs = have === EFFORT_OFF ? 'thinking off' : `thinking on${have ? `, ${have}` : ''}`;
+    return {
+      field: 'effort', from: target.effort, to: turn.effort ?? null, reason: 'thinking_waits',
+      text: `${off ? 'thinking off' : `thinking on (${want})`} waits: Claude Code is running background work, and switching thinking ${off ? 'off' : 'on'} restarts it, which would end that work. This carries on here as it runs now (${asIs}); once the background work has reported, route this task again with the same task_key and it continues on ${effortWord(target.effort)}`,
+    };
+  }
+  /** What the brain's running turn is on, from a session snapshot (turnBrain, for a session id). */
+  function turnOf(session, brain = {}) {
+    const turn = session?.turn;
+    return turn && typeof turn === 'object' ? { ...brain, model: turn.model ?? brain.model ?? null, effort: turn.effort ?? null } : brain;
+  }
+  /**
+   * Whether a direct pick queues a continuation now: continuesHere against the running turn (a re-route compares
+   * the model with the turn too), unless its thinking switch waits for background work (thinkingWaits).
+   */
+  function continuesNow(sessionId, target, brain, { reroute = false } = {}) {
+    const turn = turnBrain(sessionId, brain);
+    const base = reroute ? turn : brain;
+    if (!continuesHere(target, base, turn)) return false;
+    return !thinkingWaits(sessionId, target, base, turn);
+  }
+  // The continuation watchdog. A "do it here" pick queues a continuation in the runtime (continueDirect),
+  // which calls continuationStarted(routeId) once the turn reached the brain. Not started after
+  // CONTINUATION_WATCH_MS: it is delivered once more (the runtime takes a delivery of a continuation it
+  // still holds, queued or on its way, or one that already ran, as done: never a second turn), and only
+  // if that one has not started either, CONTINUATION_WATCH_MS later, the brain and the panel are told.
+  // A retry the runtime refuses (the turn is gone, the session is closing) is told at once. Every timer
+  // ends with the start, the session's end or Stop, a newer task, a newer continuation and shutdown.
+  function stopContinuationWatch(entry) {
+    if (entry?.timer != null) continuationTimers.clearTimeout(entry.timer);
+    if (entry) entry.timer = null;
+  }
+  function closeContinuation(entry) { stopContinuationWatch(entry); entry.closed = true; }
+  function continuationStarted(routeId) {
+    const entry = continuations.get(String(routeId || ''));
+    if (!entry) return;
+    stopContinuationWatch(entry);
+    entry.started = true;
+  }
+  /** The runtime took the continuation (queued it, or holds / ran it already): exactly `true`. */
+  // `reroute`: agent_route asked for the task again in the turn running now, so it is delivered in that turn's
+  // generation; the watchdog's retry keeps the generation the continuation was delivered in.
+  const deliverContinuation = (entry, retry, reroute = false) => call('continueDirect', entry.sessionId,
+    retry || reroute ? { ...entry.payload, ...(retry ? { retry: true } : {}), ...(reroute ? { reroute: true } : {}) } : entry.payload) === true;
+  function reportContinuation(entry, reasonCode, text) {
+    entry.reported = true;
+    call('mailbox', entry.sessionId, { kind: 'route_continuation_delayed', route: entry.source, reasonCode, retried: entry.retries > 0, text });
+    call('routeEvent', entry.sessionId, 'continuation_delayed', { ...entry.source, reasonCode, retried: entry.retries > 0, reason: text });
+  }
+  function armContinuationWatch(entry, fire) {
+    stopContinuationWatch(entry);
+    entry.timer = continuationTimers.setTimeout(() => {
+      entry.timer = null;
+      if (entry.started || entry.closed) return;
+      fire();
+    }, CONTINUATION_WATCH_MS);
+    entry.timer?.unref?.();
+  }
+  function watchContinuation(entry) {
+    entry.reported = false;
+    armContinuationWatch(entry, () => {
+      entry.retries += 1;
+      const delivered = deliverContinuation(entry, true);
+      // (The runtime may answer that it already ran, and say so through continuationStarted meanwhile.)
+      if (entry.started || entry.closed) return;
+      if (!delivered) {
+        reportContinuation(entry, 'continuation_undeliverable', `The approved continuation did not start within ${CONTINUATION_WATCH_S} seconds, and SynaBun's retry could not deliver it (its turn is gone, or the session is stopping). Nothing ran. Route again with the same task_key to retry.`);
+        return;
+      }
+      armContinuationWatch(entry, () => reportContinuation(entry, 'continuation_timeout',
+        `The approved continuation has not started after ${CONTINUATION_WATCH_S * 2} seconds, although SynaBun retried its delivery once at ${CONTINUATION_WATCH_S} seconds. It may still be queued behind a running turn; check the task, and route again with the same task_key to retry.`));
+    });
+  }
+  /**
+   * → whether a continuation is queued for this route (continueDirect), so the answer can say continuation:true.
+   * `reroute`: the task's route was approved in an earlier turn and is asked again in the turn running now (a task
+   * notification, a mailbox turn, the user's next words). It is compared with what that turn runs on (turnBrain), not
+   * with the session's brain: a turn already on the approved model carries the task on in place (false). A
+   * continuation still queued and watched is that one (true); one that already ran is consumed (false). Otherwise it
+   * is delivered again, in the generation of the turn running now (the runtime's `reroute`).
+   */
+  function maybeContinuation(sessionId, target, brain, source, { reroute = false } = {}) {
+    if (reroute ? (!target || target.kind !== 'direct') : !continuesNow(sessionId, target, brain)) return false;
+    const routeId = String(source.routeId || '');
+    const previous = continuations.get(routeId);
+    if (previous?.started) return false;
+    // Delivered and still watched: the watchdog retries it; nothing is queued twice.
+    if (previous && !previous.reported && !previous.closed) return true;
+    if (reroute && !continuesNow(sessionId, target, brain, { reroute: true })) return false;
+    // A newer continuation of the session replaces the one the runtime holds (one continuation slot): the older stops being watched.
+    for (const [id, other] of continuations) if (id !== routeId && other.sessionId === sessionId && !other.started && !other.closed) closeContinuation(other);
+    const entry = previous || { routeId, sessionId, taskId: source.taskId ?? getSession(sessionId)?.taskId ?? null, payload: { target, route: source, text: source.summary || '' }, source, started: false, closed: false, reported: false, retries: 0, timer: null };
+    entry.closed = false;
+    continuations.delete(routeId);
+    continuations.set(routeId, entry);
+    while (continuations.size > CONTINUATIONS_KEPT) { const [oldest, old] = continuations.entries().next().value; stopContinuationWatch(old); continuations.delete(oldest); }
+    if (!deliverContinuation(entry, !!previous, reroute)) {
+      closeContinuation(entry);
+      throw routeError('ROUTE_CONTINUATION_FAILED', 'The continuation could not be queued. Route again with the same task_key to retry.', 409);
+    }
+    // (A runtime that already ran it says so at once: consumed.)
+    if (entry.started) return false;
+    watchContinuation(entry);
     return true;
   }
-  /** → whether the runtime took the continuation (continueDirect): false for a pick whose turn is gone. */
-  function maybeContinuation(sessionId, target, brain, source) {
-    if (!continuesHere(target, brain)) return false;
-    return call('continueDirect', sessionId, { target, route: source, text: source.summary || '' }) !== false;
+  /**
+   * What the brain's running turn is on: the runtime's `turn` ({ model, effort }: a continuation's model and
+   * effort, which a turn the CLI starts by itself afterwards keeps), else the brain's own. A re-route compares
+   * with this, so a turn already on the approved model and effort carries the task on in place; every pick's
+   * effort is compared with it (continuesHere).
+   */
+  function turnBrain(sessionId, brain = {}) { return turnOf(getSession(sessionId), brain); }
+  /** The session is closing or has ended (routerSession `closing`): a continuation it refuses can never run. */
+  function sessionClosing(sessionId) {
+    const session = getSession(sessionId);
+    return !session || session.closing === true;
   }
 
   function resultFor(status, { routeId, mode, source = null, target = null, card = null, runIds = [], corrections = [], cat = null, brain = {}, brainInfo = null, remembered = false, continuation = false, sessionId = null, switched = null, droppedRuns = [] } = {}) {
@@ -1261,12 +1440,25 @@ export function createAssistantRouter({
       : binding ? `The user's saved route for this task class applies (${binding.to}), not your pick (${binding.from}). `
         : skipped ? `The saved route for this task class (${skipped.from}) is on a disabled model, so your pick stands. `
           : maker ? `Your pick (${maker.from}) cannot make what this task creates, so it runs on ${maker.to}. ` : '';
+    // An effort-only pick whose thinking switch waits for background work (thinkingWaits): said first.
+    const waits = (corrections || []).find((c) => c?.reason === 'thinking_waits');
+    const waitLead = waits && !continuation ? `${waits.text}. ` : '';
     const shares = sessionId && budgeted() ? compactBudget(sessionId) : null;
+    const record = decided.get(routeId) || card;
+    const plannedSplit = record?.plannedSplit || null;
+    const flow = plannedSplit?.flow;
+    const splitNext = status === 'approved' && target?.kind === 'dispatch' && plannedSplit
+      ? flow === 'team'
+        ? `Call agent_team action "plan" with task_class="${record.taskClass}" and these ${plannedSplit.workers} slice titles (${["research", "review"].includes(record.taskClass) ? "read-only: owned_paths []" : "disjoint owned_paths"}), then action "start" with route_id="${routeId}". One approval covers every slice; never route a slice. Wait on its workflow_id, then ${["research", "review"].includes(record.taskClass) ? "synthesize the results; worktrees are cleaned up automatically, no integration or landing" : "verify the integration result"}.`
+        : `Call agent_dispatch with route_id="${routeId}" for one worker. Explain: ${plannedSplit.reason}`
+      : null;
     return {
-      ok: true, status, routeId, mode, source, target: described, remembered, continuation,
+      ok: true, status, routeId, mode, source: source || record?.decidedBy || (status === 'expired' ? 'timeout' : status === 'cancelled' ? 'system' : null), reasonCode: record?.reasonCode || (status === 'expired' ? 'expired' : status === 'cancelled' ? 'cancelled' : null), target: described, remembered, continuation,
+      taskClass: record?.taskClass || null, sessionId: sessionId || record?.sessionId || null, taskId: record?.taskId || null, taskKey: record?.taskKey || '',
+      agentDensity: plannedSplit?.density || normalizeAgentDensity(getSession(sessionId || record?.sessionId)?.agentDensity), expectedWorkers: plannedSplit?.workers || 1, plannedSplit, workflowId: record?.workflowId || null,
       corrections, runIds, expiresAt: card?.expiresAt ? new Date(card.expiresAt).toISOString() : null,
       ...(shares ? { budget: shares } : {}),
-      next: `${lead}${status === 'approved' ? kindLead : ''}${nextText(status, described, { routeId, label: described?.label })}`,
+      next: `${waitLead}${lead}${status === 'approved' ? kindLead : ''}${splitNext || nextText(record?.reasonCode === 'moved_on' ? 'moved_on' : status, described, { routeId, label: status === 'declined' ? record?.reasonCode : described?.label })}`,
     };
   }
 
@@ -1291,7 +1483,7 @@ export function createAssistantRouter({
     };
     call('routeEvent', sessionId, 'declined', routeView(route, { catalog: cat, brain, brainInfo }));
     return {
-      ok: true, status: 'declined', reason: 'no_capable_model', requires: request.needsOutput, ...(needs ? { needs } : {}), routeId, mode, source: 'rule', target: null,
+      ok: true, status: 'declined', reason: 'no_capable_model', reasonCode: 'no_capable_model', requires: request.needsOutput, ...(needs ? { needs } : {}), routeId, mode, source: 'rule', target: null,
       remembered: false, continuation: false, corrections: [], runIds: [], expiresAt: null, next: noMakerText(request),
     };
   }
@@ -1310,7 +1502,7 @@ export function createAssistantRouter({
     if (request.taskClass !== 'computer') return null;
     const option = options.find((o) => o.id === defaultOptionId);
     if (!option || option.disabled || option.kind !== 'direct' || option.provider !== brain.provider) return null;
-    if (continuesHere({ kind: 'direct', provider: option.provider, model: option.model, effort: option.effort }, brain)) return null;
+    if (continuesHere({ kind: 'direct', provider: option.provider, model: option.model, effort: option.effort }, brain, turnOf(session, brain))) return null;
     return { optionId: option.id };
   }
 
@@ -1340,6 +1532,7 @@ export function createAssistantRouter({
     const pref = r.preferences?.[request.taskClass];
     const card = {
       routeId, requestId, sessionId, origin, status: 'pending', mode, workflowId,
+      plannedSplit: request.plannedSplit || null, taskId: request.taskId, taskKey: request.taskKey || '',
       taskClass: request.taskClass, summary: request.summary, confidence: request.confidence, needsVision: request.needsVision,
       needsOutput: request.needsOutput || null, dispatchOnly: request.dispatchOnly === true, visionOnly: request.visionOnly === true,
       reasons: evaluation.reasons, request, options, defaultOptionId, sides, defaults, runIds: new Set(runIds), waiters: new Set(),
@@ -1354,6 +1547,7 @@ export function createAssistantRouter({
       request: {
         subtype: 'route', kind: 'route', provider: 'synabun', routeId, origin, runIds: [...card.runIds], workflowId, sessionId, mode,
         reasons: evaluation.reasons, taskClass: request.taskClass, taskClassLabel: request.taskClassLabel, summary: request.summary,
+        plannedSplit: request.plannedSplit || null, taskId: request.taskId || null, taskKey: request.taskKey || '',
         confidence: request.confidence, needsVision: request.needsVision,
         // Image / video creation: the medium the model must generate, and no "here" (always a worker).
         requires: request.needsOutput || null, dispatchOnly: request.dispatchOnly === true,
@@ -1401,7 +1595,7 @@ export function createAssistantRouter({
     byRequest.delete(card.requestId);
     cards.delete(card.routeId);
     // Why it closed, for a producer that attaches a run a moment too late (bounded).
-    lastClosed.set(card.routeId, { routeId: card.routeId, settled: card.settled || null });
+    lastClosed.set(card.routeId, { routeId: card.routeId, requestId: card.requestId, sessionId: card.sessionId, taskId: card.taskId, taskKey: card.taskKey, mode: card.mode, decidedBy: card.decidedBy, reasonCode: card.reasonCode, settled: card.settled || null });
     while (lastClosed.size > 50) lastClosed.delete(lastClosed.keys().next().value);
   }
 
@@ -1412,15 +1606,18 @@ export function createAssistantRouter({
     const card = cards.get(routeId);
     if (!card || card.status !== 'pending') return;
     card.status = reason === 'expired' || reason === 'superseded' ? 'expired' : 'cancelled';
+    card.decidedBy = reason === 'expired' ? 'timeout' : 'system';
+    card.reasonCode = movedOn ? 'moved_on' : reason;
     const status = card.status;
     for (const runId of card.runIds) call('declineHeld', runId, reason === 'expired' ? 'route_expired' : `route_${reason}`);
     call('cancelCard', card.sessionId, card.requestId, reason);
-    const view = routeView({ ...card, status, decidedBy: reason === 'expired' ? 'timeout' : null }, { catalog: catalog.peek?.(), brain: card.brain });
+    const view = routeView({ ...card, status, decidedBy: card.decidedBy }, { catalog: catalog.peek?.(), brain: card.brain });
     call('routeEvent', card.sessionId, status === 'expired' ? 'expired' : 'cancelled', view);
     if ((card.mailboxOnDecision || card.runIds.size) && reason !== 'session_closed' && reason !== 'aborted' && reason !== 'superseded') {
       call('mailbox', card.sessionId, { kind: 'route_expired', route: view, runIds: [...card.runIds], text: `Route card for "${card.summary || card.taskClass}" ${status === 'expired' ? 'expired without an answer' : `was cancelled (${reason})`}.` });
     }
     settle(card, { status, routeId, ...(movedOn ? { movedOn: true } : {}) });
+    if (card.taskId) decided.set(routeId, { ...view, sessionId: card.sessionId, expiresAt: now() + DECIDED_TTL_MS });
     closeCard(card);
   }
 
@@ -1443,13 +1640,17 @@ export function createAssistantRouter({
    */
   async function propose(args = {}) {
     const origin = args.origin || 'agent_route';
+    const taskId = getSession(args.sessionId)?.taskId || null;
     try {
       const result = await proposeRoute(args);
       // The class rides along: a "chat" route must not unlock the gate.
-      if (origin === 'agent_route') call('routed', args.sessionId, result, { taskClass: normalizeRouteRequest(args.body || {}).taskClass });
+      if (origin === 'agent_route') call('routed', args.sessionId, result, { taskClass: result.taskClass || normalizeRouteRequest(args.body || {}).taskClass });
       return result;
     } catch (error) {
-      if (origin === 'agent_route') call('routeFailed', args.sessionId, error);
+      if (origin === 'agent_route' && (!taskId || getSession(args.sessionId)?.taskId === taskId)) {
+        if (/^ROUTE_(SPLIT_|PROJECT_|TASK_)/.test(error?.code || '')) call('routed', args.sessionId, { status: 'plan_required', taskId, next: error.message }, { taskClass: normalizeRouteRequest(args.body || {}).taskClass });
+        else call('routeFailed', args.sessionId, error);
+      }
       throw error;
     }
   }
@@ -1462,18 +1663,84 @@ export function createAssistantRouter({
       next: `The user has not answered your questions yet (brief ${waiting.briefId}${what}). End your turn now with one short line and route this after the answers arrive (a [SynaBun Mailbox] clarify_answered event, or the user's next message). If this task does not depend on them, call agent_route again with independent:true.`,
     };
   }
+  function taskIdentity(sessionId, session, body = {}) {
+    const taskKey = body.task_key ?? body.taskKey ?? '';
+    if (typeof taskKey !== 'string' || taskKey.length > 100 || /[\x00-\x1f]/.test(taskKey)) throw routeError('ROUTE_TASK_KEY_INVALID', 'task_key must be at most 100 characters of text.', 400);
+    return { sessionId, taskId: session.taskId || null, taskKey: taskKey.trim() };
+  }
+  function assertCurrentTask(sessionId, taskId) {
+    if (taskId && getSession(sessionId)?.taskId !== taskId) throw routeError('ROUTE_TASK_CHANGED', 'This request has moved on to another task; route the current task.', 409);
+  }
+  /**
+   * The task already has a route (same task id and task_key). `deliver` (agent_route only; a dispatch looking
+   * the route up asks the runtime for nothing): an approved "do it here" route goes through maybeContinuation
+   * as a re-route, so an answer that says continuation:true always has one queued and watched. A turn already
+   * on the approved model (the continuation itself, or a turn the CLI started after it) carries the task on in
+   * place, and a continuation that already ran is consumed: continuation:false, and the gate opens. A refusal
+   * from a session that is closing answers expired (nothing can run there); any other refusal is
+   * ROUTE_CONTINUATION_FAILED, which says to route again.
+   */
+  function existingTaskResult(request, sessionId, context, { deliver = false } = {}) {
+    const key = routeTaskIdentity(request);
+    if (!key) return null;
+    const card = [...cards.values()].find(c => routeTaskIdentity(c) === key);
+    const prior = card || [...decided.values()].find(c => routeTaskIdentity(c) === key);
+    if (!prior) return null;
+    assertCurrentTask(sessionId, request.taskId);
+    let continuation = false;
+    // A thinking switch that waited is decided again now (the background work may have reported since).
+    let corrections = (prior.corrections || []).filter((c) => c?.reason !== 'thinking_waits');
+    if (prior.status === 'approved' && prior.target) {
+      if (!deliver) continuation = continuesNow(sessionId, prior.target, context.brain, { reroute: true });
+      else {
+        try { continuation = maybeContinuation(sessionId, prior.target, context.brain, prior, { reroute: true }); } catch (error) {
+          if (error?.code !== 'ROUTE_CONTINUATION_FAILED' || !sessionClosing(sessionId)) throw error;
+          // The session is closing or gone: nothing runs, so nothing is promised.
+          log('router:reroute-refused', `${prior.routeId}: the continuation of a re-routed task could not be queued (the session is closing)`);
+          return { ...resultFor('expired', { routeId: prior.routeId, mode: prior.mode, cat: context.cat, brain: context.brain, brainInfo: context.brainInfo, sessionId }), reason: 'superseded' };
+        }
+      }
+    }
+    if (prior.status === 'approved' && prior.target && !continuation) {
+      const waits = thinkingWaits(sessionId, prior.target, turnBrain(sessionId, context.brain), turnBrain(sessionId, context.brain));
+      if (waits) corrections = [...corrections, waits];
+    }
+    return resultFor(prior.status, { routeId: prior.routeId, mode: prior.mode, card, source: prior.decidedBy,
+      target: prior.target, corrections, remembered: prior.remembered,
+      continuation, sessionId, ...context });
+  }
+  // New human requests retire the previous request's pending cards, across every subtask.
+  function expireOtherTasks(sessionId, taskId) {
+    for (const card of [...cards.values()]) if (card.sessionId === sessionId && card.taskId && card.taskId !== taskId) expire(card.routeId, 'superseded', { movedOn: true });
+    // An earlier task's continuation is not watched any more (the runtime dropped it with its generation).
+    for (const entry of continuations.values()) if (entry.sessionId === sessionId && !entry.started && entry.taskId && entry.taskId !== taskId) closeContinuation(entry);
+  }
   async function proposeRoute({ sessionId, body = {}, origin = 'agent_route', waitMs = null, signal = null } = {}) {
     pruneDecided();
     const session = requireSession(sessionId);
     const waiting = origin === 'agent_route' ? clarifier?.blocking?.(sessionId, { independent: body.independent === true }) : null;
     if (waiting) return clarifyingResult(sessionId, waiting);
     const brain = session.brain || {};
+    expireOtherTasks(sessionId, session.latestTaskId || session.taskId);
     const cat = await catalogValue();
     const brainInfo = brainInfoFor(brain);
     const request = normalizeRouteRequest(body, { brain });
+    Object.assign(request, taskIdentity(sessionId, session, body));
+    // The same task routed again (a later turn: a task notification, a mailbox event, the user's next words).
+    const existing = existingTaskResult(request, sessionId, { cat, brain, brainInfo }, { deliver: origin === 'agent_route' });
+    if (existing) return existing;
+    request.plannedSplit = await planRouteSplit(body, session, request.taskClass);
+    request.projectPath = request.plannedSplit?.projectPath || null;
+    if (request.plannedSplit) {
+      request.dispatchOnly = true;
+      request.proposals = request.proposals.map(p => ({ ...p, kind: 'dispatch' }));
+    }
     const mode = modeFor(sessionId);
     const r = routing();
     const evaluation = await evaluateWithBudget(sessionId, { mode, routing: r, request, brain, brainInfo, catalog: cat });
+    const raced = existingTaskResult(request, sessionId, { cat, brain, brainInfo }, { deliver: origin === 'agent_route' });
+    if (raced) return raced;
+    assertCurrentTask(sessionId, request.taskId);
     if (evaluation.unavailable === 'budget_exhausted') return budgetDeclinedResult({ sessionId, request, mode, cat, brain, brainInfo, evaluation });
     if (evaluation.unavailable) return unavailableResult({ sessionId, request, mode, cat, brain, brainInfo });
     if (!evaluation.ask) {
@@ -1481,21 +1748,25 @@ export function createAssistantRouter({
       let target = evaluation.auto;
       const checked = accountTarget(target, brain, cat, { check: false, select: request.taskClass !== 'chat' });
       if (checked.accountError) {
-        const failed = { routeId, sessionId, taskClass: request.taskClass, summary: request.summary, target: checked, status: 'declined', reason: checked.accountError.message, reasonCode: checked.accountError.code, mode };
+        const failed = { routeId, sessionId, taskClass: request.taskClass, summary: request.summary, target: checked, status: 'declined', decidedBy: 'account', reason: checked.accountError.message, reasonCode: checked.accountError.code, mode };
         call('routeEvent', sessionId, 'declined', routeView(failed, { catalog: cat, brain, brainInfo }));
-        return { ok: false, status: 'declined', routeId, mode, code: checked.accountError.code, target: describeTarget(checked, { catalog: cat, brain }), next: checked.accountError.message };
+        return { ok: false, status: 'declined', routeId, mode, source: 'account', reasonCode: checked.accountError.code, code: checked.accountError.code, target: describeTarget(checked, { catalog: cat, brain }), next: checked.accountError.message };
       }
       target = checked;
       const decidedBy = evaluation.source === 'remembered' ? 'remembered' : evaluation.source === 'budget' ? 'budget' : 'brain';
+      // Off to or from a level that waits for Claude Code's background work: in place, and the answer says so.
+      const waits = origin === 'agent_route' && request.taskClass !== 'chat' ? thinkingWaits(sessionId, target, brain, turnBrain(sessionId, brain)) : null;
       const route = {
+        taskId: request.taskId, taskKey: request.taskKey || '', plannedSplit: request.plannedSplit || null, workflowId: null,
         routeId, status: 'approved', sessionId, taskClass: request.taskClass, summary: request.summary, confidence: request.confidence,
-        target, decidedBy, remembered: evaluation.source === 'remembered', corrections: accountCorrections(target, evaluation.corrections), mode,
+        target, decidedBy, remembered: evaluation.source === 'remembered', corrections: [...accountCorrections(target, evaluation.corrections), ...(waits ? [waits] : [])], mode,
         reason: request.proposals[0]?.reason || null, runIds: [], expiresAt: now() + DECIDED_TTL_MS,
       };
       decided.set(routeId, route);
       noteBudgetTask(sessionId, request, target);
       if (request.taskClass !== 'chat') call('routeEvent', sessionId, 'auto', routeView(route, { catalog: cat, brain, brainInfo }));
-      const continuation = origin === 'agent_route' ? maybeContinuation(sessionId, target, brain, route) : false;
+      // A chat route is the brain's own turn: it never continues (its effort is the session's).
+      const continuation = origin === 'agent_route' && request.taskClass !== 'chat' ? maybeContinuation(sessionId, target, brain, route) : false;
       return resultFor('approved', { routeId, mode, source: evaluation.source, target, corrections: route.corrections, cat, brain, brainInfo, remembered: route.remembered, continuation, sessionId });
     }
     // The session as it is now (the catalog was awaited since): its computer-use answer decides what the card says.
@@ -1540,6 +1811,8 @@ export function createAssistantRouter({
    * the answer came in on; a card of another session is refused (ROUTE_NOT_FOUND).
    */
   async function answer(idOrRequestId, response = {}, { origin = 'ui', sessionId = null, authority = null } = {}) {
+    const closed = closedRoute(idOrRequestId, sessionId);
+    if (closed) return { ...resultFor(closed.settled.status, { routeId: closed.routeId, mode: closed.mode, card: closed, sessionId: closed.sessionId }), ...(closed.settled.movedOn ? { reason: 'superseded' } : {}) };
     const card = openCard(idOrRequestId, { sessionId });
     const routeId = card.routeId;
     const cat = await catalogValue();
@@ -1548,16 +1821,20 @@ export function createAssistantRouter({
     // decided: an answer in progress never undoes a cancellation or decides a card twice.
     if (cards.get(routeId) !== card || card.status !== 'pending') openCard(routeId, { sessionId });
     const session = getSession(card.sessionId) || { brain: card.brain };
+    if (card.taskId && session.taskId !== card.taskId) { expire(routeId, 'superseded', { movedOn: true }); throw routeError('ROUTE_TASK_CHANGED', 'This card belongs to an earlier task.', 409); }
     const brain = session.brain || card.brain || {};
     const brainInfo = brainInfoFor(brain);
     const parsed = targetFromAnswer({ card, response, catalog: cat, brain });
     if (parsed.declined) {
       card.status = 'declined';
+      card.decidedBy = 'user';
+      card.reasonCode = response.reason === 'dismissed' ? 'dismissed' : 'cancelled';
       for (const runId of card.runIds) call('declineHeld', runId, 'route_declined');
       const view = routeView({ ...card, status: 'declined', decidedBy: 'user' }, { catalog: cat, brain, brainInfo });
       call('routeEvent', card.sessionId, 'declined', view);
       const result = resultFor('declined', { routeId, mode: card.mode, card, cat, brain, brainInfo, runIds: [...card.runIds] });
-      if (card.mailboxOnDecision && !card.waiters.size) call('mailbox', card.sessionId, { kind: 'route_declined', route: view, runIds: [...card.runIds], text: `The user declined the route for "${card.summary || card.taskClass}".` });
+      if (card.mailboxOnDecision && !card.waiters.size) call('mailbox', card.sessionId, { kind: 'route_declined', route: view, runIds: [...card.runIds], text: result.next });
+      if (card.taskId) decided.set(routeId, { ...view, sessionId: card.sessionId, expiresAt: now() + DECIDED_TTL_MS });
       settle(card, { status: 'declined', result });
       closeCard(card);
       return result;
@@ -1592,11 +1869,21 @@ export function createAssistantRouter({
     // handed over first. The runtime refuses a pick that turn no longer owns (a
     // newer prompt, a Stop or the session closing came after it): then nothing is
     // approved or remembered, and the card expires on every host.
-    const continuation = (keptHere || !card.runIds.size) && continuesHere(target, brain);
+    // An effort-only pick continues too: another effort than the brain's running turn is on (continuesNow), unless
+    // its thinking switch waits for Claude Code's background work, which the answer then says (thinkingWaits).
+    const here = keptHere || !card.runIds.size;
+    const continuation = here && continuesNow(card.sessionId, target, brain);
+    const waits = here && !continuation ? thinkingWaits(card.sessionId, target, brain, turnBrain(card.sessionId, brain)) : null;
+    if (waits) corrections.push(waits);
     // The decision is claimed here, before the first side effect (the runtime's continuation, the
     // held runs, the mailbox): nothing a sink does can close or decide this card again meanwhile.
     card.status = 'approved';
-    if (continuation && !maybeContinuation(card.sessionId, target, brain, { routeId, summary: card.summary, taskClass: card.taskClass, target, decidedBy: 'user', optionId })) {
+    let queued = !continuation;
+    if (continuation) {
+      try { queued = maybeContinuation(card.sessionId, target, brain, { routeId, summary: card.summary, taskClass: card.taskClass, target, decidedBy: 'user', optionId }); }
+      catch { queued = false; }
+    }
+    if (!queued) {
       card.status = 'pending';
       expire(routeId, 'superseded');
       log('router:superseded', `${routeId}: a "do it here" pick after its turn was replaced; nothing approved`);
@@ -1613,6 +1900,7 @@ export function createAssistantRouter({
     const heldRuns = keptHere ? [] : [...card.runIds];
     const droppedRuns = keptHere ? [...card.runIds] : [];
     const route = {
+      taskId: card.taskId, taskKey: card.taskKey || '', plannedSplit: card.plannedSplit || null, workflowId: null,
       routeId, status: 'approved', sessionId: card.sessionId, taskClass: card.taskClass, summary: card.summary, confidence: card.confidence,
       target, decidedBy: 'user', remembered, optionId, corrections, mode: card.mode, runIds: heldRuns,
       reason: card.options.find((o) => o.id === optionId)?.reason || null, alternatives: card.alternatives, expiresAt: now() + DECIDED_TTL_MS,
@@ -1663,7 +1951,7 @@ export function createAssistantRouter({
    * dispatcher refuses first gives it back: releaseRoute), a card holds one run,
    * and a workflow does not fan out under one card. The desktop keeps both.
    */
-  async function resolveDispatch({ sessionId, spec = {}, origin = 'assistant' } = {}) {
+  async function resolveDispatch({ sessionId, spec = {}, origin = 'assistant', team = null } = {}) {
     pruneDecided();
     if (origin === 'ui' || !sessionId) return { action: 'start', spec, route: null };
     const session = getSession(sessionId);
@@ -1677,13 +1965,17 @@ export function createAssistantRouter({
     const remote = session.remote === true;
     if (routeId) {
       const approved = decided.get(routeId);
+      const bound = approved || cards.get(routeId);
+      if (bound?.sessionId === sessionId && !team) assertCurrentTask(sessionId, bound.taskId);
+      if (bound?.taskId && ['expired', 'cancelled'].includes(bound.status)) throw routeClosedError(lastClosed.get(routeId) || bound);
+      if (bound?.taskId && (bound.status !== 'approved' && bound.status !== 'pending' || bound.consumed)) throw routeError('ROUTE_NOT_APPROVED', 'This task route is closed or already used.', 409);
       // The user picked "here" on this route's card: it runs in this conversation, never on a worker
       // (a brain's own direct route, or a saved one in Never ask, keeps its old dispatch behaviour).
       if (approved && approved.sessionId === sessionId && approved.target?.kind === 'direct' && approved.decidedBy === 'user') {
         const where = approved.target.model ? ` on ${approved.target.model}` : '';
         throw routeError('ROUTE_IS_DIRECT', `Route ${routeId} was decided by the user to run here, in this conversation${where}, not on a worker. Do the task yourself now; do not dispatch it. If it should go to a worker after all, ask the user, then call agent_route again.`, 409, { routeId, target: approved.target });
       }
-      if (approved && approved.sessionId === sessionId && approved.target && !approved.consumed) {
+      if (approved && approved.sessionId === sessionId && approved.target && (approved.plannedSplit || !approved.consumed)) {
         // A remote session's route is claimed here, so a second dispatch cannot take it meanwhile.
         // `claimed` tells the dispatcher to give it back (releaseRoute) if it refuses the launch
         // before a run exists: only the run it starts uses the route up.
@@ -1708,22 +2000,29 @@ export function createAssistantRouter({
           }
           if (moved.correction) { runTarget = moved.target; budgetCorrection = moved.correction; }
         }
-        if (remote) approved.consumed = true;
+        const claim = approved.plannedSplit ? claimSplit(approved, spec, team) : null;
+        if (remote && !approved.plannedSplit) approved.consumed = true;
         const applied = { ...spec, provider: runTarget.provider, model: runTarget.model || null, effort: runTarget.effort ?? null, accountId: runTarget.accountId || null, codexAccountId: null, claudeAccountId: null };
         const meta = routeMeta(approved, cat, brain, brainInfo);
         const route = budgetCorrection ? { ...meta, target: describeTarget(runTarget, { catalog: cat, brain, brainInfo }), corrections: [...(meta.corrections || []), budgetCorrection] } : meta;
-        return { action: 'start', spec: applied, route: { ...route, requested: { provider: spec.provider || null, model: spec.model || null, effort: spec.effort || null } }, ...(remote ? { claimed: true } : {}) };
+        return { action: 'start', spec: applied, route: { ...route, requested: { provider: spec.provider || null, model: spec.model || null, effort: spec.effort || null } }, ...(claim ? { claimed: true, claim } : remote ? { claimed: true } : {}) };
       }
       const pending = cards.get(routeId);
+      if (pending?.plannedSplit && pending.sessionId === sessionId) throw routeError('ROUTE_NOT_APPROVED', 'Wait for the whole task approval; do not dispatch or route individual workers.', 409, { routeId });
       if (pending && pending.sessionId === sessionId && pending.status === 'pending' && !(remote && pending.runIds.size)) {
         return { action: 'hold', routeId, spec, route: pendingMeta(pending) };
       }
     }
+    if (team || spec.workerIndex != null) throw routeError('ROUTE_NOT_APPROVED', 'This split requires its approved route_id; do not route individual workers.', 409);
     const request = normalizeRouteRequest({
       task_class: spec.taskClass || 'code', confidence: spec.confidence ?? null, summary: spec.title || clip(spec.task, 200),
       needs_vision: !!spec.usesComputer,
       proposals: [{ kind: 'dispatch', provider: spec.provider || brain.provider, model: spec.model || null, effort: spec.effort || null, accountId: spec.accountId || spec.codexAccountId || spec.claudeAccountId || null }],
     }, { brain });
+    Object.assign(request, taskIdentity(sessionId, session, spec));
+    expireOtherTasks(sessionId, session.latestTaskId || request.taskId);
+    const prior = existingTaskResult(request, sessionId, { cat, brain, brainInfo });
+    if (prior && prior.routeId !== routeId) return resolveDispatch({ sessionId, spec: { ...spec, routeId: prior.routeId }, origin, team });
     if (!spec.provider) request.proposals[0].provider = brain.provider || 'claude-code';
     const evaluation = await evaluateWithBudget(sessionId, { mode, routing: r, request, brain, brainInfo, catalog: cat });
     if (evaluation.unavailable === 'budget_exhausted') {
@@ -1731,6 +2030,9 @@ export function createAssistantRouter({
     }
     if (evaluation.unavailable) throw routeError('NO_CAPABLE_MODEL', noMakerText(request), 409, { requires: request.needsOutput, ...(request.needsOutput ? {} : { needs: 'vision' }), taskClass: request.taskClass });
     if (!evaluation.ask) {
+      assertCurrentTask(sessionId, request.taskId);
+      const raced = existingTaskResult(request, sessionId, { cat, brain, brainInfo });
+      if (raced) return resolveDispatch({ sessionId, spec: { ...spec, routeId: raced.routeId }, origin, team });
       const t = checkedTarget(evaluation.auto, brain, cat);
       noteBudgetTask(sessionId, request, t);
       const applied = { ...spec, provider: t.provider, model: t.model || null, effort: t.effort || spec.effort || null, ...(t.accountId ? { accountId: t.accountId, codexAccountId: null, claudeAccountId: null } : {}) };
@@ -1739,9 +2041,14 @@ export function createAssistantRouter({
         taskClass: request.taskClass, confidence: request.confidence, target: t, corrections: accountCorrections(t, evaluation.corrections),
         remembered: evaluation.source === 'remembered',
       };
+      Object.assign(route, taskIdentity(sessionId, session, spec), { summary: request.summary, expiresAt: now() + DECIDED_TTL_MS });
+      if (route.taskId) decided.set(route.routeId, { ...route, status: 'approved', consumed: remote });
       return { action: 'start', spec: applied, route: { ...routeMeta(route, cat, brain, brainInfo), requested: { provider: spec.provider || null, model: spec.model || null, effort: spec.effort || null } } };
     }
-    let card = spec.workflowId && !remote ? [...cards.values()].find((c) => c.sessionId === sessionId && c.status === 'pending' && c.workflowId && c.workflowId === spec.workflowId) : null;
+    assertCurrentTask(sessionId, request.taskId);
+    const raced = existingTaskResult(request, sessionId, { cat, brain, brainInfo });
+    if (raced && raced.routeId !== routeId) return resolveDispatch({ sessionId, spec: { ...spec, routeId: raced.routeId }, origin, team });
+    let card = request.taskId ? [...cards.values()].find(c => routeTaskIdentity(c) === routeTaskIdentity(request)) : spec.workflowId && !remote ? [...cards.values()].find((c) => c.sessionId === sessionId && c.status === 'pending' && c.taskId === request.taskId && c.workflowId && c.workflowId === spec.workflowId) : null;
     if (!card) {
       card = createCard({ sessionId, request, evaluation, brain, brainInfo, cat, mode, origin: 'dispatch', workflowId: spec.workflowId || null });
       call('sendCard', sessionId, card.packet);
@@ -1755,6 +2062,7 @@ export function createAssistantRouter({
   function routeMeta(route, cat, brain, brainInfo) {
     return {
       routeId: route.routeId, status: route.status === 'approved' ? 'approved' : route.status, decidedBy: route.decidedBy || null, mode: route.mode || null,
+      plannedSplit: route.plannedSplit || null, taskId: route.taskId || null, taskKey: route.taskKey || '', sessionId: route.sessionId || null,
       taskClass: route.taskClass || null, taskClassLabel: TASK_CLASS_META[route.taskClass]?.label || null, confidence: route.confidence ?? null,
       target: route.target ? describeTarget(route.target, { catalog: cat, brain, brainInfo }) : null,
       corrections: route.corrections || [], remembered: !!route.remembered, decidedAt: new Date(now()).toISOString(),
@@ -1762,7 +2070,7 @@ export function createAssistantRouter({
   }
   function pendingMeta(card) {
     return {
-      routeId: card.routeId, status: 'pending', decidedBy: null, mode: card.mode, taskClass: card.taskClass,
+      routeId: card.routeId, taskId: card.taskId || null, taskKey: card.taskKey || '', sessionId: card.sessionId || null, status: 'pending', decidedBy: null, mode: card.mode, taskClass: card.taskClass,
       taskClassLabel: TASK_CLASS_META[card.taskClass]?.label || null, confidence: card.confidence ?? null,
       target: null, corrections: [], remembered: false, decidedAt: null,
     };
@@ -1774,8 +2082,33 @@ export function createAssistantRouter({
    * the route_id gets the route again, so it runs or is refused for the same reason, and never
    * falls through to a fresh route of another class.
    */
-  function releaseRoute(routeId) {
+  function claimSplit(route, spec, team) {
+    const split = route.plannedSplit;
+    const mismatch = (text) => { throw routeError('ROUTE_SPLIT_MISMATCH', text, 409, { routeId: route.routeId }); };
+    if (spec.taskClass && spec.taskClass !== route.taskClass) mismatch('Dispatch task_class must match the approved split.');
+    let slot = 1;
+    if (split.flow === 'team') {
+      if (!team?.teamId || !team?.sliceId || spec.workflowId !== `team:${team.teamId}`) mismatch('This route requires agent_team plan → start, not individual dispatches.');
+      if (route.workflowId && route.workflowId !== spec.workflowId) mismatch('This route already belongs to another team.');
+      slot = team.sliceId;
+    } else if (team) mismatch('This task was approved for one worker, not a team.');
+    route.claims ||= new Map();
+    if (route.claims.has(slot) && !team) mismatch('This worker already started. Use agent_send for follow-ups; do not route or dispatch it again.');
+    if (!route.claims.has(slot) && route.claims.size >= split.workers) mismatch('All approved worker slots are assigned.');
+    if (!team && [...route.claims.values()].some(c => c.task === spec.task)) mismatch('Every parallel worker needs a distinct task.');
+    const token = randomBytes(12).toString('hex');
+    const previous = route.claims.get(slot);
+    route.claims.set(slot, { token, task: spec.task });
+    if (team) route.workflowId = spec.workflowId;
+    return { slot, token, previous };
+  }
+
+  function releaseRoute(routeId, claim = null) {
     const route = decided.get(String(routeId || ''));
+    if (claim && route?.claims?.get(claim.slot)?.token === claim.token) {
+      if (claim.previous) route.claims.set(claim.slot, claim.previous); else route.claims.delete(claim.slot);
+      return true;
+    }
     if (!route?.consumed) return false;
     route.consumed = false;
     return true;
@@ -1812,6 +2145,8 @@ export function createAssistantRouter({
     return true;
   }
   function cancelForSession(sessionId, reason = 'session_closed', { origins = null } = {}) {
+    // The session closing, its brain going or a Stop: the runtime dropped its continuation; nothing watches it.
+    for (const entry of continuations.values()) if (entry.sessionId === sessionId && !entry.started) closeContinuation(entry);
     for (const card of [...cards.values()]) {
       if (card.sessionId !== sessionId) continue;
       if (origins && !origins.includes(card.origin)) continue;
@@ -1825,11 +2160,16 @@ export function createAssistantRouter({
     if (!routeId) return false;
     return sessionId === null || sessionId === undefined || cards.get(routeId)?.sessionId === String(sessionId);
   }
+  function closedRoute(idOrRequestId, sessionId = null) {
+    const id = String(idOrRequestId);
+    return [...lastClosed.values()].find(c => c.taskId && (c.routeId === id || c.requestId === id)
+      && (sessionId == null || c.sessionId === String(sessionId)) && ['expired', 'cancelled'].includes(c.settled?.status)) || null;
+  }
   function status(routeId) {
     const card = cards.get(routeId);
-    if (card) return { routeId, status: card.status, sessionId: card.sessionId, runIds: [...card.runIds], taskClass: card.taskClass, expiresAt: new Date(card.expiresAt).toISOString(), request: card.packet.request };
+    if (card) return { routeId, status: card.status, sessionId: card.sessionId, taskId: card.taskId || null, taskKey: card.taskKey || '', runIds: [...card.runIds], taskClass: card.taskClass, expiresAt: new Date(card.expiresAt).toISOString(), request: card.packet.request };
     const route = decided.get(routeId);
-    if (route) return { routeId, status: route.status, sessionId: route.sessionId, runIds: route.runIds || [], taskClass: route.taskClass, target: route.target, decidedBy: route.decidedBy };
+    if (route) return { routeId, status: route.status, sessionId: route.sessionId, taskId: route.taskId || null, taskKey: route.taskKey || '', runIds: route.runIds || [], taskClass: route.taskClass, target: route.target, decidedBy: route.decidedBy, plannedSplit: route.plannedSplit || null, workflowId: route.workflowId || null };
     return null;
   }
 
@@ -1848,16 +2188,18 @@ export function createAssistantRouter({
   }
 
   function shutdown() {
+    for (const entry of continuations.values()) closeContinuation(entry);
+    continuations.clear();
     for (const card of [...cards.values()]) { if (card.timer) clearTimeout(card.timer); settle(card, { status: 'cancelled' }); }
     cards.clear();
     byRequest.clear();
   }
 
   return {
-    propose, answer, resolveDispatch, releaseRoute, holdRuns, cancel, cancelForRun, cancelForSession, pendingCards, owns, status, modeFor, stamp, shutdown,
+    continuationStarted, propose, answer, expireOtherTasks, resolveDispatch, releaseRoute, holdRuns, cancel, cancelForRun, cancelForSession, pendingCards, owns, closedRoute, status, modeFor, stamp, shutdown,
     routeClosedError: (routeId) => routeClosedError(lastClosed.get(String(routeId || '')) || { routeId: String(routeId || '') }),
     routing, escalationFor: ({ run, depth = 0 }) => escalationFor({ run, catalog: catalog.peek?.() || null, routing: routing(), depth }),
-    _internals: { cards, decided, byRequest },
+    _internals: { cards, decided, byRequest, continuations },
   };
 }
 

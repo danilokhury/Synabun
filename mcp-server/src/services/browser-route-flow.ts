@@ -37,8 +37,9 @@ export interface RouteLoss {
   from: RouteRef;
   /** The replacement route request() prepared, when there is one. */
   to?: RouteRef;
-  /** SynaBun tried to open a replacement and could not (`error`), or the browser is still starting (`starting`). */
-  recovery?: { error: string; starting?: boolean };
+  /** SynaBun tried to open a replacement and could not (`error`), or the browser is still starting (`starting`), or
+   *  the server refused it until the user acts (`needsUser`: a MoreLogin profile closed outside SynaBun, `code`). */
+  recovery?: { error: string; starting?: boolean; needsUser?: boolean; code?: string };
 }
 
 export interface RouteFlow {
@@ -126,6 +127,8 @@ function lossNext(loss: RouteLoss): string {
   // A replacement is open already: a create now would only replace it again (and close it), so the agent is told
   // plainly not to (browserSessionLossRule says the same).
   if (loss.to) return `A new tab replaced it: ${describeRoute(loss.to)}. Your next browser calls use it${loss.to.tabId ? ` (keep using tabId ${loss.to.tabId})` : ''}; do not call browser_session create.`;
+  // Refused on purpose (a profile closed outside SynaBun): its sentence, and no create (refused the same way).
+  if (loss.recovery?.needsUser) return `SynaBun did not open a replacement tab: ${loss.recovery.error.replace(/\.?\s*$/, '.')} Do not call browser_session create (it is refused the same way) and do not switch to another profile or browser.`;
   if (loss.recovery?.starting) return `SynaBun is opening a new tab for it, and the browser is still starting: call the tool again in a moment (the tab is kept for you). ${loss.recovery.error}`.trim();
   if (loss.recovery) return `SynaBun could not open a replacement tab (${loss.recovery.error}). Call browser_session with action "create" and continue in the tab it returns; only if that fails too, stop and report it. Never switch to another browser or tool.`;
   return 'The next browser call gets a new tab. If it answers that the session or tab is gone, call browser_session with action "create" and continue in the tab it returns; only if that fails too, stop and report it.';
@@ -136,7 +139,10 @@ export function routeLossMessage(tool: string, loss: RouteLoss): string {
   const lines = [
     `${tool} stopped: the browser tab it was working in (${describeRoute(loss.from)}) ${lossCause(loss)} during the call, at the ${loss.step} step. Nothing ran on a blank page and nothing was read from it.`,
     lossNext(loss),
-    'Steps before that point may have taken effect: look at the page before you repeat a change. Then open the page again (browser_navigate or the tool\'s own navigation) and call the tool again.',
+    // Refused until the user acts: there is no page to open again, and calling again gets the same answer.
+    loss.recovery?.needsUser
+      ? 'Steps before that point may have taken effect. Report this to the user and stop; do not call the tool again until the user has acted.'
+      : 'Steps before that point may have taken effect: look at the page before you repeat a change. Then open the page again (browser_navigate or the tool\'s own navigation) and call the tool again.',
   ];
   return lines.join('\n');
 }
@@ -265,7 +271,8 @@ function prependNotices(result: unknown, notices: RouteNotice[]): unknown {
 // ── Fields a browser tool does not take ─────────────────────────
 
 /**
- * Which browser SynaBun drives is the owner's choice (Settings → Browser), and a session picks a MoreLogin profile for
+ * Which browser SynaBun drives is the owner's choice (Settings → Browser, or a profile in Settings → Connected tools →
+ * MoreLogin), and a session picks a MoreLogin profile for
  * itself only through the `morelogin` tool's "use" action (or browser_session create's own moreloginProfile), never
  * through an argument of a page tool. A tool argument naming one is refused, not silently dropped: before 2026-11-05 zod stripped unknown keys, so
  * `browser_navigate({ profile: "other" })` ran in the default browser and the model believed it had switched profile.
@@ -287,7 +294,7 @@ export class OwnerOnlyFieldsError extends Error {
   readonly fields: string[];
   constructor(tool: string, fields: string[]) {
     const names = fields.map(f => `"${f}"`).join(', ');
-    super(`OWNER_ONLY_FIELDS: ${tool} does not take ${names}. A browser tool works in the browser of the session that calls it and takes no such argument; the browser settings are the owner's (Settings → Browser). To work in another MoreLogin profile, call morelogin with action "use" (envId or name) first: your browser tools then drive that profile (only a profile the owner allowed agents to choose). Leave ${fields.length === 1 ? 'it' : 'them'} out and call ${tool} again. Nothing ran.`);
+    super(`OWNER_ONLY_FIELDS: ${tool} does not take ${names}. A browser tool works in the browser of the session that calls it and takes no such argument; the browser settings are the owner's (Settings → Browser for SynaBun's own browser, Settings → Connected tools → MoreLogin (Default AI browser) for the default profile). To work in another MoreLogin profile, call morelogin with action "use" (envId or name) first: your browser tools then drive that profile (only a profile the owner allowed agents to choose). Leave ${fields.length === 1 ? 'it' : 'them'} out and call ${tool} again. Nothing ran.`);
     this.name = 'OwnerOnlyFieldsError';
     this.fields = fields;
   }

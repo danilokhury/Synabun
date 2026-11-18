@@ -115,8 +115,8 @@ export function registerMainView({ owner, isVisible }) {
 //   keepPrompts(items, label)
 //                         prompts that were waiting in a sub-agent panel that
 //                         went away by itself: kept for the user on notices
-export function registerPrimaryPanel({ panelId, store, getSessionId, ownsSession, keepPrompts }) {
-  _primary = { panelId, store, getSessionId, ownsSession, keepPrompts };
+export function registerPrimaryPanel({ panelId, store, getSessionId, ownsSession, keepPrompts, onChildWaitingChange }) {
+  _primary = { panelId, store, getSessionId, ownsSession, keepPrompts, onChildWaitingChange };
   startManager();
   syncSubagentTray();
   // Retroactive scan: sub-agent sessions may already exist server-side
@@ -838,6 +838,11 @@ let _summaryEl = null;
 let _traySyncQueued = false;
 let _groupLayoutKey = '';           // what the group's height was last measured for
 let _groupHeight;                   // the height the group may take (trayGroupHeight), once measured
+let _waitingParents = new Set();
+
+export function subagentNeedsYou(sessionId) {
+  return _waitingParents.has(sessionId);
+}
 
 // Store events come in bursts (every streamed token): one tray pass per tick.
 function scheduleTraySync() {
@@ -846,8 +851,8 @@ function scheduleTraySync() {
   setTimeout(() => { _traySyncQueued = false; syncSubagentTray(); }, 0);
 }
 
-function tabPillOf(tray, sessionId) {
-  for (const node of tray.children || []) {
+function tabPillOf(items, sessionId) {
+  for (const node of items) {
     if (node?.dataset?.sessionId !== sessionId) continue;
     if (String(node.dataset.owner || '').startsWith('ocp-v2-child-')) continue;
     if (node.classList?.contains('ocpv2-session-pill')) return node;
@@ -865,6 +870,7 @@ function tabPillOf(tray, sessionId) {
 export function syncSubagentTray() {
   const tray = typeof document !== 'undefined' ? document.getElementById('term-minimized-tray') : null;
   if (!tray) return;
+  const items = Array.from(tray.children).filter((node) => node !== _groupEl && !node.classList.contains('tray-col-head'));
   const shownRoot = _primary?.getSessionId?.() || '';
   const entries = _panels.all();
   const byId = new Map(entries.map((entry) => [entry.sessionId, entry]));
@@ -874,6 +880,11 @@ export function syncSubagentTray() {
     visiblePanelId: visibleEntry()?.panelId || '',
     stateOf: (entry) => entry.instance?.pillState?.() || { state: 'idle' },
   });
+  const waitingParents = new Set([...plan.parents].filter(([, flags]) => flags.waiting).map(([sessionId]) => sessionId));
+  if (waitingParents.size !== _waitingParents.size || [...waitingParents].some((sid) => !_waitingParents.has(sid))) {
+    _waitingParents = waitingParents;
+    _primary?.onChildWaitingChange?.();
+  }
 
   if (!_groupEl) {
     _groupEl = document.createElement('div');
@@ -882,6 +893,15 @@ export function syncSubagentTray() {
     _summaryEl.classList.add('ocpv2-subagent-summary');
     _summaryEl.hidden = true;
     _groupEl.appendChild(_summaryEl);
+    if (typeof MutationObserver !== 'undefined') {
+      // The columns controller moves the group after the pill's state changes.
+      const placement = new MutationObserver((changes) => {
+        if (changes.every(({ oldValue }) => oldValue === _groupEl.getAttribute('data-tray-col'))) return;
+        _groupLayoutKey = '';
+        scheduleTraySync();
+      });
+      placement.observe(_groupEl, { attributes: true, attributeOldValue: true, attributeFilter: ['data-tray-col'] });
+    }
   }
 
   // The pills of this session, in order; every other pill leaves the group.
@@ -898,9 +918,10 @@ export function syncSubagentTray() {
 
   // The group sits right under its parent session's pill (or stands alone
   // while that pill is hidden because the main panel is on screen).
-  const parentPill = shownRoot ? tabPillOf(tray, shownRoot) : null;
+  const parentPill = shownRoot ? tabPillOf(items, shownRoot) : null;
   if (!wanted.length) {
     if (_groupEl.parentNode) _groupEl.remove();
+    _groupLayoutKey = '';
   } else if (parentPill) {
     if (parentPill.nextSibling !== _groupEl) tray.insertBefore(_groupEl, parentPill.nextSibling);
   } else if (_groupEl.parentNode !== tray) {
@@ -908,17 +929,16 @@ export function syncSubagentTray() {
   }
   const docked = !!wanted.length && !!parentPill && parentPill.style?.display !== 'none';
   _groupEl.classList.toggle('ocpv2-pills-docked', docked);
-  // The tray ends inside the window: the group takes the room the other pills
-  // leave (trayGroupHeight), however little that is, and scrolls inside it.
-  // Measured when the pills or their place changed, not on every state change
-  // of a sub-agent.
-  const layoutKey = `${wanted.length}|${shownRoot}|${docked}|${tray.children.length}`;
+  // Use the parent as the viewport anchor. A taller neighboring column
+  // doesn't take vertical space from this group.
+  const layoutKey = `${wanted.length}|${shownRoot}|${docked}|${items.length}|${plan.summary.waiting}`;
   if (wanted.length && layoutKey !== _groupLayoutKey) {
     _groupLayoutKey = layoutKey;
     try {
-      const trayBox = tray.getBoundingClientRect();
-      _groupHeight = trayGroupHeight({ trayTop: trayBox.top, othersHeight: trayBox.height - _groupEl.getBoundingClientRect().height, viewportHeight: window.innerHeight });
-      _groupEl.style.maxHeight = `${_groupHeight}px`;
+      const parentBox = docked ? parentPill.getBoundingClientRect() : null;
+      const top = parentBox?.height ? parentBox.bottom : _groupEl.getBoundingClientRect().top;
+      _groupHeight = trayGroupHeight({ trayTop: top, viewportHeight: window.innerHeight });
+      if (_groupEl.style.maxHeight !== `${_groupHeight}px`) _groupEl.style.maxHeight = `${_groupHeight}px`;
     } catch { /* the stylesheet's bound holds */ }
   }
   // More pills than the group shows at once (its rows, or the room it got):
@@ -928,9 +948,9 @@ export function syncSubagentTray() {
   wanted.forEach((pill, index) => pill.classList.toggle('ocpv2-pill-docked', docked && index === 0 && !scrolls));
 
   // What each parent session's own pill says about its sub-agents.
-  for (const node of tray.children || []) {
+  for (const node of items) {
     const sessionId = node?.dataset?.sessionId;
-    if (!sessionId || node === _groupEl || String(node.dataset.owner || '').startsWith('ocp-v2-child-')) continue;
+    if (!sessionId || String(node.dataset.owner || '').startsWith('ocp-v2-child-')) continue;
     if (!node.classList?.contains('ocpv2-session-pill')) continue;
     const flags = plan.parents.get(sessionId) || { hasChild: false, running: false, waiting: false };
     node.classList.toggle('ocpv2-pill-has-child', flags.hasChild);

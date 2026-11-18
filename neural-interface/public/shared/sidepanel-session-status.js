@@ -1,27 +1,21 @@
-// What a detached session window (ui-sidepanel-sessions.js) is doing, for the
-// pill the main window shows for it. It is read from the window's own tray
-// pills, the ones its provider panel paints from its sessions' state: Claude
-// (tabWorking: a turn or background agents and shells; tabNeedsYou: a
-// permission or a question waiting), Codex (a turn or a thread being made; an
-// approval or a question card waiting), OpenCode (tabPillState: a turn, an
-// automation's turn, a sub-agent's, one waiting on you) and the SynaBun
-// Assistant (sessionStatus); Maritaca (a reply streaming: mtc-pill-running, it never waits on you). The same source as the tray pills, never a second
-// guess. DOM-free.
+// The detached host pill follows the state signals painted by the window's own tray pills.
 
-const WORKING = /^(cp|cxp|ocpv2|agy|mtc|asp)-pill-running$/;
-const NEEDS_YOU = /^((cp|cxp|agy|asp)-pill-attention|ocpv2-pill-waiting)$/;
+const WORKING = /-pill-running$/;
+const NEEDS_YOU = /-pill-(attention|waiting)$/;
 
 /** The states a detached window's pill shows: a session in it needs you > one works > none. */
 export const SESSION_WINDOW_STATES = Object.freeze(['action', 'working', 'idle']);
 
 /**
  * 'action' when a session in the window waits on you, 'working' when one works,
- * else 'idle'. `pills`: the class names of each tray pill of the window.
+ * else 'idle'. Each pill supplies its classes and optional pill and badge statuses.
  */
 export function sessionWindowStatus(pills) {
   let working = false;
-  for (const classes of pills || []) {
-    for (const cls of classes || []) {
+  for (const pill of pills || []) {
+    if (pill?.status === 'action' || pill?.badgeStatus === 'action') return 'action';
+    if (pill?.status === 'working' || pill?.badgeStatus === 'working') working = true;
+    for (const cls of (Array.isArray(pill) ? pill : pill?.classes) || []) {
       if (NEEDS_YOU.test(cls)) return 'action';
       if (WORKING.test(cls)) working = true;
     }

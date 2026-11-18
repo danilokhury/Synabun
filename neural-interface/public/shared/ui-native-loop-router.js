@@ -1,5 +1,5 @@
 import { on } from './state.js';
-import { attachClaudeAutomation, detachClaudeAutomation, handleClaudeAutomationEvent } from './ui-claude-panel.js';
+import { attachClaudeAutomation, detachClaudeAutomation, handleClaudeAutomationEvent } from './claude-panel-lazy.js';
 import { attachCodexAutomation, detachCodexAutomation, handleCodexAutomationEvent } from './ui-codex-panel.js';
 import { attachOpenCodeAutomation, detachOpenCodeAutomation } from './ui-opencode-panel-v2.js';
 import { attachAntigravityAutomation, detachAntigravityAutomation, handleAntigravityAutomationEvent } from './ui-antigravity-panel.js';

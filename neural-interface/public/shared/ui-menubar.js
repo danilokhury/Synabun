@@ -140,6 +140,7 @@ export function initMenubar() {
   wireViewMenu();
   wireGraphMenu();
   wireSkillsMenu();
+  wireAgentsMenu();
   wireAutomationsMenu();
   wireSchedulesButton();
   wireTerminalMenu();
@@ -518,6 +519,28 @@ function wireSkillsMenu() {
 
   // Keyboard shortcut: open Skills Studio (via central keybinds)
   registerAction('open-skills', () => emit('skills:open'));
+}
+
+// ── Agents Menu (agents-p5: Agents Studio, ui-agents.js answers agents:open) ──
+
+function wireAgentsMenu() {
+  const items = {
+    'menu-open-agents-studio': () => emit('agents:open'),
+    'menu-agents-new': () => emit('agents:open', { view: 'create' }),
+    'menu-agents-review': () => emit('agents:open', { view: 'review' }),
+    'menu-agents-teams': () => emit('agents:open', { view: 'teams' }),
+  };
+  for (const [id, run] of Object.entries(items)) {
+    const item = $(id);
+    if (!item) continue;
+    item.addEventListener('click', () => {
+      closeAll();
+      run();
+    });
+  }
+
+  // Keyboard shortcut: open Agents Studio (via central keybinds)
+  registerAction('open-agents', () => emit('agents:open'));
 }
 
 // ── Automations Menu ──

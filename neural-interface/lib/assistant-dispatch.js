@@ -42,8 +42,10 @@ import { MAX_MEDIA_BYTES, MAX_RUN_MEDIA_BYTES, copyRunMedia, mediaType, mediaUrl
 import { loadPlaybook } from './assistant-playbooks.js';
 import { loadStyleGuideForRun } from './style-guide/store.js';
 import { claimCheckWaived, normalizeTestDensity, testingApplies } from './assistant-test-density.js';
+import { normalizeAgentDensity } from './agents/density.js'; // agents-p4
 import { normalizeEffort } from './effort-levels.js';
 import { acpCommandOf, createTurnEvidence, recordProviderEvent, evidenceSnapshot, claimEvidenceLine } from './assistant-evidence.js';
+import { runAwaitsAnswer } from '../public/shared/sidepanel-session-status.js';
 import { BUDGET_MAX_USD, codexUsageCostUsd, floorCents } from './assistant-budget.js';
 import { MIN_SPEND_USD, PROVIDER_LABELS, UNPRICED_PROVIDER_REASON, isFreePrice, isUnpricedProvider } from './assistant-budget-split.js';
 import { createBudgetPlanner } from './assistant-budget-planner.js';
@@ -52,6 +54,12 @@ import { claudeTokensCostUsd } from './assistant-pricing.js';
 import { RemotePolicyError, clampDispatchSpec, getSessionPolicy, readRegisteredProjects } from './remote-policy.js';
 import { validateWorkerReply } from './worker-question.js';
 import { limitFromText } from '../public/shared/assistant/asst-limit.js';
+// agents-p1: a dispatch's agent_ref (lib/agents/resolve.js).
+import { agentCorrections, agentIntake, carryAgentRun, getAgentResolver, stampAgentRun } from './agents/resolve.js';
+// Agents P2 (durable agent messaging): run events, typed waits, the follow-up outbox and the transcript on disk.
+import { createCoordinationService, sharedCoordinationService } from './coordination/service.js';
+import { createRunWaits } from './assistant-run-wait.js';
+import { createRunTailStore, pageText } from './assistant-run-tail.js';
 
 // Antigravity (Google's `agy`, over ACP: lib/native-loop-providers.js createAntigravityNativeLoopAdapter) is a worker
 // provider only: never a brain, no accounts, its usage reported in tokens and never priced.
@@ -454,6 +462,10 @@ export function createAssistantDispatcher({
   // Clarification (assistant-clarify.js): { forDispatch(sessionId, { briefId, independent }) }.
   // A brain's dispatch waits while its questions are open and carries the user's brief.
   clarifier = null,
+  // agents-p1: the agent resolver (lib/agents/resolve.js createAgentResolver, or what returns one). A dispatch's
+  // agent_ref is resolved through it at intake. Default: the one server.js set for the process (none: such a
+  // dispatch is refused, AGENTS_UNAVAILABLE; a dispatch without agent_ref never asks).
+  agents = getAgentResolver,
   // Live limit overrides (assistant-config.json `limits`, re-read on every check), the brain's own
   // spend per assistant session (the runtime: its total, and by the provider it ran on) and list
   // prices for Codex usage (assistant-budget.js createModelPricing).
@@ -480,9 +492,16 @@ export function createAssistantDispatcher({
   // The session's Test density (assistant-test-density.js): (assistantSessionId) => level | null.
   // Read when a prompt is composed; null or an unknown value is the default level.
   testDensity = () => null,
+  // agents-p4: the session's Agent density (lib/agents/density.js): (assistantSessionId) => level | null. How many
+  // workers one task may get; the team scheduler (lib/teams/scheduler.js) asks the dispatcher for it and enforces it.
+  agentDensity = () => null,
   // After a restart, resolves once this server answers its workers (a resumed CLI connects to SynaBun's MCP as it
   // starts): runs are resumed only then. null: at once.
   serverReady = null,
+  // The coordination service (lib/coordination/service.js): the durable log run events go to, the follow-up outbox
+  // and typed waits. Given none, the dispatcher takes the one server.js shares (shareCoordinationService), else it
+  // keeps its own in memory (a test: nothing survives the process).
+  coordination: givenCoordination = null,
 } = {}) {
   if (typeof getRuntime !== 'function') throw new Error('createAssistantDispatcher requires getRuntime()');
   if (!dataDir) throw new Error('createAssistantDispatcher requires dataDir');
@@ -502,6 +521,11 @@ export function createAssistantDispatcher({
     return limits;
   }
   const registryPath = resolve(dataDir, 'assistant-dispatches.json');
+  // ── Agents P2: durable messaging ───────────────────────────────────────────
+  const sharedCoordination = givenCoordination || sharedCoordinationService();
+  const coordination = sharedCoordination || createCoordinationService({ log: (tag, detail) => log(null, tag, detail) });
+  // A run's transcript tail and the whole text of its last turn, kept on disk: <dataDir>/run-tails/<runId>.*.json.
+  const tails = createRunTailStore({ dir: resolve(dataDir, 'run-tails'), log: (tag, detail) => log(null, tag, detail) });
   // What image / video creation runs generated, and design runs' screenshots: <dataDir>/media/<runId>/<n>-<name>.
   const mediaRoot = resolve(dataDir, 'media');
   // A guarded worker's own scratch folder (lib/worker-confinement.js): <dataDir>/scratch/<runId>, removed when empty.
@@ -529,7 +553,43 @@ export function createAssistantDispatcher({
   // Assistant listens (both filled by loadRegistry). Follow-ups sent to a run while it is away wait here for it.
   const bootResumes = [];
   const bootInterrupts = [];
-  const awaitingResume = new Map(); // runId → follow-up items (sendTurn) for a suspended or resuming run
+  // ── Agents P2: follow-ups wait in the coordination store's outbox ──────────
+  // Text sent to a run while it works, or while a restart has it away (suspended / resuming), used to sit in arrays
+  // in memory. Now each is a row of the outbox: it survives a restart, keeps its place, is marked sent in the step
+  // that hands it to the run's provider, and the queue refuses more than its bound.
+  /** Queue a follow-up for a run → { id, position }. Throws FOLLOW_UP_QUEUE_FULL (409) at the bound. */
+  function queueFollowUp(entry, item) {
+    try {
+      return coordination.followUps.enqueue({ runId: entry.runId, text: item.text, sessionId: entry.assistantSessionId || null, origin: item.origin, taskId: item.taskId, at: item.at });
+    } catch (error) {
+      if (error?.code === 'OUTBOX_FULL') {
+        throw new DispatchError('FOLLOW_UP_QUEUE_FULL', `Run ${entry.runId} already has ${error.queued} follow-up${error.queued === 1 ? '' : 's'} waiting (at most ${error.limit}). Wait until it took some (agent_wait), or send one message that says it all.`, { status: 409, queued: error.queued, limit: error.limit });
+      }
+      throw new DispatchError('FOLLOW_UP_NOT_QUEUED', `The follow-up for run ${entry.runId} could not be queued: ${error?.message || error}`, { status: 500 });
+    }
+  }
+  /** The run's oldest follow-up not handed to its provider yet ({ id, kind: 'follow-up', text, origin, taskId, at }), or null. */
+  function nextFollowUp(runId) {
+    try { return coordination.followUps.next(runId); } catch { return null; }
+  }
+  function followUpCount(runId) {
+    try { return coordination.followUps.count(runId); } catch { return 0; }
+  }
+  /** The run will take no more follow-ups (it ended, was stopped, did not resume): they leave the queue → the items. */
+  function cancelFollowUps(runId) {
+    try { return coordination.followUps.cancel(runId); } catch { return []; }
+  }
+  /** After a restart: follow-ups queued for runs that are gone or ended reach nobody. Their run's notes say so. */
+  function settleOrphanFollowUps() {
+    let runIds = [];
+    try { runIds = coordination.followUps.runs(); } catch { runIds = []; }
+    for (const runId of runIds) {
+      const entry = entries.get(runId);
+      if (entry && !TERMINAL_STATES.has(entry.state)) continue;
+      const dropped = cancelFollowUps(runId);
+      if (entry && dropped.length) entry.notes = [...(Array.isArray(entry.notes) ? entry.notes : []), `${dropped.length} queued follow-up${dropped.length === 1 ? '' : 's'} not delivered: the run ended first (the first: "${clip(dropped[0].text, 160)}")`];
+    }
+  }
   const resumeInProgress = new Set(); // runIds resumeRun works on (they hold their slot; the others waiting do not)
   // The server is going down (suspendForShutdown ran): a resume under way stops where it is, for the next start.
   let closing = false;
@@ -625,7 +685,7 @@ export function createAssistantDispatcher({
       const terminal = rows.filter((row) => !ACTIVE_STATES.has(row.state));
       const retained = [...active, ...terminal.slice(0, Math.max(0, limits.retention - active.length))];
       const retainedIds = new Set(retained.map((row) => row.runId));
-      for (const row of terminal) if (!retainedIds.has(row.runId)) { entries.delete(row.runId); live.delete(row.runId); meters.delete(row.runId); }
+      for (const row of terminal) if (!retainedIds.has(row.runId)) { entries.delete(row.runId); live.delete(row.runId); meters.delete(row.runId); tails.remove(row.runId); }
       try { writeJsonAtomic(registryPath, retained); } catch (error) { log(null, 'assistant:registry-error', error?.message || String(error)); }
     };
     if (force) { if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; } write(); return; }
@@ -678,7 +738,8 @@ export function createAssistantDispatcher({
     const elapsedMs = startedAt ? Math.max(0, end - new Date(startedAt).getTime()) : 0;
     // The brief goes to the worker's prompt; views name it only. The meters' state stays inside, and so does what a
     // resume after a restart needs (resumeInfo: the CLI's pid, the turn in progress); `resumes` counts them.
-    const { rawSpec: _rawSpec, brief: _brief, usageState: _usageState, resumeInfo: _resumeInfo, crashed: _crashed, refusedAtShutdown: _refusedAtShutdown, aliveAt: _aliveAt, ...rest } = entry;
+    // agents-p4: a team slice's brief (the TEAM block's content) goes to the worker's prompt; views carry `team` only.
+    const { rawSpec: _rawSpec, brief: _brief, usageState: _usageState, resumeInfo: _resumeInfo, crashed: _crashed, refusedAtShutdown: _refusedAtShutdown, aliveAt: _aliveAt, teamBrief: _teamBrief, ...rest } = entry;
     return {
       ...rest,
       tools: toolsView({ ...entry, tools: runtimeRun?.tools ?? entry.tools }),
@@ -767,6 +828,9 @@ export function createAssistantDispatcher({
     touch(entry);
     persist({ force: TERMINAL_STATES.has(entry.state) });
     const payload = { type: 'assistant:dispatch', reason, run: view(entry), ...extra };
+    // Agents P2: the event goes into the durable log in the step that changed the run, under an id that names it
+    // (recording it again stores nothing), before anyone is told. It never throws: the run goes on either way.
+    coordination.recordDispatch(payload);
     if (['turn_completed', 'idle', 'failed', 'stopped', 'completed'].includes(reason)) { try { completeSkillUsage(entry); } catch {} }
     try { broadcastSync(payload); } catch {}
     for (const listener of listeners) { try { listener(payload); } catch {} }
@@ -827,26 +891,26 @@ export function createAssistantDispatcher({
     const mark = entries.get(runId)?.delivered;
     return mark && typeof mark === 'object' ? { ...mark } : null;
   }
+  /**
+   * Agents P2: events a brain read through agent_wait until:"event" are settled in its session's mailbox by their
+   * ids (never a second turn for them). The log keeps them: the same cursor returns them again. → how many.
+   */
+  function markEventsDelivered(assistantSessionId, eventIds) {
+    if (!assistantSessionId || !Array.isArray(eventIds) || !eventIds.length) return 0;
+    try { return coordination.mailbox.ack(String(assistantSessionId), eventIds).acked; } catch { return 0; }
+  }
 
-  // ── waiters ────────────────────────────────────────────────────────────────
-  const waiters = new Set(); // { check(): boolean, resolve() }
-  function notifyWaiters() {
-    for (const waiter of [...waiters]) {
-      try { if (waiter.check()) { waiters.delete(waiter); waiter.resolve(); } } catch {}
-    }
-  }
-  function satisfies(entry, until, sinceVersion) {
-    if (!entry) return true;
-    // A failed run whose cause is still being judged is not final yet: its
-    // 'failed' event (with the cause and the matching escalation) follows
-    // within the surface timeout.
-    const terminal = TERMINAL_STATES.has(entry.state) && !entry.judging;
-    if (until === 'terminal') return terminal;
-    if (until === 'event') return terminal || entry.state === 'awaiting_permission' || entry.state === 'awaiting_route' || (Number(entry.version) || 0) !== sinceVersion;
-    // 'idle' (default): the run is not busy — idle, awaiting a decision (a
-    // permission or the user's model choice), or finished.
-    return entry.state === 'idle' || entry.state === 'awaiting_permission' || entry.state === 'awaiting_route' || terminal;
-  }
+  // ── waiters (Agents P2: lib/assistant-run-wait.js) ─────────────────────────
+  // until 'idle' / 'terminal' read the runs' state; until 'event' waits on typed events of the coordination log
+  // after a cursor. A workflow's runs are looked up at every check, so one added later is waited for too.
+  const runWaits = createRunWaits({
+    entries, view, coordination, now,
+    // A failed run whose cause is still being judged is not final yet: its 'failed' event follows.
+    isTerminal: (entry) => TERMINAL_STATES.has(entry.state) && !entry.judging,
+    waitCapMs: () => limits.waitCapMs,
+    fail: (code, message, extra) => new DispatchError(code, message, extra),
+  });
+  function notifyWaiters() { runWaits.notify(); }
 
   // ── validation ─────────────────────────────────────────────────────────────
   function suggestModels(catalogValue, provider, model) {
@@ -1440,7 +1504,9 @@ export function createAssistantDispatcher({
     return true;
   }
 
-  async function dispatch(rawSpec = {}, { assistantSessionId = null, origin = 'assistant', brief: carried = null, notes: callerNotes = null } = {}) {
+  // agents-p4: `team` (lib/teams/brief.js teamBrief) and `runId` are the team scheduler's own (lib/teams/scheduler.js):
+  // the slice a run works and the id its claims were taken under. No request body reaches these options.
+  async function dispatch(rawSpec = {}, { assistantSessionId = null, origin = 'assistant', brief: carried = null, notes: callerNotes = null, agentOf = null, team = null, runId: givenRunId = null } = {}) {
     const sessionId = assistantSessionId ? String(assistantSessionId) : null;
     const idempotencyKey = rawSpec.idempotencyKey || rawSpec.idempotency_key ? String(rawSpec.idempotencyKey || rawSpec.idempotency_key).slice(0, 200) : null;
     if (idempotencyKey && sessionId) {
@@ -1452,6 +1518,10 @@ export function createAssistantDispatcher({
     }
     refreshLimits();
     refuseSessionOver(sessionId);
+    // agents-p1: the agent the dispatch names (agent_ref) is applied before anything else reads the spec: what the
+    // dispatch says itself wins, the definition fills the rest and never widens it (lib/agents/resolve.js). The very
+    // same object comes back for a dispatch that names none.
+    rawSpec = agentIntake(agents, rawSpec, { assistantSessionId: sessionId, origin, desktop, resolveExternalTools });
     // "true" (a string) is computer use too: normalizeSpec reads it so, and so must the gate.
     rawSpec = { ...rawSpec, usesComputer: rawSpec.usesComputer === true || rawSpec.usesComputer === 'true' };
     // The MoreLogin profile it names for the worker's browser tab, as MoreLogin lists it (refused here when it cannot
@@ -1477,14 +1547,14 @@ export function createAssistantDispatcher({
     let routed = null;
     // Skills owns the runtime selection and its provider-specific workspace. Never bind Assistant routes.
     if (router && !isSkillsRun(rawSpec) && origin !== 'ui' && sessionId) {
-      routed = await router.resolveDispatch({ sessionId, spec: rawSpec, origin });
+      routed = await router.resolveDispatch({ sessionId, spec: rawSpec, origin, team });
       // A hold names an open card, but an answer that was already in flight (it waited on the same
       // catalog read) can decide that card before this continuation runs. Approved for this
       // session: the dispatch is resolved again with that route_id, so the run starts on it as any
       // dispatch with an approved route does (its validation, the remote clamps and claim, the
       // rails). Declined, cancelled or expired: the attachment below fails and it is refused.
       for (let i = 0; i < 2 && routed?.action === 'hold' && routeApprovedFor(routed.routeId, sessionId); i += 1) {
-        routed = { ...(await router.resolveDispatch({ sessionId, spec: { ...rawSpec, routeId: routed.routeId }, origin })), approvedMeanwhile: true };
+        routed = { ...(await router.resolveDispatch({ sessionId, spec: { ...rawSpec, routeId: routed.routeId }, origin, team })), approvedMeanwhile: true };
       }
     }
     // A remote session's approved route, claimed by resolveDispatch, is used up only by the run it
@@ -1519,14 +1589,29 @@ export function createAssistantDispatcher({
       // The route's spec (a route_id alone can make it a design dispatch, with design's defaults):
       // its browser settings must agree too (the route already exists).
       if (routed?.spec) refuseBrowserConflict(input);
+      // agents-p4: a team's slices start on a route that is approved already; none waits on a card of its own.
+      if (team && routed?.action === 'hold') throw new DispatchError('TEAM_ROUTE_REQUIRED', 'A team slice starts on an approved route: route the team\'s task with agent_route first and start the team with that route_id.', { status: 409, routeId: routed.routeId || null });
       if (routed?.action === 'hold') return holdForRoute(input, routed, { sessionId, origin, idempotencyKey, brief, remoteNotes });
       // The run's class: its route's (the brain may omit task_class with a route_id), else the spec's.
       // Its capability backstop runs in normalizeSpec on the final target, however that was chosen.
       const taskClass = routeClass || knownClass(input.taskClass);
       const spec = normalizeSpec(input, { catalogValue, taskClass });
       const queuedCount = [...entries.values()].filter((e) => e.state === 'queued' && e.assistantSessionId === sessionId).length;
-      runId = randomId();
+      if (givenRunId && entries.has(String(givenRunId))) throw new DispatchError('RUN_EXISTS', `Run ${givenRunId} exists already.`, { status: 409 }); // agents-p4
+      runId = givenRunId ? String(givenRunId) : randomId();
       const entry = { ...baseEntry(runId, sessionId, origin), ...specFields(spec), notes: [...(spec.notes || []), ...remoteNotes] };
+      stampAgentRun(entry, input); // agents-p1: agentRef, agentRevision, agentPin (nothing for a dispatch without an agent)
+      // agents-p4: a team slice's run names its team and slice from its first event on (the durable log files it under
+      // the team), and keeps the slice's brief for its prompt. Its worker is confined by its worktree (worker-confinement.js).
+      if (team && team.teamId && team.sliceId) {
+        entry.teamId = String(team.teamId);
+        entry.team = { teamId: String(team.teamId), sliceId: String(team.sliceId) };
+        entry.teamBrief = team;
+        entry.notes.push(`team ${team.teamId}, slice ${team.sliceId}: ${team.readOnly ? 'read-only worktree; cleaned when the worker ends, changes kept and reported' : 'confined to its worktree and its own files; SynaBun commits and joins its work'}`);
+      }
+      // A run dispatched again as another run (escalate, which names its parent in `agentOf`) is its parent's agent
+      // from the moment its record exists: its first events in the durable log (queued, started) say so too.
+      if (agentOf) carryAgentRun(agentOf, entry);
       if (taskClass) entry.taskClass = taskClass;
       if (brief) { entry.brief = brief; entry.notes.push(`carries the user's brief ${brief.briefId || ''}`.trim()); }
       if (routed?.route) entry.route = routed.route;
@@ -1535,16 +1620,17 @@ export function createAssistantDispatcher({
       if (spec.idempotencyKey && sessionId) idempotency.set(`${sessionId}:${spec.idempotencyKey}`, { runId, at: now() });
       let budgetCorrections = [];
       try { budgetCorrections = await fitBudget(entry, { routed: !!routed?.route }); } catch (error) { entries.delete(runId); throw error; }
-      entry.taskId = taskAtDispatch(sessionId);
+      entry.taskId = routed?.route?.taskId || taskAtDispatch(sessionId);
       const launched = await launchOrQueue(entry, spec, { queuedCount, strict: true });
-      const withCorrections = budgetCorrections.length ? { ...launched, corrections: budgetCorrections } : launched;
+      const corrections = [...budgetCorrections, ...agentCorrections(input)]; // agents-p1: what the agent's definition was held to
+      const withCorrections = corrections.length ? { ...launched, corrections } : launched;
       // The route's own "decided" event (it had no run attached) still tells the brain to dispatch.
       return routed?.approvedMeanwhile
         ? { ...withCorrections, next: 'The user picked this route while the dispatch was on its way, so this run started on it. Do not dispatch it again when the route_decided event for this route arrives.' }
         : withCorrections;
     } catch (error) {
       // A run that exists (it failed or stopped at start) used the route; a refusal before one did not.
-      if (routed?.claimed && !(runId && entries.has(runId))) router.releaseRoute?.(routed.route?.routeId);
+      if (routed?.claimed && !(runId && entries.has(runId))) router.releaseRoute?.(routed.route?.routeId, routed.claim);
       throw error;
     }
   }
@@ -1641,6 +1727,7 @@ export function createAssistantDispatcher({
       idempotencyKey, rawSpec: { ...input }, route: routed.route,
       notes: ['awaiting the user\'s model choice on the route card', ...remoteNotes],
     };
+    stampAgentRun(entry, input); // agents-p1
     const heldClass = knownClass(routed.route?.taskClass) || knownClass(input.taskClass);
     if (heldClass) entry.taskClass = heldClass;
     const selection = dispatchTools({ ...input, taskClass: heldClass });
@@ -1651,7 +1738,7 @@ export function createAssistantDispatcher({
     entry.usesBrowser = input.usesBrowser === true || selection.groups.some(isBrowserGroup);
     if (brief) entry.brief = brief;
     // A held run belongs to the task that asked for it, whenever the user picks its model.
-    entry.taskId = taskAtDispatch(sessionId);
+    entry.taskId = routed?.route?.taskId || taskAtDispatch(sessionId);
     // The run waits on its route card, so the card must still be open: one that closed meanwhile
     // (the user wrote something else, a Stop) would leave a run nothing ever starts or declines.
     // Attached before the run exists: a refusal leaves no entry and no idempotency key behind.
@@ -1754,9 +1841,9 @@ export function createAssistantDispatcher({
       usesBrowser: entry.usesBrowser, usesComputer: entry.usesComputer, maxMinutes: entry.maxMinutes, budgetUsd: entry.budgetUsd,
       ...(entry.moreloginEnvId ? { moreloginEnvId: entry.moreloginEnvId, moreloginEnvName: entry.moreloginEnvName || null } : {}),
       outputSchema: entry.outputSchema, taskClass: entry.taskClass || null,
-    }, { assistantSessionId: entry.assistantSessionId, origin: 'ui', brief: entry.brief || null });
+    }, { assistantSessionId: entry.assistantSessionId, origin: 'ui', brief: entry.brief || null, agentOf: entry });
     const child = entries.get(result?.run?.runId);
-    if (child) { child.escalationDepth = (Number(entry.escalationDepth) || 0) + 1; child.escalatedFrom = runId; }
+    if (child) { child.escalationDepth = (Number(entry.escalationDepth) || 0) + 1; child.escalatedFrom = runId; carryAgentRun(entry, child); /* agents-p1 */ }
     entry.notes.push(`${retry ? 'retried on' : 'escalated to'} ${to.provider}/${to.model || 'default'} as ${result?.run?.runId || '?'}`);
     if (entry.limit && typeof entry.limit === 'object') entry.limit = { ...entry.limit, retriedAt: iso(now()) };
     emit(entry, 'escalated', { childRunId: result?.run?.runId || null });
@@ -1997,7 +2084,7 @@ export function createAssistantDispatcher({
   /** What a run's worker keeps in memory while it lives (never saved): its turn loop, transcript tail, waits. */
   function newLiveState(entry) {
     return {
-      entry, ctx: null, ring: [], ringChars: 0, followUps: [], waitResolve: null, idleTimer: null,
+      entry, ctx: null, ring: [], ringChars: 0, waitResolve: null, idleTimer: null,
       pendingResolvers: new Map(), dead: false, lastEventAt: now(), stalledFlagged: false, turnCounter: 0, abortReason: null,
       evidence: null, // the current turn's commands / tool results / edited files (assistant-evidence.js)
       completed: false, // its turn loop ended on a completion (agent_complete, a closed finished tab, a removal)
@@ -2055,6 +2142,8 @@ export function createAssistantDispatcher({
       title: entry.title, tags: entry.tags, workflowId: entry.workflowId, parentRunId: entry.parentRunId,
       // The user's brief after a clarification (assistant-task-prompt.js briefBlock).
       brief: entry.brief || null,
+      // agents-p4: a team slice's TEAM block (assistant-task-prompt.js teamBlock); null for every other run.
+      team: entry.teamBrief || null,
       // Image / video creation: the prompt's media block and what the adapter collects ('image' | 'video');
       // design collects its screenshots and images the same way ('image').
       taskClass: entry.taskClass || null, collectMedia: collectedMedia(entry.taskClass),
@@ -2239,13 +2328,20 @@ export function createAssistantDispatcher({
     startUsageMetering(entry, liveState);
     const waitForFollowUp = () => new Promise((resolveWait) => {
       const finish = (value) => { if (liveState.idleTimer) { clearTimeout(liveState.idleTimer); liveState.idleTimer = null; } liveState.waitResolve = null; resolveWait(value); };
-      if (liveState.followUps.length) { finish(liveState.followUps.shift()); return; }
+      // The outbox first (Agents P2): what was queued while the turn worked, or while a restart had the run away.
+      const queued = nextFollowUp(entry.runId);
+      if (queued) { finish(queued); return; }
       if (liveState.abortReason) { finish({ kind: 'abort' }); return; }
-      liveState.waitResolve = finish;
+      // sendTurn signals { kind: 'follow-up' } once its text is in the outbox: the oldest queued one is taken from there.
+      liveState.waitResolve = (value) => {
+        if (value?.kind !== 'follow-up') { finish(value); return; }
+        const next = nextFollowUp(entry.runId);
+        if (next) finish(next);
+      };
       liveState.idleTimer = setTimeout(() => finish({ kind: 'timeout' }), entry.idleTimeoutMs);
       liveState.idleTimer.unref?.();
     });
-    const runInnerTurn = async (prompt, meta, { origin = 'assistant', label = null, followUp = null, taskId = entry.taskId || null } = {}) => {
+    const runInnerTurn = async (prompt, meta, { origin = 'assistant', label = null, followUp = null, taskId = entry.taskId || null, outboxId = null } = {}) => {
       liveState.turnCounter += 1;
       const turnNumber = liveState.turnCounter;
       const startedAt = iso(now());
@@ -2271,6 +2367,9 @@ export function createAssistantDispatcher({
       liveState.evidence = createTurnEvidence();
       // Money booked while this turn runs (OpenCode steps, Codex rollout records).
       liveState.turnMeteredUsd = 0;
+      // A queued follow-up is sent exactly here, as its prompt goes to the provider: a restart from now on continues
+      // this turn (resumeInfo.inFlight) and never sends the text a second time.
+      if (outboxId) { try { coordination.followUps.markSent([outboxId]); } catch (error) { log(entry.runId, 'assistant:follow-up-error', error?.message || String(error)); } }
       let raw = await inner.runTurn(prompt, { ...meta, turn: turnNumber, outputSchema: entry.outputSchema || undefined });
       if (entry.provider === 'codex') settleCodexTurn(entry, liveState, raw);
       else if (entry.provider === 'antigravity') settleAntigravityTurn(entry, liveState, raw);
@@ -2365,6 +2464,8 @@ export function createAssistantDispatcher({
       // (the OpenCode panel's pill): a warm worker whose turn ended asking waits on the user, it does not rest.
       ctx.setOutcome?.(parsed.status || null);
       entry.lastText = text.slice(0, 20_000);
+      // The whole text goes to disk (lib/assistant-run-tail.js): agent_read format "text" pages through it with `offset`.
+      tails.saveText(entry.runId, { turn: turnNumber, text });
       // The turn has ended: its result is in. Idle time from here on is not work.
       pauseWork(entry, liveState);
       // Blocked or contract-less turns offer a one-tier escalation (the run
@@ -2443,15 +2544,18 @@ export function createAssistantDispatcher({
             entry.notes.push(`follow-up dropped: ${blocked.message}${blocked.code === 'BUDGET_SHARE_EXHAUSTED' ? '; no unspent budget could be moved to it' : ''}`);
             return budgetStop(entry, blocked);
           }
-          // No work time left: a turn started now would only be cut off.
+          // No work time left: a turn started now would only be cut off. The run ends as the cap's timer ends it
+          // (stopped, time_cap), so its brain hears it in its mailbox; the follow-up stays in the outbox until
+          // finalize cancels it, and the stop event names it.
           if (workLeftMs(entry) <= 0) {
             entry.completionReason = 'time_cap';
             entry.notes.push(`follow-up dropped: its ${entry.maxMinutes} minutes of work time are used up`);
+            stop(entry.runId, 'time_cap').catch(() => {});
             return { providerSessionId: inner.identity?.()?.providerSessionId };
           }
           try {
             const followPrompt = buildFollowUpPrompt(next.text, state, { turn: liveState.turnCounter + 1, maxTurns: entry.maxTurns, origin: next.origin, testDensity: changedTestDensity(entry) });
-            await runInnerTurn(followPrompt, meta, { origin: next.origin, label: clip(next.text, 80), followUp: next.text, taskId: next.taskId || entry.taskId || null });
+            await runInnerTurn(followPrompt, meta, { origin: next.origin, label: clip(next.text, 80), followUp: next.text, taskId: next.taskId || entry.taskId || null, outboxId: next.id || null });
           } catch (error) {
             pauseWork(entry, liveState);
             return handleTurnError(error, liveState, entry, ctx);
@@ -3445,10 +3549,9 @@ export function createAssistantDispatcher({
     const liveState = newLiveState(entry);
     liveState.turnCounter = turned;
     liveState.resume = { mode, taskId: inFlight?.taskId || null };
-    // Follow-ups sent while it was away wait for it like any queued follow-up.
-    const waiting = awaitingResume.get(entry.runId) || [];
-    awaitingResume.delete(entry.runId);
-    liveState.followUps.push(...waiting);
+    // Follow-ups sent while it was away wait in the outbox: its turn loop takes them like any queued follow-up.
+    // The transcript tail kept on disk goes on where it was.
+    for (const line of tails.readTail(entry.runId)) pushRingLine(liveState, line);
     live.set(entry.runId, liveState);
     const desktopGrant = mintDesktopGrant(entry);
     const state = runState(entry, {
@@ -3528,8 +3631,7 @@ export function createAssistantDispatcher({
     const index = queue.indexOf(entry.runId);
     if (index !== -1) queue.splice(index, 1);
     // Follow-ups accepted for it while it was away (agent_send) reach nobody: its end says so, with the first of them.
-    const waiting = awaitingResume.get(entry.runId) || [];
-    awaitingResume.delete(entry.runId);
+    const waiting = cancelFollowUps(entry.runId);
     const undelivered = waiting.length ? `; ${waiting.length} follow-up${waiting.length === 1 ? '' : 's'} sent while it was away ${waiting.length === 1 ? 'was' : 'were'} not delivered (${waiting.length === 1 ? '' : 'the first: '}"${clip(waiting[0].text, 160)}")` : '';
     // Nothing of it may go on: a CLI a crash left behind is ended too.
     endOldProcess(entry).then(() => persist()).catch(() => {});
@@ -3580,20 +3682,25 @@ export function createAssistantDispatcher({
     }
     // A follow-up works for the task in progress when it is sent, which may be a later one than the run's.
     const item = { kind: 'follow-up', text: message, origin, at: iso(now()), taskId: taskNow(entry.assistantSessionId) || entry.taskId || null };
-    if (origin === 'user') emit(entry, 'user_intervened', { text: clip(message, 200) });
-    if (away) {
-      if (!allowQueue) throw new DispatchError('TURN_ACTIVE', `Run ${runId} is ${entry.state === 'suspended' ? 'suspended while the server restarts' : 'being resumed after a server restart'}; retry when it is idle or pass queue:true`, { status: 409 });
-      const waiting = awaitingResume.get(runId) || [];
-      waiting.push(item);
-      awaitingResume.set(runId, waiting);
-      emit(entry, 'follow_up_queued', { queued: waiting.length });
-      return { ok: true, queued: true, position: waiting.length, run: view(entry), note: 'The run resumes after the server restart; this follow-up goes to it then.' };
+    // Every follow-up goes through the outbox (Agents P2), also one an idle run takes at once: the queue is one, in
+    // order, and what it holds outlives a restart.
+    const idle = !away && !!liveState.waitResolve;
+    if (!idle && !allowQueue) {
+      throw new DispatchError('TURN_ACTIVE', away
+        ? `Run ${runId} is ${entry.state === 'suspended' ? 'suspended while the server restarts' : 'being resumed after a server restart'}; retry when it is idle or pass queue:true`
+        : `Run ${runId} is busy; retry when idle or pass queue:true`, { status: 409 });
     }
-    if (liveState.waitResolve) { liveState.waitResolve(item); return { ok: true, queued: false, turn: liveState.turnCounter + 1, run: view(entry) }; }
-    if (!allowQueue) throw new DispatchError('TURN_ACTIVE', `Run ${runId} is busy; retry when idle or pass queue:true`, { status: 409 });
-    liveState.followUps.push(item);
-    emit(entry, 'follow_up_queued', { queued: liveState.followUps.length });
-    return { ok: true, queued: true, position: liveState.followUps.length, run: view(entry) };
+    const queued = queueFollowUp(entry, item);
+    if (origin === 'user') emit(entry, 'user_intervened', { text: clip(message, 200) });
+    if (idle) {
+      liveState.waitResolve({ kind: 'follow-up' });
+      return { ok: true, queued: false, turn: liveState.turnCounter + 1, followUpId: queued.id, run: view(entry) };
+    }
+    emit(entry, 'follow_up_queued', { queued: queued.position });
+    return {
+      ok: true, queued: true, position: queued.position, followUpId: queued.id, run: view(entry),
+      ...(away ? { note: 'The run resumes after the server restart; this follow-up goes to it then.' } : {}),
+    };
   }
   /**
    * Before a follow-up: when the run's provider share is used up, the session's unspent budget is
@@ -3651,7 +3758,7 @@ export function createAssistantDispatcher({
     if (entry.state === 'resuming' || entry.state === 'suspended') {
       const index = queue.indexOf(runId);
       if (index !== -1) queue.splice(index, 1);
-      awaitingResume.delete(runId);
+      cancelFollowUps(runId);
       // A CLI a crash left behind (this start has not ended it yet) goes with the run.
       if (entry.state === 'resuming') await endOldProcess(entry);
     }
@@ -3673,8 +3780,12 @@ export function createAssistantDispatcher({
   function finalize(entry, runtimeRun) {
     if (TERMINAL_STATES.has(entry.state)) return;
     const liveState = live.get(entry.runId);
-    // Follow-ups that waited for its resume after a restart go with it.
-    awaitingResume.delete(entry.runId);
+    // Follow-ups still queued for it (behind a turn, or for its resume after a restart) go with it: its notes say so.
+    const unsent = cancelFollowUps(entry.runId);
+    const undelivered = unsent.length ? `${unsent.length} queued follow-up${unsent.length === 1 ? '' : 's'} not delivered: the run ended first (the first: "${clip(unsent[0].text, 160)}")` : null;
+    if (undelivered) entry.notes.push(undelivered);
+    // What its transcript showed last stays readable (agent_read format "tail") after the worker is gone.
+    if (liveState) tails.flush(entry.runId, liveState.ring);
     pauseWork(entry, liveState);
     let status = runtimeRun?.status || 'completed';
     // A completed worker whose loop file was swept meanwhile (a stale-file cleanup) reaches the
@@ -3707,7 +3818,8 @@ export function createAssistantDispatcher({
       return;
     }
     if (entry.state === 'failed' || entry.lastResult?.status === 'blocked') { noteLimit(entry); entry.escalation = computeEscalation(entry); }
-    emit(entry, entry.state);
+    // The end event says which follow-ups never reached the worker (a stop the brain hears of carries it to its mailbox).
+    emit(entry, entry.state, undelivered ? { text: undelivered } : {});
     // A memory already stored for the run (by the worker or the brain) is the run's memory.
     // An evaluation run (lib/skills/evals.js) is a measurement, not work to remember: it stores no memory.
     if (memory?.rememberDispatch && !isEvalRun(entry) && !syncMemory(entry, { announce: true }) && (entry.state === 'completed' || (entry.state === 'stopped' && entry.lastResult))) {
@@ -3730,6 +3842,8 @@ export function createAssistantDispatcher({
       const removed = liveState.ring.shift();
       liveState.ringChars -= removed?.length || 0;
     }
+    // Kept on disk too (at most once a second), so the tail is still there after the run or a restart.
+    tails.touch(liveState.entry.runId, () => liveState.ring);
   }
   /**
    * An Antigravity message chunk (ACP agent_message_chunk): the text joins the message's line when that line is
@@ -3747,6 +3861,7 @@ export function createAssistantDispatcher({
         liveState.ring[liveState.ring.length - 1] = line;
         liveState.ringChars += line.length - open.line.length;
         open.line = line;
+        tails.touch(liveState.entry.runId, () => liveState.ring);
       }
       return;
     }
@@ -3882,6 +3997,19 @@ export function createAssistantDispatcher({
       .slice(0, Math.max(1, Math.min(500, Number(limit) || 100)))
       .map((entry) => view(entry));
   }
+  // Check live entries directly: a long queue must not hide an older worker behind the roster's page limit.
+  function hasRunAwaitingOwner() {
+    for (const entry of entries.values()) {
+      if (entry.removedAt || !ACTIVE_STATES.has(entry.state) || entry.state === 'suspended') continue;
+      if (entry.state === 'awaiting_route' || entry.route?.status === 'pending' || entry.state === 'awaiting_permission') return true;
+      if (runAwaitsAnswer({ status: runStatusFromState(entry.state), turnState: entry.turnState, pending: entry.pending, lastResult: entry.lastResult })) return true;
+    }
+    return false;
+  }
+  // Unbounded inventory, including removed runs, for conservative team cleanup checks.
+  function teamRuns(teamId, workflowId) {
+    return [...entries.values()].filter(entry => entry.teamId === teamId || entry.team?.teamId === teamId || entry.workflowId === workflowId).map(entry => view(entry));
+  }
   function totals({ assistantSessionId = null, workflowId = null } = {}) {
     const rows = [...entries.values()].filter((entry) => (!assistantSessionId || entry.assistantSessionId === assistantSessionId) && (!workflowId || entry.workflowId === workflowId));
     // tokens: the five classes plus total, from the runs' ledger views (a run without one counts its legacy input / output).
@@ -3910,60 +4038,45 @@ export function createAssistantDispatcher({
     out.queue = queue.map((runId, index) => ({ runId, position: index + 1, title: entries.get(runId)?.title || null, provider: entries.get(runId)?.provider || null }));
     return out;
   }
-  function transcript(runId, { format = 'result', tail = 40, maxChars = 4000 } = {}) {
+  /**
+   * agent_read. `offset` (Agents P2, additive) pages through the text of format "text" / "tail": without it the
+   * answer is the END of the text, at most `maxChars`, and says where that page starts (`offset`) and how long the
+   * whole is (`totalChars`); with it the page starts there and `nextOffset` is where the following one starts.
+   */
+  function transcript(runId, { format = 'result', tail = 40, maxChars = 4000, offset = null } = {}) {
     const entry = requireEntry(runId);
     const liveState = live.get(runId);
     const cap = Math.max(200, Math.min(20_000, Number(maxChars) || 4000));
     const base = { runId, state: entry.state, turnState: entry.turnState, outcome: entry.lastResult?.status || null, turns: (entry.turns || []).length };
     if (format === 'result') return { ...base, result: entry.lastResult, turnsSummary: (entry.turns || []).map((turn) => ({ n: turn.n, origin: turn.origin, status: turn.result?.status || null, summary: clip(turn.result?.summary, 200), costUsd: turn.costUsd })) };
     if (format === 'text') {
-      const text = String(entry.lastText || '');
-      return { ...base, text: text.length > cap ? text.slice(-cap) : text, truncated: text.length > cap };
+      // The whole text of the last turn is on disk; the registry keeps its first 20,000 characters only.
+      const kept = tails.readText(runId);
+      const lastTurn = (entry.turns || []).at(-1)?.n ?? null;
+      const text = kept && (kept.turn === null || lastTurn === null || kept.turn === lastTurn) ? kept.text : String(entry.lastText || '');
+      return { ...base, ...pageText(text, { offset, maxChars: cap }) };
     }
     if (format === 'files') return { ...base, files: entry.lastResult?.files || [] };
     // A skill-evaluation run's tool calls and its start catalog (kept while the run lives).
     if (format === 'tools') return { ...base, calls: liveState?.evalCalls ? [...liveState.evalCalls] : [], init: liveState?.evalInit || null, unavailable: !liveState ? 'tool calls are only kept for live runs' : null };
     if (format === 'events' || format === 'tail') {
-      const lines = liveState ? liveState.ring.slice(-Math.max(1, Math.min(500, Number(tail) || 40))) : [];
-      const joined = lines.join('\n');
-      return { ...base, tail: lines, text: joined.length > cap ? joined.slice(-cap) : joined, truncated: joined.length > cap, unavailable: !liveState ? 'transcript buffer is only kept for live runs' : null };
+      // A live run's ring, else what was kept of it on disk (the run ended, or the server restarted since).
+      const all = liveState ? liveState.ring : tails.readTail(runId);
+      const lines = all.slice(-Math.max(1, Math.min(500, Number(tail) || 40)));
+      return {
+        ...base, tail: lines, ...pageText(lines.join('\n'), { offset, maxChars: cap }),
+        unavailable: !liveState && !all.length ? 'no transcript was kept for this run' : null,
+      };
     }
     throw new DispatchError('INVALID_FORMAT', `Unknown transcript format ${format}`);
   }
   function pendingPermissions(runId) { return [...(requireEntry(runId).pending || [])]; }
 
-  async function wait({ runId = null, runIds = null, workflowId = null, assistantSessionId = null, until = 'idle', mode = 'all', timeoutMs = 30_000 } = {}) {
-    let ids = Array.isArray(runIds) ? [...runIds] : runId ? [runId] : [];
-    if (workflowId) ids = [...new Set([...ids, ...[...entries.values()].filter((e) => e.workflowId === workflowId && (!assistantSessionId || e.assistantSessionId === assistantSessionId)).map((e) => e.runId)])];
-    ids = ids.slice(0, 20);
-    if (!ids.length) throw new DispatchError('RUN_IDS_REQUIRED', 'runId, runIds or workflowId is required');
-    for (const id of ids) requireEntry(id);
-    const started = now();
-    const budget = Math.max(1000, Math.min(limits.waitCapMs, Number(timeoutMs) || 30_000));
-    const baseline = new Map(ids.map((id) => [id, Number(entries.get(id)?.version) || 0]));
-    const check = () => {
-      const satisfied = ids.filter((id) => satisfies(entries.get(id), until, baseline.get(id)));
-      return mode === 'any' ? satisfied.length > 0 : satisfied.length === ids.length;
-    };
-    if (!check()) {
-      await new Promise((resolveWait) => {
-        const waiter = { check, resolve: () => { clearTimeout(timer); resolveWait(); } };
-        const timer = setTimeout(() => { waiters.delete(waiter); resolveWait(); }, budget);
-        timer.unref?.();
-        waiters.add(waiter);
-      });
-    }
-    const done = ids.filter((id) => satisfies(entries.get(id), until, baseline.get(id)));
-    const pendingIds = ids.filter((id) => !done.includes(id));
-    const timedOut = !check();
-    return {
-      ok: true, timedOut, waitedMs: now() - started, until, mode,
-      done: done.map((id) => view(entries.get(id))),
-      pending: pendingIds.map((id) => view(entries.get(id))),
-      needsInput: ids.map((id) => entries.get(id)).filter((e) => e?.lastResult?.status === 'needs_input' && e.state === 'idle').map((e) => ({ runId: e.runId, question: e.lastResult.question })),
-      permissions: ids.flatMap((id) => (entries.get(id)?.pending || []).map((request) => ({ runId: id, ...request }))),
-    };
-  }
+  /**
+   * agent_wait (lib/assistant-run-wait.js). Additive since Agents P2: `afterSeq` and `kinds` for until 'event',
+   * `unseenFor` (the asking brain's session), and `events` / `cursor` in the answer.
+   */
+  function wait(options = {}) { return runWaits.wait(options); }
 
   // ── removal (the user clears finished runs from the agents tray) ──────────
   /**
@@ -3976,7 +4089,7 @@ export function createAssistantDispatcher({
   function finishedIdle(entry, { outcomes = ['done', 'blocked'] } = {}) {
     return entry.state === 'idle' && !entry.judging
       && outcomes.includes(entry.lastResult?.status)
-      && !(live.get(entry.runId)?.followUps?.length);
+      && !followUpCount(entry.runId);
   }
   async function finishIdleForRemoval(entry) {
     if (!finishedIdle(entry)) return;
@@ -4049,12 +4162,20 @@ export function createAssistantDispatcher({
       }
     }
     persist({ force: true });
+    // Agents P2: the transcript tails are written; a service this dispatcher made for itself goes with it (the one
+    // server.js shares is closed there, after the runtime).
+    tails.flushAll();
+    if (!sharedCoordination) coordination.close();
   }
 
   loadRegistry();
+  settleOrphanFollowUps();
   attachRuntime();
   stalledTimer = setInterval(() => { attachRuntime(); checkStalled(); beat(); }, 60_000);
   stalledTimer.unref?.();
+  // Transcript files of runs the registry dropped go, a while after the start (never on its path).
+  const tailSweep = setTimeout(() => { try { tails.sweep(entries.keys()); } catch { /* the next start tries again */ } }, 30_000);
+  tailSweep.unref?.();
   // After a restart: the cut-off runs are resumed, or said to have ended, once the Assistant listens (server.js makes
   // its runtime, which subscribes, right after this dispatcher, in the same tick).
   if (bootResumes.length || bootInterrupts.length) {
@@ -4062,14 +4183,20 @@ export function createAssistantDispatcher({
   }
 
   return {
-    dispatch, sendTurn, complete, completeClosedTab, stop, killAll, get, peek, list, totals, wait, transcript, pendingPermissions,
+    dispatch, sendTurn, complete, completeClosedTab, stop, killAll, get, peek, teamRuns, hasRunAwaitingOwner, list, totals, wait, transcript, pendingPermissions,
     respondPermission, subscribe, shutdown, limits, suspendForShutdown,
     sessionBudget, checkSession, refreshLimits, providerSpend, coverFollowUp, budget,
     resolveRoute, declineRoute, heldRouteRefusal, escalate,
-    markDelivered, deliveryState, noteBrowserRoute, noteBrowserProfile,
+    markDelivered, deliveryState, markEventsDelivered, noteBrowserRoute, noteBrowserProfile,
     remove, removeFinished,
     mediaFile,
     accountInUse: (provider, accountId) => activeEntries((e) => e.provider === provider && e.accountId === accountId).length > 0,
-    _internals: { entries, live, queue, processQueue, attachRuntime, registryPath },
+    // agents-p4: the session's Agent density as the server reads it (the default when it is not set or cannot be read).
+    agentDensity: (assistantSessionId) => { try { return normalizeAgentDensity(agentDensity(assistantSessionId || null)); } catch { return normalizeAgentDensity(null); } },
+    // Agents P2: the coordination service this dispatcher records into (the Assistant runtime reads its mailbox from it),
+    // and when this server answers its workers (the runtime delivers the mailboxes a restart left open only then).
+    coordination,
+    whenServerReady: () => Promise.resolve(typeof serverReady === 'function' ? serverReady() : null).catch(() => null),
+    _internals: { entries, live, queue, processQueue, attachRuntime, registryPath, tails, runWaits },
   };
 }

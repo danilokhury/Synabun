@@ -142,6 +142,11 @@ const SYNC_HANDLERS = {
   // Skills Service (lib/skills/service.js): a skill, a revision, a review or an installation changed (owner only) —
   // the Studio reads its library again, Settings its chips, the Codex panel its skill hints
   'skills:changed':                (msg) => emit('sync:skills:changed', msg),
+  // Agents (agents-p5): an agent definition changed (lib/agents/registry.js through server.js) or a team did (the
+  // team scheduler): Agents Studio reads its library, its Review queue and its teams again (ui-agents.js)
+  'assistant:automation-records-changed': (msg) => emit('sync:assistant:automation-records-changed', msg),
+  'assistant:agents-changed':      (msg) => emit('sync:assistant:agents-changed', msg),
+  'assistant:team-changed':        (msg) => emit('sync:assistant:team-changed', msg),
 
   // WhatsApp Link — states and counters only (never a QR, code, number or text); Settings → WhatsApp re-reads /api/whatsapp/status
   'whatsapp:status':               (msg) => emit('sync:whatsapp:status', msg),

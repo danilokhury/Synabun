@@ -316,7 +316,10 @@
     background: var(--frame-surface);
     z-index: 1;
     opacity: 1;
-    filter: blur(0px);
+    /* none, not blur(0px): a zero blur is still a filter, and the engine then draws the whole map into an
+       offscreen surface first on every frame it renders. Entering Focus Mode animates none → blur(12px) just
+       the same (none stands for the same functions at zero). */
+    filter: none;
     transform: scale(1);
     transition: left 0.3s cubic-bezier(0.22, 1, 0.36, 1),
                 width 0.3s cubic-bezier(0.22, 1, 0.36, 1),
@@ -1768,6 +1771,19 @@
     color: var(--t-bright);
   }
 
+  .menubar-label[data-studio-attention] { position: relative; }
+
+  .menubar-attention-dot {
+    position: absolute;
+    top: 3px;
+    inset-inline-end: 3px;
+    width: 6px;
+    height: 6px;
+    border-radius: var(--r-pill);
+    background: var(--accent-red);
+    pointer-events: none;
+  }
+
   .menubar-label .count-badge {
     position: relative;
     top: -1px;
@@ -1804,13 +1820,6 @@
                 0 8px 20px rgba(0,0,0,0.25),
                 0 24px 48px rgba(0,0,0,0.18);
   }
-  html.platform-win32 .menubar-dropdown,
-  html.platform-win32 .menubar-submenu {
-    background: rgba(28, 28, 32, 0.98);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-  }
-
   /* Arrow caret — seamless extension of the container */
   .menubar-dropdown::before {
     content: '';
@@ -6427,15 +6436,9 @@
       display: none;
     }
   }
-  /* The session pills (#term-minimized-tray, a child of the row): a column under the bar, one pill per line,
-     right-aligned with its right edge (the last agent button). The same
-     place whether the tools show or not; under the dock's line where the bar wrapped. Never wider than the band, so
-     nothing of them lies over a left panel (a pill gives its label up first); in Focus Mode they also keep clear of
-     the whiteboard rail at the band's left edge (--topright-tray-inset: its 42px and 8px). The row slides left with
-     a right side panel and takes them along. Nothing in the row hides them: the menus the dock opens draw over them
-     (#topright-inner's z-index, an opaque menu). Only the code editor hides the whole row, pills included
-     (body.fe-editor-open): it fills the band they hang in. The tray's own box takes no click: what lies beside the
-     pills is the canvas's. */
+  /* The tray's status columns share the band under the bar and stay aligned with its right edge.
+     In Focus Mode the inset reserves 42px for the whiteboard rail and 8px of clearance. The dock's opaque
+     menus draw above the tray, and gaps between the pills pass clicks to the canvas. */
   :root {
     --topright-tray-inset: 0px;
   }
@@ -6443,27 +6446,184 @@
   :root.static-bg-visible {
     --topright-tray-inset: 50px;
   }
-  #topright-controls > #term-minimized-tray {
+  #topright-controls > #term-minimized-tray.tray-columns {
+    --tray-tracks: 1;
+    --tray-cell: calc((100% - (var(--tray-tracks) - 1) * 4px) / var(--tray-tracks));
     right: 0;
-    width: max-content;
+    width: calc(var(--tray-tracks) * 184px + (var(--tray-tracks) - 1) * 4px);
     max-width: calc(var(--topright-band) - var(--topright-tray-inset));
-    flex-direction: column;
-    flex-wrap: nowrap;
-    align-items: flex-end;
-    gap: 6px;
+    height: var(--tray-height, 28px);
+    display: block;
     pointer-events: none;
   }
-  #topright-controls > #term-minimized-tray > * {
+  #term-minimized-tray.tray-columns > .tray-col-head,
+  #term-minimized-tray.tray-columns .term-minimized-pill {
+    position: absolute;
+    box-sizing: border-box;
+    top: var(--tray-top, 0px);
+    right: calc(var(--tray-lane, 0) * (var(--tray-cell) + 4px));
+    width: var(--tray-cell);
+    min-width: 0;
+    max-width: none;
+    margin: 0;
     pointer-events: auto;
   }
-  /* A pill's label: 100px as everywhere, less in a narrow band, so that two pills share a line (the pill around its
-     label is 60px, 62 with rounding, and 6px apart): a narrow band gets rows of two, not a stack of one, down to a
-     band of 182px (two pills at the shortest label, 28px). It keeps that width on hover (widening, a pill would push the others onto another line under the pointer):
-     its whole name is its tooltip (ui-navbar.js). */
-  #topright-controls > #term-minimized-tray > .term-minimized-pill .term-minimized-pill-label,
-  #topright-controls > #term-minimized-tray > .term-minimized-pill:hover .term-minimized-pill-label {
-    max-width: clamp(28px, calc(var(--topright-band) - var(--topright-tray-inset) - 62px), 100px);
+  #term-minimized-tray.tray-columns > .tray-col-head {
+    --tray-head-fill: var(--s-hover);
+    --tray-head-border: var(--b-hover);
+    --tray-head-ink: var(--t-bright);
+    --tray-mark: var(--accent-blue);
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: var(--tray-head-height, 28px);
+    padding: 3px clamp(4px, calc(8% - 4px), 8px);
+    container: tray-header / inline-size;
+    border: 1px solid var(--tray-head-border);
+    border-radius: var(--r-card);
+    background: linear-gradient(var(--tray-head-fill), var(--tray-head-fill)) var(--frame-surface);
+    color: var(--tray-head-ink);
+    font: inherit;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    line-height: 1.2;
+    cursor: pointer;
+    transition: border-color var(--ease), color var(--ease);
+  }
+  #term-minimized-tray.tray-columns > .tray-col-head[data-tray-col="waiting"] {
+    --tray-head-fill: var(--accent-orange-bg);
+    --tray-head-border: color-mix(in srgb, var(--accent-orange) 48%, transparent);
+    --tray-head-ink: var(--accent-orange);
+    --tray-mark: currentColor;
+  }
+  #term-minimized-tray.tray-columns > .tray-col-head[data-tray-col="done"] {
+    --tray-head-fill: var(--s-subtle);
+    --tray-head-border: var(--b-light);
+    --tray-head-ink: var(--t-primary);
+    --tray-mark: currentColor;
+  }
+  #term-minimized-tray.tray-columns > .tray-col-head[aria-expanded="false"]:not([data-tray-col="waiting"]) {
+    --tray-head-fill: var(--s-transparent);
+  }
+  #term-minimized-tray.tray-columns > .tray-col-head:hover {
+    --tray-head-fill: color-mix(in srgb, var(--tray-mark) 12%, var(--s-hover));
+    border-color: var(--tray-mark);
+  }
+  #term-minimized-tray.tray-columns > .tray-col-head:active {
+    --tray-head-fill: color-mix(in srgb, var(--tray-mark) 20%, var(--s-active));
+  }
+  #term-minimized-tray.tray-columns > .tray-col-head:focus-visible {
+    outline: 2px solid var(--accent-blue);
+    outline-offset: -2px;
+  }
+  #term-minimized-tray.tray-columns .tray-col-mark {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 12px;
+    color: var(--tray-mark);
+  }
+  #term-minimized-tray.tray-columns .tray-col-mark svg {
+    width: 100%;
+    height: 12px;
+  }
+  #term-minimized-tray.tray-columns .tray-col-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #term-minimized-tray.tray-columns .tray-col-count {
+    flex: none;
+    min-width: 16px;
+    padding: 2px 3px;
+    border-radius: 4px;
+    background: var(--s-active);
+    color: var(--t-bright);
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  #term-minimized-tray.tray-columns > .tray-col-head[data-tray-col="waiting"] .tray-col-count {
+    background: var(--accent-orange);
+    color: var(--frame-surface);
+  }
+  #term-minimized-tray.tray-columns > .tray-col-head[data-tray-col="done"] .tray-col-count {
+    background: var(--s-hover);
+    color: var(--t-primary);
+  }
+  #term-minimized-tray.tray-columns .tray-col-chevron {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    margin-inline-start: auto;
+    margin-inline-end: 2px;
+    border-right: 1px solid currentColor;
+    border-bottom: 1px solid currentColor;
+    rotate: 45deg;
+    transition: rotate var(--ease);
+  }
+  #term-minimized-tray.tray-columns > .tray-col-head[aria-expanded="false"] .tray-col-chevron {
+    rotate: -45deg;
+  }
+  #term-minimized-tray.tray-columns > .tray-col-head[aria-expanded="false"] .tray-col-chevron:dir(rtl) {
+    rotate: 135deg;
+  }
+
+  #topright-controls > #term-minimized-tray.tray-columns[data-tray-empty="true"],
+  #term-minimized-tray.tray-columns > [hidden],
+  #term-minimized-tray.tray-columns > .tray-col-head[data-tray-count="0"],
+  #term-minimized-tray.tray-columns [data-tray-view="hidden"],
+  #term-minimized-tray.tray-columns > .ocpv2-subagent-pills[data-tray-group-empty="true"],
+  #term-minimized-tray.tray-columns .ocpv2-subagent-summary,
+  #term-minimized-tray.tray-columns .ocpv2-subagent-pills > [hidden] {
+    display: none !important;
+  }
+  /* The provider keeps its group, and its children use the tray as their containing block. */
+  #term-minimized-tray.tray-columns > .ocpv2-subagent-pills {
+    display: contents;
+    overflow: visible;
+  }
+  #term-minimized-tray.tray-columns :is(.term-minimized-pill, .term-minimized-pill-close):focus-visible,
+  #term-minimized-tray.tray-columns .term-minimized-pill:has(> .term-minimized-pill-label:focus-visible) {
+    outline: 2px solid var(--accent-blue);
+    outline-offset: -2px;
+  }
+  #term-minimized-tray.tray-columns .term-minimized-pill-label:focus-visible { outline: none; }
+  #term-minimized-tray.tray-columns .term-minimized-pill {
+    height: var(--tray-row, 32px);
+    min-height: 0;
+    padding-inline: clamp(4px, calc(8% - 3px), 10px);
+    border-radius: var(--r-card);
+  }
+  #term-minimized-tray.tray-columns .ocpv2-subagent-pills > .term-minimized-pill {
+    padding-inline-start: 12px;
+  }
+  #term-minimized-tray.tray-columns [data-tray-view="folding"] {
+    pointer-events: none;
+  }
+  #term-minimized-tray.tray-columns > .term-minimized-pill[data-tray-col="waiting"] {
+    box-shadow: inset 2px 0 var(--accent-orange);
+  }
+  #term-minimized-tray.tray-columns > .term-minimized-pill[data-tray-col="done"]:not(:hover, :focus-within) {
+    background: color-mix(in srgb, var(--s-panel) 55%, var(--frame-surface));
+  }
+  /* Only the label shrinks. Its full name remains in the tooltip. */
+  #term-minimized-tray.tray-columns .term-minimized-pill .term-minimized-pill-label {
+    min-width: 0;
+    max-width: none;
     transition: none;
+  }
+  @container tray-header (inline-size < 108px) {
+    #term-minimized-tray.tray-columns .tray-col-mark {
+      display: none;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #term-minimized-tray.tray-columns > .tray-col-head,
+    #term-minimized-tray.tray-columns .tray-col-chevron {
+      transition: none;
+    }
   }
 
   /* ── Thin divider between groups ── */
@@ -9996,12 +10156,6 @@
     -webkit-backdrop-filter: none !important;
     pointer-events: none;
   }
-  html.platform-win32 .studio-backdrop {
-    background: rgba(5, 5, 8, 0.62);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-  }
-
   /* ── Settings Panel (draggable/pinnable) ── */
   .settings-panel {
     position: fixed;
@@ -14704,6 +14858,29 @@
     color: var(--stg-text); background: var(--stg-control); border: 1px solid var(--stg-field-line);
   }
   .settings-panel .settings-content .cc-tool-category-all.on { color: #fff; background: var(--stg-accent-fill); border-color: transparent; }
+  /* Tool permissions: the switch for every tool, in the section's header next to the total. The same switch as
+     every .cc-toggle of the window (the macOS regular switch below: 26×15 track, 13px knob); mixed (some tools
+     on) is a bar in the middle of a half-filled track. */
+  .settings-panel .cc-tools-master {
+    display: inline-flex; align-items: center; gap: 8px; min-height: 22px; padding: 0; border: 0; background: none;
+    font-family: inherit; font-size: 12px; font-weight: 400; color: var(--stg-text); cursor: pointer;
+  }
+  .settings-panel .cc-tools-master:disabled { opacity: 0.4; cursor: default; }
+  .settings-panel .cc-tools-master-switch {
+    position: relative; flex-shrink: 0; width: 26px; height: 15px; border-radius: 999px;
+    background: rgba(255,255,255,0.16); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.22); transition: background-color 0.15s ease;
+  }
+  .settings-panel .cc-tools-master-switch::after {
+    content: ''; position: absolute; top: 1px; left: 1px; width: 13px; height: 13px; border-radius: 50%;
+    background: #e8e8ea; box-shadow: 0 1px 2px rgba(0,0,0,0.35); transition: left 0.15s ease, top 0.15s ease, width 0.15s ease, height 0.15s ease;
+  }
+  .settings-panel .cc-tools-master[data-state="on"] .cc-tools-master-switch { background: var(--stg-accent-fill); box-shadow: none; }
+  .settings-panel .cc-tools-master[data-state="on"] .cc-tools-master-switch::after { left: 12px; background: #fff; }
+  .settings-panel .cc-tools-master[data-state="mixed"] .cc-tools-master-switch { background: color-mix(in srgb, var(--stg-accent-fill) 55%, rgba(255,255,255,0.16)); box-shadow: none; }
+  .settings-panel .cc-tools-master[data-state="mixed"] .cc-tools-master-switch::after { left: 7px; top: 6px; width: 12px; height: 3px; border-radius: 1.5px; background: #fff; box-shadow: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .settings-panel .cc-tools-master-switch, .settings-panel .cc-tools-master-switch::after { transition: none; }
+  }
   .settings-panel .stg-card-body .cc-skill-row { padding: 10px 0; background: none; border: 0; border-radius: 0; }
   .settings-panel .stg-card-body .cc-skill-row + .cc-skill-row { border-top: 1px solid var(--stg-sep); }
   .settings-panel .settings-content .stg-mx-grp-count { padding: 0; background: none; border: 0; color: var(--stg-help); }
@@ -15928,6 +16105,128 @@
   .settings-panel .stg-help { margin-top: 5px; }
   .settings-panel .stg-toggle-text .stg-help { margin-top: 4px; }
   /* <<< settings-redesign:spacing */
+  /* >>> browser-extension-card */
+  /* Settings → Browser → "Existing browser via extension" (shared/settings/settings-browser-extension.js), as approved
+     in docs/design/browser-extension ("Settings card"). The card is one row of the Browser group, never a label +
+     control grid: its parts (status, agent access, tabs, setup, files and limits, connection details, actions) stack
+     top to bottom, every row wraps, and nothing is positioned or given a height, so no paragraph can lie over another
+     at any width or in any language. Colours are the panel's --stg-* tokens; controls keep Settings' 22 px geometry. */
+  .settings-panel .stg-field.bc-extension { display: block; min-width: 0; }
+  .settings-panel .bc-extension .bc-ext-label {
+    display: block; margin: 0; min-width: 0;
+    font-size: 13px; font-weight: 400; line-height: 1.4; color: var(--stg-text); overflow-wrap: anywhere;
+  }
+  .settings-panel .bc-extension .bc-ext-text { margin: 0; overflow-wrap: anywhere; }
+  .settings-panel .bc-extension .bc-ext-actions { flex: 0 1 auto; flex-wrap: wrap; gap: 6px; min-width: 0; }
+  .settings-panel .bc-extension .bc-ext-head > .bc-ext-actions { margin-top: 8px; }
+  .settings-panel .bc-extension .cli-detect-btn { max-width: 100%; }
+  .settings-panel .bc-extension .cli-detect-btn.bc-ext-primary { color: var(--stg-text); background: var(--stg-accent-fill); border-color: transparent; }
+  .settings-panel .bc-extension .cli-detect-btn.bc-ext-primary:hover:not(:disabled) { color: var(--stg-text); background: var(--stg-accent-fill-hover); border-color: transparent; }
+  .settings-panel .bc-extension .cli-detect-btn[data-tone="danger"] { color: var(--stg-err); }
+  .settings-panel .bc-extension .cli-detect-btn:disabled { color: var(--stg-off); cursor: default; }
+  /* the status: a symbol, the word (Settings' badge), what it means, the one action that helps */
+  .settings-panel .bc-extension .bc-ext-status-row {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0;
+  }
+  .settings-panel .bc-extension .bc-ext-status-row > .bc-ext-label { flex: 1 1 120px; font-weight: 500; }
+  .settings-panel .bc-extension .bc-ext-symbol { display: inline-flex; flex-wrap: wrap; flex: 0 0 auto; color: var(--stg-help); }
+  .settings-panel .bc-extension .bc-ext-sym {
+    display: none; width: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  }
+  .settings-panel .bc-extension .bc-ext-head[data-tone="ok"] .bc-ext-symbol { color: var(--stg-ok); }
+  .settings-panel .bc-extension .bc-ext-head[data-tone="warn"] .bc-ext-symbol { color: var(--stg-warn); }
+  .settings-panel .bc-extension .bc-ext-head[data-tone="err"] .bc-ext-symbol { color: var(--stg-err); }
+  .settings-panel .bc-extension :is(.bc-ext-head[data-tone="ok"] [data-sym="ok"], .bc-ext-head[data-tone="warn"] [data-sym="warn"],
+    .bc-ext-head[data-tone="err"] [data-sym="err"], .bc-ext-head[data-tone="off"] [data-sym="off"], .bc-ext-head[data-tone="sync"] [data-sym="sync"]) { display: block; }
+  .settings-panel .bc-extension .bc-ext-status { min-width: 0; white-space: normal; overflow-wrap: anywhere; line-height: 1.45; }
+  .settings-panel .bc-extension .bc-ext-status-help { margin-top: 4px; }
+  .settings-panel .bc-extension .bc-ext-status-help:empty { display: none; }
+  /* parts of the card, each under a hairline */
+  .settings-panel .bc-extension .bc-ext-section {
+    margin: var(--stg-row-y) 0 0; padding: var(--stg-row-y) 0 0; min-width: 0; border-top: 1px solid var(--stg-sep);
+  }
+  .settings-panel .bc-extension :is(.bc-ext-section, .bc-ext-part) > .stg-subhead { margin: 0; padding: 0; }
+  .settings-panel .bc-extension :is(.bc-ext-section, .bc-ext-part) > * + * { margin-top: 8px; }
+  .settings-panel .bc-extension .bc-ext-section[data-extension-section="setup"][data-mode="connect"] > .stg-subhead { font-size: 14px; font-weight: 600; }
+  .settings-panel .bc-extension .bc-ext-note[data-tone="warn"] { color: var(--stg-warn); }
+  /* agent access: the heading and its dropdown on one line when they fit, the dropdown under it otherwise */
+  .settings-panel .bc-extension .bc-ext-mode-row {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; min-width: 0;
+  }
+  .settings-panel .bc-extension .bc-ext-mode-row > .stg-subhead { flex: 1 1 120px; margin: 0; padding: 0; }
+  .settings-panel .bc-extension .bc-ext-mode { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+  .settings-panel .bc-extension .bc-ext-mode .cc-dropdown-value { overflow-wrap: anywhere; }
+  /* the tabs agents hold, grouped by agent */
+  .settings-panel .bc-extension .bc-ext-title-row { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; min-width: 0; }
+  .settings-panel .bc-extension .bc-ext-title-row > .stg-subhead { margin: 0; padding: 0; }
+  .settings-panel .bc-extension .bc-ext-count { font-size: 12px; color: var(--stg-help); }
+  .settings-panel .bc-extension .bc-ext-list:empty { display: none; }
+  .settings-panel .bc-extension .bc-ext-agent + .bc-ext-agent { margin-top: 10px; }
+  .settings-panel .bc-extension .bc-ext-agent-head {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; padding: 2px 0;
+    font-size: 12px; font-weight: 600; color: var(--stg-body); overflow-wrap: anywhere;
+  }
+  .settings-panel .bc-extension .bc-ext-agent-mark {
+    display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: center; padding: 2px 5px; border-radius: 5px;
+    background: var(--stg-control); font-family: var(--stg-mono); font-size: 10.5px; font-weight: 500; line-height: 1.4; color: var(--stg-text);
+  }
+  .settings-panel .bc-extension .bc-ext-item { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 6px 0; min-width: 0; }
+  .settings-panel .bc-extension .bc-ext-item + .bc-ext-item { border-top: 1px solid var(--stg-sep); }
+  .settings-panel .bc-extension .bc-ext-item-label { flex: 1 1 200px; min-width: 0; line-height: 1.45; overflow-wrap: anywhere; }
+  .settings-panel .bc-extension .bc-ext-item-title {
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    font-size: 13px; color: var(--stg-text); overflow-wrap: anywhere;
+  }
+  .settings-panel .bc-extension :is(.bc-ext-item-address, .bc-ext-item-site) {
+    display: block; font-family: var(--stg-mono); font-size: 11.5px; color: var(--stg-help); overflow-wrap: anywhere; unicode-bidi: isolate;
+  }
+  .settings-panel .bc-extension .bc-ext-item-site { color: var(--stg-body); }
+  .settings-panel .bc-extension .bc-ext-item > .cli-detect-btn { flex: 0 0 auto; }
+  .settings-panel .bc-extension .bc-ext-row-error { flex: 1 0 100%; margin: 0; color: var(--stg-warn); }
+  .settings-panel .bc-extension .bc-ext-empty { margin: 0; }
+  .settings-panel .bc-extension .bc-ext-path-text { font-family: var(--stg-mono); font-size: 11.5px; color: var(--stg-body); overflow-wrap: anywhere; }
+  /* files and limits, connection details: Settings' disclosure row */
+  .settings-panel .bc-extension .bc-ext-advanced { margin: var(--stg-row-y) 0 0; border-top: 1px solid var(--stg-sep); }
+  .settings-panel .bc-extension .bc-ext-advanced > summary { font-size: 13px; }
+  .settings-panel .bc-extension .bc-ext-advanced-body { padding: 0 0 4px; min-width: 0; }
+  .settings-panel .bc-extension .bc-ext-advanced-body > * + * { margin-top: 8px; }
+  .settings-panel .bc-extension .bc-ext-part + .bc-ext-part { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--stg-sep); }
+  /* the folder: a full-width read-only field (ellipsis, the whole path in its tooltip), its buttons beside or under it */
+  .settings-panel .bc-extension .bc-ext-control-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+  .settings-panel .bc-extension .bc-ext-path { flex: 1 1 220px; width: auto; min-width: 0; text-overflow: ellipsis; }
+  /* the port: its label and its number on one line, the number at the right */
+  .settings-panel .bc-extension .bc-ext-port-row {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; min-width: 0;
+  }
+  .settings-panel .bc-extension .bc-ext-port-row > .bc-ext-label { flex: 1 1 160px; }
+  .settings-panel .bc-extension .bc-ext-port { flex: 0 0 auto; width: 72px; }
+  /* while pairing by code: the code, large, in a hairline box with its expiry */
+  .settings-panel .bc-extension .bc-ext-code {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin-bottom: 0; padding: 8px 12px; min-width: 0;
+    border: 1px solid var(--stg-line); border-radius: 8px; font-size: 12px; line-height: 1.45; color: var(--stg-help);
+  }
+  .settings-panel .bc-extension .bc-ext-code:empty { display: none; }
+  .settings-panel .bc-extension .bc-ext-code-value {
+    font-family: var(--stg-mono); font-size: 18px; font-weight: 600; line-height: 1.3; letter-spacing: 0.06em;
+    color: var(--stg-text); overflow-wrap: anywhere;
+  }
+  /* Disconnect and Revoke pairing at the end, and their confirmation next to what asked */
+  .settings-panel .bc-extension .bc-ext-footer { margin: var(--stg-row-y) 0 0; padding: var(--stg-row-y) 0 0; border-top: 1px solid var(--stg-sep); }
+  .settings-panel .bc-extension .bc-ext-footer > .bc-ext-actions { justify-content: flex-end; }
+  .settings-panel .bc-extension .bc-ext-confirm {
+    margin: 8px 0 0; padding: 10px 12px; min-width: 0; border: 1px solid var(--stg-line); border-left: 2px solid var(--stg-warn);
+    border-radius: 8px; background: var(--stg-group);
+  }
+  .settings-panel .bc-extension .bc-ext-confirm[data-kind="revoke"], .settings-panel .bc-extension .bc-ext-confirm[data-kind="disconnect"] { border-left-color: var(--stg-err); }
+  .settings-panel .bc-extension .bc-ext-confirm > .stg-subhead { margin: 0; padding: 0; }
+  .settings-panel .bc-extension .bc-ext-confirm > * + * { margin-top: 6px; }
+  .settings-panel .bc-extension .bc-ext-confirm .bc-ext-actions { justify-content: flex-end; }
+  .settings-panel .bc-extension :is(.bc-ext-confirm, .bc-ext-head) .stg-subhead:focus-visible,
+  .settings-panel .bc-extension .bc-ext-advanced > summary:focus-visible { outline: 2px solid var(--stg-focus); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) {
+    .settings-panel .bc-extension :is(.cli-detect-btn, .cc-section-chevron) { transition: none; }
+  }
+  /* <<< browser-extension-card */
   /* >>> settings-about */
   /* Settings → About (shared/settings/settings-about-pane.js): the header (icon, name, version, the two buttons),
      the links, the facts of System and the dependency lists. Text weight and the panel's --stg-* roles; every row
@@ -20451,6 +20750,299 @@
     .skills-studio-panel.sx, .sx .sx-btn, .sx .sx-icon-btn { transition: none; }
     .skills-studio-panel.sx { transform: none; }
   }
+
+  /* ══════════════════════════════════════════════
+     AGENTS STUDIO (public/shared/agents/studio/)  — agents-p5
+     ══════════════════════════════════════════════
+     Skills Studio's sibling. Its window carries Skills Studio's own classes (`.skills-studio-panel.sx`), so the
+     chrome, the header, the rail, the buttons, the fields, the dropdowns' fit, the docking and the narrow layouts
+     are the rules above, unchanged; this section adds only what an agent needs that a skill does not: its mark
+     (icon on a colour token), the library's cards, the editor's form and privilege summary, the diff of two
+     revisions, the review cards, the runs and the team board. Every colour is an app token (--t-*, --s-*, --b-*),
+     an --sx-* variable of the Studio, or one of the --ax-tone-* values declared just below, which are the style
+     guide's own colour tokens (DESIGN.md → Colors; .synabun/style-guide/tokens.css): an agent's `color` names one
+     of them. Text is never smaller than the Studio's meta size. */
+
+  .agents-studio-panel.ax {
+    --ax-tone-primary: #cccccc;                 /* primary.500 */
+    --ax-tone-secondary: #d4a27f;               /* secondary.500 */
+    --ax-tone-accent: rgba(255,215,0,0.85);     /* accent.500, at the opacity the guide gives it */
+    --ax-tone-success: #86efac;                 /* status.success */
+    --ax-tone-warning: #fbbf24;                 /* status.warning */
+    --ax-tone-danger: #fca5a5;                  /* status.danger */
+    --ax-tone-running: #0ea5e9;                 /* status.running */
+    --ax-tone-working: #d4a848;                 /* status.working */
+    --ax-tone-neutral: var(--t-primary);
+    --ax-tone: var(--ax-tone-neutral);
+  }
+  body.ax-studio-docked #topright-controls { display: none; }
+  .menubar-item[data-menu="agents"][hidden] { display: none; }
+  .ax .ax-tone--primary { --ax-tone: var(--ax-tone-primary); }
+  .ax .ax-tone--secondary { --ax-tone: var(--ax-tone-secondary); }
+  .ax .ax-tone--accent { --ax-tone: var(--ax-tone-accent); }
+  .ax .ax-tone--success { --ax-tone: var(--ax-tone-success); }
+  .ax .ax-tone--warning { --ax-tone: var(--ax-tone-warning); }
+  .ax .ax-tone--danger { --ax-tone: var(--ax-tone-danger); }
+  .ax .ax-tone--running { --ax-tone: var(--ax-tone-running); }
+  .ax .ax-tone--working { --ax-tone: var(--ax-tone-working); }
+  .ax .ax-tone--neutral { --ax-tone: var(--ax-tone-neutral); }
+
+  /* ── An agent's mark, its labels ── */
+  .ax .ax-mark {
+    flex: none; display: inline-flex; align-items: center; justify-content: center;
+    padding: 6px; border-radius: 8px; color: var(--ax-tone);
+    background: color-mix(in oklab, var(--ax-tone) 12%, transparent);
+    border: 1px solid color-mix(in oklab, var(--ax-tone) 32%, transparent);
+  }
+  .ax .ax-status--draft { color: var(--sx-gold); border-color: color-mix(in oklab, var(--sx-gold) 40%, transparent); }
+  .ax .ax-status--in_review { color: var(--t-bright); border-color: var(--b-visible); background: var(--s-light); }
+  .ax .ax-status--approved { color: var(--sx-ok); border-color: color-mix(in oklab, var(--sx-ok) 40%, transparent); }
+  .ax .ax-status--withdrawn { color: var(--t-secondary); }
+  .ax .ax-status--damaged, .ax .ax-wider { color: var(--sx-err); border-color: color-mix(in oklab, var(--sx-err) 40%, transparent); }
+  .ax .ax-changed, .ax .ax-dirty { color: var(--sx-warn); border-color: color-mix(in oklab, var(--sx-warn) 40%, transparent); }
+  .ax .ax-rev { font: 500 var(--sx-meta)/1.4 var(--ff-mono, 'JetBrains Mono', monospace); color: var(--t-secondary); white-space: nowrap; }
+  .ax .ax-scope { display: inline-flex; align-items: center; gap: 4px; max-width: 220px; }
+  .ax .ax-scope > span { overflow: hidden; text-overflow: ellipsis; }
+  .ax .ax-chip { padding: 2px 8px; font-family: inherit; color: var(--t-primary); background: transparent; }
+  .ax .ax-spinner {
+    display: inline-block; width: 14px; height: 14px; flex: none; border-radius: 50%;
+    border: 2px solid var(--b-light); border-top-color: var(--t-bright);
+    animation: axSpin 0.8s linear infinite; vertical-align: -2px;
+  }
+  @keyframes axSpin { to { transform: rotate(360deg); } }
+  .ax .ax-state { gap: 12px; }
+  .ax .ax-state-icon { color: var(--t-primary); }
+  .ax .ax-state-icon--err { color: var(--sx-err); }
+  .ax .ax-state-actions { justify-content: center; }
+  .ax .ax-note-title { margin: 0 0 4px; font-weight: 600; color: var(--t-bright); }
+  /* A heading or a tab panel takes the focus by script when a place is drawn (never by Tab): no ring on it. */
+  .agents-studio-panel.ax :is(h2, h3, h4, [role="tabpanel"])[tabindex="-1"]:focus-visible { outline: none; }
+  .ax .ax-sub-title { margin: 8px 0 4px; font: 600 var(--fs-xs)/1.3 var(--ff-heading); color: var(--t-bright); }
+  .ax .ax-required { color: var(--sx-warn); }
+  .ax .ax-facts { margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 6px 16px; font-size: var(--fs-xs); }
+  .ax .ax-facts > div { min-width: 0; display: grid; gap: 1px; }
+  .ax .ax-facts dt { color: var(--t-secondary); font-size: var(--sx-meta); }
+  .ax .ax-facts dd { margin: 0; color: var(--t-bright); overflow-wrap: anywhere; }
+  .ax .ax-run-state--active, .ax .ax-run-state--warn { color: var(--sx-warn); border-color: color-mix(in oklab, var(--sx-warn) 40%, transparent); }
+  .ax .ax-run-state--ok, .ax .ax-run-state--done { color: var(--sx-ok); border-color: color-mix(in oklab, var(--sx-ok) 40%, transparent); }
+  .ax .ax-run-state--err { color: var(--sx-err); border-color: color-mix(in oklab, var(--sx-err) 40%, transparent); }
+  .ax .ax-run-state--off, .ax .ax-run-state--idle { color: var(--t-secondary); }
+
+  /* ── Library ── */
+  .ax .ax-filters { padding: 8px 16px; gap: 8px 14px; }
+  .ax .ax-cards { list-style: none; margin: 0; padding: 12px 16px 16px; display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+  .ax .ax-card {
+    min-width: 0; padding: 12px 14px; display: grid; gap: 8px; align-content: start;
+    background: var(--s-subtle); border: 1px solid var(--b-light); border-radius: 8px;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .ax .ax-card:hover, .ax .ax-card:focus-within { border-color: var(--b-hover); background: var(--s-light); }
+  .ax .ax-card-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .ax .ax-card-title { min-width: 0; display: grid; gap: 1px; }
+  .ax .ax-card-name { font-size: var(--fs-sm); font-weight: 600; text-align: left; overflow-wrap: anywhere; }
+  .ax .ax-card-id { color: var(--t-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ax .ax-card-desc { margin: 0; font-size: var(--fs-xs); color: var(--t-primary); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; min-height: 2.9em; }
+  .ax .ax-card-meta { margin: 0; font: 400 var(--sx-meta)/1.4 var(--ff-mono, 'JetBrains Mono', monospace); color: var(--t-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ax .ax-card-classes { margin: 0; }
+  .ax .ax-card-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-top: 8px; border-top: 1px solid var(--b-subtle); font-size: var(--sx-meta); color: var(--t-secondary); }
+  .ax .ax-card-state, .ax .ax-ws-state { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .ax .ax-lib th.ax-col-model { width: 190px; }
+  .ax .ax-lib th.ax-col-classes { width: 150px; }
+  .ax .ax-lib th.ax-col-scope { width: 150px; }
+  .ax .ax-lib th.ax-col-state { width: 190px; }
+  .ax .ax-lib td.ax-col-state { display: table-cell; }
+  .ax .ax-lib td.ax-col-state > * { margin-right: 6px; }
+  .ax .ax-row-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .ax .ax-row-name > span:last-child { min-width: 0; display: block; }
+
+  /* ── One agent: the workspace ── */
+  .ax .ax-ws-head .sx-ws-title { row-gap: 6px; }
+  .ax .ax-actions { flex-wrap: wrap; justify-content: flex-end; }
+  .ax .ax-menu { top: 44px; margin-top: 0; }
+  .ax .ax-tabpanel { overflow: hidden; }
+  .ax .ax-edit { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 320px; }
+  .ax .ax-form { min-height: 0; overflow: auto; padding: 12px 16px 24px; display: grid; gap: 16px; align-content: start; }
+  .ax .ax-section { margin: 0; padding: 0; border: 0; min-width: 0; display: grid; gap: 10px; }
+  .ax .ax-section-title {
+    padding: 0; display: flex; align-items: center; gap: 6px; width: 100%;
+    font: 600 var(--fs-sm)/1.3 var(--ff-heading); color: var(--t-bright);
+    padding-bottom: 6px; border-bottom: 1px solid var(--b-subtle);
+  }
+  .ax .ax-section-mark { display: inline-flex; }
+  .ax .ax-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; align-items: start; }
+  .ax .ax-field--wide { grid-column: 1 / -1; }
+  .ax .ax-field .cc-dropdown { width: 100%; }
+  .ax .ax-issues { display: grid; gap: 2px; }
+  .ax .ax-issues:empty { display: none; }
+  .ax .ax-issues .sx-field-note { display: flex; align-items: flex-start; gap: 6px; }
+  .ax .ax-issues .sx-i { margin-top: 2px; }
+  .ax .ax-desc { min-height: 52px; }
+  .ax .ax-instructions { min-height: 260px; line-height: 1.55; font-family: var(--ff-mono, 'JetBrains Mono', ui-monospace, monospace); }
+  .ax .ax-kept { font-family: var(--ff-mono, 'JetBrains Mono', monospace); }
+  .ax .ax-swatches { display: flex; flex-wrap: wrap; gap: 4px; }
+  .ax .ax-swatch {
+    width: 30px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid var(--b-light); border-radius: 5px; background: var(--sx-field); color: var(--t-primary); cursor: pointer;
+  }
+  .ax .ax-swatch:hover:not(:disabled) { border-color: var(--b-hover); color: var(--t-bright); }
+  .ax .ax-swatch[aria-checked="true"] { border-color: var(--t-bright); color: var(--t-bright); background: var(--s-active); }
+  .ax .ax-swatch:disabled { opacity: 0.5; cursor: default; }
+  .ax .ax-swatch--none { color: var(--t-secondary); }
+  .ax .ax-swatch-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--ax-tone); }
+  .ax .ax-side { min-height: 0; overflow: auto; padding: 12px 16px 24px 12px; display: grid; gap: 12px; align-content: start; border-left: 1px solid var(--b-subtle); }
+  .ax .ax-side-card { min-width: 0; padding: 12px; display: grid; gap: 8px; align-content: start; background: var(--s-subtle); border: 1px solid var(--b-light); border-radius: 8px; }
+  .ax .ax-side-card > .sx-section-title { display: flex; align-items: center; gap: 6px; }
+  .ax .ax-problem { width: 100%; text-align: left; font: inherit; font-size: var(--fs-xs); cursor: pointer; }
+
+  /* ── What an agent may do ── */
+  .ax .ax-priv { margin: 0; display: grid; gap: 2px; font-size: var(--fs-xs); }
+  .ax .ax-priv-row { display: grid; grid-template-columns: minmax(96px, 38%) minmax(0, 1fr); gap: 8px; padding: 5px 6px; border-radius: 5px; }
+  .ax .ax-priv-row dt { display: flex; align-items: flex-start; gap: 6px; color: var(--t-secondary); }
+  .ax .ax-priv-row dt .sx-i { margin-top: 2px; }
+  .ax .ax-priv-row dd { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; color: var(--t-bright); overflow-wrap: anywhere; }
+  .ax .ax-priv-row.is-changed { background: color-mix(in oklab, var(--sx-warn) 7%, transparent); }
+  .ax .ax-priv-row.is-wider { background: color-mix(in oklab, var(--sx-err) 9%, transparent); }
+  .ax .ax-priv-was { flex-basis: 100%; color: var(--t-secondary); }
+
+  /* ── A diff of two revisions ── */
+  .ax .ax-diff { display: grid; gap: 10px; }
+  .ax .ax-diff-head { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: var(--fs-xs); font-weight: 600; color: var(--t-bright); }
+  .ax .ax-diff-size { font: 400 var(--sx-meta)/1.4 var(--ff-mono, 'JetBrains Mono', monospace); color: var(--t-secondary); }
+  .ax .ax-delta { padding: 8px 10px; display: grid; gap: 6px; border: 1px solid var(--b-light); border-radius: 8px; background: var(--s-subtle); }
+  .ax .ax-delta--wider { border-color: color-mix(in oklab, var(--sx-err) 40%, transparent); background: color-mix(in oklab, var(--sx-err) 6%, transparent); }
+  .ax .ax-delta-title { margin: 0; display: flex; align-items: center; gap: 6px; font-size: var(--fs-xs); font-weight: 600; color: var(--sx-ok); }
+  .ax .ax-delta--wider .ax-delta-title { color: var(--sx-err); }
+  .ax .ax-delta-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; font-size: var(--fs-xs); }
+  .ax .ax-delta-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; color: var(--t-primary); }
+  .ax .ax-delta-field, .ax .ax-change-field { min-width: 120px; color: var(--t-secondary); }
+  .ax .ax-delta-from, .ax .ax-change-from { color: var(--t-secondary); text-decoration: line-through; text-decoration-color: var(--b-visible); overflow-wrap: anywhere; }
+  .ax .ax-delta-to, .ax .ax-change-to { color: var(--t-bright); overflow-wrap: anywhere; }
+  .ax .ax-changes { display: grid; gap: 6px; }
+  .ax .ax-change--value { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 6px 10px; border: 1px solid var(--b-subtle); border-radius: 6px; font-size: var(--fs-xs); }
+  .ax .ax-change-list { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+  .ax .ax-pill { padding: 1px 7px; border-radius: 6px; border: 1px solid var(--b-light); font: 400 var(--sx-meta)/1.5 var(--ff-mono, 'JetBrains Mono', monospace); }
+  .ax .ax-pill--add { color: var(--sx-ok); border-color: color-mix(in oklab, var(--sx-ok) 40%, transparent); }
+  .ax .ax-pill--del { color: var(--sx-err); border-color: color-mix(in oklab, var(--sx-err) 40%, transparent); }
+  .ax .ax-hunks { table-layout: fixed; }
+  .ax .ax-diff-gap td { color: var(--t-secondary); background: var(--sx-field); font-style: italic; }
+  .ax .ax-diff-box { min-height: 0; }
+
+  /* ── Review, revisions, runs, test run ── */
+  .ax .ax-review-cards { max-width: 1040px; }
+  .ax .ax-review-body { display: grid; gap: 8px; }
+  .ax .ax-review-body .ax-state { margin: 0; padding: 12px; flex-direction: row; }
+  .ax .ax-revisions .sx-versions-head { row-gap: 8px; }
+  .ax .ax-runs .ax-run-title { display: grid; gap: 2px; }
+  .ax .ax-runs .ax-run-name { color: var(--t-bright); font-weight: 500; overflow-wrap: anywhere; }
+  .ax .ax-runs .ax-run-title > .sx-label, .ax .ax-runs .ax-run-title > .ax-rev { justify-self: start; }
+  .ax .ax-runs-summary { padding: 0; }
+  .ax .ax-test-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; max-width: 860px; }
+  .ax .ax-test-form .cc-dropdown { width: 100%; }
+  .ax .ax-test-task { min-height: 110px; }
+  .ax .ax-test-run { padding: 12px; display: grid; gap: 10px; border: 1px solid var(--b-light); border-radius: 8px; background: var(--s-subtle); max-width: 860px; }
+  .ax .ax-test-run-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .ax .ax-test-summary { margin: 0; max-height: 260px; white-space: pre-wrap; }
+
+  /* ── Create ── */
+  .ax .ax-create { padding: 16px; display: grid; gap: 16px; max-width: 920px; align-content: start; }
+  .ax .ax-starts, .ax .ax-templates { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+  .ax .ax-start, .ax .ax-template, .ax .ax-pick, .ax .ax-team-row {
+    width: 100%; height: 100%; text-align: left; font: inherit; color: var(--t-primary); cursor: pointer;
+    background: var(--s-subtle); border: 1px solid var(--b-light); border-radius: 8px;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .ax .ax-start:hover, .ax .ax-template:hover, .ax .ax-pick:hover, .ax .ax-team-row:hover { border-color: var(--b-hover); background: var(--s-light); color: var(--t-bright); }
+  .ax .ax-start { padding: 14px; display: flex; align-items: flex-start; gap: 12px; }
+  .ax .ax-start-icon { flex: none; display: inline-flex; padding: 8px; border-radius: 8px; border: 1px solid var(--b-light); color: var(--t-bright); }
+  .ax .ax-start-text, .ax .ax-template { display: grid; gap: 4px; align-content: start; }
+  .ax .ax-start-name, .ax .ax-template-name, .ax .ax-team-title { font: 600 var(--fs-sm)/1.3 var(--ff-heading); color: var(--t-bright); }
+  .ax .ax-start-desc, .ax .ax-template-desc { font-size: var(--fs-xs); color: var(--t-secondary); line-height: 1.45; }
+  .ax .ax-template { padding: 12px 14px; gap: 8px; }
+  .ax .ax-template-top { display: flex; align-items: center; gap: 10px; }
+  .ax .ax-template-facts { display: flex; flex-wrap: wrap; gap: 4px; }
+  .ax .ax-pick-list, .ax .ax-team-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  .ax .ax-pick { padding: 8px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; height: auto; }
+  .ax .ax-pick-name { font-weight: 600; color: var(--t-bright); }
+  .ax .ax-pick-id { color: var(--t-secondary); margin-right: auto; }
+  .ax .ax-import { display: grid; gap: 14px; }
+  .ax .ax-drop { padding: 24px 16px; display: grid; gap: 10px; justify-items: center; text-align: center; border: 1px dashed var(--b-visible); border-radius: 8px; background: var(--s-subtle); }
+  .ax .ax-drop.is-over { border-color: var(--t-bright); background: var(--s-light); }
+  .ax .ax-drop-text { margin: 0; font-size: var(--fs-sm); color: var(--t-bright); }
+  .ax .ax-import-options { display: grid; gap: 10px; max-width: 520px; }
+  .ax .ax-import-result { display: grid; gap: 8px; }
+  .ax .ax-import-result .sx-section-title:focus { outline: none; }
+  .ax .ax-describe { display: grid; gap: 12px; max-width: 720px; }
+  .ax .ax-describe-text { min-height: 140px; }
+  .ax .ax-describe-scope { max-width: 420px; }
+  .ax .ax-create-foot { padding-top: 4px; }
+
+  /* ── Teams ── */
+  .ax .ax-team-list { padding: 12px 16px 16px; max-width: 1040px; }
+  .ax .ax-team-row { padding: 10px 14px; display: grid; gap: 6px; height: auto; }
+  .ax .ax-team-row-main { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+  .ax .ax-team-id { color: var(--t-secondary); }
+  .ax .ax-team-row-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: var(--sx-meta); color: var(--t-secondary); }
+  .ax .ax-team { padding: 12px 16px 24px; display: grid; gap: 16px; align-content: start; }
+  .ax .ax-team > section { display: grid; gap: 8px; min-width: 0; }
+  .ax .ax-team-summary { padding: 12px; border: 1px solid var(--b-light); border-radius: 8px; background: var(--s-subtle); }
+  .ax .ax-slices { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(250px, 1fr); gap: 10px; overflow-x: auto; padding-bottom: 4px; align-items: start; }
+  .ax .ax-slice { min-width: 0; padding: 10px 12px; display: grid; gap: 8px; align-content: start; border: 1px solid var(--b-light); border-top: 2px solid var(--b-visible); border-radius: 8px; background: var(--s-subtle); }
+  .ax .ax-slice--active, .ax .ax-slice--warn { border-top-color: var(--sx-warn); }
+  .ax .ax-slice--ok, .ax .ax-slice--done { border-top-color: var(--sx-ok); }
+  .ax .ax-slice--err { border-top-color: var(--sx-err); }
+  .ax .ax-slice-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
+  .ax .ax-slice-title { margin: 0; font: 600 var(--fs-xs)/1.3 var(--ff-heading); color: var(--t-bright); overflow-wrap: anywhere; }
+  .ax .ax-slice-task { margin: 0; font-size: var(--fs-xs); color: var(--t-primary); display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+  .ax .ax-slice-facts { grid-template-columns: minmax(0, 1fr); }
+  .ax .ax-paths { max-height: 160px; overflow: auto; }
+  .ax .ax-team-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+  .ax .ax-team-actions { padding-top: 4px; }
+  .ax .ax-feed { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow: auto; display: grid; gap: 1px; border: 1px solid var(--b-light); border-radius: 8px; background: var(--sx-field); }
+  .ax .ax-feed-item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 5px 10px; font-size: var(--fs-xs); color: var(--t-primary); }
+  .ax .ax-feed-item.is-message { background: var(--s-subtle); }
+  .ax .ax-feed-time, .ax .ax-feed-from { color: var(--t-secondary); font-size: var(--sx-meta); white-space: nowrap; }
+  .ax .ax-feed-kind { font: 500 var(--sx-meta)/1.4 var(--ff-mono, 'JetBrains Mono', monospace); color: var(--t-bright); }
+  .ax .ax-feed-text { flex: 1 1 260px; overflow-wrap: anywhere; }
+
+  /* ── Questions asked in the window ── */
+  .ax .ax-dlg .ss-dlg-body { max-height: min(60vh, 520px); overflow: auto; }
+  .ax .ax-dlg-form, .ax .ax-approve { display: grid; gap: 10px; margin-top: 8px; }
+  .ax .ax-dlg-choice { margin-top: 8px; }
+  .ax .ax-export-content { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; padding: 12px; border: 1px solid var(--b-subtle); border-radius: var(--r-md); background: var(--sx-field); color: var(--t-primary); font: var(--fs-sm)/1.5 var(--ff-mono); }
+  .ax .ax-export-path { overflow-wrap: anywhere; font-family: var(--ff-mono); color: var(--t-primary); }
+  .ax .ax-conflict { margin: 8px 0 0; display: grid; gap: 6px; font-size: var(--fs-xs); }
+  .ax .ax-conflict > div { display: grid; grid-template-columns: minmax(120px, 34%) minmax(0, 1fr); gap: 8px; }
+  .ax .ax-conflict dt { color: var(--t-secondary); }
+  .ax .ax-conflict dd { margin: 0; color: var(--t-bright); }
+  .ax .ax-conflict .is-clash dt, .ax .ax-conflict .is-clash dd { color: var(--sx-warn); }
+
+  /* ── Narrow windows: fold, never shrink the text (the Studio's own thresholds) ── */
+  @container ss (max-width: 900px) {
+    .ax .ax-edit { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+    .ax .ax-side { border-left: 0; border-top: 1px solid var(--b-subtle); max-height: 40%; padding: 12px 16px; }
+    .ax .ax-lib .ax-col-classes { display: none; }
+    .ax .ax-team-cols { grid-template-columns: minmax(0, 1fr); }
+  }
+  @container ss (max-width: 760px) {
+    .ax .ax-fields, .ax .ax-test-form { grid-template-columns: minmax(0, 1fr); }
+    .ax .ax-lib .ax-col-model { display: none; }
+    .ax .ax-slices { grid-auto-flow: row; grid-auto-columns: auto; grid-template-columns: minmax(0, 1fr); overflow-x: visible; }
+    .ax .ax-edit { display: block; overflow: auto; }
+    .ax .ax-form, .ax .ax-side { overflow: visible; max-height: none; }
+  }
+  @container ss (max-width: 560px) {
+    .ax .ax-cards { grid-template-columns: minmax(0, 1fr); padding: 12px; }
+    .ax .ax-lib .ax-col-scope { display: none; }
+    .ax .ax-lib td.ax-col-state { display: block; }
+    .ax .ax-create, .ax .ax-team { padding: 12px; }
+    .ax .ax-actions { justify-content: flex-start; }
+    .ax .ax-priv-row { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .ax .ax-spinner { animation-duration: 2.4s; }
+    .ax .ax-card, .ax .ax-start, .ax .ax-template, .ax .ax-pick, .ax .ax-team-row { transition: none; }
+  }
+  /* ══ end of AGENTS STUDIO ══ */
 
   /* ── Kept from the Studio before 2.0 ──
      The questions inside the panel (shared/skills/ss-dialog.js), an import's review, the toasts, and the
@@ -24980,9 +25572,7 @@
     gap: 4px;
   }
   #term-minimized-tray:empty { display: none; }
-  /* In the top-right row it is a row under the bar: placed with the row ("Fit"). The menus of the dock (workspaces,
-     bookmarks, invite) draw over it, opaque: their blur lives inside the dock's own backdrop root and cannot reach
-     the pills, and through 95% glass their labels still read. */
+  /* The main tray's column overrides live in "Fit". Detached session windows keep the base stack. */
   #term-minimized-tray > .term-minimized-pill {
     max-width: 100%;
   }
@@ -25072,16 +25662,11 @@
       transition: none !important;
     }
   }
-  html.platform-win32 .term-minimized-pill,
-  html.desktop-titlebar--win32 .term-minimized-pill {
-    background: rgba(20, 20, 26, 0.94);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-  }
-  html.platform-win32 .term-minimized-pill:hover,
-  html.desktop-titlebar--win32 .term-minimized-pill:hover {
-    background: rgba(30, 30, 38, 0.96);
-  }
+  /* Windows draws the pills as every other platform does: the glass (12px blur) and, on a working pill, the
+     turning ring. Both were off there from 2026-11-01 to 2026-11-15. What was slow then was the :has() rules
+     that re-styled the whole page on every change (tests/css-has-performance.test.mjs: with those rewritten,
+     taking every backdrop-filter out changed nothing), and a ring that animated a custom property on the main
+     thread; the ring is a box the compositor turns now. A hidden pill is display: none and costs nothing. */
 
   /* Genie minimize/restore animation on floating tabs (class toggled by
      ui-terminal.js minimizeTab/restoreTab only while it runs) */
@@ -29844,3 +30429,50 @@ body .styleguide-panel {
 
 .ocpv2-tools-picker .tool-list-picker .cc-dropdown-menu { background: rgba(22,22,26,0.98); }
 
+/* ═══════════════════════════════════════════
+   Images in chat messages (every side panel)
+   ═══════════════════════════════════════════
+   A Markdown image of a message (a run's media, a gallery image) is scaled down to the
+   message column, never cut at the panel's edge: the whole picture, its aspect ratio kept,
+   a very tall one capped and letterboxed. The selector names the Markdown bodies of the
+   Assistant, Claude Code, Codex, OpenCode, Antigravity and Maritaca panels, their plan
+   documents and OpenCode's reasoning (their sub-agent, child and detached views use the same
+   bodies). Every size is relative (the column, the window), so an image re-fits by itself
+   while the panel is dragged wider or narrower, detached or docked. `:not([class]):not([style])`
+   is the bare <img> the shared sanitiser (assistant/asst-sanitize.js) writes, so an icon a
+   panel sizes itself is never touched. */
+:is(.asst-md, .claude-panel .msg-body, .claude-panel .cp-info-content, .claude-panel .cp-plan-approval-body, .cxp-msg-body, .cxp-msg-verbose-body, .cxp-plan-document-content, .ocpv2-part-text, .ocpv2-post-plan-content, .ocpv2-reasoning-body, .agy-md, .mtc-md) img:not([class]):not([style]) {
+  box-sizing: border-box;
+  max-width: 100%;
+  max-height: min(70vh, 640px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  vertical-align: middle;
+  border-radius: var(--r-small, 6px);
+}
+
+/* A Markdown table that holds an image (same message bodies as above). Left alone, a table cell lets the image
+   claim the column (its natural width is what the table layout shares the room by) and the text beside it is
+   crushed to a word, or a letter, per line. So: the table is its own sideways scroller and a size container; an
+   image in a cell is capped to a share of the table (container units, which the table layout can resolve, unlike
+   a percentage) and to a fixed size; a text cell keeps a readable width and wraps by word. A table still wider
+   than its message (many columns, a long unbroken word) scrolls inside itself, never past the panel. Tables
+   without an image keep each panel's own layout. */
+:is(.asst-md, .claude-panel .msg-body, .claude-panel .cp-info-content, .claude-panel .cp-plan-approval-body, .cxp-msg-body, .cxp-msg-verbose-body, .cxp-plan-document-content, .ocpv2-part-text, .ocpv2-post-plan-content, .ocpv2-reasoning-body, .agy-md, .mtc-md) table:has(img) {
+  display: block;
+  box-sizing: border-box;
+  width: auto;
+  max-width: 100%;
+  overflow-x: auto;
+  container-type: inline-size;
+}
+:is(.asst-md, .claude-panel .msg-body, .claude-panel .cp-info-content, .claude-panel .cp-plan-approval-body, .cxp-msg-body, .cxp-msg-verbose-body, .cxp-plan-document-content, .ocpv2-part-text, .ocpv2-post-plan-content, .ocpv2-reasoning-body, .agy-md, .mtc-md) table:has(img) :is(td, th):not(:has(img)) {
+  min-width: 8em;
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+:is(.asst-md, .claude-panel .msg-body, .claude-panel .cp-info-content, .claude-panel .cp-plan-approval-body, .cxp-msg-body, .cxp-msg-verbose-body, .cxp-plan-document-content, .ocpv2-part-text, .ocpv2-post-plan-content, .ocpv2-reasoning-body, .agy-md, .mtc-md) :is(td, th) img:not([class]):not([style]) {
+  max-width: min(50cqi, 280px);
+  max-height: min(50vh, 280px);
+}

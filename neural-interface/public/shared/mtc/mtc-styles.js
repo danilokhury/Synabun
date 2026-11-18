@@ -5,7 +5,11 @@
 // values. The one colour of its own is the provider's (provider-icons.js PROVIDER_META.maritaca, Maritaca's green):
 // its mark and nothing else. Every rule below uses a token; add a value to the block first.
 
+import { installCodeCopy } from '../ui-code-copy.js';
+
 export function injectMaritacaStyles() {
+  // The Copy button of every code block: its stylesheet and its one click listener, in this document.
+  installCodeCopy(document);
   if (document.getElementById('maritaca-panel-styles')) return;
   const style = document.createElement('style');
   style.id = 'maritaca-panel-styles';
@@ -74,7 +78,6 @@ export function injectMaritacaStyles() {
       font-family: var(--mtc-font); font-size: var(--mtc-fs-md); color: var(--mtc-text);
     }
     .mtc-panel.open { transform: translateX(0); opacity: 1; overflow: visible; }
-    html.platform-win32 .mtc-panel, html.desktop-titlebar--win32 .mtc-panel { backdrop-filter: none; -webkit-backdrop-filter: none; }
     .mtc-panel:has(.cc-dropdown.open) { z-index: 99999; }
     .mtc-panel :is(a, button, input, textarea, summary, [tabindex]):focus-visible, .mtc-pop :is(a, button, input, textarea, summary, [tabindex]):focus-visible, .mtc-session-pill:focus-visible { outline: 2px solid var(--mtc-focus); outline-offset: 2px; }
     .mtc-panel input::placeholder, .mtc-panel textarea::placeholder, .mtc-pop input::placeholder, .mtc-pop textarea::placeholder { color: var(--mtc-text-3); opacity: 1; }

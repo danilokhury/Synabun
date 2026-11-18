@@ -12,7 +12,7 @@ import { t, tp, getLocale } from './i18n.js';
 import { KEYS } from './constants.js';
 import { isGuest, hasPermission, showGuestToast } from './ui-sync.js';
 import { registerLaunchPrefetch } from './launch-prefetch.js';
-import { sendToPanel } from './ui-claude-panel.js';
+import { sendToPanel } from './claude-panel-lazy.js';
 import { openAntigravityWithPrompt } from './ui-antigravity-panel.js';
 import { getProviderMeta } from './provider-icons.js';
 import { fetchAutomationApprovals, openApprovalDialog } from './ui-automation-approval.js';
@@ -2241,7 +2241,7 @@ async function saveScheduleFromEditor() {
     if (timezone !== shownZone) payload.timezone = timezone;
     if (stableJson(dayThemes) !== stableJson(original.dayThemes || {})) payload.dayThemes = dayThemes;
     for (const key of LAUNCH_FIELDS) if (!sameValue(launch[key], original[key])) payload[key] = launch[key];
-    // The MoreLogin profile: sent when it changed (null goes back to the default of Settings → Browser).
+    // The MoreLogin profile: sent when it changed (null goes back to the default AI browser).
     if (!sameValue(moreloginEnvId, original.moreloginEnvId)) {
       payload.moreloginEnvId = moreloginEnvId;
       payload.moreloginEnvName = moreloginEnvName;
@@ -3131,7 +3131,7 @@ async function createQuickTimerFromForm(runNow) {
   const tools = strictToolHost(profile) ? readToolPicker($('sched-qt-mcp')) : null;
   const codexAccountId = profile === 'codex' ? ($('sched-qt-account')?.value || _launchAccount || 'default') : undefined;
   const usesBrowser = _qtUsesBrowser !== null ? _qtUsesBrowser : !!template?.usesBrowser;
-  // The MoreLogin profile of this one run (none: the default of Settings → Browser).
+  // The MoreLogin profile of this one run (none: the default AI browser).
   _qtMoreLogin = readMoreLoginField('sched-qt-mlprofile') || _qtMoreLogin;
   const moreloginEnvId = _qtMoreLogin.moreloginEnvId || undefined;
   const moreloginEnvName = moreloginEnvId ? (_qtMoreLogin.moreloginEnvName || undefined) : undefined;

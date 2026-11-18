@@ -218,13 +218,89 @@ export function changedStartSettings(before, after) {
   return [...new Set(Object.entries(START_KEYS).filter(([k]) => JSON.stringify(a[k]) !== JSON.stringify(b[k])).map(([, label]) => label))];
 }
 
+// ── Thinking that cannot be turned off ──
+// Claude Code says per model whether it can run with thinking off (ModelInfo
+// `supportsThinkingOff`; the Assistant catalog's `thinkingOff`). false: the
+// model rejects disabled thinking and the CLI sends adaptive thinking instead
+// (Opus 5.5 on Claude Code 2.1.326), so an Off the panel showed would be a
+// claim nothing on the wire honours. Missing (an older CLI): nothing changes.
+// The same reading as agent-runtime-options.js modelSupportsEffortOff and
+// lib/effort-levels.js thinkingAlwaysOn.
+export const THINKING_ALWAYS_ON_NOTE = "thinking can't be turned off on this model";
+
+/** Did the CLI say this model always thinks? Only an explicit false counts. */
+export function thinkingAlwaysOn(model) {
+  return !!model && typeof model === 'object' && (model.supportsThinkingOff === false || model.thinkingOff === false);
+}
+
+const THINK_TITLES = {
+  off: 'Thinking off',
+  low: 'Thinking: low',
+  medium: 'Thinking: medium',
+  high: 'Thinking: high',
+  xhigh: 'Thinking: extra high',
+  max: 'Thinking: max',
+};
+
+/**
+ * What the Think toggle shows at a level, for the model in use. The toggle's
+ * first stop (`off`) is Off, except on a model that always thinks, where it
+ * is the model's default and says why: never "Thinking off" there.
+ * → { label, title, corrected } (corrected: the stop is not what it was picked as).
+ */
+export function thinkToggleView(level, model) {
+  const id = THINK_TITLES[level] ? level : 'off';
+  if (id === 'off' && thinkingAlwaysOn(model)) {
+    return { label: 'Think', title: `Thinking: model default · ${THINKING_ALWAYS_ON_NOTE}`, corrected: true };
+  }
+  return { label: id === 'off' ? 'Think' : ({ low: 'lo', medium: 'med', high: 'hi', xhigh: 'xhi', max: 'max' })[id], title: THINK_TITLES[id], corrected: false };
+}
+
+/**
+ * The effort a query carries for the Think toggle's level: a level as is; Off
+ * as 'off' (thinking disabled, over the user's settings' effortLevel) only
+ * when the bridge reads it (`effortOff`) and the model has thinking it can turn
+ * off; otherwise nothing, the model's default. → string | undefined.
+ */
+export function thinkWireEffort(level, model, { effortOff = false, modelHasEffort = true } = {}) {
+  const id = String(level || 'off');
+  if (id !== 'off') return id;
+  if (!effortOff || !modelHasEffort || thinkingAlwaysOn(model)) return undefined;
+  return 'off';
+}
+
+/** The session's Thinking setting as it runs on this model: 'off' becomes 'default' where it cannot be off. */
+export function effectiveSessionThinking(session, model) {
+  const s = normalizeSession(session);
+  return s.thinking === 'off' && thinkingAlwaysOn(model) ? 'default' : s.thinking;
+}
+
+/**
+ * What a query says about the tab's session and thinking, for the model in use.
+ * With a bridge that reads the thinking that runs (`effective`: capability
+ * 'thinking_effective'), a saved Off goes only to a model that can turn
+ * thinking off: a model that always thinks gets the default and
+ * `thinkingAlwaysOn: true`, so the bridge neither sends Off nor counts the
+ * dropped value as a change (it compares with how its process was started).
+ * The tab keeps its Off. A model the CLI said nothing about (an older CLI),
+ * or an older bridge, gets the settings as saved, as before.
+ * → { session, thinkingAlwaysOn } (thinkingAlwaysOn: true or undefined).
+ */
+export function sessionWireSettings(session, model, { effective = false } = {}) {
+  const s = normalizeSession(session);
+  if (!effective) return { session: s, thinkingAlwaysOn: undefined };
+  const alwaysOn = thinkingAlwaysOn(model);
+  return { session: alwaysOn && s.thinking === 'off' ? { ...s, thinking: 'default' } : s, thinkingAlwaysOn: alwaysOn ? true : undefined };
+}
+
 /** Short words for the statusline: what is switched on for this tab. */
-export function sessionFlags(session, { toolPolicy = 'full', fastModeState = '', account = '' } = {}) {
+export function sessionFlags(session, { toolPolicy = 'full', fastModeState = '', account = '', thinkingAlwaysOn: alwaysOn = false } = {}) {
   const s = normalizeSession(session);
   const flags = [];
   if (account && account !== 'default') flags.push(`account ${account}`);
   if (s.fastMode) flags.push(fastModeState === 'cooldown' ? 'fast (cooldown)' : 'fast');
-  if (s.thinking === 'off') flags.push('no thinking');
+  // (Off on a model that always thinks is not claimed: it runs with adaptive thinking.)
+  if (s.thinking === 'off' && !alwaysOn) flags.push('no thinking');
   if (s.sandbox.enabled) flags.push('sandbox');
   if (toolPolicy && toolPolicy !== 'full') flags.push(toolPolicy);
   if (s.strictMcp) flags.push('SynaBun MCP only');
@@ -234,11 +310,11 @@ export function sessionFlags(session, { toolPolicy = 'full', fastModeState = '',
 }
 
 /** Rows for /status and for the note after a change: [label, value]. */
-export function sessionRows(session) {
+export function sessionRows(session, { thinkingAlwaysOn: alwaysOn = false } = {}) {
   const s = normalizeSession(session);
   const rows = [];
   if (s.fastMode) rows.push(['Fast mode', 'on']);
-  if (s.thinking === 'off') rows.push(['Thinking', 'off']);
+  if (s.thinking === 'off') rows.push(['Thinking', alwaysOn ? `model default (${THINKING_ALWAYS_ON_NOTE})` : 'off']);
   if (s.outputStyle) rows.push(['Output style', s.outputStyle]);
   if (s.agent) rows.push(['Agent', s.agent]);
   if (s.fallbackModel) rows.push(['Fallback model', s.fallbackModel]);
@@ -297,7 +373,11 @@ export function mergeSessionModels(catalog, sessionModels) {
       supportsFastMode: live.supportsFastMode === true,
       supportsAdaptiveThinking: live.supportsAdaptiveThinking === true,
     };
-    if (Object.entries(flags).every(([k, v]) => (row[k] === true) === v)) return row;
+    // Whether thinking can be off: only what the session said (true / false) replaces the catalog's.
+    const thinkingOff = typeof live.supportsThinkingOff === 'boolean' ? live.supportsThinkingOff : null;
+    if (Object.entries(flags).every(([k, v]) => (row[k] === true) === v)
+      && (thinkingOff === null || row.supportsThinkingOff === thinkingOff)) return row;
+    if (thinkingOff !== null) flags.supportsThinkingOff = thinkingOff;
     changed = true;
     return { ...row, ...flags };
   });
@@ -318,6 +398,7 @@ export function mergeSessionModels(catalog, sessionModels) {
       supportsFastMode: m.supportsFastMode === true,
       supportsAutoMode: m.supportsAutoMode === true,
       supportsAdaptiveThinking: m.supportsAdaptiveThinking === true,
+      supportsThinkingOff: typeof m.supportsThinkingOff === 'boolean' ? m.supportsThinkingOff : null,
       cliReady: true,
       fromSession: true,
     });

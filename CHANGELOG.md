@@ -1,3 +1,27 @@
+# SynaBun v.2.4.0
+
+You can now save an agent for recurring work, assign a task to a team, and connect the Assistant to the browser you already use.
+
+## ✨ New
+
+- **Create reusable agents.** Describe the reviewer, researcher, or other worker you need. Review its role, model, and tools in Agents Studio before using it again.
+- **Choose a team size.** Agent density lets you assign several workers to one task. Coding workers use separate Git worktrees, and you can follow their progress from one task card.
+- **Connect Chrome or Edge.** Choose “Connect your browser” in Browser settings to set up the extension. Agents can work in multiple tabs and use your signed-in sessions. Full control gives them access to existing tabs and local sites.
+- **Set tool permissions together.** Use the switch at the top of Tool permissions to turn every permission on or off. The switch also shows when only some tools have access.
+
+## 🛠 Fixed
+
+- **Keep account settings across updates.** Tool permissions persist after updating. Named Claude Code and Codex accounts on Windows now pick up shared settings.
+- **Return to the right conversation.** Finished Antigravity tasks show a completion card. Back to Assistant returns to your Assistant conversation, and worker panels show the branch and checkout for the selected session.
+- **Use supported thinking settings.** Claude Code hides the Off option for models that always use thinking and handles a previously saved Off preference when you switch models.
+
+## ⚙️ Changed
+
+- **Check browser connection status.** The extension icon shows its status, and the popup and Browser settings provide connection and setup details.
+- **Resume team conversations.** Messages between agents are saved so workers can pick them up after a restart.
+
+---
+
 # SynaBun v.2.3.1
 
 SynaBun 2.3.1 is a fix release. Browser automations keep working after OpenCode updates, Sabiá works in protected workers, and floating windows follow your Appearance settings again.

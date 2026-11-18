@@ -131,20 +131,20 @@ function drawChoice(btn, label, checked) {
 
 /**
  * The account choices as menu items (this menu and the composer's Model menu): Auto, every account
- * once, and the note that another account starts a new conversation. rows: accountMenuRow()s;
- * onAuto(), onPick(id) (never for the current account), onSignIn(id) (a signed-out account is its sign-in).
+ * once, and the note that switching preserves this chat. rows: accountMenuRow()s;
+ * onAuto(), onPick(id) (also pins the Auto-selected account), onSignIn(id) (a signed-out account is its sign-in).
  */
-export function accountChoiceItems({ t = null, rows = [], currentId = null, onAuto, onPick, onSignIn } = {}) {
+export function accountChoiceItems({ t = null, rows = [], currentId = null, accountPolicy = 'manual', onAuto, onPick, onSignIn } = {}) {
   const tr = tf(t);
-  const newConversation = tr('assistant.brain.newConversation', 'starts a new conversation');
+  const newConversation = tr('assistant.accountMenu.switchNote', 'Switching accounts preserves this chat.');
   const items = [{
-    kind: 'radio', id: 'auto', label: autoAccountLabel(t), selected: currentId === 'auto',
-    title: tr('assistant.accountUsage.composerHint', 'Pick the subscription with most usage left and start a new conversation.'),
-    render: (btn, { checked }) => drawAuto(btn, autoAccountLabel(t), checked),
+    kind: 'radio', id: 'auto', label: autoAccountLabel(t), selected: currentId === 'auto' || accountPolicy === 'auto',
+    title: tr('assistant.accountUsage.composerHint', 'Use the subscription with most usage left. Keep it until limited; preserve this chat.'),
+    render: (btn, { checked }) => drawAuto(btn, [autoAccountLabel(t), accountPolicy === 'auto' ? rows.find(r => r.id === currentId)?.name : ''].filter(Boolean).join(' · '), checked),
     onSelect: () => onAuto?.(),
   }];
   for (const r of rows) {
-    const current = r.id === currentId;
+    const current = r.id === currentId && accountPolicy !== 'auto';
     // A signed-out account is listed with its way back in: choosing it opens its sign-in.
     const words = rowWords(r, [!current && !r.signedOut ? newConversation : '']);
     items.push({
@@ -154,7 +154,7 @@ export function accountChoiceItems({ t = null, rows = [], currentId = null, onAu
       onSelect: () => (r.signedOut ? onSignIn?.(r.id) : current ? null : onPick?.(r.id)),
     });
   }
-  items.push({ kind: 'info', className: 'asst-acct-note', label: tr('assistant.accountMenu.switchNote', 'Another account starts a new conversation.') });
+  items.push({ kind: 'info', className: 'asst-acct-note', label: tr('assistant.accountMenu.switchNote', 'Switching accounts preserves this chat.') });
   return items;
 }
 
@@ -167,7 +167,7 @@ export function accountModeItem({ provider = 'claude', t = null, account = null,
   const modes = modeChoices(account, p);
   if (!modes.length) return null;
   const tr = tf(t);
-  const newConversation = tr('assistant.brain.newConversation', 'starts a new conversation');
+  const newConversation = tr('assistant.accountMenu.switchNote', 'Switching accounts preserves this chat.');
   const name = accountName(account, p);
   return {
     kind: 'buttons', id: 'uses', label: tr('assistant.accountMenu.uses', '{label} uses', { label: name }), ariaLabel: accountText('usesGroup', { label: name }, p),
@@ -197,7 +197,7 @@ export function accountManageItem({ t = null, onAdd, onManage } = {}) {
 
 /**
  * Open the menu from `anchor`. ctx: { provider: 'claude' | 'codex', t, placement, bounds,
- *   read() → { accounts, currentId, workerId, running },
+ *   read() → { accounts, currentId, accountPolicy, workerId, running },
  *   onAuto(), onPick(id), onSetWorker(id) → Promise, onSetMode(id, mode), onAdd(), onManage(id?), onError(err),
  *   now, locale (the clock and language of the reset times; default: now and the page's) }
  * Returns the asst-menu handle (or null).
@@ -214,11 +214,11 @@ export function openAccountMenu(anchor, ctx = {}) {
     const s = ctx.read?.() || {};
     const accounts = Array.isArray(s.accounts) ? s.accounts : [];
     const rows = accounts.map((a) => accountMenuRow(a, { provider: p, t: ctx.t, now: ctx.now, locale: ctx.locale }));
-    return { accounts, rows, currentId: s.currentId || null, workerId: s.workerId || 'default', running: s.running === true };
+    return { accounts, rows, currentId: s.currentId || null, accountPolicy: s.accountPolicy || 'manual', workerId: s.workerId || 'default', running: s.running === true };
   };
 
   function mainItems(s) {
-    return accountChoiceItems({ t: ctx.t, rows: s.rows, currentId: s.currentId, onAuto: () => ctx.onAuto?.(), onPick: (id) => ctx.onPick?.(id), onSignIn: (id) => ctx.onManage?.(id) });
+    return accountChoiceItems({ t: ctx.t, rows: s.rows, currentId: s.currentId, accountPolicy: s.accountPolicy, onAuto: () => ctx.onAuto?.(), onPick: (id) => ctx.onPick?.(id), onSignIn: (id) => ctx.onManage?.(id) });
   }
 
   function mainFooter(s) {

@@ -81,6 +81,9 @@ export function modelEfforts(row) {
  */
 export const EFFORT_OFF = 'none';
 
+/** A Claude Code row whose CLI said it cannot run with thinking off (`supportsThinkingOff: false` → row.thinkingOff). */
+export function thinkingAlwaysOn(row) { return !!row && (row.thinkingOff === false || row.supportsThinkingOff === false); }
+
 /**
  * Can this provider/row run with thinking off? Codex and OpenCode only when the
  * model lists `none`; Claude Code whenever the model thinks at all (the SDK
@@ -88,6 +91,9 @@ export const EFFORT_OFF = 'none';
  */
 export function supportsEffortOff(provider, row) {
   const levels = modelEfforts(row);
+  // A model whose CLI says its thinking cannot be turned off (thinkingOff false: Opus 5.5 rejects disabled thinking,
+  // and the CLI then sends adaptive thinking at whatever effort its settings give): Off is corrected to the lowest level.
+  if (provider === 'claude-code' && thinkingAlwaysOn(row)) return false;
   if (provider === 'claude-code') return levels ? levels.some((id) => id.toLowerCase() !== EFFORT_OFF) : !!row;
   if (provider === 'antigravity') return false;
   return !!levels?.some((id) => id.toLowerCase() === EFFORT_OFF);
@@ -136,7 +142,10 @@ export function normalizeEffort({ provider = null, model = null, effort = null, 
   // Off on a model that can switch its thinking off stays Off (Claude Code lists no `none`: see supportsEffortOff).
   if (raw.toLowerCase() === EFFORT_OFF && supportsEffortOff(provider, row)) return { effort: EFFORT_OFF, corrected: null };
   const next = clampEffort(raw, levels, { fallback: row?.defaultEffort || null });
-  return next === raw ? { effort: raw, corrected: null } : { effort: next, corrected: { from: raw, to: next } };
+  if (next === raw) return { effort: raw, corrected: null };
+  // Off asked of a model that always thinks: it runs at the lowest level, and the correction says why.
+  const alwaysOn = raw.toLowerCase() === EFFORT_OFF && provider === 'claude-code' && thinkingAlwaysOn(row);
+  return { effort: next, corrected: { from: raw, to: next, ...(alwaysOn ? { reason: 'thinking_always_on' } : {}) } };
 }
 
 /** The model's levels for a provider/model pair (null when unknown). */

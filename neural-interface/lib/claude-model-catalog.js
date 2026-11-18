@@ -106,6 +106,8 @@ export function onClaudeModelsChanged(listener) {
 export function claudeModelsSignature(models) {
   return JSON.stringify((Array.isArray(models) ? models : []).map(m => [
     m?.id || '', m?.resolvedModel || '', m?.label || '', m?.contextWindow || 0, (m?.effortLevels || []).join(','),
+    // Whether thinking can be off: a list kept from before the CLI said so differs from the one that says it.
+    typeof m?.supportsThinkingOff === 'boolean' ? m.supportsThinkingOff : null,
   ]));
 }
 
@@ -207,6 +209,10 @@ export function normalizeClaudeModel(model) {
     // Which controls the sidepanel may offer for this model (Auto mode, thinking).
     supportsAutoMode: model?.supportsAutoMode === true,
     supportsAdaptiveThinking: model?.supportsAdaptiveThinking === true,
+    // Whether the CLI can run this model with thinking off (`--thinking disabled`). false: the model rejects disabled
+    // thinking and the CLI sends adaptive thinking instead, at the effort its settings give (Opus 5.5 on Claude Code
+    // 2.1.326). null: an older CLI that does not say.
+    supportsThinkingOff: typeof model?.supportsThinkingOff === 'boolean' ? model.supportsThinkingOff : null,
     cliReady: true,
     ...(id === 'default' ? { tier: 'default' } : {}),
   };

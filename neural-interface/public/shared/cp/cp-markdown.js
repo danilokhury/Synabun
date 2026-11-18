@@ -8,6 +8,7 @@
 // OpenCode panel use. Nothing here touches `document` at import time.
 
 import { sanitizeHtmlString } from '../assistant/asst-sanitize.js';
+import { withCodeCopyButtons } from '../code-copy.js';
 
 // ── The panel's one escaper ──
 // Every value the panel puts into markup it builds itself (a session's title or
@@ -34,13 +35,17 @@ const plain = (text) => escapeHtml(text).replace(/\n/g, '<br>');
  * Markdown text → sanitised HTML string, safe to assign to innerHTML.
  * `parse` is marked's parser (absent until it has loaded). Any failure, in the
  * parser or in the sanitiser, falls back to escaped text: never to raw HTML.
+ * Every code block carries the shared Copy button (../code-copy.js), written in
+ * after the sanitiser: a stream, a re-render and a string-keyed transcript keep
+ * it, and a model cannot write one. `codeCopy: false` leaves it out.
  */
-export function renderMarkdown(text, { parse = null, sanitize = sanitizeHtmlString, doc = globalThis.document } = {}) {
+export function renderMarkdown(text, { parse = null, sanitize = sanitizeHtmlString, doc = globalThis.document, codeCopy = true } = {}) {
   const src = String(text ?? '');
   if (typeof parse !== 'function') return plain(src);
   try {
     const html = sanitize(parse(src), doc);
-    return typeof html === 'string' ? html : plain(src);
+    if (typeof html !== 'string') return plain(src);
+    return codeCopy ? withCodeCopyButtons(html) : html;
   } catch {
     return plain(src);
   }

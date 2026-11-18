@@ -103,6 +103,7 @@ export const OPEN_ENTRIES = [
   { id: 'open-categories', key: 'categories', action: 'toggle-categories', active: 'menu-toggle-categories', icon: 'tag' },
   { id: 'open-focus-mode', key: 'focusMode', action: 'toggle-focus-mode', active: '!titlebar-viz-toggle', perm: 'whiteboard', icon: 'pen' },
   null,
+  { id: 'open-agents', key: 'agents', event: ['agents:open'], perm: 'agents', icon: 'panel' },
   { id: 'open-skills', key: 'skills', action: 'open-skills', perm: 'skills', icon: 'star' },
   { id: 'open-automations', key: 'automations', action: 'open-automations', perm: 'automations', icon: 'zap' },
   { id: 'open-schedules', key: 'schedules', event: ['schedules:toggle'], active: 'menubar-schedules-btn', perm: 'automations', icon: 'clock' },

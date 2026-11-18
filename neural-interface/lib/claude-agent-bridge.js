@@ -30,7 +30,7 @@ import { query, startup } from '@anthropic-ai/claude-agent-sdk';
 import { CLAUDE_EFFORT_LEVELS, CLAUDE_EFFORT_OFF, isThinkingOff } from './claude-model-catalog.js';
 import { CLAUDE_NOT_INSTALLED, resolveClaudeSdkExecutable } from './claude-executable.js';
 import { diagnoseLaunchFailure, isNativeBinaryLaunchFailure } from './native-binary-runtime.js';
-import { normalizePanelSession, startSignature, applyPanelSessionOptions, liveSettingsPatch, normalizeMcpServers, mergeTabMcpServers } from './claude-panel-session.js';
+import { normalizePanelSession, startSignature, startSignatureWithoutThinking, thinkingRestartNeeded, applyPanelSessionOptions, liveSettingsPatch, normalizeMcpServers, mergeTabMcpServers } from './claude-panel-session.js';
 import { SESSION_REQUESTS, runSessionRequest, slimRewind, slimMcpStatus } from './claude-panel-requests.js';
 import { applyTemporaryOptions, plansDirsOf, snapshotPlanFiles, planFileOfToolCall, removeTemporaryPlanFiles } from './claude-temporary.js';
 import { rootBypassBlock } from './claude-bypass-policy.js';
@@ -124,6 +124,8 @@ export const PANEL_CAPABILITIES = Object.freeze([
   'bypass_mode',      // Bypass is the SDK's bypassPermissions: a tab's process can take it (query `permissionMode`, `set_permission_mode`, the plan card's `planDecision`); `mode_changed` carries `reason` when it was refused or undone
   'mode_statements',  // the page numbers its statements of the tab's mode (`modeSeq`) and every mode report (init, status, mode_changed, reattach_result) returns the number applied; `set_permission_mode {fromSettings}` and a plan answer's `planExit` go back to the mode the user's settings name
   'temporary_chat',   // query / warm / `config` `temporary: true`: a conversation that leaves nothing behind (lib/claude-temporary.js); `temporary_ended` when its process is gone
+  'thinking_effective', // the panel sends the thinking that runs (no saved Off to a model that always thinks) and `thinkingAlwaysOn: true` for such a model; thinking restarts the process only when how it was started cannot give that (thinkingRestartNeeded)
+  'thinking_deferral', // a thinking switch that would restart the process waits while background tasks or wakeups run; system/runtime_notice (level info) carries `thinking: { state: deferred | still | ready | made | cancelled, wants, runs, pending }`
 ]);
 
 const WARM_TTL_MS = 3 * 60 * 1000; // an unused warm process is closed after this
@@ -555,6 +557,8 @@ export class ClaudeSession {
         log(`session create: adopted the warm process (resume=${this.sessionId || 'none'})`);
         this._startModeSeen = false;
         this.q = w.handle.query(this.input);
+        // (How this process was started, for _thinkingRestart: the warm one's own options.)
+        this._startedThinkingOff = w.thinkingOff === true;
         if (this.panel) this._noteProcessStarted();
         this.pumpPromise = this._pump(this.q);
         return this.q;
@@ -606,7 +610,7 @@ export class ClaudeSession {
               const before = JSON.stringify(this._sessionCrons);
               this._sessionCrons = Array.isArray(input?.session_crons) ? input.session_crons : [];
               // Panel sessions: the scheduled wakeups of this session, when they change.
-              if (this.panel && JSON.stringify(this._sessionCrons) !== before) this._announceCrons();
+              if (this.panel && JSON.stringify(this._sessionCrons) !== before) { this._announceCrons(); this._thinkingWorkSettled(); }
             }
             return {};
           }],
@@ -788,6 +792,9 @@ export class ClaudeSession {
     // Off is the user's pick, not the model's default: without it an
     // effortLevel in the user's settings would still apply.
     // `none` is the Assistant's Off (route card, dispatch, brain turns): the same, for every session.
+    // (A model that rejects disabled thinking, Opus 5.5, is sent adaptive thinking by the CLI anyway, at the
+    // effort its settings give: the Assistant corrects `none` to the lowest level before it gets here,
+    // effort-levels.js thinkingAlwaysOn, from the CLI's own `supportsThinkingOff`.)
     if ((this.panel && this.effort === 'off') || this.effort === CLAUDE_EFFORT_OFF) options.thinking = { type: 'disabled' };
     if (this.effort && CLAUDE_EFFORT_LEVELS.includes(this.effort)) {
       // Panel sessions use the typed option; every other caller keeps the flag it had.
@@ -845,7 +852,7 @@ export class ClaudeSession {
       // Start the process now; hand it the input queue when the first prompt comes.
       // (`bypass`: started in Bypass, as the tab's stated mode or as the mode this session saw the user's
       // settings name. A process kept ready is a process of this session's all the same: see _mayBypass.)
-      const w = { sig: this._warmSignature(), input: this.input, abortController: this.abortController, handle: null, ready: false, closed: false, timer: null, bypass: this._startAskedBypass === true || (this._startedFromSettings === true && this.permissionMode === BYPASS) };
+      const w = { sig: this._warmSignature(), input: this.input, abortController: this.abortController, handle: null, ready: false, closed: false, timer: null, bypass: this._startAskedBypass === true || (this._startedFromSettings === true && this.permissionMode === BYPASS), thinkingOff: options.thinking?.type === 'disabled' };
       this._warm = w;
       log(`warm start: resume=${this.sessionId || 'none'} model=${this.model || 'default'} cwd=${workDir} cli=${runtimeLabel}`);
       const startupFactory = typeof deps.startupFactory === 'function' ? deps.startupFactory : startup;
@@ -866,6 +873,9 @@ export class ClaudeSession {
     log(`session create: resume=${this.sessionId || 'none'} model=${this.model || 'default'} effort=${this.effort || 'default'} mode=${this.permissionMode} cwd=${workDir} sdk=${SDK_VERSION} cli=${runtimeLabel}${sessionOpts.ownerKey ? ` owner=${sessionOpts.ownerKey}` : ''}`);
     const queryFactory = typeof deps.queryFactory === 'function' ? deps.queryFactory : query;
     this.q = queryFactory({ prompt: this.input, options });
+    // Whether this process was started with thinking disabled (an Off effort or the session settings):
+    // what a later message's thinking is compared with (_thinkingRestart), never the message before it.
+    this._startedThinkingOff = options.thinking?.type === 'disabled';
     if (this.panel) this._noteProcessStarted();
     this.pumpPromise = this._pump(this.q);
     return this.q;
@@ -1084,6 +1094,13 @@ export class ClaudeSession {
     // What this process is in, and whether it may be in Bypass (see "what is" below):
     // a process launched in Bypass may be in it from its launch.
     this._cli = { q: this.q, mode: this._launchMode || '', may: this._startAskedBypass === true, at: 0, sends: 0 };
+    // A thinking switch that waited for background work (_handleQuery) is made: this process was started with
+    // the thinking the tab asks for. The tab is told what runs now.
+    if (this._thinkingDeferred) {
+      this._thinkingDeferred = false;
+      this._thinkingNotice('made');
+    }
+    this._thinkingReadyTold = false;
   }
 
   // Panel sessions: a turn at the session's process. Socket messages are
@@ -1242,8 +1259,70 @@ export class ClaudeSession {
     if (msg.typesafe !== undefined && (msg.typesafe === 'off') !== !!this.typesafeOff) return 'the judgment setting';
     if (msg.accountId !== undefined && account !== (this.accountId || '')) return 'the Claude account';
     if (msg.toolPolicy !== undefined && (TOOL_POLICY_DISALLOW[msg.toolPolicy] ? msg.toolPolicy : null) !== (this.toolPolicy || null)) return 'the tool policy';
-    if (msg.session !== undefined && startSignature(normalizePanelSession(msg.session)) !== startSignature(this.panelSession || normalizePanelSession(null))) return 'the session settings';
+    const session = msg.session !== undefined ? normalizePanelSession(msg.session) : this.panelSession;
+    if (msg.session !== undefined && startSignatureWithoutThinking(session) !== startSignatureWithoutThinking(this.panelSession || normalizePanelSession(null))) return 'the session settings';
+    // (A panel message that sends no effort clears it.)
+    if (this._thinkingRestart({ effort: effort || null, session, alwaysOn: msg.thinkingAlwaysOn === true })) return 'the thinking setting';
     return '';
+  }
+
+  // Panel sessions: does the thinking this message asks for need a new process? Thinking disabled (an Off
+  // effort, or Off in the session settings) is a start-up option. It is compared with how the running process
+  // was started (_startedThinkingOff), never with the message before: the panel leaves a saved Off out for a
+  // model that always thinks (`thinkingAlwaysOn`), and that is no change. Claude Code resolves the start-up
+  // value against each request's model, so a process started with it stays right on such a model, and a
+  // process started without it restarts once, at the first message that asks for Off where it can be off.
+  // (lib/claude-panel-session.js thinkingRestartNeeded. Other sessions keep their own rule in _handleQuery.)
+  _thinkingRestart({ effort = this.effort, session = this.panelSession, alwaysOn = false } = {}) {
+    if (!this.panel || !this.q) return false;
+    const wantOff = isThinkingOff(effort, { panel: true }) || session?.start?.thinkingOff === true;
+    return thinkingRestartNeeded({ startedOff: this._startedThinkingOff === true, wantOff, lenient: alwaysOn === true || !effort });
+  }
+
+  // Panel sessions: does the tab ask for thinking disabled (its effort, or Off in the session settings)?
+  _panelWantsThinkingOff(effort = this.effort, session = this.panelSession) {
+    return isThinkingOff(effort, { panel: true }) || session?.start?.thinkingOff === true;
+  }
+
+  // Panel sessions: what keeps a thinking switch waiting, in words ("1 background task", "2 scheduled wakeups").
+  _pendingWorkWords() {
+    const parts = [];
+    const tasks = this._bgTasks.size;
+    const crons = this._sessionCrons.length;
+    if (tasks) parts.push(`${tasks} background task${tasks === 1 ? '' : 's'}`);
+    if (crons) parts.push(`${crons} scheduled wakeup${crons === 1 ? '' : 's'}`);
+    return parts.join(' and ') || 'background work';
+  }
+
+  // Panel sessions: a thinking switch that waits for background work, told to the tab as a runtime notice (the
+  // panel draws an `info` one as a status line), so the Think toggle's new state is never taken for what runs.
+  // `thinking` carries the same in fields: { state: deferred | still | ready | made | cancelled, wants, runs,
+  // pending } (wants / runs: 'on' | 'off'; runs is how the running process was started).
+  _thinkingNotice(state) {
+    if (!this.panel) return;
+    const runs = this._startedThinkingOff === true ? 'off' : 'on';
+    const wants = runs === 'on' ? 'off' : 'on';
+    const pending = { tasks: this._bgTasks.size, wakeups: this._sessionCrons.length };
+    let message;
+    if (state === 'deferred') {
+      message = `Thinking ${wants} is waiting: ${this._pendingWorkWords()} still running, and the switch restarts the session, which would end ${pending.tasks + pending.wakeups === 1 ? 'it' : 'them'}. This message runs with thinking ${runs}. The switch is made with your first message after the background work finishes.`;
+    } else if (state === 'still') {
+      message = `Thinking ${wants} is still waiting for ${this._pendingWorkWords()}: this message runs with thinking ${runs}.`;
+    } else if (state === 'ready') {
+      message = `The background work finished: thinking ${wants} is made with your next message.`;
+    } else if (state === 'made') {
+      message = `Thinking is ${runs} now: the session restarted with it.`;
+    } else if (state === 'cancelled') {
+      message = `Thinking stays ${runs}: the switch that was waiting is no longer asked for.`;
+    } else return;
+    this._thinkingReadyTold = state === 'ready';
+    this.sendEvent({ type: 'system', subtype: 'runtime_notice', level: 'info', message, thinking: { state, wants: state === 'made' || state === 'cancelled' ? runs : wants, runs, pending }, session_id: this.sessionId });
+  }
+
+  // Panel sessions: the background work a thinking switch waited for is over (a task list or the wakeups changed).
+  _thinkingWorkSettled() {
+    if (!this.panel || !this._thinkingDeferred || !this.q || this._hasPendingWork() || this._thinkingReadyTold) return;
+    this._thinkingNotice('ready');
   }
 
   // A temporary chat cannot be resumed, so a stalled stream is not answered
@@ -1539,6 +1618,8 @@ export class ClaudeSession {
         ambient: !!t.ambient,
       });
     }
+    // (Panel sessions: a thinking switch that waited for these can now be made.)
+    this._thinkingWorkSettled();
   }
 
   // A background agent reported back: close its card with the real outcome.
@@ -2991,7 +3072,8 @@ export class ClaudeSession {
       if (msg.session !== undefined) {
         const next = normalizePanelSession(msg.session);
         // What is fixed at start changed: the session restarts with it.
-        if (this.q && startSignature(next) !== startSignature(this.panelSession || normalizePanelSession(null))) policyChanged = true;
+        // (Thinking is judged apart, against how the process was started: _thinkingRestart.)
+        if (this.q && startSignatureWithoutThinking(next) !== startSignatureWithoutThinking(this.panelSession || normalizePanelSession(null))) policyChanged = true;
         this.panelSession = next;
       }
     }
@@ -3004,7 +3086,6 @@ export class ClaudeSession {
     if (cwd) this.cwd = cwd;
     // A panel tab that sends no effort means "the model's default": a level that
     // was set goes back to it, live when a session exists.
-    const prevEffort = this.effort;
     const effortCleared = this.panel && !effort && !!this.effort;
     if (effort) this.effort = effort;
     else if (effortCleared) this.effort = null;
@@ -3048,14 +3129,65 @@ export class ClaudeSession {
     // (Off disables thinking, a start-up option: to or from it the session restarts. Outside the panel
     // 'off' is Auto: a level back to the model's default switches live, `effortLevel: null`.)
     const thinkingOff = (value) => isThinkingOff(value, { panel: !!this.panel });
+    // Panel sessions: Off is judged against how the running process was started (_thinkingRestart), so an
+    // Off the panel leaves out for a model that always thinks, or asks again of a process that already has
+    // it, restarts nothing; the effort then switches live like any other.
+    let thinkingChanged = this._thinkingRestart({ alwaysOn: msg.thinkingAlwaysOn === true });
+    // Panel sessions, the same deferral as the brain's below: a restart for thinking alone would end the CLI's
+    // background tasks and wakeups (_hasPendingWork). While there are any, this turn runs on the process as it
+    // is and the switch waits (_thinkingDeferred); every later message judges thinking again against how the
+    // process was started, so the first one with nothing pending restarts with it (before its prompt is sent:
+    // the restart below), and one that asks for the started state again cancels it with no restart. The tab is
+    // told each step (_thinkingNotice), so it never takes the switch for made. Any other reason to restart
+    // (folder, conversation, account, tool policy, start-up settings) restarts as it always did.
+    let thinkingWaits = false;
+    if (this.panel && this.q) {
+      const otherRestart = cwdChanged || sessionChanged || newChat || typesafeChanged || policyChanged
+        || (effortChanged && typeof this.q.applyFlagSettings !== 'function');
+      if (thinkingChanged && !otherRestart && this._hasPendingWork()) {
+        if (!this._thinkingDeferred) log(`panel: thinking ${this._panelWantsThinkingOff() ? 'off' : 'on'} waits: background work is running in session ${this.sessionId || '(new)'}; no restart`);
+        this._thinkingNotice(this._thinkingDeferred ? 'still' : 'deferred');
+        this._thinkingDeferred = true;
+        thinkingChanged = false;
+        thinkingWaits = true;
+      } else if (!thinkingChanged && this._thinkingDeferred) {
+        log(`panel: the thinking switch that waited is no longer asked for in session ${this.sessionId || '(new)'}`);
+        this._thinkingDeferred = false;
+        this._thinkingNotice('cancelled');
+      }
+      // (A switch made now, by the restart below: _noteProcessStarted reports it.)
+    }
+    // Other sessions (the Assistant's brain): Off is judged against how the running process was started too,
+    // so a switch that waited (below) and was taken back costs nothing. In step, this is the old rule: a change
+    // to or from Off restarts.
+    const thinkingMismatch = !this.panel && !!this.q && thinkingOff(this.effort) !== (this._startedThinkingOff === true);
+    let offSwitch = this.panel ? thinkingChanged : thinkingMismatch;
+    // Other sessions: a restart ends the CLI's background tasks (a background Bash, an agent) and its wakeups,
+    // whose task-notification is the turn that wakes the brain to read them. While there are any, a turn that
+    // would restart for thinking alone runs on the process as it is (its level is applied live below); the
+    // first turn with nothing pending gets the process its effort asks for.
+    if (!this.panel && this.q && offSwitch && !cwdChanged && !sessionChanged && !newChat && !typesafeChanged && !policyChanged) {
+      if (this._hasPendingWork()) {
+        if (!this._thinkingDeferred) log(`thinking ${thinkingOff(this.effort) ? 'off' : 'on'} waits: background work is running in session ${this.sessionId || '(new)'}; no restart`);
+        this._thinkingDeferred = true;
+        offSwitch = false;
+      } else if (this._thinkingDeferred) {
+        // The switch that waited: now, with nothing left to lose (the restart below starts the process it asks for).
+        effortChanged = true;
+        this._thinkingDeferred = false;
+      }
+    }
+    if (!this.panel && !thinkingMismatch) this._thinkingDeferred = false;
+    // (Panel sessions: an Off that waits has no level to apply; the process keeps the level it runs at.)
+    if (thinkingWaits && thinkingOff(effort)) effortChanged = false;
     if (this.q && effortChanged && !cwdChanged && !sessionChanged && !newChat
-      && !thinkingOff(prevEffort) && !thinkingOff(effort)
+      && !offSwitch
       && typeof this.q.applyFlagSettings === 'function') {
       const effortLevel = CLAUDE_EFFORT_LEVELS.includes(effort) ? effort : null;
       this.q.applyFlagSettings({ effortLevel }).catch(err => log('applyFlagSettings(effort) failed:', err.message));
       effortChanged = false;
     }
-    if (this.q && this.panel && !cwdChanged && !sessionChanged && !newChat && !policyChanged
+    if (this.q && this.panel && !cwdChanged && !sessionChanged && !newChat && !policyChanged && !thinkingChanged
       && typeof this.q.applyFlagSettings === 'function') {
       // Fast mode, output style and the main-thread agent switch on the live
       // session; so does a return to the default effort.
@@ -3070,8 +3202,8 @@ export class ClaudeSession {
       }
     }
 
-    if (this.q && (cwdChanged || effortChanged || sessionChanged || newChat || typesafeChanged || policyChanged)) {
-      log(`config change (cwd=${!!cwdChanged} effort=${!!effortChanged} session=${!!sessionChanged} newChat=${newChat} typesafe=${typesafeChanged}${policyChanged ? ' toolPolicy=true' : ''}) — recreating query`);
+    if (this.q && (cwdChanged || effortChanged || sessionChanged || newChat || typesafeChanged || policyChanged || thinkingChanged)) {
+      log(`config change (cwd=${!!cwdChanged} effort=${!!effortChanged} session=${!!sessionChanged} newChat=${newChat} typesafe=${typesafeChanged}${policyChanged ? ' toolPolicy=true' : ''}${thinkingChanged ? ' thinking=true' : ''}) — recreating query`);
       const restarted = this._endQuery({ graceful: true }).then(() => {
         if (this.destroyed) return;
         this.ensureQuery();

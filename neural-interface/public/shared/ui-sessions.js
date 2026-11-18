@@ -11,10 +11,10 @@
 import { emit, on } from './state.js';
 import { getSynabunUpdateData, openSynabunUpdateModal, syncSynabunUpdateData, synabunUpdateMeta } from './ui-update.js';
 import { getToolUpdateData, runToolUpdate, TOOL_LABELS } from './ui-tool-updates.js';
-import { openSettingsModal } from './ui-settings.js';
+import { openSettingsModal } from './ui-settings-entry.js';
 import { getProviderMeta } from './provider-icons.js';
-import { sendToPanel as sendToClaudePanel, isClaudePanelOpen } from './ui-claude-panel.js';
-import { toggleCodexPanel, isCodexPanelOpen } from './cdx/cdx-panel.js';
+import { sendToPanel as sendToClaudePanel, isClaudePanelOpen } from './claude-panel-lazy.js';
+import { toggleCodexPanel, isCodexPanelOpen } from './ui-codex-panel.js';
 import { openOpencodeWithPrompt } from './ui-opencode-panel-v2.js';
 import { openAntigravityWithPrompt } from './ui-antigravity-panel.js';
 import { dropdownHTML, wireDropdowns } from './cc-dropdown.js';

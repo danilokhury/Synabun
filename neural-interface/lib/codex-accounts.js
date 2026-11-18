@@ -6,7 +6,11 @@
 // accounts). Default is the ambient CODEX_HOME (or ~/.codex); every added
 // account owns ~/.codex-accounts/<id>, whose config.toml, prompts/ and
 // AGENTS.md link back to Default's so model, MCP and tool settings stay shared,
-// while auth.json, sessions/ and the state database stay its own.
+// while auth.json, sessions/ and the state database stay its own. How a file
+// and a folder are linked on each system, and kept in step where a link cannot
+// be made (Windows without Developer Mode: a hard link, which Codex's own
+// rename-write of config.toml splits), is lib/claude-account-links.js, the
+// same functions the Claude accounts use.
 //
 // One account, two credentials, one mode. Each account can hold a ChatGPT
 // login (Codex's own, in its CODEX_HOME: auth.json or the keyring Codex is set
@@ -26,13 +30,14 @@
 // Codex as it is.
 
 import {
-  existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync,
+  existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { readProfileApiKey, saveProfileApiKey, clearProfileApiKey } from './claude-profile-api-key.js';
 import { apiKeyHint, resolveClaudeAuth } from './claude-accounts.js';
 import { normalizeAdminSandbox, sandboxElevationFor } from './agent-sandbox-elevation.js';
+import { sameSharedRecords, syncSharedEntries } from './claude-account-links.js';
 
 export const CODEX_DEFAULT_ACCOUNT_ID = 'default';
 export const CODEX_AUTH_MODES = Object.freeze(['subscription', 'apiKey']);
@@ -48,7 +53,14 @@ export const CODEX_CREDENTIAL_ENV = Object.freeze([
 // An app-server that runs on a key SynaBun holds: nothing it is told is kept,
 // and the account's own auth.json (its ChatGPT login) is not read or replaced.
 export const CODEX_EPHEMERAL_STORE_ARGS = Object.freeze(['-c', 'cli_auth_credentials_store="ephemeral"']);
-const SHARED_FILES = ['config.toml', 'AGENTS.md'];
+// What a named account shares with Default, and nothing else: auth.json (the ChatGPT login), `.synabun-api-key`,
+// sessions/, the history and the state database are an account's own and are never linked or copied.
+export const CODEX_SHARED_FILES = Object.freeze(['config.toml', 'AGENTS.md']);
+export const CODEX_SHARED_FOLDERS = Object.freeze(['prompts']);
+const SHARED_NAMES = [...CODEX_SHARED_FILES, ...CODEX_SHARED_FOLDERS];
+// The one file SynaBun itself leaves in an account where the link could not be made: a launch makes a missing
+// config.toml (server.js ensureCanonicalCodexConfig). An AGENTS.md found in an account is the owner's.
+const ADOPTED_FILES = ['config.toml'];
 const STATUS_MAX_AGE_MS = 5 * 60_000;
 
 export class CodexAccountError extends Error {
@@ -148,6 +160,9 @@ export function createCodexAccounts({
   prepareDefaultConfig = () => {},
   // () => the Admin sandbox setting (lib/agent-sandbox-setting.js): which Windows sandbox every launch may use.
   adminSandbox = () => false,
+  platform = process.platform,
+  // The file system the shared links are made with (node:fs; a test stands in for Windows rights).
+  linkFs = undefined,
 } = {}) {
   if (!dataHome) throw new Error('createCodexAccounts requires dataHome');
   const registryPath = resolve(dataHome, 'data', 'codex-accounts.json');
@@ -278,6 +293,8 @@ export function createCodexAccounts({
     if (!profile || !profile.home) {
       return { ok: false, accountId: wanted, code: 'account_unavailable', message: 'That Codex account is no longer set up in SynaBun.' };
     }
+    // The account reads Default's config.toml and AGENTS.md: in step before every launch.
+    if (wanted !== CODEX_DEFAULT_ACCOUNT_ID) syncShared(wanted);
     const { row, key } = describeProfile(profile, data);
     const apiKey = row.mode === 'apiKey' && row.apiKey.source === 'synabun' && key ? key : null;
     // A launch override, never written into config.toml: Default's home is the user's own ~/.codex.
@@ -396,32 +413,58 @@ export function createCodexAccounts({
     for (const listener of [...listeners]) { try { listener({ accountId, ...extra }); } catch {} }
   }
 
-  function linkShared(home) {
-    try { prepareDefaultConfig(); } catch (error) { log('codex-accounts', `config repair failed: ${error?.message || error}`); }
-    const linked = [];
-    const link = (name, kind) => {
-      const source = resolve(defaultHome, name);
-      const target = resolve(home, name);
-      try { lstatSync(target); return; } catch {}
-      try {
-        if (!existsSync(source)) {
-          // config.toml and prompts/ are made when missing (shared from the start); AGENTS.md is not ours to create.
-          if (name === 'AGENTS.md') return;
-          if (kind === 'dir') mkdirSync(source, { recursive: true }); else { mkdirSync(defaultHome, { recursive: true }); writeFileSync(source, '', 'utf8'); }
+  /**
+   * Put the shared entries of one account (or every named account) in order: a hard link or a copy two writes
+   * apart brought back in step (Codex writes config.toml as a new file renamed over the old one), a missing
+   * entry linked only with `linkMissing`, which making the account asks for.
+   *
+   * On Windows, once per account (`sharedChecked` on its row): an account made while SynaBun linked these files
+   * with a symbolic link only, which Windows refuses without Developer Mode or administrator rights, has no
+   * AGENTS.md and a config.toml of its own that a launch made for it. Its missing entries are linked, and that
+   * config.toml becomes Default's again (what it held is kept in the account's backups/).
+   * Never throws; returns what it did per account.
+   */
+  function syncShared(id = null, { linkMissing = false } = {}) {
+    const results = [];
+    try {
+      const data = load();
+      let changed = false;
+      for (const account of data.accounts) {
+        if (account.id === CODEX_DEFAULT_ACCOUNT_ID || (id && account.id !== id)) continue;
+        if (!account.home || resolve(account.home) === defaultHome || !existsSync(account.home)) continue;
+        const firstCheck = platform === 'win32' && account.sharedChecked !== true;
+        const result = syncSharedEntries({
+          defaultHome, home: account.home, names: SHARED_NAMES, fileNames: CODEX_SHARED_FILES, recorded: account.shared || {},
+          linkMissing: linkMissing || firstCheck, adopt: firstCheck ? ADOPTED_FILES : [],
+          platform, fs: linkFs, now, log, tag: 'codex-accounts',
+        });
+        if (!sameSharedRecords(account.shared || {}, result.modes)) {
+          if (Object.keys(result.modes).length) account.shared = result.modes; else delete account.shared;
+          changed = true;
         }
-        symlinkSync(source, target, kind === 'dir' ? (process.platform === 'win32' ? 'junction' : 'dir') : 'file');
-        linked.push(name);
-      } catch (error) { log('codex-accounts', `link ${name} failed: ${error?.message || error}`); }
-    };
-    for (const name of SHARED_FILES) link(name, 'file');
-    link('prompts', 'dir');
-    return linked;
+        // A check that could not finish (a file in use) is made again by the next start or launch.
+        if (firstCheck && !result.failed.length) { account.sharedChecked = true; changed = true; }
+        results.push({ id: account.id, linked: result.linked, repaired: result.repaired });
+      }
+      if (changed) save(data);
+    } catch (error) {
+      log('codex-accounts', `shared files check failed: ${error?.message || error}`);
+    }
+    return results;
   }
   function seedHome(id) {
     const account = id && id !== CODEX_DEFAULT_ACCOUNT_ID ? profileFor(id) : null;
     if (!account) throw new CodexAccountError('ACCOUNT_NOT_FOUND', `Codex account not found: ${id}`, 404);
     mkdirSync(resolve(account.home, 'sessions'), { recursive: true });
-    return { home: account.home, linked: linkShared(account.home) };
+    try { prepareDefaultConfig(); } catch (error) { log('codex-accounts', `config repair failed: ${error?.message || error}`); }
+    // config.toml and prompts/ are made when missing (shared from the start); AGENTS.md is not ours to create.
+    try {
+      mkdirSync(resolve(defaultHome, 'prompts'), { recursive: true });
+      const config = resolve(defaultHome, 'config.toml');
+      if (!existsSync(config)) writeFileSync(config, '', 'utf8');
+    } catch (error) { log('codex-accounts', `default home not ready: ${error?.message || error}`); }
+    const { linked } = syncShared(account.id, { linkMissing: true })[0] || { linked: [] };
+    return { home: account.home, linked };
   }
 
   function create({ label } = {}) {
@@ -497,6 +540,6 @@ export function createCodexAccounts({
     registryRows: () => load().accounts,
     get: describe, find: describe,
     launchFor, unusableReason, setMode, noteNativeStatus, forgetNativeStatus, noteSubscriptionSignIn, setNativeStatusReader,
-    refreshStatus, stale, subscribe, create, rename, remove, seedHome,
+    refreshStatus, stale, subscribe, create, rename, remove, seedHome, syncShared,
   };
 }

@@ -582,6 +582,23 @@ function failureText(error) {
   return String(error?.code || error?.message || error || 'failed');
 }
 
+const STDERR_NOTE_MAX = 200;
+/**
+ * What a program wrote to stderr, for a failure's reason: ` (netstat said: "…")`, on one line and at most
+ * STDERR_NOTE_MAX characters, or '' when it wrote nothing.
+ */
+export function stderrNote(text, program = 'netstat') {
+  const said = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!said) return '';
+  return ` (${program} said: "${said.length > STDERR_NOTE_MAX ? `${said.slice(0, STDERR_NOTE_MAX - 1)}…` : said}")`;
+}
+
+/** A run's answer as `{ stdout, stderr }`: a run may answer stdout alone (a string) or both (`{ stdout, stderr }`). */
+function outputOf(answer) {
+  if (answer && typeof answer === 'object' && 'stdout' in answer) return { stdout: String(answer.stdout ?? ''), stderr: String(answer.stderr ?? '') };
+  return { stdout: String(answer ?? ''), stderr: '' };
+}
+
 /**
  * What a request's peer verdict means for the owner's authority: the one reading lib/page-session.js,
  * lib/owner-authority.js and lib/assistant-api.js share. Pure, never throws.
@@ -615,11 +632,16 @@ export function peerAuthority(verdict) {
 
 // ── The reader ───────────────────────────────────────────────────────────────
 
-function defaultRun(file, args, { timeout }) {
+// `stderr: true` answers `{ stdout, stderr }` instead of stdout alone; a failure always carries what the program wrote
+// to stderr (`error.stderr`).
+function defaultRun(file, args, { timeout, stderr: withStderr = false }) {
   return new Promise((resolve, reject) => {
     try {
-      execFile(file, args, { encoding: 'utf8', timeout, maxBuffer: 64 * 1024 * 1024, windowsHide: true, env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LANG: 'C', LC_ALL: 'C' } }, (error, stdout) => {
-        if (error) reject(error); else resolve(String(stdout || ''));
+      execFile(file, args, { encoding: 'utf8', timeout, maxBuffer: 64 * 1024 * 1024, windowsHide: true, env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LANG: 'C', LC_ALL: 'C' } }, (error, stdout, stderr) => {
+        if (error) {
+          if (error && typeof error === 'object' && error.stderr === undefined) { try { error.stderr = String(stderr || ''); } catch { /* frozen */ } }
+          reject(error);
+        } else resolve(withStderr ? { stdout: String(stdout || ''), stderr: String(stderr || '') } : String(stdout || ''));
       });
     } catch (error) { reject(error); }
   });
@@ -671,7 +693,7 @@ export function createPeerIdentity({ platform = process.platform, selfPid = proc
     return typeof real === 'string' && real !== written ? [written, real] : [written];
   }))];
   const logged = new Map(); // key → last time
-  const stats = { lookups: 0, tableReads: 0, psReads: 0, envReads: 0, refused: 0, unknown: 0, failed: 0, retries: 0, gone: 0, totalMs: 0, maxMs: 0 };
+  const stats = { lookups: 0, tableReads: 0, tableRetries: 0, psReads: 0, envReads: 0, refused: 0, unknown: 0, failed: 0, retries: 0, gone: 0, totalMs: 0, maxMs: 0 };
   let addrCache = null;
   let addrAt = 0;
 
@@ -738,11 +760,10 @@ export function createPeerIdentity({ platform = process.platform, selfPid = proc
     probed = (async () => {
       const failures = [];
       let retryable = false;
-      try {
-        const table = parseNetstatTcp(await run(NETSTAT, NETSTAT_ARGS, { timeout: TABLE_TIMEOUT_MS }));
-        if (!table.rows.length) failures.push('netstat listed no TCP sockets');
-        else if (!table.rows.some((r) => r.pid > 0)) failures.push('netstat named no processes (an unknown output layout)');
-      } catch (error) { failures.push(`netstat: ${failureText(error)}`); retryable = retryable || isTransientLookupError(error); }
+      try { await readNetstat(); } catch (error) {
+        failures.push(error?.netstatTable ? error.message : netstatFailure(error));
+        retryable = retryable || isTransientLookupError(error);
+      }
       try {
         const parents = parsePsParents(await run(PS, ['-Ao', 'pid=,ppid=,ucomm='], { timeout: PS_TIMEOUT_MS }));
         if (!parents.size) failures.push('ps listed no processes');
@@ -763,6 +784,34 @@ export function createPeerIdentity({ platform = process.platform, selfPid = proc
     return addrCache.has(addr);
   };
 
+  /**
+   * netstat's TCP table: `{ rows, listening, startedAt }` (when the read that gave it started). A table that lists no
+   * socket at all is read again once, at once: a busy system can answer one read with nothing (seen at a cold start,
+   * right after login), and that is not worth the owner's 503s. What netstat wrote to stderr is kept in the reason of a
+   * table that stays unreadable. Rejects with the reason (`error.netstatTable`: the table, not the program, failed);
+   * a program that cannot run rejects with its own error (netstatFailure).
+   */
+  async function readNetstat() {
+    let said = '';
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt) stats.tableRetries++;
+      const startedAt = now();
+      // -l: full IPv6 addresses (without it macOS cuts a long one, fe80::105e:de82:…, and the client's row would not
+      // be found: a connection taken for one that closed, refused).
+      const out = outputOf(await run(NETSTAT, NETSTAT_ARGS, { timeout: TABLE_TIMEOUT_MS, stderr: true }));
+      if (out.stderr.trim()) said = out.stderr;
+      const table = parseNetstatTcp(out.stdout);
+      if (!table.rows.length) continue;
+      // A layout this parser does not read gives no process at all: that is a lookup that cannot run (the rules from
+      // before), never "every client left". Not read again: the layout does not change between two reads.
+      if (!table.rows.some((r) => r.pid > 0)) throw Object.assign(new Error(`netstat named no processes (an unknown output layout)${stderrNote(said)}`), { netstatTable: true });
+      return { ...table, startedAt };
+    }
+    throw Object.assign(new Error(`netstat listed no TCP sockets${stderrNote(said)}`), { netstatTable: true });
+  }
+  /** The reason of a netstat that failed as a program: `netstat: <why>`, with what it wrote to stderr. */
+  const netstatFailure = (error) => `netstat: ${failureText(error)}${error && typeof error === 'object' && !error.netstatTable ? stderrNote(error.stderr) : ''}`;
+
   // One TCP table read serves every lookup that was waiting when it STARTED (a socket accepted after a read began
   // may not be in it, so its lookup waits for the next read).
   let tableRunning = null;
@@ -773,17 +822,7 @@ export function createPeerIdentity({ platform = process.platform, selfPid = proc
     tableNext = after.catch(() => {}).then(() => {
       tableNext = null;
       stats.tableReads++;
-      const startedAt = now();
-      // -l: full IPv6 addresses (without it macOS cuts a long one, fe80::105e:de82:…, and the client's row would not
-      // be found: a connection taken for one that closed, refused).
-      const read = run(NETSTAT, NETSTAT_ARGS, { timeout: TABLE_TIMEOUT_MS }).then((text) => {
-        const table = parseNetstatTcp(text);
-        if (!table.rows.length) throw new Error('netstat listed no TCP sockets');
-        // A layout this parser does not read gives no process at all: that is a lookup that cannot run (the rules from
-        // before), never "every client left".
-        if (!table.rows.some((r) => r.pid > 0)) throw new Error('netstat named no processes (an unknown output layout)');
-        return { ...table, startedAt };
-      });
+      const read = readNetstat();
       tableRunning = read;
       read.catch(() => {}).then(() => { if (tableRunning === read) tableRunning = null; });
       return read;
@@ -875,7 +914,7 @@ export function createPeerIdentity({ platform = process.platform, selfPid = proc
     if (!isThisMachine(remote)) return { status: 'remote' };
     if (!supported) return unsupportedPeerVerdict(unsupportedReason);
     let table;
-    try { table = await tcpTable(); } catch (error) { return failedPeerVerdict(`netstat: ${failureText(error)}`, { retryable: isTransientLookupError(error) }); }
+    try { table = await tcpTable(); } catch (error) { return failedPeerVerdict(netstatFailure(error), { retryable: isTransientLookupError(error) }); }
     const row = table.rows.find((r) => r.local.port === remotePort && r.local.addr === remote && r.foreign.port === localPort && (r.foreign.addr === local || !local));
     if (!row || !row.pid) return { status: 'gone', reason: 'the connection closed before its request was identified', ms: now() - started };
     if (row.pid === selfPid) return { status: 'ok', self: true, pid: row.pid, name: row.name, chain: [], refuse: null, ms: now() - started };

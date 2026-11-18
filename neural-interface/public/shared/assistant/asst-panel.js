@@ -1,3 +1,4 @@
+import { createRouteReplayGuard } from './route-identity.js';
 import { fetchToolCatalog } from '../agent-runtime-options.js';
 // ═══════════════════════════════════════════
 // SynaBun Assistant — panel (mount / lifecycle)
@@ -44,6 +45,7 @@ import { injectAssistantStyles } from './asst-styles.js';
 import { tipsSeen, tourOffered } from '../tour/tour-state.js';
 import { createAssistantSocket } from './asst-ws.js';
 import { createRenderer, ICON_ASSISTANT, mdInto } from './asst-render.js';
+import { createLimitDismissals } from './asst-limit-dismissals.js';
 import { createMascotDirector, MASCOT_TIMING, turnEndPose } from './asst-mascot.js';
 import { lastInputAt, onKey, onPointer } from '../synabun-ticker.js';
 import { buildControlResponse, closedControlState, normalizeControlRequest, renderControlCard } from './asst-control.js';
@@ -52,6 +54,8 @@ import { buildDispatchSpec, parseSlashCommand, slashHelpMarkdown } from './asst-
 import { resolveStopTarget } from './asst-stop.js';
 import { plural } from './asst-tool-kinds.js';
 import { cachedProjects, createBrainPicker, openModelMenu, testDensityLabel } from './asst-brain-picker.js';
+import { agentDensityCap, agentDensityLabel } from './asst-brain-picker.js'; // agents-p4
+import { normalizeAgentDensity } from './asst-state.js'; // agents-p4
 import { createRovingToolbar } from './asst-roving.js';
 import { openAccountsManager } from './asst-accounts.js';
 import { createAgentsDock } from './asst-agents-dock.js';
@@ -65,8 +69,10 @@ import { computerRemoteView, createComputerPanel, createComputerToggle, normaliz
 import {
   applyLimit, applyLimitPacket, applyUsagePacket, BRAIN_PROVIDERS, brainLabel, createRenameWriter, createTabState, DEFAULT_ROUTE_MODE, deserializeTabState, fmtCost, fmtRunLine, limitExpiresIn, limitNoticeText, modelShortName,
   brainModePatch, isBrainProvider, normalizeBrain, normalizeComputerMode, permissionModeLabel, normalizeRouteMode, normalizeTestDensity, projectLabel, providerMeta, providerShortLabel, readStoredBrain, runFromPayload,
-  serializeTabState, sessionStatus, slashBrainEffort, tabStorageKey, userSessionTitle,
+  serializeTabState, sessionStatus, slashBrainEffort, tabStorageKey, userSessionTitle, conversationCanWait,
 } from './asst-state.js';
+import { idleQueue } from '../idle-queue.js';
+import { watchTranscriptRows } from '../transcript-rows.js';
 import {
   closeAssistantSession, dispatchAssistantRun, escalateAssistantRun, focusAssistantRun, getAssistantRun,
   fetchManageCatalog, getAssistantRunResult, getAssistantSession, getAssistantSessionUsage, getRouting, killAllAssistantRuns, removeAssistantRun, clearFinishedAssistantRuns,
@@ -152,6 +158,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     routeMode: saved?.routeMode ?? null,
     computerUse: saved?.computerUse ?? null,
     testDensity: saved?.testDensity ?? null,
+    agentDensity: saved?.agentDensity ?? null, // agents-p4
     usageView: saved?.usageView || null,
   });
   Object.assign(st, {
@@ -165,6 +172,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     routing: null,                                 // server view { mode, effectiveMode, defaultMode, askBelow }
     features: { routing: null, computer: null, testDensity: null, rename: null, adminSandbox: null },   // null = unknown yet
     testDensityEffective: null,                    // server view: the level in effect
+    agentDensityEffective: null,                   // agents-p4: server view: the Agent density in effect
     adminSandbox: null,                            // server view: the global Admin sandbox setting (every agent)
     brainCapabilities: null,
     computerEffective: st.computerUse === true,
@@ -184,6 +192,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   // arrived (control_cancelled after it) says so instead of keeping "Allowed".
   const answeredCards = new Map();
   const routeCards = new Map(); // routeId → route card entry
+  const routeReplay = createRouteReplayGuard(); // late control replays must not reopen an answered card
   const clarifyCards = new Set(); // requestIds of clarify cards shown here (the card records their outcome)
   // Prompts this panel sent (request_id → { payload, row }): one the server refuses comes back to the composer.
   const sentQueries = new Map();
@@ -196,6 +205,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   let replaying = false;
   const unsubs = [];
   let destroyed = false;
+  let brainChange = null;
+  let confirmedBrain = st.brain;
   let persistTimer = null;
   let helpModal = null;
   let director = null; // the mascot on screen (asst-mascot.js), made once the renderer and the composer exist
@@ -499,6 +510,17 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     if (data?.session) st.budget = data.session;
     renderCost();
   } });
+  // Rows far from the screen are skipped by the engine, at their exact size (transcript-rows.js). Left
+  // alone whatever their place: a row that is being written, a rack that still works, the open cards at the
+  // bottom, the "Working…" row, the empty state and the limit dock (it sticks to the transcript's edge).
+  const rowWatcher = watchTranscriptRows(transcriptEl, {
+    skip: (row) => {
+      const c = row.classList;
+      return c.contains('streaming') || c.contains('asst-ask-tail') || c.contains('asst-limit-dock')
+        || c.contains('asst-working') || c.contains('asst-empty')
+        || (c.contains('asst-rack') && row.dataset.state !== 'settled');
+    },
+  });
   const renderer = createRenderer(transcriptEl, {
     t,
     providerIcon,
@@ -543,6 +565,9 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     onLimitRetry: (text) => { submit(clickPayload(text)); },
     onSwitchProvider: (anchor, meta) => continueOnAnotherProvider(anchor, meta),
     limitInfo: () => st.limit,
+    // The limit card's × hides that limit's countdown for this conversation, across reloads (storage.js).
+    limitScope: () => st.sessionId || sessionId || '',
+    limitDismissals: createLimitDismissals({ storage }),
     brainProvider: () => st.brain.provider,
     heroOrigin: () => { try { return host.takeHeroOrigin?.() || null; } catch { return null; } },
     onMascotChange: () => director?.retarget(),
@@ -633,7 +658,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     onShowWaiting: () => sock.send({ type: 'reattach' }),
   });
 
-  const accountHooks = () => ({ t, onChanged: () => picker.refresh(true), onSelect: (id) => applyBrain({ ...st.brain, accountId: id }, { requiresSwitch: true, field: 'account' }) });
+  const accountHooks = () => ({ t, onChanged: () => picker.refresh(true), onSelect: (id) => applyBrain({ ...st.brain, accountId: id, accountPolicy: id === 'auto' ? 'auto' : 'manual' }, { requiresSwitch: true, field: 'account' }) });
   // Model · effort · permission mode · account sit in the composer row next to attach; project and MCP in the toolbar.
   const picker = createBrainPicker({ brain: composer.el.querySelector('.asst-composer-brain'), context: barGroups.context }, {
     getSessionId: () => st.sessionId,
@@ -652,6 +677,9 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     // Test density sits right after the permission mode; hidden on a server that does not know it.
     getTestDensity: () => testDensityView(),
     onTestDensity: (level) => setTestDensity(level),
+    // agents-p4: Agent density sits right after Test density; hidden on a server that does not know it.
+    getAgentDensity: () => agentDensityView(),
+    onAgentDensity: (level) => setAgentDensity(level),
     // The global Admin sandbox switch, in the permission menu; hidden on a server that does not serve it.
     getAdminSandbox: () => adminSandboxView(),
     onAdminSandbox: (enabled) => changeAdminSandbox(enabled),
@@ -774,11 +802,13 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   limitEl.setAttribute('aria-live', 'polite');
   root.querySelector('.asst-usage-host').after(limitEl);
   let limitTimer = null;
-  function renderLimit() {
+  function renderLimit({ expired = false } = {}) {
     clearTimeout(limitTimer);
     limitTimer = null;
     const limit = st.limit;
-    renderer.noteLimit(limit); // the waiting card of this turn's limit error counts to the reported reset
+    // The waiting card of this turn's limit error counts to the reported reset; a report the runtime cleared
+    // (another provider or account) takes it away, one whose reset passed leaves it to say so.
+    renderer.noteLimit(limit, { expired });
     limitEl.hidden = !limit;
     limitEl.dataset.status = limit?.status || '';
     const text = limitNoticeText(limit, tt);
@@ -789,7 +819,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       if (destroyed) return;
       if (limitExpiresIn(st.limit) > 0) { renderLimit(); return; } // a wait longer than one timer can hold
       st.limit = null;
-      renderLimit();
+      renderLimit({ expired: true });
     }, Math.min(wait + 250, 2 ** 31 - 1));
   }
 
@@ -993,7 +1023,17 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
         if (ev.runId) dock.patchRun(ev.runId, { turnState: 'running' });
         return;
       case 'synabun.mailbox':
+        // The runtime starts a turn of its own right after this (a decided route card, a worker's
+        // result): the panel works with it, or the brain's last line ("waiting for your choice")
+        // reads as the end. A refused turn ends it again (error, or reattach_result running:false).
+        if (!replaying && !st.running) setRunning(true);
         renderer.appendMailbox(ev.items || ev.events || []);
+        return;
+      case 'synabun.continuation':
+        // A "do it here" pick on another model: its turn starts now. Running first, so the
+        // renderer binds the approved route's scene to this turn.
+        if (!replaying && !st.running) setRunning(true);
+        draw(ev);
         return;
       case 'synabun.clarify':
         if (settleClarifyCard(ev)) return;
@@ -1028,14 +1068,16 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     if (meta.chatStartedAt || Number(meta.turns) > 0) st.chatStarted = true;
     if (meta.brain && typeof meta.brain === 'object') {
       const next = normalizeBrain({ ...st.brain, ...meta.brain, provider: meta.brain.provider || meta.brain.brain || st.brain.provider });
+      confirmedBrain = next;
       if (JSON.stringify(next) !== JSON.stringify(st.brain)) { st.brain = next; picker.render(); host.setBrain?.(next); persist(); }
     } else if (typeof meta.brain === 'string') {
       const next = normalizeBrain({ ...st.brain, provider: meta.brain, model: meta.model ?? st.brain.model, effort: meta.effort ?? st.brain.effort, accountId: meta.accountId ?? st.brain.accountId, tools: meta.tools ?? st.brain.tools, project: meta.cwd ?? st.brain.project });
+      confirmedBrain = next;
       if (JSON.stringify(next) !== JSON.stringify(st.brain)) { st.brain = next; picker.render(); host.setBrain?.(next); persist(); }
     }
     if (meta.budget && typeof meta.budget === 'object') budgetController.receiveSession(meta.budget);
     if (Number.isFinite(Number(meta.costUsd))) { st.costUsd = Number(meta.costUsd); renderCost(); }
-    if (meta.providerSessionId) st.providerSessionId = meta.providerSessionId;
+    if (Object.hasOwn(meta, 'providerSessionId')) st.providerSessionId = meta.providerSessionId || null;
     if (meta.routing && typeof meta.routing === 'object') {
       st.routing = {
         mode: normalizeRouteMode(meta.routing.mode, null),
@@ -1051,12 +1093,16 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       if (st.features.routing === true) prewarmRoutesEditor();
       if (typeof meta.features.computer === 'boolean') st.features.computer = meta.features.computer;
       if (typeof meta.features.testDensity === 'boolean') st.features.testDensity = meta.features.testDensity;
+      if (typeof meta.features.agentDensity === 'boolean') st.features.agentDensity = meta.features.agentDensity; // agents-p4
       if (typeof meta.features.rename === 'boolean') st.features.rename = meta.features.rename;
       if (typeof meta.features.adminSandbox === 'boolean') st.features.adminSandbox = meta.features.adminSandbox;
     }
     if (typeof meta.adminSandbox === 'boolean') st.adminSandbox = meta.adminSandbox;
     if ('testDensityExplicit' in meta) st.testDensity = normalizeTestDensity(meta.testDensityExplicit, null);
     if (meta.testDensity) st.testDensityEffective = normalizeTestDensity(meta.testDensity);
+    // agents-p4: the session's own Agent density (null: not set) and the level in effect.
+    if ('agentDensityExplicit' in meta) st.agentDensity = normalizeAgentDensity(meta.agentDensityExplicit, null);
+    if (meta.agentDensity) st.agentDensityEffective = normalizeAgentDensity(meta.agentDensity);
     if (typeof meta.computerUse === 'boolean') st.computerEffective = meta.computerUse;
     if ('computerUseExplicit' in meta) st.computerUse = normalizeComputerMode(meta.computerUseExplicit, null);
     // A WhatsApp conversation: what is in effect and why (not a per-conversation switch). null on the desktop.
@@ -1170,6 +1216,32 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     if (!quiet) renderer.appendStatus(tt('assistant.status.testDensity', 'Test density: {level}', { level: testDensityLabel(next, t) }));
   }
 
+  // ── agents-p4: Agent density (the twin of Test density above) ──
+  /** The level the composer shows: this session's, else the server's; null while the server does not know the setting. */
+  function agentDensityView() {
+    if (st.features.agentDensity !== true) return null;
+    return normalizeAgentDensity(st.agentDensity || st.agentDensityEffective);
+  }
+
+  function setAgentDensity(level, { quiet = false } = {}) {
+    const next = normalizeAgentDensity(level);
+    st.agentDensity = next;
+    st.agentDensityEffective = next;
+    picker.render();
+    persist();
+    sock.send({ type: 'set_agent_density', level: next });
+    try { storage.setItem(KEYS.ASSISTANT_AGENT_DENSITY, next); } catch { /* storage unavailable */ }
+    if (!quiet) renderer.appendStatus(tt('assistant.status.agentDensity', 'Agent density: {level} ({cap})', { level: agentDensityLabel(next, t), cap: agentDensityCap(next, t) }));
+  }
+
+  /** Fresh tabs inherit the last-used Agent density (like the Test density). */
+  function applyLastUsedAgentDensity() {
+    if (saved || st.features.agentDensity !== true || st.agentDensity != null) return;
+    let last = null;
+    try { last = normalizeAgentDensity(storage.getItem(KEYS.ASSISTANT_AGENT_DENSITY), null); } catch { last = null; }
+    if (last && last !== agentDensityView()) setAgentDensity(last, { quiet: true });
+  }
+
   /** The global Admin sandbox setting (true / false), or null while the server does not serve it. */
   function adminSandboxView() {
     if (st.features.adminSandbox !== true || typeof st.adminSandbox !== 'boolean') return null;
@@ -1275,6 +1347,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     const normalized = normalizeControlRequest({ ...packet, provider: packet.provider || (origin ? origin.provider : st.brain.provider) }, { origin });
     if (!normalized) return;
     if (controls.has(normalized.requestId)) return;
+    if (normalized.kind === 'route' && routeReplay.has(normalized.route)) return;
     renderer.hideWorking();
     const entry = renderControlCard(null, normalized, {
       t,
@@ -1298,6 +1371,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   }
 
   function mountRouteCard(n) {
+    const routeId = n.routeId || n.route?.routeId || n.request?.routeId;
+    if (routeId && routeCards.has(routeId)) return routeCards.get(routeId);
     const card = renderRouteCard(null, n, {
       t,
       providerIcon,
@@ -1323,6 +1398,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     if (!card) return null;
     renderer.removeRouteLine(card.routeId);
     renderer.appendNode(card.el);
+    routeReplay.record(n.route || n);
     routeCards.set(card.routeId, card);
     routeChip.render();
     tip('route', () => card.el);
@@ -1334,8 +1410,9 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   function handleRouteCardEvent(ev) {
     const routeId = ev?.route?.routeId;
     const card = routeId ? routeCards.get(routeId) : null;
-    if (!card) return false;
     const phase = ev.phase || 'decided';
+    if (routeId && phase !== 'card' && phase !== 'pending') routeReplay.record(ev.route);
+    if (!card) return false;
     if (phase === 'card' || phase === 'pending') return true;
     card.settle(phase, ev.route);
     card.destroy();
@@ -1456,6 +1533,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
 
   async function submit(payload) {
     if (guestBlocked()) return false;
+    while (brainChange) { if (await brainChange === false) return false; }
+    if (destroyed) return false;
     const parsed = parseSlashCommand(payload.text);
     if (parsed && !parsed.passthrough) {
       const handled = await runSlash(parsed, payload);
@@ -1660,29 +1739,42 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     if (meta.silent) return;
     if (meta.requiresSwitch) {
       const b = st.brain;
-      if (!meta.restartBrain) sock.send({ type: 'switch_brain', brain: b.provider, model: b.model || undefined, effort: b.effort || undefined, accountId: b.accountId || undefined, tools: b.tools ?? undefined, cwd: b.project || undefined, agent: b.agent || undefined, permissionMode: b.permissionMode, planMode: b.planMode === true });
+      // One acknowledged PATCH owns a switch; a second socket write could resolve Auto twice.
       renderer.appendDivider(`${tt('assistant.status.brain', 'brain')} → ${brainLabel(b)}`);
       renderer.forgetSeen(); // the new brain's ids start over
     } else if (before.permissionMode !== st.brain.permissionMode || !!before.planMode !== !!st.brain.planMode) {
       sock.send({ type: 'set_permission_mode', mode: st.brain.permissionMode, planMode: st.brain.planMode === true });
     }
-    patchAssistantSession(sessionId, { brain: st.brain, ...(meta.restartBrain ? { restartBrain: true } : {}) }).catch((err) => {
-      // Refused (a model disabled in Assistant → Models): undo, so the refused
-      // brain is neither shown nor saved as the last used one — the next start
-      // would ask for it again. A brain switch already got the error on the socket.
-      if (err?.code !== 'MODEL_DISABLED' || destroyed || st.brain !== applied) return;
-      st.brain = before;
+    const previousChange = brainChange;
+    const patch = { brain: applied, ...(meta.restartBrain ? { restartBrain: true } : {}) };
+    // Another model, provider or account: the brain's usage-limit countdown was the old one's. It goes once
+    // the switch is acknowledged; a limit the new brain hits brings its own card.
+    const leavesLimit = ['provider', 'model', 'accountId'].some((field) => (before[field] || '') !== (applied[field] || ''));
+    const change = Promise.resolve(previousChange).then(() => patchAssistantSession(sessionId, patch)).then((result) => {
+      const record = result.session || result;
+      if (record.brain) confirmedBrain = normalizeBrain(record.brain);
+      if (!destroyed && brainChange === change) applySessionMeta(record);
+      if (!destroyed && leavesLimit) renderer.clearLimitWait?.();
+      return true;
+    }).catch((err) => {
+      // A refused switch keeps the old conversation and account on screen.
+      if (destroyed) return false;
+      renderer.appendError(err.message || String(err));
+      if (st.brain !== applied) return false;
+      st.brain = confirmedBrain;
       picker.render();
-      if (applied.project !== before.project) renderer.refreshEmpty();
-      host.setBrain?.(before);
+      if (applied.project !== confirmedBrain.project) renderer.refreshEmpty();
+      host.setBrain?.(confirmedBrain);
       persist();
-      if (!meta.requiresSwitch) renderer.appendError(err.message || String(err));
-    });
+      return false;
+    }).finally(() => { if (brainChange === change) brainChange = null; });
+    brainChange = change;
+    return change;
   }
 
   // "Continue with another provider" on the Assistant's own limit-wait card: the same model menu
   // the toolbar's model field opens (never a native select), minus the limited provider, then the
-  // existing switch (applyBrain → switch_brain) and, where the blocked prompt is known, Retry now's
+  // existing switch (applyBrain → acknowledged PATCH) and, where the blocked prompt is known, Retry now's
   // own resend (submit) — in that order, so the server sees the switch before the retried prompt.
   function continueOnAnotherProvider(anchor, { excludeProvider = '', retryText = '' } = {}) {
     if (!anchor) return;
@@ -1699,7 +1791,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       onManageModels: () => openModels(),
       onSelect: async (target) => {
         if (!target?.provider) return;
-        await picker.switchProvider(target.provider, target.model || '');
+        const switched = await picker.switchProvider(target.provider, target.model || '');
+        if (switched === false) return;
         if (destroyed) return;
         renderer.clearLimitWait();
         if (retryText) submit(clickPayload(retryText));
@@ -2138,7 +2231,15 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   unsubs.push(on('sync:assistant:budget', (msg) => { if ((msg?.assistantSessionId || msg?.sessionId) === sessionId) budgetController.receiveSession(msg.budget); }));
   unsubs.push(on('sync:assistant:budget-changed', () => budgetController.load()));
   unsubs.push(on('sync:assistant:cost', (msg) => { if (!msg?.assistantSessionId || msg.assistantSessionId === sessionId) applyCost(msg); }));
-  unsubs.push(on('sync:assistant:mailbox', (msg) => { if (msg?.assistantSessionId === sessionId) renderer.appendMailbox(msg.items || msg.events || []); }));
+  unsubs.push(on('sync:assistant:mailbox', (msg) => {
+    if (msg?.assistantSessionId !== sessionId) return;
+    const draw = () => renderer.appendMailbox(msg.items || msg.events || []);
+    // Something happened in a tab whose conversation still waited for idle time: it loads now, and the
+    // mailbox goes under its history (loadConversation, below).
+    loadConversation();
+    if (afterLoad) afterLoad.push(draw);
+    else draw();
+  }));
   unsubs.push(on('sync:assistant:permission-request', (msg) => {
     const run = runFromPayload(msg);
     const runId = msg?.runId || run?.runId || null;
@@ -2234,13 +2335,48 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   host.setBrain?.(st.brain);
   if (session && typeof session === 'object') applySessionMeta(session);
   else applyFeatures();
-  rehydrate().finally(() => {
-    if (destroyed || gone) return;
-    probeFeatures();
-    applyLastUsedRouteMode();
-    applyLastUsedTestDensity();
-    sock.connect();
-  });
+  // The conversation: read, drawn, then connected. At once for the tab that is on screen and for a session
+  // that is at work; a quiet tab nobody looks at (a restored tab behind the one showing, every tab of a closed
+  // panel) waits for its turn in the page's idle time, or for being shown, whichever is first. All of them
+  // used to do it in the page's start, one transcript after another in the same tasks (95 ms of them).
+  // The order inside is what it always was (rehydrate, then the socket), so nothing is drawn before the
+  // history; only when it starts changed.
+  let loadStarted = false;
+  let cancelIdleLoad = null;
+  // While a conversation that waited is being read: what was asked of the tab meanwhile and draws a row (a
+  // prompt handed to it as it is shown). It runs after the history, never above it. null otherwise: a tab
+  // that loaded at once takes a prompt at once, as it always did.
+  let afterLoad = null;
+  function loadConversation() {
+    if (loadStarted || destroyed) return;
+    loadStarted = true;
+    if (cancelIdleLoad) afterLoad = [];
+    cancelIdleLoad?.();
+    cancelIdleLoad = null;
+    rehydrate().finally(() => {
+      const held = afterLoad;
+      afterLoad = null;
+      if (destroyed || gone) return;
+      probeFeatures();
+      applyLastUsedRouteMode();
+      applyLastUsedTestDensity();
+      applyLastUsedAgentDensity(); // agents-p4
+      sock.connect();
+      for (const run of held || []) {
+        try { run(); } catch (err) { console.error('[assistant] a request held for the conversation failed', err); }
+      }
+    });
+  }
+  if (conversationCanWait({ visible: visible(), session })) {
+    cancelIdleLoad = idleQueue().add(loadConversation);
+    // A quiet session whose agents are still at work is not quiet: the tray knows once it has read its runs.
+    dock.ready.then(() => {
+      const counts = dock.counts();
+      if (Number(counts?.active) > 0 || Number(counts?.attention) > 0) loadConversation();
+    }).catch(() => {});
+  } else {
+    loadConversation();
+  }
   fetchUsage();
   budgetController.load();
 
@@ -2261,7 +2397,12 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     },
     isRunning: () => st.running,
     isConnected: () => st.connected,
-    send: (text, extra = {}) => submit({ text: String(text ?? ''), images: extra.images || [], files: extra.files || [], uploads: extra.uploads || [], memories: extra.memories || [] }),
+    send: (text, extra = {}) => {
+      const go = () => submit({ text: String(text ?? ''), images: extra.images || [], files: extra.files || [], uploads: extra.uploads || [], memories: extra.memories || [] });
+      loadConversation();
+      if (afterLoad) { afterLoad.push(go); return undefined; } // its history is on its way: the prompt goes under it
+      return go();
+    },
     abort,
     compact,
     newSession,
@@ -2294,12 +2435,16 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     /** The session's status as its host shows it: the brain's own with its dispatched agents' (sessionStatus). */
     getStatus: () => st.shownStatus || 'idle',
     focus: () => composer.focus(),
-    onShown: () => { syncTabLabel(); renderer.scrollEnd(true); if (visible()) composer.focus(); director.touch(); },
+    onShown: () => { loadConversation(); syncTabLabel(); renderer.scrollEnd(true); if (visible()) composer.focus(); director.touch(); },
+    /** The tab is wanted (shown, or about to be used): its conversation loads now instead of in idle time. */
+    wake: () => loadConversation(),
     onHidden: () => { closeMenu(); picker.close(); director.stopTyping(); },
     counts: () => dock.counts(),
     destroy: ({ closeServer = false } = {}) => {
       if (destroyed) return;
       destroyed = true;
+      cancelIdleLoad?.();
+      cancelIdleLoad = null;
       if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; }
       clearTimeout(announceTimer);
       if (replay) { clearTimeout(replay.timer); replay = null; }
@@ -2320,6 +2465,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       if (helpModal) { helpModal.remove(); helpModal = null; }
       for (const card of routeCards.values()) card.destroy();
       routeCards.clear();
+      routeReplay.clear();
       sock.close();
       roving.destroy();
       picker.destroy();
@@ -2328,6 +2474,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       computerPanel.destroy();
       dock.destroy();
       composer.destroy();
+      rowWatcher.disconnect();
       renderer.destroy();
       barEmpty.disconnect();
       barEl.remove(); // it may live in the host's header

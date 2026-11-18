@@ -29,6 +29,7 @@ import {
 import { ToolListRefreshBarrier } from './services/tool-list-refresh-barrier.js';
 import { selectionFromList, unreadableSelection, type ToolMode, type ToolSelection } from './services/tool-runtime.js';
 import { TOOL_LIST_LIMITS } from './services/tool-catalog.js';
+import { runHasTeamContext, setTeamContextResolver } from './services/team-context.js'; // agents-p4
 import {
   type CallerIdentity,
   markHttpMode,
@@ -308,6 +309,9 @@ function jsonRpcError(res: express.Response, status: number, code: number, messa
   res.status(status).json({ jsonrpc: '2.0', error: { code, message }, id: null });
 }
 
+// agents-p4: the host (the Neural Interface) says which runs work a team slice (services/team-context.ts).
+export { setTeamContextResolver };
+
 /**
  * Initialize DB, categories, and warm up the embedding model.
  * Safe to call multiple times — only runs once.
@@ -398,8 +402,12 @@ export function createMcpRoutes(options: McpRoutesOptions = {}): Router {
           // presenting a desktop grant (re-checked server-side on every call).
           const grant = remote ? null : sanitizeDesktopGrant(req.get('x-synabun-desktop-grant'));
           if (grant) setServerCapabilities(server, { computer: true });
+          // agents-p4: the context-gated `team` group is advertised only to a run the host says works a team slice
+          // (asked with the pin the host accepted; the Neural Interface re-checks the run on every call).
+          const team = !remote && !!terminal && runHasTeamContext(terminal);
+          if (team) setServerCapabilities(server, { team: true });
           const tools = selection.source === 'http' ? '' : `, tools=${selection.mode}:${selection.groups.join(',') || 'memory'}${selection.listError ? ' (unreadable)' : ''}`;
-          console.error(`[mcp-http] session ${sessionLogId(newSid)} init (terminal=${terminal || 'none'}${role ? `, role=${role}` : ''}${grant ? ', computer' : ''}${tools}, sessions=${mcpSessions.size})`);
+          console.error(`[mcp-http] session ${sessionLogId(newSid)} init (terminal=${terminal || 'none'}${role ? `, role=${role}` : ''}${grant ? ', computer' : ''}${team ? ', team' : ''}${tools}, sessions=${mcpSessions.size})`);
         },
       });
       // Re-entry guard: server.close() closes its transport, which fires

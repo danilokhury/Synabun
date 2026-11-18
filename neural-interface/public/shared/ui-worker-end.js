@@ -182,10 +182,37 @@ export function endWorkerRunOnClose(runId, stop, { busy = false } = {}) {
 /**
  * Show the Assistant session that dispatched a run: focused where it is open
  * (the terminal tab or the sidepanel), else opened in the Assistant sidepanel.
+ * A run that names no session still goes back to the Assistant: the one last
+ * used, else one in the Assistant sidepanel (`assistant:open`).
  */
 export function backToAssistant(assistantSessionId) {
-  if (!assistantSessionId) return false;
+  if (!assistantSessionId) {
+    emit('assistant:open', { host: 'sidepanel' });
+    return false;
+  }
   emit('assistant:show', { sessionId: assistantSessionId, host: 'sidepanel' });
+  return true;
+}
+
+/**
+ * The card's button, in every panel: close the worker's tab with `close` (the
+ * panel's own close, what its X runs: the run is completed or stopped there,
+ * and a panel left with no tab hides, with no new session in it), then bring
+ * the Assistant that dispatched the run to the front. Nothing is shown when
+ * `close` answers `false` (the panel asked first and the user kept the tab).
+ *
+ * `close` must have put the panel where it stays before it returns: the
+ * Assistant takes the screen right after, and a panel that showed or hid
+ * itself later (an await between the decision and the change) would take the
+ * slot back from it.
+ *
+ * @param {{ assistantSessionId?: string|null }} view a workerEndView() result
+ * @param {() => (void | boolean | Promise<void | boolean>)} close
+ * @returns {Promise<boolean>} whether the tab closed
+ */
+export async function leaveWorkerTab(view, close) {
+  if ((await close()) === false) return false;
+  backToAssistant(view?.assistantSessionId || null);
   return true;
 }
 

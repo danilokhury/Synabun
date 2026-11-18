@@ -151,6 +151,39 @@ export function startSignature(cfg) {
 }
 
 /**
+ * The same, without thinking. A panel session decides thinking against what its
+ * running process was started with (thinkingRestartNeeded), never against the
+ * last message: the panel leaves a saved Off out of what it sends for a model
+ * that always thinks, and a value dropped for that reason is no change.
+ */
+export function startSignatureWithoutThinking(cfg) {
+  const { thinkingOff: _thinking, ...rest } = cfg?.start || {};
+  return JSON.stringify(rest);
+}
+
+/**
+ * Must a running panel process restart for its thinking?
+ * Thinking disabled is a start-up option, and Claude Code resolves it for every
+ * request against that request's model: on a model that rejects disabled
+ * thinking (its `supportsThinkingOff: false`, Opus 5.5) a process started with it
+ * thinks adaptively, and after a switch to a model that can turn thinking off
+ * the same process honours Off again.
+ * @param o.startedOff the process was started with thinking disabled
+ * @param o.wantOff    what this message asks for: Off by the effort or by the session settings
+ * @param o.lenient    leaving thinking disabled changes nothing on the model in use: it always
+ *                     thinks (the panel's `thinkingAlwaysOn`), or the message states no effort
+ *                     (a model without levels: a cleared effort never restarted the session)
+ * @returns {boolean}
+ */
+export function thinkingRestartNeeded({ startedOff = false, wantOff = false, lenient = false } = {}) {
+  if (!!startedOff === !!wantOff) return false;
+  // Started without the flag, asked for Off: only a new process can honour it.
+  if (!startedOff) return true;
+  // Started with it, no longer asked for: kept where it does nothing; ended where thinking would be off.
+  return !lenient;
+}
+
+/**
  * The programmatic MCP server set of a session: the host's own entries (SynaBun,
  * a brain's extras) plus the tab's. Used at start and again by setMcpServers,
  * which replaces the whole dynamic set: the host's entries go in every time.

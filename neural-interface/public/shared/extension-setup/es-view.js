@@ -1,0 +1,100 @@
+// The "Connect your browser" page's decisions (public/extension-setup.html; docs/browser-extension-bridge.md →
+// One-button setup). DOM-free and import-free: node --test loads it. The page (es-page.js) renders what this returns.
+//
+// Page states (data-state on <main>): the server's setup state (idle, waiting-for-extension, pairing, connected,
+// unsupported, error), with one page-only refinement: `extension-found` while the server still waits but the
+// extension's content script has announced itself on this page (it then gets the one-time token and pairs).
+
+/** The server's setup states, and the page's own. */
+export const SETUP_STATES = Object.freeze(['idle', 'waiting-for-extension', 'pairing', 'connected', 'unsupported', 'error']);
+export const PAGE_STATES = Object.freeze([...SETUP_STATES, 'extension-found']);
+/** What the extension's service worker may answer the content script (setup-content.js writes it to data-synabun-pair). */
+export const PAIR_ANSWERS = Object.freeze(['sent', 'started', 'ALREADY_CONNECTED', 'ALREADY_PAIRED', 'PAUSED', 'BUSY', 'NOT_OWNED', 'INVALID_MESSAGE', 'REFUSED', 'EXTENSION_UNAVAILABLE']);
+/** Error codes the page has a sentence for (browserExtension.setup.error<CODE>); any other is `error`. */
+export const SETUP_ERRORS = Object.freeze(['SETUP_EXPIRED', 'EXTENSION_FOLDER_FAILED', 'OPEN_FAILED', 'SETUP_NOT_ACTIVE', 'SETUP_TICKETS_USED', 'PAGE_SECRET_REQUIRED', 'PEER_UNAVAILABLE']);
+/** Answers after which the page asks for a fresh ticket (a new token) once its wait has passed. */
+const RETRY_AFTER = Object.freeze({ ALREADY_PAIRED: 8000, BUSY: 2500, REFUSED: 5000, EXTENSION_UNAVAILABLE: 5000, started: 20000 });
+
+/**
+ * The page's view of a status (GET /api/browser/extension/setup/status) and what the page saw of the extension:
+ * `extensionVersion` (data-synabun-extension, '' when absent) and `pairAnswer` (data-synabun-pair).
+ * Returns { state, title, lead, steps, browser, extensionsUrl, folder, alternatives, live, tone, reloadNeeded, retry }.
+ * Strings are i18n keys under browserExtension.setup (the page translates them); `params` fill their {placeholders}.
+ */
+export function setupView(status = {}, { extensionVersion = '', pairAnswer = '' } = {}) {
+  const server = SETUP_STATES.includes(status.state) ? status.state : 'error';
+  const found = !!extensionVersion;
+  const state = server === 'waiting-for-extension' && found ? 'extension-found' : server;
+  const browser = status.browser || null;
+  const name = browser?.name || '';
+  const extensionsUrl = browser?.supported ? browser.extensionsUrl || null : null;
+  // The three steps no app may do for the owner, then the pairing SynaBun does.
+  const installed = found || ['pairing', 'connected'].includes(server);
+  // Developer mode sits in a different place per browser (docs/design/browser-extension → Browser-specific installation).
+  const developer = { edge: 'stepDeveloperEdge', opera: 'stepDeveloperOpera', arc: 'stepDeveloperOther', vivaldi: 'stepDeveloperOther' }[browser?.id] || 'stepDeveloper';
+  const steps = [
+    { key: 'stepOpen', title: 'stepOpenTitle', params: { url: extensionsUrl || '' }, done: installed },
+    { key: developer, title: 'stepDeveloperTitle', params: {}, done: installed },
+    { key: 'stepLoad', title: 'stepLoadTitle', params: {}, done: installed },
+    { key: 'stepPair', title: 'stepPairTitle', params: {}, done: server === 'connected' },
+  ];
+  // "Open in X instead": the installed supported browsers other than the one this setup uses.
+  const alternatives = (status.installedBrowsers || []).filter(b => b?.supported && b.id !== browser?.id).map(b => ({ id: b.id, name: b.name }));
+  const live = {
+    idle: 'liveIdle', 'waiting-for-extension': 'liveWaiting', 'extension-found': PAIR_ANSWERS.includes(pairAnswer) && pairAnswer !== 'sent' && pairAnswer !== 'started' ? `answer${pairAnswer}` : 'liveFound',
+    pairing: 'livePairing', connected: 'liveConnected', unsupported: 'liveUnsupported', error: `error${SETUP_ERRORS.includes(status.code) ? status.code : ''}`,
+  }[state];
+  const tone = state === 'connected' ? 'ok' : state === 'error' || state === 'unsupported' ? 'err' : state === 'idle' ? '' : 'warn';
+  const showSteps = !['unsupported', 'idle'].includes(state) && !(state === 'error' && !status.folder);
+  // The guide (the steps beside the status) while the owner installs; one result card once there is nothing to do there.
+  const layout = showSteps && state !== 'connected' ? 'guide' : 'result';
+  const statusTitle = { 'waiting-for-extension': 'waitingTitle', 'extension-found': 'foundTitle', pairing: 'pairingTitle', connected: 'titleConnected',
+    unsupported: 'titleUnsupported', idle: 'idleTitle', error: 'errorTitle' }[state];
+  return {
+    layout, statusTitle, eyebrow: name ? 'eyebrow' : '',
+    help: state === 'connected' ? 'connectedHelp' : '',
+    state, title: state === 'connected' ? 'titleConnected' : state === 'unsupported' ? 'titleUnsupported' : 'title',
+    lead: state === 'unsupported' ? 'leadUnsupported' : 'lead', steps, browser: name, extensionsUrl,
+    folder: typeof status.folder === 'string' ? status.folder : '', alternatives, live, liveParams: { browser: name }, tone,
+    reloadNeeded: status.reloadNeeded === true,
+    showSteps,
+    // What the page offers: start again (idle, error), back to SynaBun and the pin tip (connected).
+    restart: ['error', 'idle'].includes(state), back: state === 'connected', pinTip: state === 'connected',
+    // "Open in X instead" while there is still something to install here; never once pairing began.
+    showAlternatives: alternatives.length > 0 && !['pairing', 'connected'].includes(state),
+  };
+}
+/** The words for "show the folder" on this computer: Finder, Explorer or the file manager. */
+export function revealKey(platform = '') {
+  const p = String(platform || '').toLowerCase();
+  return /mac|darwin|iphone|ipad/.test(p) ? 'showFolderMac' : /win/.test(p) ? 'showFolderWindows' : /linux|x11|cros|bsd/.test(p) ? 'showFolderLinux' : 'showFolder';
+}
+/**
+ * Whether the page should ask for a (new) ticket now: the server waits for the extension, the extension is on the
+ * page, and either no token was offered yet or the extension's answer calls for another try after its wait.
+ * `offeredAt`: when the current token was put on the page (0: never). `now`: the clock.
+ */
+export function wantsTicket(status = {}, { extensionVersion = '', pairAnswer = '', offeredAt = 0, now = Date.now(), tickets = 0, maxTickets = 5 } = {}) {
+  if (status.state !== 'waiting-for-extension' || !extensionVersion || tickets >= maxTickets) return false;
+  if (!offeredAt) return true;
+  const wait = RETRY_AFTER[pairAnswer];
+  return wait !== undefined && now - offeredAt >= wait;
+}
+
+/**
+ * The page's translator: the active locale's strings with English behind them, key by key, `{name}` filled from
+ * params. The page loads the two JSON files itself (es-page.js), never the app's i18n module: that one brings the
+ * app's server-synced storage, which this page must not read or write.
+ */
+export function pageLocale(languages = []) {
+  return (Array.isArray(languages) ? languages : [languages]).some(l => /^pt\b/i.test(String(l))) ? 'pt-BR' : 'en';
+}
+export function makeTranslator(messages = {}, fallback = {}) {
+  const find = (tree, key) => key.split('.').reduce((node, part) => (node && typeof node === 'object' ? node[part] : undefined), tree);
+  return (key, params) => {
+    let value = find(messages, key);
+    if (typeof value !== 'string') value = find(fallback, key);
+    if (typeof value !== 'string') return key;
+    return params ? value.replace(/\{(\w+)\}/g, (all, name) => (params[name] != null ? String(params[name]) : all)) : value;
+  };
+}

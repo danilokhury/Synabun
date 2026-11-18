@@ -314,6 +314,8 @@ function showClearDialog() {
 
   // Keyboard
   const onKey = (e) => {
+    // Closed by a button or a click outside: the listener goes with the dialog instead of staying for good.
+    if (!overlay.isConnected) { document.removeEventListener('keydown', onKey); return; }
     if (e.key === 'Escape') {
       dismiss();
       document.removeEventListener('keydown', onKey);
@@ -383,6 +385,8 @@ function confirmDeleteWorkspace(id, name) {
   });
 
   const onKey = (e) => {
+    // Closed by a button or a click outside: the listener goes with the dialog instead of staying for good.
+    if (!overlay.isConnected) { document.removeEventListener('keydown', onKey); return; }
     if (e.key === 'Escape') { dismiss(); document.removeEventListener('keydown', onKey); }
   };
   document.addEventListener('keydown', onKey);
@@ -717,6 +721,15 @@ export function initWorkspaces() {
     if (container && (!container.contains(e.target) || e.target.closest('#term-minimized-tray'))) {
       closeDropdown();
     }
+  });
+
+  // Escape closes the dropdown, as every other dropdown of the bar, and gives the focus back to its button. A dialog
+  // it opened on top (delete, save, clear: .tag-delete-overlay) takes that Escape first, with its own listener.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !_isOpen || e.defaultPrevented) return;
+    if (document.querySelector('.tag-delete-overlay')) return;
+    closeDropdown();
+    $('ws-indicator')?.focus({ preventScroll: true });
   });
 
   // Close on global dropdown close event

@@ -209,12 +209,12 @@ export function handleServerRequestResponseResult(msg) {
     responseToken,
     status: msg.status || 'delivery_failed',
   }, pending.correlation);
-  // Stale or cancelled with its turn: the bridge no longer holds the request.
-  if (msg.status === 'stale' || msg.status === 'turn_canceled') heldRequests()?.delete(String(pending.requestId));
-  if (msg.status === 'stale') {
+  if (['stale', 'turn_canceled', 'timed_out'].includes(msg.status)) {
+    heldRequests()?.delete(String(pending.requestId));
     clearRequestDraft(pending.requestId, pending.correlation);
     _requestMetadata.delete(requestMetadataKey(pending.requestId, pending.correlation));
-    lockRequestCard(pending.entry, 'stale');
+    const label = msg.status === 'turn_canceled' ? 'cancelled' : msg.status === 'timed_out' ? 'timed out' : 'stale';
+    lockRequestCard(pending.entry, label);
     _ctx.onBlockingServerRequestAnswered?.(pending.requestId);
     _ctx.appendSystem(msg.error || 'This Codex request is no longer pending', 'error');
     return true;

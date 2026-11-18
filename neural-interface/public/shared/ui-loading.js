@@ -128,7 +128,18 @@ export function showLoadingError(title, sub, canStart, serverOffline) {
  */
 export function hideLoading(delay = 400) {
   const $overlay = $('loading-overlay');
-  if ($overlay) setTimeout(() => concealOverlay($overlay), delay);
+  if ($overlay) setTimeout(() => { markOnce(OVERLAY_HIDDEN_MARK); concealOverlay($overlay); }, delay);
+}
+
+/** The moment the overlay started to fade for the first time on this page (the time the user waited). */
+export const OVERLAY_HIDDEN_MARK = 'synabun:overlay-hidden';
+
+function markOnce(name) {
+  try {
+    if (typeof performance?.mark !== 'function') return;
+    if (performance.getEntriesByName?.(name, 'mark')?.length) return;
+    performance.mark(name);
+  } catch {}
 }
 
 /**

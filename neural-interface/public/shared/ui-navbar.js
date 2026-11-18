@@ -9,10 +9,10 @@ import { state, emit, on } from './state.js';
 import { KEYS } from './constants.js';
 import { storage } from './storage.js';
 import { t } from './i18n.js';
-import { loadIfaceConfig, saveIfaceConfig, applyIfaceConfig } from './ui-settings.js';
+import { loadIfaceConfig, saveIfaceConfig, applyIfaceConfig } from './iface-config.js';
 import { registerAction } from './ui-keybinds.js';
 import { startTutorial } from './ui-tutorial.js';
-import { toggleClaudePanel, isClaudePanelOpen } from './ui-claude-panel.js';
+import { toggleClaudePanel, isClaudePanelOpen } from './claude-panel-lazy.js';
 import { toggleCodexPanel, isCodexPanelOpen } from './ui-codex-panel.js';
 import { toggleOpencodePanel, isOpencodePanelOpen } from './ui-opencode-panel-v2.js';
 import { toggleAntigravityPanel, isAntigravityPanelOpen } from './ui-antigravity-panel.js';
@@ -30,6 +30,8 @@ import { initOwnerAccessNotice } from './ui-owner-access.js';
 import { initSidepanelTrayPlaceholders } from './ui-sidepanel-tray.js';
 import { initDesktopTitleBar } from './desktop-titlebar.js';
 import { initToprightOverflow } from './ui-topright-overflow.js';
+import { initTrayAutoClose } from './tray-auto-close.js';
+import { initTrayColumns } from './ui-tray-columns.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -164,7 +166,7 @@ export function initNavbar() {
   }
 
   // ── Settings ──
-  // Note: Settings button click is handled by initSettings() in ui-settings.js.
+  // Note: Settings button click is handled by initSettings() in ui-settings-entry.js (re-exported by ui-settings.js).
   // Do NOT add a click handler here — it would cause duplicate openSettingsModal() calls.
 
   // ── Trash ──
@@ -392,14 +394,18 @@ export function initNavbar() {
   // ── One row, always: what does not fit the band goes into the ⋯ menu ──
   initToprightOverflow();
 
-  // ── Session pills in the row: the whole name is the tooltip ──
-  // Laid out in a row, a pill keeps its width on hover (styles.css): widening, it would push the others onto another
-  // line under the pointer. A name cut short is read from the tooltip instead; a pill that brings a tooltip of its own
-  // (the Assistant's) keeps it.
+  // A pill keeps its width on hover. The tooltip shows its full name unless the producer supplies its own.
   const tray = $('term-minimized-tray');
-  if (controls && tray && controls.contains(tray)) {
-    const nameTips = () => {
+  if (controls && tray?.parentElement === controls) {
+    initTrayColumns(tray, storage);
+    initTrayAutoClose(tray, $('topright-auto-close-btn'), storage, t);
+    const nameTips = (records) => {
+      if (records && !records.some(({ target }) => {
+        const element = target.nodeType === 1 ? target : target.parentElement;
+        return element && !element.closest('.tray-col-head');
+      })) return;
       for (const pill of tray.children) {
+        if (pill.classList.contains('tray-col-head')) continue;
         const name = pill.querySelector('.term-minimized-pill-label')?.textContent.trim() || '';
         if (pill.hasAttribute('data-tooltip') && pill.dataset.tooltip !== pill.dataset.nameTip) {
           delete pill.dataset.nameTip;

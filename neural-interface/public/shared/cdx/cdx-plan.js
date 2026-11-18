@@ -76,8 +76,8 @@ export function syncPlanMirrors(tab) {
   const document = planBelongsToTab(tab?.planDocument, tab) ? tab.planDocument : null;
   tab.planContent = document?.markdown || '';
   tab.editedPlanContent = document?.source === 'editor' ? document.markdown : '';
-  tab.planApprovalPending = !!document && document.status === 'complete' && document.approvedRevision !== document.revision;
-  tab.showPostPlanActions = tab.planApprovalPending && !tab.planTurnActive;
+  tab.planApprovalPending = !tab.planTurnActive && !!document && document.status === 'complete' && document.approvedRevision !== document.revision;
+  tab.showPostPlanActions = tab.planApprovalPending;
   return document;
 }
 
@@ -87,6 +87,7 @@ export function beginPlanTurn(tab, turnId = '') {
   tab.lastPlanTurnId = turnId;
   recordPlanTurn(tab, turnId);
   tab.planCandidate = null;
+  tab.planApprovalPending = false;
   tab.showPostPlanActions = false;
   // A failed revision must leave the previous reviewable document intact.
 }

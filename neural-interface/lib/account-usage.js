@@ -153,7 +153,7 @@ export function chooseUsageAccount(rows, choice, defaultId = 'default') {
   const known = available.filter(row => typeof row.usage?.remainingPercent === 'number');
   const highest = Math.max(...known.map(row => row.usage.remainingPercent));
   const best = known.filter(row => row.usage.remainingPercent === highest);
-  let row = (best.length > 1 ? available.find(row => row.id === defaultId) : null) || best.find(row => row.id === defaultId) || best[0];
+  let row = best.find(row => row.id === defaultId) || best[0];
   if (!row) row = available.find(row => row.id === defaultId) || available[0];
   let reason = choice === 'auto' ? 'account_auto' : 'account_limited';
   if (!available.length && candidates.length) {

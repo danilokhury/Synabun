@@ -266,6 +266,10 @@ function gatedProblem(item: string, group: string): ToolListProblem {
   if (toolGroup(group)?.gate === 'grant:computer') {
     return { item, reason: 'gated', suggestions: [], hint: `${group} is never named in a list: pass uses_computer: true for a desktop grant` };
   }
+  // agents-p4: the team channel comes with a team slice, never with a list.
+  if (toolGroup(group)?.gate === 'context:team') {
+    return { item, reason: 'gated', suggestions: [], hint: `${group} is never named in a list: a worker of a team slice gets it by itself` };
+  }
   return { item, reason: 'gated', suggestions: [], hint: `${group} is the Assistant's own, never a worker's: its role decides` };
 }
 

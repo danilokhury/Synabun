@@ -1,7 +1,7 @@
 import { startMemoryMaintenance, stopMemoryMaintenance } from './services/memory-maintenance.js';
 import { attachMemoryClient } from './services/memory-client.js';
 import { buildServerInstructionsText } from './services/server-instructions.js';
-import { isBrowserV2Enabled } from './services/neural-interface.js';
+import { isBrowserV2Enabled, teamContext } from './services/neural-interface.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ensureDatabase, closeDatabase, reopenDatabase } from './services/sqlite.js';
@@ -32,7 +32,9 @@ import { registerYoutubeTools } from './tools/youtube.js';
 import { registerStyleGuideTools } from './tools/style-guide.js';
 import { registerMoreLoginTools } from './tools/morelogin.js';
 import { registerAgentTools } from './tools/agents.js';
+import { registerTeamTools } from './tools/team.js'; // agents-p4
 import { registerSkillTools } from './tools/skill.js';
+import { registerAgentDefinitionTools } from './tools/agent-definition.js'; // agents-p6
 import { registerWhatsAppSendFileTool } from './tools/whatsapp-send-file.js';
 import { registerComputerTools } from './tools/computer.js';
 import { toolGroupsSchema, toolGroupsDescription, handleToolGroups } from './tools/tool-groups.js';
@@ -45,6 +47,7 @@ import {
 import { invalidateCategoryCache, setOnExternalChange, startWatchingCategories, stopWatchingCategories, initCategoryCache } from './services/categories.js';
 import { healCodexConfig } from './services/codex-config-heal.js';
 import type { CallerRole } from './services/identity.js';
+import { sanitizePin } from './services/identity.js'; // agents-p4
 import type { RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { getEnvPath, config } from './config.js';
 import { SERVER_VERSION } from './version.js';
@@ -108,9 +111,12 @@ const GROUP_REGISTRARS: Readonly<Record<string, (server: McpServer) => Registere
   // Role-gated: only an assistant brain sees it; whatsapp_send_file rides here (and only a WhatsApp brain may use it).
   agents: (server) => [...registerAgentTools(server), registerWhatsAppSendFileTool(server)],
   // Role-gated like agents: the Assistant drafts skills and submits them for review; the owner installs.
-  skills: registerSkillTools,
+  // agents-p6: agent_definition rides here (the same authoring gate: the Assistant drafts, the owner approves).
+  skills: (server) => [...registerSkillTools(server), ...registerAgentDefinitionTools(server)],
   // Capability-gated: a caller holding a desktop grant, macOS only.
   computer: registerComputerTools,
+  // agents-p4. Context-gated: a run that works a team slice sees it; the Neural Interface checks every call.
+  team: registerTeamTools,
 });
 
 /** The group ids this server has a registrar for (tests/tool-catalog.test.ts compares them with the catalog). */
@@ -284,11 +290,14 @@ export function setServerRole(target: McpServer, role: CallerRole | null): boole
  * Bind proven capabilities (a desktop grant → `computer`) to a live server;
  * same mechanics as setServerRole, called from the HTTP initialize hook.
  */
-export function setServerCapabilities(target: McpServer, caps: { computer?: boolean }): boolean {
+export function setServerCapabilities(target: McpServer, caps: { computer?: boolean; team?: boolean }): boolean {
   const runtime = getServerToolRuntime(target);
   if (!runtime) return false;
-  const next: CallerCapability[] = caps.computer ? ['computer'] : [];
   const current = runtime.getCapabilities();
+  // agents-p4: each capability is set by what names it; one a call leaves out stays as it is (a desktop grant bound
+  // at initialize does not take a team context away, nor the other way round).
+  const has = (cap: CallerCapability, asked: boolean | undefined) => (asked === undefined ? current.includes(cap) : asked);
+  const next: CallerCapability[] = [...(has('computer', caps.computer) ? ['computer' as const] : []), ...(has('team', caps.team) ? ['team' as const] : [])];
   if (current.length === next.length && current.every((cap) => next.includes(cap))) return true;
   runtime.setCapabilities(next);
   runtime.apply();
@@ -366,6 +375,24 @@ export function refreshCategorySchemas() {
   for (const fn of schemaRefreshListeners) {
     try { fn(); } catch { /* listener errors must not break refresh */ }
   }
+}
+
+/**
+ * agents-p4: the `team` group of a stdio child. Its launch environment may name its team (SYNABUN_TEAM, read by the
+ * ToolRuntime); otherwise a task run asks the Neural Interface once, with its own pin and token, whether it works a
+ * team slice. Bounded and never fatal: without an answer the tool stays out (the Neural Interface refuses every
+ * `team` call of a run that works no team anyway).
+ */
+export async function bindTeamContext(target: McpServer, env: NodeJS.ProcessEnv = process.env, ask: (timeoutMs: number) => Promise<{ ok?: unknown; team?: unknown }> = teamContext): Promise<boolean> {
+  const runtime = getServerToolRuntime(target);
+  if (!runtime) return false;
+  if (runtime.getCapabilities().includes('team')) return true;
+  if (env.SYNABUN_RUN_MODE !== 'task' || !sanitizePin(env.SYNABUN_TERMINAL_SESSION)) return false;
+  try {
+    const answer = await ask(2500);
+    if (answer?.ok === true && answer.team === true) { setServerCapabilities(target, { team: true }); return true; }
+  } catch { /* no team channel */ }
+  return false;
 }
 
 async function main() {
@@ -524,6 +551,9 @@ async function main() {
   process.on('exit', () => {
     try { process.kill(process.pid, 'SIGKILL'); } catch { /* already gone */ }
   });
+
+  // agents-p4: a worker of a team slice gets the team channel before its client lists the tools.
+  await bindTeamContext(server);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

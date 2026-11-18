@@ -19,6 +19,8 @@
 // without) them. Focus rings are the panel's one recipe (asst-styles.js), none
 // of the rack's own. Every control reaches 24×24 (an ::after margin).
 
+import { installInteractionHold } from './asst-interaction-hold.js';
+
 export const RACK_STYLE_ID = 'asst-rack-styles';
 
 export const RACK_CSS = `
@@ -51,8 +53,8 @@ export const RACK_CSS = `
     grid-template-rows: 0fr;
     grid-auto-rows: auto;
     min-width: 0;
-    /* Wide hosts: the ledger's ticks stay near their labels. */
-    max-width: 560px;
+    /* Full width, like the other turn blocks. */
+    width: 100%;
     border-radius: 10px;
     color: var(--rk-text-2);
     font-size: 12.5px;
@@ -278,7 +280,7 @@ export const RACK_CSS = `
      a rounded rectangle at one line or two. */
   .asst-rack-receipt {
     grid-row: 2;
-    justify-self: start;
+    justify-self: stretch;
     position: relative;
     isolation: isolate;
     display: inline-flex;
@@ -307,7 +309,7 @@ export const RACK_CSS = `
   .asst-rack-receipt-face { flex: none; align-self: stretch; display: inline-flex; align-items: center; justify-content: center; width: 46px; box-shadow: inset -1px 0 0 var(--rk-line); color: var(--rk-text-2); line-height: 0; }
   .asst-rack-receipt-face svg { display: block; width: 64px; height: 32px; }
   .asst-rack-receipt-text {
-    flex: 0 1 auto;
+    flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
     display: -webkit-box;
@@ -596,9 +598,12 @@ export const RACK_CSS = `
   @keyframes asst-rk-caret { 0% { opacity: 1; } 50% { opacity: 0; } }
   @keyframes asst-rk-sweep { from { transform: translateX(-100%); } to { transform: translateX(270%); } }
   @keyframes asst-rk-tick { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
-  body.ui-interacting .asst-rack *,
-  body.ui-interacting .asst-rack *::before,
-  body.ui-interacting .asst-rack *::after { animation-play-state: paused !important; }
+  /* Dragging or resizing (body.ui-interacting): asst-interaction-hold.js marks each rack with data-ui-held for
+     as long as the class is on <body>. A rule that ends in a universal selector behind a class on the root
+     would restyle the whole page every time that class changes; this one restyles the racks. */
+  .asst-rack[data-ui-held] *,
+  .asst-rack[data-ui-held] *::before,
+  .asst-rack[data-ui-held] *::after { animation-play-state: paused !important; }
   @media (prefers-reduced-motion: reduce) {
     .asst-rack,
     .asst-rack *,
@@ -611,7 +616,9 @@ export const RACK_CSS = `
 
 /** Add the rack stylesheet once, right after the main assistant styles when they are in the page. */
 export function injectRackStyles(doc = globalThis.document) {
-  if (!doc || doc.getElementById(RACK_STYLE_ID)) return;
+  if (!doc) return;
+  installInteractionHold(doc); // the sheet's data-ui-held rule does nothing without it
+  if (doc.getElementById(RACK_STYLE_ID)) return;
   const style = doc.createElement('style');
   style.id = RACK_STYLE_ID;
   style.textContent = RACK_CSS;

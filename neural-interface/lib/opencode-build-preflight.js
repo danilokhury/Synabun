@@ -6,6 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { serveSpecFor, servePasswordReader } from './opencode-protocol.js';
+import { moreLoginProcessesRunning } from './process-identity.js';
 
 /** Strictly parse the observed MoreLogin /api/env/detail response; never retain cookies or other profile data. */
 export function portProtectionOf(detail) {
@@ -27,9 +28,23 @@ export function moreLoginFailureDetail(error) {
 function profileError(code, message, envId) {
   return Object.assign(new Error(message), { code, offenders: envId ? [{ envId, reason: code }] : [] });
 }
-export async function reconcilePreflightProfiles(profiles, list, { requested = [], log = () => {} } = {}) {
+export async function reconcilePreflightProfiles(profiles, list, { requested = [], allowUnavailable = false,
+  browserProcesses = moreLoginProcessesRunning, log = () => {} } = {}) {
   let live;
   try { live = await list(); } catch (error) {
+    // Optional only for starting OpenCode: keep verifying its build/serves without MoreLogin port exclusions.
+    // Browser work still requires the API, and native attachment still waits for the serve boundary. Never
+    // interpret an answering API (including a partial listing), a reset or an unknown failure as an empty list.
+    if (allowUnavailable && error?.code === 'MORELOGIN_UNREACHABLE' && error.unavailable === true && !error.apiAnswered) {
+      // Profile windows can outlive the desktop API, including windows SynaBun has never attached to.
+      let running = null;
+      try { running = await browserProcesses(); } catch { /* unknown: fail closed, without OS/process details */ }
+      if (running !== false) throw profileError(running === true ? 'MORELOGIN_BROWSER_RUNNING' : 'MORELOGIN_PROCESS_UNREADABLE',
+        running === true ? 'MoreLogin API is unavailable but a MoreLogin process is still running. OpenCode build verification has not started.'
+          : 'MoreLogin API is unavailable and browser processes could not be checked. OpenCode build verification has not started.');
+      log('MoreLogin local API unavailable (MORELOGIN_UNREACHABLE) and no MoreLogin browser processes found; continuing OpenCode build verification without profile port exclusions. Native browser attachment still requires verified serves.');
+      return [];
+    }
     throw profileError('MORELOGIN_LIST_UNREADABLE', `MoreLogin profile listing failed: ${moreLoginFailureDetail(error)}. OpenCode build verification has not started.`);
   }
   if (!Array.isArray(live) || live.moreloginError || live.some(p => !p?.id)) throw profileError('MORELOGIN_LIST_UNREADABLE', 'MoreLogin profile listing is malformed or incomplete.');

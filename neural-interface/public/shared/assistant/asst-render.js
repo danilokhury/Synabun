@@ -59,6 +59,7 @@ import { createMotionGate } from './asst-motion-gate.js';
 import { createStyleCache } from './asst-style-cache.js';
 import { formatRunTokens } from './asst-usage.js';
 import { sanitizeHtmlString, sanitizeInto } from './asst-sanitize.js';
+import { decorateCodeBlocks } from '../ui-code-copy.js';
 import { renderStreamingMarkdown } from '../streaming-markdown.js';
 import { automationView } from './asst-automation.js';
 import { guessFollowups, splitFollowups } from './asst-followups.js';
@@ -69,6 +70,7 @@ import { createLimitDock } from './asst-limit-dock.js';
 import { createLimitWait } from './asst-limit-wait.js';
 import { synabunToolKey, synabunToolLabel } from '../synabun-tools.js';
 import { normalizeToolHeartbeat } from '../tool-heartbeat.js';
+import { closedSidepanelOf, createShownGate } from '../sidepanel-shown.js';
 
 // ── Markdown (lazy marked, the vendored build the sidepanels use too) ───────────────
 let _marked = null;
@@ -618,6 +620,9 @@ export function createRenderer(transcriptEl, hooks = {}) {
   let snapshot = null;
 
   $msgs.addEventListener('scroll', () => {
+    // Inside a closed side panel nobody scrolls: the follow stays what it was, and no height is read
+    // (reading it lays the hidden panel out; sidepanel-shown.js).
+    if (closedSidepanelOf($msgs)) return;
     followTail = isNearBottom();
   }, { passive: true });
 
@@ -638,7 +643,13 @@ export function createRenderer(transcriptEl, hooks = {}) {
     if (step.ghost && step.type === 'call' && !Object.keys(step.input || {}).length) { say.text = '…'; say.detail = '…'; say.segments = null; say.mono = false; say.meta = []; }
     return say;
   };
-  const limitDock = createLimitDock($msgs, { t });
+  // The dock's dismissals (the card's ×) belong to this conversation and survive a reload when the host
+  // keeps them (asst-panel.js: storage.js); without one they last as long as the page.
+  const limitDock = createLimitDock($msgs, {
+    t,
+    scope: () => (typeof hooks.limitScope === 'function' ? hooks.limitScope() : ''),
+    ...(hooks.limitDismissals ? { dismissals: hooks.limitDismissals } : {}),
+  });
   const nowMs = () => (clockAt ?? Date.now());
   const isTimed = () => !muted || clockAt != null;
   const locale = () => (typeof document !== 'undefined' && document.documentElement?.lang) || 'en';
@@ -653,10 +664,22 @@ export function createRenderer(transcriptEl, hooks = {}) {
     return $msgs.scrollHeight - $msgs.scrollTop - $msgs.clientHeight < 48;
   }
 
+  // The scroll to the newest row, on the next frame. A transcript inside a closed side panel has no layout:
+  // scrolling it there read its height, which made the engine lay the whole hidden panel out, at every load
+  // and for every row a session added meanwhile. The scroll is kept and made when the panel is shown.
+  const endGate = createShownGate($msgs, () => {
+    if (scrollFrame) return;
+    scrollFrame = requestAnimationFrame(() => {
+      scrollFrame = 0;
+      if (closedSidepanelOf($msgs)) { endGate.request(); return; } // closed again before the frame
+      $msgs.scrollTop = $msgs.scrollHeight;
+    });
+  });
+
   function scrollEnd(force = false) {
     if (!force && !followTail) return;
     if (scrollFrame) return;
-    scrollFrame = requestAnimationFrame(() => { scrollFrame = 0; $msgs.scrollTop = $msgs.scrollHeight; });
+    endGate.request();
   }
 
   function root() { return { container: $msgs, stream: null, key: null, msgId: null, lastAt: 0 }; }
@@ -949,6 +972,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
 
   function renderMarkdownInto(body, text) {
     mdInto(body, text);
+    // Every code block gets the shared Copy button (../ui-code-copy.js), also each piece a stream draws.
+    decorateCodeBlocks(body);
     body.querySelectorAll('pre code').forEach((code) => {
       const lang = (code.className || '').replace('language-', '').trim();
       if (lang) code.parentElement.dataset.lang = lang;
@@ -1075,10 +1100,15 @@ export function createRenderer(transcriptEl, hooks = {}) {
     });
   }
 
-  /** The session's limit report changed (assistant:limit): this turn's waiting card counts to its reset time. */
-  function noteLimit(limit) {
+  /**
+   * The session's limit report changed (assistant:limit): this turn's waiting card counts to its reset time.
+   * A report that no longer blocks takes the card away: a warning, or none at all (`null`: the runtime
+   * cleared it, as it does when the brain moves to another provider or account). `expired`: the report went
+   * because its reset time passed, which the card shows by itself ("Usage limit restored", Retry now): kept.
+   */
+  function noteLimit(limit, { expired = false } = {}) {
     if (limit?.status === 'rejected') offerLimitWait('', { brainError: true, limit });
-    else if (limit?.status && limit.status !== 'rejected') limitDock.set('brain', null);
+    else if (!expired) limitDock.set('brain', null);
   }
 
   function copyText(text) {
@@ -4183,7 +4213,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
   return {
     el: $msgs,
     clear,
-    destroy: () => { clear(); stageResizes?.disconnect(); limitDock.destroy(); stopFontWatch(); },
+    destroy: () => { clear(); endGate.cancel(); stageResizes?.disconnect(); limitDock.destroy(); stopFontWatch(); },
     appendUser,
     appendAssistantMarkdown,
     appendStatus,

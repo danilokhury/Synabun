@@ -1,3 +1,4 @@
+import { sessionProjectItems } from './session-project-items.js';
 import { t } from './i18n.js';
 import { answerWorkerQuestion, syncWorkerQuestionQueue } from './worker-questions.js';
 import { providerAuthSnapshot } from './ui-provider-auth.js';
@@ -23,9 +24,12 @@ import { registerSidepanel, setSidepanelVisible, syncSidepanelLayout, focusSidep
 import { mountCliBanner } from './ui-cli-banner.js';
 import { nativeLoopWindowId } from './ui-native-window-id.js';
 import { createStickyScrollController } from './ui-scroll-follow.js';
+import { createDomChangeFlag } from './dom-change-flag.js';
+import { isFarRowStyleRecord, watchTranscriptRows } from './transcript-rows.js';
 import { requestGeneratedSessionTitle } from './session-title.js';
 import { wireFileLinks } from './ui-file-links.js';
-import { WORKER_END_CLASS, backToAssistant, buildWorkerEndCard, endWorkerRunOnClose, forgetWorkerEnd, trackWorkerEnd, updateWorkerEndBusy } from './ui-worker-end.js';
+import { decorateCodeBlocks, installCodeCopy } from './ui-code-copy.js';
+import { WORKER_END_CLASS, buildWorkerEndCard, endWorkerRunOnClose, forgetWorkerEnd, leaveWorkerTab, trackWorkerEnd, updateWorkerEndBusy } from './ui-worker-end.js';
 import { isDispatchedRun, isEndOfRunAbort, workerEndView } from './worker-end.js';
 import { runAwaitsAnswer, runTurnLive } from './sidepanel-session-status.js';
 // ── cp/ feature modules (SDK-engine CLI parity: diffs, agents, bash, perms, statusline) ──
@@ -35,7 +39,7 @@ import { buildBashCard, updateBashResult, handleBgToolUse, handleBgToolResult, r
 import { decorateToolCard, applyStructuredResult, appendResultText, buildHistoryAskCard, buildHistoryPlanCard, fillHistoryCard, settleReplayedCards, planCardSummaryHtml } from './cp/cp-tool-cards.js';
 import { buildAgentCard, ensureAgentScope, noteAgentActivity, updateAgentTodoBadge, finalizeAgentCard, markAgentBackground } from './cp/cp-agents.js';
 import { renderPermissionCard, renderPlanApprovalCard, renderElicitationCard, decorateAskCard, askAnnotations, markAskAnswered, PERMISSION_MODES, MODE_LABELS } from './cp/cp-permissions.js';
-import { normalizeSession, changedStartSettings, sessionFlags, sessionRows, fastModeSupported, fastModeReason, mergeSessionModels, parseMcpServerLines, formatMcpServerLines } from './cp/cp-session-model.js';
+import { normalizeSession, changedStartSettings, sessionFlags, sessionRows, fastModeSupported, fastModeReason, mergeSessionModels, parseMcpServerLines, formatMcpServerLines, thinkingAlwaysOn, thinkToggleView, thinkWireEffort, sessionWireSettings, THINKING_ALWAYS_ON_NOTE } from './cp/cp-session-model.js';
 import { renderSessionSettingsCard } from './cp/cp-session-settings.js';
 import { describeOrigin, reconcileTasks, adoptLiveTasks, describeHistorySystemRow, workEndedByRestart, isTaskRunning, endRunningTasks, backgroundWaitLine } from './cp/cp-tasks-model.js';
 import { renderTasksCard } from './cp/cp-tasks.js';
@@ -484,10 +488,6 @@ function injectStyles() {
       opacity: 1;
       overflow: visible;
     }
-    /* Windows: the shell is 92% opaque, so the blur behind it barely shows, yet Chromium recomputes it on every repaint
-       inside the panel (a transcript rendering, a stream). There it goes; the colour stays. */
-    html.platform-win32 .claude-panel,
-    html.desktop-titlebar--win32 .claude-panel { backdrop-filter: none; -webkit-backdrop-filter: none; }
     /* Raise panel above floating terminal windows while a dropdown is open
        so project/branch/recall menus aren't clipped behind them. */
     .claude-panel:has(.cp-dropdown.open) { z-index: 99999; }
@@ -700,16 +700,7 @@ function injectStyles() {
       font-family: 'JetBrains Mono', monospace; font-size: 11px;
       color: var(--t-primary); background: none; border: none; padding: 0;
     }
-    .cp-copy-btn {
-      position: absolute; top: 6px; right: 8px;
-      background: none; border: none; cursor: pointer;
-      font-family: 'JetBrains Mono', monospace; font-size: 9px;
-      color: var(--t-faint); text-transform: uppercase; letter-spacing: 0.04em;
-      padding: 2px 6px; border-radius: 4px; opacity: 0.6;
-      transition: opacity 0.15s, color 0.15s, background 0.15s;
-    }
-    .cp-copy-btn:hover { opacity: 1; color: var(--t-bright); background: rgba(255,255,255,0.06); }
-    .cp-copy-btn.copied { color: #6ec96e; opacity: 1; }
+    /* A block's Copy button is the shared one (../code-copy.js, ui-code-copy.js): its styles come with it. */
     .cp-messages .msg-body a { color: var(--t-bright); text-decoration: none; }
     .cp-messages .msg-body a:hover { text-decoration: underline; }
     .cp-messages .msg-body strong { color: var(--t-bright); }
@@ -1595,7 +1586,7 @@ function injectStyles() {
     }
     .cp-thumb img {
       height: 48px; width: auto; max-width: 80px;
-      object-fit: cover; display: block;
+      object-fit: contain; display: block;
     }
     .cp-thumb-x {
       position: absolute; top: 1px; right: 1px;
@@ -1801,14 +1792,6 @@ function injectStyles() {
       backdrop-filter: blur(60px) saturate(1.5);
       -webkit-backdrop-filter: blur(60px) saturate(1.5);
     }
-    html.platform-win32 .cp-todo-tag,
-    html.desktop-titlebar--win32 .cp-todo-tag,
-    html.platform-win32 .cp-todo-dock.is-open .cp-todo-drawer,
-    html.desktop-titlebar--win32 .cp-todo-dock.is-open .cp-todo-drawer {
-      background: rgba(18, 18, 20, 0.96);
-      backdrop-filter: none;
-      -webkit-backdrop-filter: none;
-    }
     .cp-todo-dock.is-open .cp-todo-tag { display: none; }
 
     .cp-todo-drawer .cp-todo-head {
@@ -1920,7 +1903,7 @@ function injectStyles() {
 
     /* ── Tool result images ── */
     .tool-result-content img {
-      max-width: 100%; max-height: 300px;
+      max-width: 100%; max-height: 300px; width: auto; height: auto; object-fit: contain;
       border-radius: 6px; margin: 4px 0; display: block;
     }
 
@@ -2366,18 +2349,8 @@ function injectStyles() {
         rgba(212,162,127,0.0) 100%
       );
     }
-    html.platform-win32 .cp-session-pill.cp-pill-running,
-    html.desktop-titlebar--win32 .cp-session-pill.cp-pill-running {
-      border-color: rgba(212, 162, 127, 0.42);
-    }
-    html.platform-win32 .cp-session-pill.cp-pill-running:hover,
-    html.desktop-titlebar--win32 .cp-session-pill.cp-pill-running:hover {
-      border-color: rgba(212, 162, 127, 0.62);
-    }
-    html.platform-win32 .cp-session-pill.cp-pill-running .cp-pill-ring,
-    html.desktop-titlebar--win32 .cp-session-pill.cp-pill-running .cp-pill-ring {
-      display: none;
-    }
+    /* The ring turns on Windows as everywhere (it was a still border there until 2026-11-15): the turn is
+       the compositor's, nothing is restyled or repainted per frame (tests/windows-visuals.test.mjs). */
     body.ui-interacting .cp-pill-ring > i { animation-play-state: paused; }
     .cp-session-pill .term-minimized-pill-icon { color: rgba(212, 162, 127, 0.45); transition: color 0.2s; }
     .cp-session-pill.cp-pill-running .term-minimized-pill-icon { color: rgba(212, 162, 127, 1); }
@@ -2693,6 +2666,8 @@ function injectStyles() {
     .cp-send.queue-mode svg { opacity: 0.9; }
   `;
   document.head.appendChild(style);
+  // The Copy button of every code block: its stylesheet and its one click listener, in this document.
+  installCodeCopy(document);
 }
 
 // ── Custom dropdown helpers ──
@@ -2706,6 +2681,9 @@ function ddSetup(dd) {
   });
 }
 function ddPopulate(dd, items, selectedValue) {
+  dd._value = '';
+  dd.querySelector('.cp-dd-label').textContent = dd.dataset.placeholder || 'select...';
+  dd.classList.remove('has-value');
   const menu = dd.querySelector('.cp-dd-menu');
   menu.innerHTML = '';
   for (const item of items) {
@@ -2830,7 +2808,9 @@ function _setEffort(btn, level) {
   btn.dataset.effort = level;
   const label = btn.querySelector('.cp-think-label');
   if (label) label.textContent = EFFORT_LABELS[level] || 'Think';
-  btn.setAttribute('data-tooltip', EFFORT_TITLES[level] || '');
+  // On a model that always thinks the first stop is the model's default, never "Thinking off".
+  const view = thinkToggleView(level, _getSelectedModel());
+  btn.setAttribute('data-tooltip', view.corrected ? view.title : (EFFORT_TITLES[level] || ''));
   // Light up dots based on level
   const dots = btn.querySelectorAll('.cp-think-dots i');
   const count = { off: 0, low: 1, medium: 2, high: 3, xhigh: 4, max: 5 }[level] || 0;
@@ -2840,6 +2820,14 @@ function _getEffort() {
   const btn = _panel?.querySelector('#cp-think-toggle');
   const val = btn?.dataset.effort || 'off';
   return val === 'off' ? null : val;
+}
+// Whether thinking blocks are drawn: a level is picked, or the model always thinks (Off cannot hide what runs).
+function _showsThinking() {
+  return !!_getEffort() || thinkingAlwaysOn(_getSelectedModel());
+}
+// The selected effort in words for /doctor and /status: Off reads as the model default where it cannot be off.
+function _effortWord() {
+  return _getEffort() || (thinkingAlwaysOn(_getSelectedModel()) ? 'model default' : 'off');
 }
 
 // Levels the currently selected model advertises, in CLI order, always led by 'off'.
@@ -2858,9 +2846,15 @@ function _modelSupportsEffort(tab) {
   return !Array.isArray(model?.effortLevels) || model.effortLevels.some(id => id !== 'off');
 }
 
+// The tab's model row (the selector's, for the active tab), or null.
+function _tabModelRow(tab) {
+  if (tab === activeTab()) return _getSelectedModel();
+  return tab?.model ? _models.find(m => m.id === tab.model) || null : null;
+}
+
 // Some models have no thinking at all (Haiku). Disable the toggle and force 'off'
 // rather than passing a --effort the CLI will ignore.
-function _syncThinkAvailability() {
+function _syncThinkAvailability({ announce = false } = {}) {
   const $think = _panel?.querySelector('#cp-think-toggle');
   if (!$think) return;
   const supported = _effortLevelsForModel().length > 1;
@@ -2871,7 +2865,22 @@ function _syncThinkAvailability() {
     storage.setItem(STOR.effort, 'off');
     const tab = activeTab();
     if (tab) { tab.effort = 'off'; saveTabs(); }
+  } else {
+    // The tooltip follows the model: on one that always thinks, Off reads as the model default.
+    _setEffort($think, $think.dataset.effort || 'off');
   }
+  if (announce) _noteThinkingAlwaysOn(activeTab());
+}
+
+// Off picked (the Think toggle's first stop, or /session's Thinking) and a model picked that cannot turn its
+// thinking off (cp-session-model.js thinkingAlwaysOn): said once per tab and model, so Off is never only implied.
+function _noteThinkingAlwaysOn(tab) {
+  const model = _getSelectedModel();
+  if (!tab || !thinkingAlwaysOn(model) || tab._thinkOnNoted === model.id) return;
+  const toggleOff = (tab.effort || 'off') === 'off' && _effortLevelsForModel().length > 1;
+  if (!toggleOff && tab.session?.thinking !== 'off') return;
+  tab._thinkOnNoted = model.id;
+  appendStatus(tab, `Thinking off is not available on ${model.label || model.id}: ${THINKING_ALWAYS_ON_NOTE}. It runs at the model's default effort.`);
 }
 
 // Close dropdowns on outside click
@@ -2993,6 +3002,10 @@ function createTab(sessionId = null, label = 'New chat', { autoSwitch = true, id
   msgDiv.innerHTML = `<div class="cp-empty"><div class="cp-empty-logo">${CLAUDE_ICON}</div><span class="cp-empty-name">Claude</span><span class="cp-empty-hint">Send a message to start</span></div>`;
   tab.messagesEl = msgDiv;
   tab.scrollController = createStickyScrollController(msgDiv, { active: false });
+  // Rows far from the screen are skipped by the engine, at their exact size (transcript-rows.js): a long
+  // session's thousands of elements are no longer restyled with every change of the page, nor laid out on
+  // every frame of a resize. What is on screen, or within a screen of it, is untouched.
+  tab.rowWatcher = watchTranscriptRows(msgDiv);
   // Connect WebSocket (every tab, active or not: a restored tab reattaches to the background agents,
   // shells and wakeups its session kept on the server).
   connectTab(tab);
@@ -3068,7 +3081,9 @@ function switchTab(idx) {
   const prev = activeTab();
   if (prev && prev !== _tabs[idx]) {
     prev.scrollController?.setActive(false);
-    flushSessionSnapshotSave(prev);
+    // Only when the stored snapshot is behind what the tab shows: writing it serialises the whole transcript
+    // and uploads it, inside the click that opens the next session.
+    if (_snapshotBehind(prev)) flushSessionSnapshotSave(prev);
     const $input = _panel?.querySelector('#cp-input');
     if ($input) prev.draft = $input.value;
     // Animate out, then hide + DETACH from the document
@@ -3143,12 +3158,13 @@ function switchTab(idx) {
   const $model = _panel?.querySelector('#cp-model');
   const $think = _panel?.querySelector('#cp-think-toggle');
   if ($project && tab.project) {
-    const items = _projects.map(p => ({ value: p.path, label: p.label || p.path.split(/[/\\]/).pop() }));
+    const items = sessionProjectItems(_projects, tab.project);
     ddPopulate($project, items, tab.project);
     loadBranches(tab.project);
   } else if ($project && !tab.project) {
-    const items = _projects.map(p => ({ value: p.path, label: p.label || p.path.split(/[/\\]/).pop() }));
+    const items = sessionProjectItems(_projects, tab.project);
     ddPopulate($project, items, '');
+    loadBranches('');
   }
   if ($model) {
     const items = _models.map(m => ({ value: m.id, label: m.label }));
@@ -3227,6 +3243,8 @@ function closeTab(idx, { detachAutomation = false } = {}) {
   if (tab.sessionId && !keepsNothing(tab)) _releaseSessionLock(tab.sessionId);
   tab.scrollController?.destroy();
   tab.scrollController = null;
+  tab.rowWatcher?.disconnect();
+  tab.rowWatcher = null;
   tab.messagesEl.remove();
   if (tab.pillEl) tab.pillEl.remove();
   _tabs.splice(idx, 1);
@@ -3234,7 +3252,10 @@ function closeTab(idx, { detachAutomation = false } = {}) {
     _activeTabIdx = -1;
     saveTabs();
     renderPills();
-    if (_visible) toggleClaudePanel();
+    // Hidden now, never after an await: Back on a worker's card shows the Assistant right after this, and a
+    // toggle that read _visible later saw the panel the Assistant had just hidden and showed it again, with a
+    // new chat in it (applyClaudeVisibility makes one for a panel with no tab).
+    if (_visible) setSidepanelVisible(PANEL_OWNER, false);
     return;
   }
   if (_activeTabIdx === idx) {
@@ -3895,10 +3916,11 @@ function cpSessRenderItem(s, projectPath, menu) {
     selectSession(sid, clickLabel);
     const $project = _panel?.querySelector('#cp-project');
     if ($project && item.dataset.cwd) {
-      ddPopulate($project, _projects.map(p => ({ value: p.path, label: p.label || p.path.split(/[/\\]/).pop() })), item.dataset.cwd);
+      ddPopulate($project, sessionProjectItems(_projects, item.dataset.cwd), item.dataset.cwd);
       storage.setItem(STOR.project, item.dataset.cwd);
       const tab = activeTab();
       if (tab) { tab.project = item.dataset.cwd; saveTabs(); }
+      loadBranches(item.dataset.cwd);
     }
     menu.classList.remove('open');
   });
@@ -4647,6 +4669,39 @@ function writeSessionSnapshot(tab) {
     results: tab._historyResults || _sessionSnapshots[sid]?.results ? 1 : 0,
   };
   _persistSessionSnapshots(sid);
+  // What is stored now is what the tab shows (_snapshotBehind).
+  _snapshotFlag(tab)?.clear();
+  tab._snapshotMetaKey = _snapshotMetaKey(tab);
+}
+
+// ── Is the stored snapshot behind the tab? ──
+// The transcript is watched for any change (dom-change-flag.js); the fields stored next to it are compared.
+function _snapshotFlag(tab) {
+  const el = tab?.messagesEl;
+  if (!el) return null;
+  if (tab._snapshotFlagEl !== el) {
+    tab._snapshotFlag?.disconnect();
+    // The far-row declarations (transcript-rows.js) are not part of what is stored: scrolling is no change.
+    tab._snapshotFlag = createDomChangeFlag(el, { ignore: (record) => isFarRowStyleRecord(record, el) });
+    tab._snapshotFlagEl = el;
+  }
+  return tab._snapshotFlag;
+}
+
+function _snapshotMetaKey(tab) {
+  return JSON.stringify([
+    tab.sessionId || '', tab.label || '', tab.usage || null,
+    Array.isArray(tab.todos) && tab.todos.length ? tab.todos : null,
+    tab.contextWindow || 0, tab.turns || 0, tab.sessionCost || 0, tab._historyResults ? 1 : 0,
+  ]);
+}
+
+function _snapshotBehind(tab) {
+  if (tab?._agentScope) tab = tab._rootTab || Object.getPrototypeOf(tab);
+  if (!tab) return false;
+  if (tab._snapshotDirty) return true;
+  const flag = _snapshotFlag(tab);
+  return !flag || flag.changed() || tab._snapshotMetaKey !== _snapshotMetaKey(tab);
 }
 
 // ── Snapshot scheduling — boundary writes, not per-append ──
@@ -4731,8 +4786,7 @@ function renderStoredSession(snapshot, $msgs, tab) {
       _addHistoryPager(tab, $msgs, sid, _historyProject(tab) || undefined, { total: state.total, start: state.start, messages: { length: state.total - state.start } });
     },
   });
-  // Re-attach copy buttons + file path links — innerHTML wipes their listeners
-  $msgs.querySelectorAll('pre .cp-copy-btn').forEach(btn => btn.remove());
+  // Copy buttons (an older snapshot's are replaced) + file path links
   addCopyButtons($msgs);
   linkifyFilePaths($msgs);
   if (tab) {
@@ -5158,7 +5212,11 @@ async function _loadSessionHistoryNow(sid, $msgs, ownerTab, stale, ticket) {
     const live = liveRows($msgs.children);
     const liveAnchor = live[0] || null;
     const liveSet = new Set(live);
-    const { head, tail } = !restored ? splitHistoryTail(data.messages, 40) : { head: [], tail: data.messages };
+    // Newest rows first, whether a stored snapshot was on screen or not: the end of the conversation is
+    // drawn in this task and the earlier rows go in above it, a chunk per task. A snapshot that turned out
+    // to be behind used to be taken out and the whole session drawn again from its first message down, so
+    // the panel showed the oldest rows and reached the newest last, a dozen tasks later.
+    const { head, tail } = splitHistoryTail(data.messages, 40);
     // Renders rows at the end, marks them as this load's, and moves them before `before`.
     const renderRows = (rows, before) => renderHistoryRowsInto($msgs, rows, (m) => _renderHistoryRow(ownerTab, $msgs, m), { before, ticket, skip: liveSet });
     // Replay goes through the live renderers (tool cards, typed results), marked
@@ -5246,15 +5304,14 @@ async function _loadSessionHistoryNow(sid, $msgs, ownerTab, stale, ticket) {
 }
 
 // ── Copy buttons on pre blocks ──
+// The shared Copy button (code-copy.js, ui-code-copy.js) on every block under `el`
+// that has none: a tool result, a block of a restored snapshot. A Markdown block
+// already has it (renderMarkdown writes it in, also while a reply streams). One
+// listener per document (installCodeCopy) takes every click, so a button put back
+// from a snapshot works as it is.
 function addCopyButtons(el) {
+  decorateCodeBlocks(el);
   el.querySelectorAll('pre').forEach(pre => {
-    if (pre.querySelector('.cp-copy-btn')) return;
-    const btn = document.createElement('button');
-    btn.className = 'cp-copy-btn';
-    btn.textContent = 'Copy';
-    // No per-button listener — clicks are handled by _onMessagesClick
-    // (delegation), which also revives buttons on snapshot-restored DOM.
-    pre.appendChild(btn);
     // Colorize diff lines inline when the code block is a diff
     const code = pre.querySelector('code');
     if (code && /\bdiff\b/i.test(code.className) && !code.dataset.diffWrapped) {
@@ -5392,7 +5449,7 @@ function _contextMenuData(tab, { full = false } = {}) {
     // The mode as the project bar words it (it knows Bypass and "from settings").
     mode: ($mode && !$mode.hidden && $mode.querySelector('.cp-dd-label')?.textContent) || tab.permissionMode || '',
     account: [tab.accountInfo?.authMethod === 'apiKey' ? 'API key' : tab.accountInfo?.email, tab.accountInfo?.organization].filter(Boolean).join(' · '),
-    flags: sessionFlags(tab.session, { toolPolicy: tab.toolPolicy, fastModeState: tab.fastModeState, account: tab.accountId }),
+    flags: sessionFlags(tab.session, { toolPolicy: tab.toolPolicy, fastModeState: tab.fastModeState, account: tab.accountId, thinkingAlwaysOn: thinkingAlwaysOn(_tabModelRow(tab)) }),
     limit: tab.rateLimit?.text || '',
     backgroundTasks: (tab.backgroundWork || []).length,
     scheduled: Array.isArray(tab.sessionCrons) ? tab.sessionCrons.length : 0,
@@ -6383,7 +6440,7 @@ function handleStreamDelta(tab, apiEvent) {
     // renderAssistant. Text blocks defer row/body creation to content_block_delta
     // so a model that opens a text block and pivots to a tool call without
     // emitting visible text doesn't leave a blank avatar row behind.
-    const isThinkingRenderable = tab._stream.blockType === 'thinking' && _getEffort();
+    const isThinkingRenderable = tab._stream.blockType === 'thinking' && _showsThinking();
     if (!isThinkingRenderable) return;
 
     if (!tab._stream.el) {
@@ -6788,8 +6845,8 @@ function renderAssistant(tab, msg) {
   const tools = content.filter(b => b.type === 'tool_use');
   // Server-side tool calls and results, citations, redacted thinking.
   const extras = splitAssistantBlocks(content);
-  const showThinks = !!_getEffort();
-  // Suppress thinking display when Think toggle is off
+  const showThinks = _showsThinking();
+  // Suppress thinking display when Think toggle is off (a model that always thinks shows what it thought)
   if (!showThinks) thinks.length = 0;
   if (!texts.length && !tools.length && !thinks.length && !extras.any) return;
 
@@ -7882,10 +7939,17 @@ function _applySessionOptions(tab, msg) {
   if (statementSent(tab, { ..._modeBridge(tab), counted: msg.type === 'query' || msg.type === 'warm' })) saveTabs();
   if (hasCapability(tab, 'tool_policy')) msg.toolPolicy = tab.toolPolicy || 'full';
   // The tab's session settings (/session): the bridge validates them again.
-  if (hasCapability(tab, 'session_settings')) msg.session = normalizeSession(tab.session);
+  // A saved Off goes only to a model that can turn thinking off; one that always thinks is named as such
+  // (`thinkingAlwaysOn`), so the bridge restarts nothing for the Off it does not get. The tab keeps its Off.
+  // (A bridge without 'thinking_effective' gets the settings as saved; sessionWireSettings in cp/cp-session-model.js.)
+  const wire = sessionWireSettings(tab.session, _tabModelRow(tab), { effective: hasCapability(tab, 'thinking_effective') });
+  if (hasCapability(tab, 'session_settings')) msg.session = wire.session;
+  if (wire.thinkingAlwaysOn) msg.thinkingAlwaysOn = true;
   // Think off on a model with effort levels is a pick of its own: sent as 'off'
   // so the bridge disables thinking, or the user's settings' effortLevel applies.
-  if (!msg.effort && hasCapability(tab, 'effort_off') && _modelSupportsEffort(tab)) msg.effort = 'off';
+  // (Not on a model that always thinks: the CLI would send adaptive thinking anyway, so the model default is
+  // asked for, which is what runs; thinkWireEffort in cp/cp-session-model.js.)
+  if (!msg.effort) msg.effort = thinkWireEffort('off', _tabModelRow(tab), { effortOff: hasCapability(tab, 'effort_off'), modelHasEffort: _modelSupportsEffort(tab) });
   // The Claude account this tab runs under (the default account sends nothing).
   if (hasCapability(tab, 'accounts')) msg.accountId = tab.accountId || 'default';
   // A name typed before the first message becomes the new session's title.
@@ -7933,6 +7997,8 @@ function _afterTemporary(tab, sid, label) {
   try { ws?.close(); } catch {}
   // So does its scroll controller, which watches every row of the transcript.
   tab.scrollController?.destroy();
+  tab.rowWatcher?.disconnect();
+  tab.rowWatcher = null;
   // What the conversation left running or waiting stops with it.
   clearInterval(tab.thinkTimerInterval);
   for (const key of ['_idleStateTimer', '_runningTimeout', '_snapshotTimer', '_compactTimer']) clearTimeout(tab[key]);
@@ -8620,7 +8686,7 @@ function appendUser(tab, text, images, files) {
     for (const img of images) {
       const imgEl = document.createElement('img');
       imgEl.src = `data:${img.mediaType};base64,${img.base64}`;
-      imgEl.style.cssText = 'max-width:200px;max-height:150px;border-radius:6px;margin-bottom:4px;display:block;';
+      imgEl.style.cssText = 'max-width:min(200px,100%);max-height:150px;object-fit:contain;border-radius:6px;margin-bottom:4px;display:block;';
       bubble.appendChild(imgEl);
     }
   }
@@ -9457,7 +9523,7 @@ function runSlashCommand(tab, raw) {
       const wsOk = tab.ws && tab.ws.readyState === WebSocket.OPEN;
       const proj = tab.project || '(none)';
       const model = _getModelId() || '(default)';
-      const effort = _getEffort() || 'off';
+      const effort = _effortWord();
       const ctxw = _contextWindowFor(tab);
       const rows = [
         ['WebSocket', wsOk ? 'connected' : 'disconnected', wsOk ? 'ok' : 'warn'],
@@ -9593,6 +9659,8 @@ function runSlashCommand(tab, raw) {
         agents: info.agents || [],
         outputStyles: info.availableOutputStyles || [],
         fastSupported: fastModeSupported(info.models, tab.mainModel || _getModelId()),
+        // A model whose CLI says it cannot run with thinking off: no Off, and a saved one shows as the default.
+        thinkingAlwaysOn: thinkingAlwaysOn(_tabModelRow(tab)),
         // Tools, MCP servers, agents, skills, settings overrides, the debug log:
         // only on a server whose bridge reads them.
         advanced: hasCapability(tab, 'session_settings_v2'),
@@ -9639,9 +9707,9 @@ function runSlashCommand(tab, raw) {
       const rows = statusRows({ init: tab.init || null, account: tab.accountInfo || null, tab });
       if (!tab.init) {
         rows.push(['Model (selected)', _getModelId() || '(default)', '']);
-        rows.push(['Effort (selected)', _getEffort() || 'off', '']);
+        rows.push(['Effort (selected)', _effortWord(), '']);
       }
-      for (const [k, v] of sessionRows(tab.session)) rows.push([k, v, '']);
+      for (const [k, v] of sessionRows(tab.session, { thinkingAlwaysOn: thinkingAlwaysOn(_tabModelRow(tab)) })) rows.push([k, v, '']);
       if (tab.sessionState) rows.push(['Session state', { running: 'running', idle: 'idle', requires_action: 'waiting for your answer' }[tab.sessionState] || tab.sessionState]);
       if (tab.fastModeState && tab.fastModeState !== 'off') rows.push(['Fast mode state', `${tab.fastModeState}${tab.fastModeReason ? ` (${fastModeReason(tab.fastModeReason)})` : ''}`, tab.fastModeState === 'on' ? 'ok' : 'warn']);
       if (tab.toolPolicy && tab.toolPolicy !== 'full') rows.push(['Tools', TOOL_POLICIES[tab.toolPolicy]?.label || tab.toolPolicy, 'warn']);
@@ -10413,8 +10481,8 @@ async function loadConfig() {
     const $model = _panel?.querySelector('#cp-model');
 
     if ($project) {
-      const items = _projects.map(p => ({ value: p.path, label: p.label || p.path.split(/[/\\]/).pop() }));
-      const saved = storage.getItem(STOR.project);
+      const saved = activeTab()?.project ?? storage.getItem(STOR.project);
+      const items = sessionProjectItems(_projects, saved);
       ddPopulate($project, items, saved || '');
       if (saved) loadBranches(saved);
     }
@@ -10488,25 +10556,26 @@ function refreshModels() {
 const _branchCache = new Map(); // path → { at, branches, current }
 const BRANCH_CACHE_MS = 60_000;
 
+let _branchRequest = 0;
 async function loadBranches(path) {
+  const request = ++_branchRequest;
   const $branch = _panel?.querySelector('#cp-branch');
   if (!$branch) return;
-  if (!path) { ddPopulate($branch, [], ''); return; }
+  ddPopulate($branch, [], '');
+  if (!path) return;
+  const current = () => request === _branchRequest && (!activeTab() || activeTab().project === path);
   const cached = _branchCache.get(path);
   if (cached && Date.now() - cached.at < BRANCH_CACHE_MS) {
-    if (cached.branches?.length) {
-      ddPopulate($branch, cached.branches.map(b => ({ value: b, label: b })), cached.current || '');
-    }
+    if (current()) ddPopulate($branch, cached.branches.map(b => ({ value: b, label: b })), cached.current || '');
     return;
   }
   try {
     const res = await fetch(`/api/terminal/branches?path=${encodeURIComponent(path)}`).then(r => r.json());
-    if (res.branches?.length) {
-      _branchCache.set(path, { at: Date.now(), branches: res.branches, current: res.current });
-      const items = res.branches.map(b => ({ value: b, label: b }));
-      ddPopulate($branch, items, res.current || '');
-    }
-  } catch {}
+    if (!current()) return;
+    const branches = Array.isArray(res.branches) ? res.branches : [];
+    _branchCache.set(path, { at: Date.now(), branches, current: res.current });
+    ddPopulate($branch, branches.map(b => ({ value: b, label: b })), res.current || '');
+  } catch { /* keep the cleared selector; never show another checkout's branch */ }
 }
 
 // ── Recall Profile ──
@@ -10639,18 +10708,7 @@ function _ensureCliSubscription() {
 // Specialized cards (cp-bash/cp-diff/cp-agent + interactive perm/ask/plan
 // widgets) keep their own listeners — the delegate skips them.
 function _onMessagesClick(e) {
-  const copy = e.target.closest('.cp-copy-btn');
-  if (copy) {
-    const pre = copy.closest('pre');
-    if (!pre) return;
-    const text = pre.querySelector('code')?.textContent || pre.textContent;
-    navigator.clipboard.writeText(text).then(() => {
-      copy.textContent = 'Copied!';
-      copy.classList.add('copied');
-      setTimeout(() => { copy.textContent = 'Copy'; copy.classList.remove('copied'); }, 1500);
-    });
-    return;
-  }
+  // A code block's Copy button is taken by ui-code-copy.js before this listener sees the click.
   // A run of repeated MCP calls: its badge shows or folds the calls after the first.
   const mcpBadge = e.target.closest('.tool-mcp-badge');
   if (mcpBadge) {
@@ -10728,16 +10786,21 @@ async function _ensureClaudePanelReady() {
 }
 
 export async function toggleClaudePanel() {
+  // Decided by what was on screen when it was asked: another panel taking the slot during the wait (the
+  // Assistant, shown by a worker card's Back) must not turn a hide into a show.
+  const show = !_visible;
   await _ensureClaudePanelReady();
-  setSidepanelVisible(PANEL_OWNER, !_visible);
+  setSidepanelVisible(PANEL_OWNER, show);
 }
 
 function applyClaudeVisibility(visible) {
   _visible = visible;
   if (_visible) {
+    // On screen first. The shared controller has already reserved this panel's width (the dock moved left
+    // for it): if making a tab threw before the class was set, the reservation stayed with no panel in it.
+    _panel.classList.add('open');
     if (_tabs.length === 0) createTab(null, 'New chat');
     state.lastActivePanel = 'claude';
-    _panel.classList.add('open');
     syncReservedWidth();
     _panel.querySelector('#cp-input')?.focus();
     _refreshCliBanners();
@@ -10874,6 +10937,11 @@ export async function attachClaudeAutomation(run, { focus = !!run?.focus, isCanc
   placeWorkerEnd(tab);
   // The mode control is hidden while the run is active and back when it ended.
   if (tab === activeTab()) populateModeDropdown(_panel?.querySelector('#cp-mode'), tab);
+  if (tab === activeTab()) {
+    const project = _panel?.querySelector('#cp-project');
+    if (project) ddPopulate(project, sessionProjectItems(_projects, tab.project), tab.project);
+    loadBranches(tab.project);
+  }
   const idx = _tabs.indexOf(tab);
   if (focus) {
     if (!_visible) await toggleClaudePanel();
@@ -11012,11 +11080,10 @@ function showWorkerEnd(tab, view) {
   if (!view) return;
   $msgs.appendChild(buildWorkerEndCard(view, {
     classes: { card: 'cp-worker-end', title: 'post-plan-header', actions: 'post-plan-actions', button: 'post-plan-action pp-primary' },
-    onBack: () => {
+    onBack: () => leaveWorkerTab(view, () => {
       const idx = _tabs.indexOf(tab);
       if (idx >= 0) closeTab(idx);
-      backToAssistant(view.assistantSessionId);
-    },
+    }),
   }));
   if (tab === activeTab()) scrollEnd(true);
 }
@@ -12082,7 +12149,7 @@ function wireEvents() {
   }
 
   // Effort support is per-model — re-gate the Think toggle when the model changes.
-  $model?.addEventListener('change', () => _syncThinkAvailability());
+  $model?.addEventListener('change', () => _syncThinkAvailability({ announce: true }));
 
   // Plan mode toggle
   const $plan = _panel.querySelector('#cp-plan-toggle');

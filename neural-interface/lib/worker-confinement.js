@@ -35,10 +35,35 @@
 //   off       today's behaviour before this guard: Claude's read-only tool list, Codex's sandbox with the parent
 //             folder, OpenCode answering "always"
 // Capability "full" is never guarded whatever the setting.
+//
+// Team slices (lib/teams/): a run that works one slice of a team is confined further, and always. Its working
+// directory is the slice's own worktree (<project>/.worktrees/<team>/<slice>), and of the project's files it
+// writes only the ones its slice owns:
+//
+//   - a file tool, a redirection or a writing program that names a file of another slice, or one no slice owns,
+//     is refused, and the refusal tells the worker to ask the owner over the team channel;
+//   - a file git ignores (build output, node_modules) may be written: it is never committed;
+//   - the temp folder and the run's scratch folder stay writable, as for any workspace run;
+//   - git is for reading (status, diff, log, show…). SynaBun commits the slice's work when it finishes, on the
+//     slice's own branch; add, commit, stash, switch, push and the rest are refused. `git stash` in particular is
+//     shared by every worktree of a repository: a worker's pop would take the user's own stash.
+//
+// A team slice has no escape hatch: capability "full" is read as "workspace", and the Protect workers setting does
+// not turn the rule off or down to a warning (resolveWorkerConfinement). The user's checkout and branch are never a
+// worker's (owner decision, 2026-11-15), and files owned by one slice each are what lets a team's work be joined.
+// A run is a team slice when resolveWorkerConfinement is given `team`, or when its working directory is inside a
+// worktree registered with registerTeamSlice (lib/teams/claims.js registers every slice of a team under way), so
+// an adapter that knows nothing about teams confines one all the same. Runs with no team context are unchanged.
+//
+// The limit above holds for a team slice too: a program the worker runs (a script, a build, a test runner, a
+// formatter) writes what it writes, and the guard does not see it. On Codex the sandbox confines a slice to its
+// worktree but knows nothing of owned paths. What catches such a write is the check after the fact: when a slice
+// finishes, what its branch changed is compared with what it owns, and a slice that changed anything else is
+// rejected (lib/teams/claims.js verifyOwnership, lib/teams/integration.js finishSlice).
 
 import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { acpCall, acpToolPaths } from './antigravity/tool-call.js';
 
 export const WORKER_GUARD_MODES = Object.freeze(['enforce', 'warn', 'off']);
@@ -190,6 +215,147 @@ export function placeOf(raw, { cwd, home = homedir(), env = process.env, vars = 
   return realPlace(abs);
 }
 
+// ── Team slices ─────────────────────────────────────────────────────────────
+
+/** The rule a refusal of a team slice carries (a file that is not the slice's, a git command that is not a read). */
+export const TEAM_OWNERSHIP_RULE = 'team-ownership';
+export const TEAM_GIT_RULE = 'team-git';
+
+// The slices of teams under way, by their worktree (where it really is). In memory, for this process:
+// lib/teams/claims.js fills it when a team starts and again after a restart (restore).
+const teamSlices = new Map();
+
+/**
+ * A team slice's context in the form the guard keeps, or null when it is not one. `check(relPath)` answers for a
+ * path relative to the worktree: `{ allow, owner, code, beneath }` (lib/teams/claims.js checkRelative).
+ */
+function teamContext(value) {
+  if (!value || typeof value !== 'object') return null;
+  const { teamId, sliceId, worktree, check } = value;
+  if (typeof teamId !== 'string' || !teamId || typeof sliceId !== 'string' || !sliceId) return null;
+  if (typeof worktree !== 'string' || !isAbsolute(worktree) || typeof check !== 'function') return null;
+  return Object.freeze({
+    teamId, sliceId,
+    worktree: realPlace(resolve(worktree)),
+    projectPath: typeof value.projectPath === 'string' && isAbsolute(value.projectPath) ? realPlace(resolve(value.projectPath)) : null,
+    ownedPaths: Object.freeze(Array.isArray(value.ownedPaths) ? value.ownedPaths.filter((glob) => typeof glob === 'string') : []),
+    channel: typeof value.channel === 'string' && value.channel ? value.channel : `team:${teamId}`,
+    check,
+  });
+}
+
+/**
+ * Register a slice of a team under way: a run whose working directory is inside its worktree is then confined to
+ * the slice's own files, whoever starts it. Throws for a context without a team, a slice, an absolute worktree or
+ * a `check` function. Registering a worktree again replaces what was there.
+ * @returns {object} the context as kept
+ */
+export function registerTeamSlice(context) {
+  const made = teamContext(context);
+  if (!made) throw new Error('A team slice context needs teamId, sliceId, an absolute worktree and a check(relPath) function.');
+  teamSlices.set(made.worktree, made);
+  return made;
+}
+
+/** Take a slice off the guard, by its context or its worktree. True when one was registered. */
+export function unregisterTeamSlice(contextOrWorktree) {
+  const worktree = typeof contextOrWorktree === 'string' ? contextOrWorktree : contextOrWorktree?.worktree;
+  if (typeof worktree !== 'string' || !worktree) return false;
+  return teamSlices.delete(worktree) || teamSlices.delete(realPlace(resolve(worktree)));
+}
+
+/** The registered slice whose worktree is this folder or holds it, or null. */
+export function teamSliceFor(cwd) {
+  if (typeof cwd !== 'string' || !cwd || !teamSlices.size) return null;
+  const place = realPlace(resolve(cwd));
+  for (const [worktree, context] of teamSlices) if (inside(worktree, place, true)) return context;
+  return null;
+}
+
+/** Every registered slice (for a status view and tests). */
+export const registeredTeamSlices = () => [...teamSlices.values()];
+
+/** A path inside the slice's worktree as the forward-slash path relative to it; '' for the worktree itself; null outside. */
+function teamRelative(place, team) {
+  if (!inside(team.worktree, place, true)) return null;
+  return relative(team.worktree, place).split(sep).join('/');
+}
+
+const ownedText = (team) => (team.ownedPaths.length ? team.ownedPaths.slice(0, 8).join(', ') + (team.ownedPaths.length > 8 ? ', …' : '') : 'the paths its plan gives it');
+const askText = (team, owner) => `Do not write it: ask ${owner && owner !== team.sliceId ? `slice "${owner}", which owns it,` : 'the team'} over the team channel (${team.channel}) for the change, and carry on with your own files.`;
+
+// Programs that run in a folder and write what they decide themselves (a package manager's install, build or test
+// script): the folder they are given is where they run, not a file they write. What they write is not seen here;
+// the check when the slice finishes is what answers for it.
+const WHOLE_FOLDER_KINDS = new Set(['pkg', 'pip', 'cargo']);
+
+/**
+ * Whether a write a team slice's run names is the slice's to make: null when it is (or when this is not a team
+ * slice, or the place is outside the worktree, where the capability's own rule has already decided), else a
+ * refusal that names the owner and tells the worker to ask over the team channel.
+ * @param {string} place  the resolved location (placeOf)
+ * @param {object} confinement
+ * @param {{ what: string, kind?: string|null, program?: string|null }} about
+ */
+function teamRefusal(place, confinement, { what, kind = null, program = null } = {}) {
+  const team = confinement?.team;
+  if (!team || !place) return null;
+  const rel = teamRelative(place, team);
+  if (rel === null) {
+    // Outside the slice's worktree the capability's rule has decided already, with one thing more for a team: the
+    // rest of the project (the user's checkout, another slice's worktree) is never a slice's to write, also where
+    // the project happens to sit under a folder a workspace run may write (a project kept in the temp folder).
+    if (team.projectPath && inside(team.projectPath, place, true)) {
+      return refusal(TEAM_OWNERSHIP_RULE, `${what} would write ${place}, which is in the project but outside the worktree of slice "${team.sliceId}" (${team.worktree}): the user's checkout and the other slices' worktrees are never a slice's to write. ${askText(team, null)}`, place);
+    }
+    return null;
+  }
+  // sed -i and perl -i are given their program among the words: a word that names no file is the program, not a
+  // file they edit. `{}` is find's stand-in for a file it found: the folders find searches are checked instead.
+  if ((kind === 'sed' || kind === 'perl') && !existsSync(place)) return null;
+  if (/(?:^|\/)\{\}$/.test(rel)) return null;
+  const whole = kind !== null && WHOLE_FOLDER_KINDS.has(kind);
+  if (rel === '') {
+    if (whole) return null;
+    return refusal(TEAM_OWNERSHIP_RULE, `${what} names the whole worktree of slice "${team.sliceId}" (team ${team.teamId}), which also holds files of other slices. This slice writes ${ownedText(team)} only: name the files or folders of your own.`, place);
+  }
+  let verdict;
+  try { verdict = team.check(rel); } catch (err) { return refusal('check-failed', `The team's ownership of ${rel} could not be checked (${err?.message || err}), so the write is refused.`, place); }
+  if (verdict?.allow) return null;
+  // A program that runs in a folder may run in any folder of the worktree; making a folder on the way to the
+  // slice's own files changes nobody's file.
+  if (whole && verdict?.code !== 'reserved_path') return null;
+  if (program === 'mkdir' && verdict?.beneath) return null;
+  let isFolder = false;
+  try { isFolder = lstatSync(place).isDirectory(); } catch { isFolder = false; }
+  const owner = verdict?.owner || null;
+  const why = verdict?.code === 'reserved_path' ? `${rel} is git's own data or a worktree folder`
+    : verdict?.code === 'claim_released' ? `${rel} is this slice's, but the slice has finished and gave its files back`
+      : verdict?.code === 'lockfile' ? (owner ? `${rel} is a dependency lockfile, and only the lockfile owner (slice "${owner}") changes it` : `${rel} is a dependency lockfile, and this team has no lockfile owner`)
+        : isFolder ? `${rel} is a folder that holds files this slice does not own`
+          : owner ? `${rel} belongs to slice "${owner}"` : `${rel} is not owned by any slice of team ${team.teamId}`;
+  return refusal(TEAM_OWNERSHIP_RULE, `${what} would write a file that is not this slice's: ${why}. Slice "${team.sliceId}" (team ${team.teamId}) writes ${ownedText(team)} only. ${askText(team, owner)} SynaBun rejects a slice that changed files outside its ownership when it finishes.`, place);
+}
+
+/** git in a team slice: reading only. Null when the command reads, else the refusal. */
+function teamGitRefusal(args, confinement) {
+  const team = confinement?.team;
+  if (!team) return null;
+  let rest = args;
+  while (rest.length && isOption(rest[0])) {
+    if ((rest[0] === '-C' || rest[0] === '-c') && rest[1] !== undefined) { rest = rest.slice(2); continue; }
+    if (rest[0] === '--no-pager' || rest[0] === '-P') { rest = rest.slice(1); continue; }
+    return refusal(TEAM_GIT_RULE, `git with the global option ${rest[0]} did not run: in a team slice git is for reading your own worktree (status, diff, log, show, blame…).`);
+  }
+  const [sub, ...subArgs] = rest;
+  if (!sub) return null;
+  // `git tag <name>` makes a tag (the table above takes any word for a pattern to list).
+  const makesTag = sub === 'tag' && subArgs.some((w) => !w.startsWith('-')) && !subArgs.some((w) => /^(-l|--list|-n\d*|--contains|--no-contains|--merged|--no-merged|--points-at)$/.test(w));
+  if (!makesTag && (GIT_READ.has(sub) || GIT_READ_WITH_ARGS.get(sub)?.(subArgs)) && !subArgs.some((w) => blockedFlag(w, GIT_BLOCKED))) return null;
+  const stash = sub === 'stash' ? ' The stash is shared by every worktree of the repository: a pop here would take the user\'s own stashed work.' : '';
+  return refusal(TEAM_GIT_RULE, `git ${sub} did not run: in a team slice git is for reading (status, diff, log, show, blame…). SynaBun commits the work of slice "${team.sliceId}" on its own branch when the slice finishes, and joins it with the team's; leave your changes in the working tree, and put a file back with "git show HEAD:<path> > <path>".${stash} If you need something else done in the repository, ask over the team channel (${team.channel}).`);
+}
+
 // ── The confinement ─────────────────────────────────────────────────────────
 
 /**
@@ -205,10 +371,22 @@ export function placeOf(raw, { cwd, home = homedir(), env = process.env, vars = 
  * @param {number[]} [o.localPorts] other local ports of SynaBun's the shell may not call (the run's own OpenCode serve)
  * @param {{ from:number, to:number }} [o.localPortRange] the ports SynaBun keeps for its OpenCode serves (4096-4400),
  *   the same band the macOS sandbox denies (lib/worker-sandbox.js)
+ * @param {object} [o.team] the team slice this run works (lib/teams/claims.js `context(teamId, sliceId)`). Without
+ *   it, a working directory inside a registered slice's worktree (registerTeamSlice) makes the run that slice's.
+ *   A team slice is always guarded: capability full is read as workspace and the mode as enforce, the working
+ *   directory must be inside the slice's worktree, and `confinement.team` carries the slice.
  */
-export function resolveWorkerConfinement({ capability, cwd, mode = WORKER_GUARD_DEFAULT, scratchDir = null, tmpDirs = null, home = homedir(), serverPort = null, localPorts = null, localPortRange = null } = {}) {
-  const cap = String(capability || 'full');
-  const guard = normalizeWorkerGuardMode(mode);
+export function resolveWorkerConfinement({ capability, cwd, mode = WORKER_GUARD_DEFAULT, scratchDir = null, tmpDirs = null, home = homedir(), serverPort = null, localPorts = null, localPortRange = null, team = null } = {}) {
+  let cap = String(capability || 'full');
+  let guard = normalizeWorkerGuardMode(mode);
+  const given = team !== null && team !== undefined;
+  const slice = given ? teamContext(team) : teamSliceFor(cwd);
+  if (given && !slice) throw new Error('A team slice run needs its slice context (team, slice, worktree and the ownership check): the run did not start.');
+  if (slice) {
+    // A team's rule is not the Protect workers setting's to switch off, and has no escape hatch.
+    if (cap !== 'read-only') cap = 'workspace';
+    guard = 'enforce';
+  }
   if (!GUARDED_CAPABILITIES.includes(cap) || guard === 'off') return null;
   // A guarded run is rooted where the dispatcher put it, never where the server happens to run: without a working
   // directory its scratch folder is the only writable root, and without either it does not start.
@@ -218,6 +396,10 @@ export function resolveWorkerConfinement({ capability, cwd, mode = WORKER_GUARD_
   // later) is kept as named: the rule still holds by its name, and realPlace() resolves what exists at each call.
   let root;
   try { root = realpathSync(rootDir); } catch { root = resolve(rootDir); }
+  // A team slice works in its own worktree: never the project's checkout, never another slice's.
+  if (slice && !(cwd && typeof cwd === 'string' && inside(slice.worktree, root, true))) {
+    throw new Error(`A run of slice "${slice.sliceId}" (team ${slice.teamId}) works in the slice's own worktree (${slice.worktree}), not in ${cwd || 'a scratch folder'}: the run did not start.`);
+  }
   const temps = Array.isArray(tmpDirs) ? tmpDirs : [tmpdir(), '/tmp'];
   const writable = [root];
   for (const dir of [...temps, scratchDir].filter(Boolean)) {
@@ -229,6 +411,7 @@ export function resolveWorkerConfinement({ capability, cwd, mode = WORKER_GUARD_
     localPorts: Object.freeze([...new Set((Array.isArray(localPorts) ? localPorts : []).map(Number).filter(validPort))]),
     localPortRange: portRange(localPortRange),
     protectedDirs: Object.freeze(PROTECTED_HOME_DIRS.map((d) => join(home, d))),
+    ...(slice ? { team: slice } : {}),
   });
 }
 
@@ -297,10 +480,14 @@ export function workerToolDecision(toolName, input, confinement) {
       const place = raw ? placeOf(raw, { cwd: confinement.cwd, home: confinement.home }) : null;
       if (!place) return refusal('unknown-path', `${name} needs a plain path: SynaBun could not read "${String(raw || '').slice(0, 200)}". This run writes inside ${rootsText(confinement)} only.`);
       if (!mayWrite(place, confinement)) return refusal('write-outside', `${name} to ${place} is outside this run's workspace. This run (capability workspace) writes inside ${rootsText(confinement)} only; nothing is written under the home folder, another project or a tool's configuration.`, place);
-      return null;
+      return teamRefusal(place, confinement, { what: name });
     }
     if (/^mcp__SynaBun__git$/.test(name) && confinement.capability === 'read-only' && String(args.action || '') === 'commit') {
       return refusal('read-only', 'This run has capability read-only: the git tool\'s commit action is not available.');
+    }
+    // A team slice's work is committed by SynaBun when the slice finishes: the git tool reads, for a slice.
+    if (/^mcp__SynaBun__git$/.test(name) && confinement.team && String(args.action || '') === 'commit') {
+      return refusal(TEAM_GIT_RULE, `The git tool's commit action is not available in a team slice: SynaBun commits the work of slice "${confinement.team.sliceId}" on its own branch when the slice finishes. Leave your changes in the working tree.`);
     }
     // Another MCP server's tool under read-only: one whose name says it writes is refused (SynaBun's own tools go
     // through SynaBun's own policies and stay; a third-party server's writes are its own and cannot be confined).
@@ -938,6 +1125,8 @@ function checkSegment(seg, confinement, readOnly) {
     const place = placeOf(target, { cwd, home: confinement.home, vars: seg.vars });
     if (!place) return refusal('unknown-path', `The redirection target "${target.slice(0, 200)}" uses a value SynaBun could not resolve (an unknown variable, a command substitution other than $(mktemp …), or an odd character), so the command did not run. ${passHint(confinement)}`);
     if (!mayWrite(place, confinement)) return refusal('write-outside', `${r.op} ${target} would write ${place}, outside this run's workspace. This run writes inside ${rootsText(confinement)} only.`, place);
+    const notMine = teamRefusal(place, confinement, { what: `${r.op} ${target}` });
+    if (notMine) return notMine;
   }
   return checkWords(seg.words, { cwd, piped: seg.piped, stdin: seg.stdin, vars: seg.vars }, confinement, readOnly);
 }
@@ -1006,6 +1195,8 @@ function checkWords(rawWords, ctx, confinement, readOnly, depth = 0) {
           const place = placeOf(root, { cwd, home: confinement.home, vars: ctx.vars });
           if (!place) return refusal('unknown-path', `${program} names a folder SynaBun could not read ("${String(root).slice(0, 200)}"), so its -exec ${innerProgram} did not run.`);
           if (!mayWrite(place, confinement)) return refusal('write-outside', `${program} … -exec ${innerProgram} would act on files under ${place}, outside this run's workspace. This run writes inside ${rootsText(confinement)} only.`, place);
+          const notMine = teamRefusal(place, confinement, { what: `${program} … -exec ${innerProgram}` });
+          if (notMine) return notMine;
         }
       }
     }
@@ -1036,6 +1227,11 @@ function checkWords(rawWords, ctx, confinement, readOnly, depth = 0) {
     return null;
   }
   // workspace
+  // A team slice: git reads only (SynaBun commits the slice's work when it finishes).
+  if (confinement.team && program === 'git') {
+    const notRead = teamGitRefusal(args, confinement);
+    if (notRead) return notRead;
+  }
   const kind = WRITERS.get(program);
   if (!kind) return null;
   const targets = writtenPaths(program, kind, args);
@@ -1045,6 +1241,8 @@ function checkWords(rawWords, ctx, confinement, readOnly, depth = 0) {
     const place = placeOf(target, { cwd, home: confinement.home, vars: ctx.vars });
     if (!place) return refusal('unknown-path', `${program} names a path SynaBun could not resolve ("${String(target).slice(0, 200)}": an unknown variable, a command substitution other than $(mktemp …), or an odd character), so it did not run. ${passHint(confinement)}`);
     if (!mayWrite(place, confinement)) return refusal('write-outside', `${program} would write ${place}, outside this run's workspace. This run (capability workspace) writes inside ${rootsText(confinement)} only; nothing is written under the home folder, another project or a tool's configuration.`, place);
+    const notMine = teamRefusal(place, confinement, { what: `${program} ${target}`, kind, program });
+    if (notMine) return notMine;
   }
   return null;
 }
@@ -1140,7 +1338,7 @@ export function openCodePermissionDecision(request, confinement, { toolName = nu
       const place = raw ? placeOf(raw, { cwd: confinement.cwd, home: confinement.home }) : null;
       if (!place) return refusal('unknown-path', `${kind} names a path SynaBun could not read; this run writes inside ${rootsText(confinement)} only.`);
       if (!mayWrite(place, confinement)) return refusal('write-outside', `${kind} to ${place} is outside this run's workspace: this run writes inside ${rootsText(confinement)} only.`, place);
-      return null;
+      return teamRefusal(place, confinement, { what: kind });
     }
     if (kind === 'external_directory') {
       // Reads outside the workspace are allowed; writes are not. The adapter resolves the ask's tool reference
@@ -1205,6 +1403,8 @@ export function acpPermissionDecision(rawCall, confinement) {
         const place = placeOf(raw, { cwd: confinement.cwd, home: confinement.home });
         if (!place) return refusal('unknown-path', `${label} names a path SynaBun could not read ("${String(raw).slice(0, 200)}"); this run writes inside ${rootsText(confinement)} only.`);
         if (!mayWrite(place, confinement)) return refusal('write-outside', `${label} (${kind}) to ${place} is outside this run's workspace: this run writes inside ${rootsText(confinement)} only.`, place);
+        const notMine = teamRefusal(place, confinement, { what: `${label} (${kind})` });
+        if (notMine) return notMine;
       }
       return null;
     }

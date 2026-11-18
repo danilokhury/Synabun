@@ -15,7 +15,11 @@
 // Infinite animations pause during drags (body.ui-interacting) and stop under
 // prefers-reduced-motion.
 
+import { installCodeCopy } from '../ui-code-copy.js';
+
 export function injectAssistantStyles() {
+  // The Copy button of every code block: its stylesheet and its one click listener, in this document.
+  installCodeCopy(document);
   if (document.getElementById('assistant-panel-styles')) return;
   const style = document.createElement('style');
   style.id = 'assistant-panel-styles';
@@ -545,7 +549,7 @@ export function injectAssistantStyles() {
       cursor: zoom-in;
     }
     .asst-computer-frame:hover { box-shadow: 0 0 0 1px var(--asst-line-2); }
-    .asst-computer-frame img { display: block; width: 100%; height: 100%; object-fit: cover; }
+    .asst-computer-frame img { display: block; width: 100%; height: 100%; object-fit: contain; }
     .asst-computer-frame.failed { display: none; }
     .asst-computer-frame.compact {
       display: inline-flex;
@@ -614,8 +618,8 @@ export function injectAssistantStyles() {
     }
 
     /* ── Route lines ────────────────────────────────────────────────────
-       One line at any width, in the cards' column (the rack's 560px, no
-       hang): the glyph, arrow, kind and mark hold; the rest (model ·
+       One line at any width, spanning the column like the rack and the
+       ask cards (no hang): the glyph, arrow, kind and mark hold; the rest (model ·
        account · usage, or the state) takes only the room left (flex-basis 0)
        and ellipsizes first; the class gives way once the rest is down to
        its "…". The head's title carries the whole text. */
@@ -625,8 +629,7 @@ export function injectAssistantStyles() {
       display: flex;
       align-items: center;
       gap: 6px;
-      width: fit-content;
-      max-width: min(100%, 560px);
+      width: 100%;
       min-width: 0;
       min-height: 26px;
       padding: 3px 8px;
@@ -759,7 +762,7 @@ export function injectAssistantStyles() {
     .asst-run-media { grid-column: 2 / span 2; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
     .asst-run-media-thumb { display: block; width: 88px; height: 88px; padding: 0; border: 0; border-radius: var(--asst-r-field); overflow: hidden; background: var(--asst-field); box-shadow: 0 0 0 1px var(--asst-line); cursor: zoom-in; }
     .asst-run-media-thumb:hover { box-shadow: 0 0 0 1px var(--asst-line-2); }
-    .asst-run-media-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+    .asst-run-media-thumb img { display: block; width: 100%; height: 100%; object-fit: contain; }
     .asst-run-media-thumb.failed { display: none; }
     .asst-run-media-video { display: block; width: min(100%, 320px); max-height: 220px; border-radius: var(--asst-r-field); background: #000; box-shadow: 0 0 0 1px var(--asst-line); }
     .asst-run-escalate { grid-column: 2 / span 2; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; }
@@ -1112,7 +1115,7 @@ export function injectAssistantStyles() {
       box-shadow: 0 0 0 1px var(--asst-line);
       cursor: zoom-in;
     }
-    .asst-computer-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+    .asst-computer-thumb img { display: block; width: 100%; height: 100%; object-fit: contain; }
     .asst-computer-activity-text { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
     .asst-computer-activity-title, .asst-computer-activity-sub { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .asst-computer-activity-title { color: var(--asst-text); font-size: 12.5px; font-weight: 500; }
@@ -1818,7 +1821,18 @@ export function injectAssistantStyles() {
     /* Model routes editor: Settings density on a desktop pointer. Scoped here
        so route cards, the model manager and other Assistant menus keep their UI. */
     .asst-routes-overlay { font-family: var(--stg-font, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Inter, sans-serif); }
-    .asst-routes-overlay .asst-routes-modal { width: min(960px, 100%); max-height: calc(100dvh - 24px); border-radius: var(--asst-r-card); line-height: 1.4; }
+    .asst-routes-overlay .asst-routes-modal {
+      --asst-routes-max-height: calc(100dvh - 48px);
+      width: min(660px, 100%);
+      height: var(--asst-routes-collapsed-height, auto);
+      max-height: var(--asst-routes-max-height);
+      border-radius: var(--asst-r-card);
+      line-height: 1.4;
+    }
+    .asst-routes-overlay .asst-routes-modal:has(.asst-routes-assignments[data-opening], .asst-routes-confirm:not([hidden])) { height: auto; }
+    .asst-routes-overlay .asst-routes-modal[data-measure-collapsed] { height: auto; max-height: none; }
+    .asst-routes-modal[data-measure-collapsed] :is(.asst-routes-row > .asst-routes-reveal, .asst-routes-scroll-cue) { position: absolute; }
+    .asst-routes-modal[data-measure-collapsed] .asst-routes-assignments[data-opening] { max-height: none !important; }
     .asst-routes-modal :is(.asst-btn, .asst-dd, .asst-iconbtn) { --cap-h: var(--asst-pill-h-sm); --cap-r: var(--asst-pill-r-xs); --cap-px: var(--asst-pill-px-sm); --cap-icon: 12px; --cap-gap: 4px; }
     .asst-routes-modal .asst-modal-head { min-height: 36px; padding: 6px 12px 6px 18px; font-size: 13px; }
     .asst-routes-modal .asst-modal-head .asst-icon { color: var(--asst-text-2); }
@@ -1908,7 +1922,7 @@ export function injectAssistantStyles() {
     }
     @media (max-width: 600px) {
       .asst-routes-overlay { padding: 8px; }
-      .asst-routes-overlay .asst-routes-modal { max-height: calc(100dvh - 16px); }
+      .asst-routes-overlay .asst-routes-modal { --asst-routes-max-height: calc(100dvh - 32px); }
       .asst-routes-modal .asst-modal-body { padding: 14px; gap: 16px; }
       .asst-routes-modal .asst-modal-head { padding-inline: 14px 8px; }
       .asst-routes-modal .asst-routes-modes { grid-template-columns: 1fr; }
@@ -1931,38 +1945,77 @@ export function injectAssistantStyles() {
       .asst-routes-confirm { padding: 10px 14px; }
     }
 
-    /* Model routes: grouped summaries with a single task editor. */
-    .asst-routes-modal .asst-routes-list { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 24px; padding: 0; border: 0; background: transparent; }
-    .asst-routes-group { min-width: 0; }
-    .asst-routes-group > h3 { margin: 8px 0 4px; color: var(--asst-text-2); font-size: 12px; font-weight: 600; }
-    .asst-routes-modal .asst-routes-row { display: block; padding: 0; border-top: 1px solid var(--asst-line); }
-    .asst-routes-toggle { display: grid; grid-template-columns: minmax(90px, .8fr) minmax(0, 1.3fr) auto 12px; align-items: center; gap: 8px; width: 100%; min-height: 48px; padding: 8px 4px; border: 0; background: transparent; color: var(--asst-text); text-align: start; font: inherit; cursor: pointer; border-radius: var(--asst-pill-r-xs); }
-    .asst-routes-toggle:hover, .asst-routes-toggle[aria-expanded="true"] { background: var(--asst-fill-1); }
-    .asst-routes-toggle:focus-visible { outline: 2px solid var(--asst-focus); outline-offset: -2px; }
-    .asst-routes-summary-name { font-size: 13px; overflow-wrap: anywhere; }
-    .asst-routes-summary-value { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 2px 6px; font-size: 12px; }
+    /* The Models manager shares the base modal. The routing layout belongs to its overlay. */
+    .asst-models-modal .asst-routes-row { display: block; padding: 0; }
+    .asst-models-modal .asst-routes-row-main { padding: 0 4px; }
+    .asst-models-modal .asst-routes-row-main > :not([hidden]) { white-space: normal; margin: 0 0 8px; line-height: 1.45; }
+
+    .asst-routes-overlay .asst-modal-body { gap: 8px; padding: 12px 16px; }
+    .asst-routes-overlay .asst-routes-ask { gap: 8px; padding-bottom: 8px; }
+    .asst-routes-overlay .asst-routes-ask-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; }
+    .asst-routes-overlay .asst-routes-ask-head .asst-routes-modes { grid-template-columns: repeat(3, auto); max-width: none; }
+    .asst-routes-overlay .asst-routes-mode { height: auto; min-height: var(--asst-pill-h-sm); }
+    .asst-routes-overlay .asst-routes-mode-label { white-space: normal; text-align: center; overflow-wrap: anywhere; line-height: 1.35; }
+    .asst-routes-overlay :is(.asst-routes-mode-desc, .asst-routes-session-note) { white-space: normal; overflow-wrap: anywhere; line-height: 1.45; }
+    .asst-routes-session-note { border-inline-start: 2px solid var(--asst-line-2); padding-inline-start: 8px; }
+    .asst-routes-task-head { border-top: 1px solid var(--asst-line-2); padding-top: 8px; }
+    .asst-routes-disclosure { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 0 4px; background: transparent; border: 0; border-radius: var(--asst-pill-r-xs); color: inherit; font: inherit; text-align: start; cursor: pointer; }
+    .asst-routes-disclosure:hover { background: var(--asst-fill-1); }
+    .asst-routes-choice-count { font-size: 12px; font-weight: 400; color: var(--asst-text-2); }
+    .asst-routes-chevron { display: inline-flex; justify-content: center; align-items: center; color: var(--asst-text-2); transform: rotate(-90deg); }
+    [dir="rtl"] .asst-routes-chevron { transform: rotate(90deg); }
+    .asst-routes-chevron svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+    .asst-routes-overlay [aria-expanded="true"] > .asst-routes-chevron { transform: none; }
+    .asst-routes-validation { margin: 0; font-size: 12px; color: var(--asst-warn); }
+    .asst-routes-overlay .asst-routes-list { display: block; background: var(--asst-field); border: 1px solid var(--asst-line-2); border-radius: var(--asst-r-field); padding: 0; }
+    .asst-routes-group { display: grid; grid-template-columns: 96px minmax(0, 1fr); min-width: 0; padding: 4px 8px; column-gap: 8px; }
+    .asst-routes-group + .asst-routes-group { border-top: 1px solid var(--asst-line-2); }
+    .asst-routes-group > h3 { grid-area: 1 / 1; margin: 0; padding: 7px 4px; font-size: 12px; line-height: 1.45; font-weight: 600; color: var(--asst-text-2); overflow-wrap: anywhere; }
+    .asst-routes-overlay .asst-routes-row { display: block; padding: 0; grid-column: 2; border: 0; }
+    .asst-routes-overlay .asst-routes-row + .asst-routes-row { border-top: 1px solid var(--asst-line); }
+    .asst-routes-toggle { display: grid; grid-template-columns: minmax(0, 37%) minmax(0, 1fr) auto 12px; align-items: center; gap: 6px; width: 100%; min-height: 30px; padding: 4px 6px; border: 0; border-radius: var(--asst-pill-r-xs); background: transparent; color: var(--asst-text); text-align: start; font: inherit; cursor: pointer; }
+    .asst-routes-toggle .asst-routes-chevron { grid-column: 4; }
+    .asst-routes-toggle:hover, .asst-routes-toggle[aria-expanded="true"] { background: var(--asst-fill-2); }
+    .asst-routes-overlay :is(.asst-routes-toggle, .asst-routes-disclosure):focus-visible { outline: 2px solid var(--asst-focus); outline-offset: -2px; }
+    .asst-routes-overlay .asst-routes-summary-name { white-space: normal; overflow-wrap: anywhere; }
+    .asst-routes-summary-value { display: flex; min-width: 0; align-items: center; gap: 6px; font-size: 12px; }
     .asst-routes-summary-model { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-    .asst-routes-summary-value:not(:has(.asst-icon)) .asst-routes-summary-model { grid-column: 1 / -1; color: var(--asst-text-2); }
-    .asst-routes-summary-meta { grid-column: 2; color: var(--asst-text-2); font-size: 11.5px; overflow-wrap: anywhere; }
-    .asst-routes-summary-status { font-size: 11px; color: var(--asst-text-2); max-width: 64px; }
+    .asst-routes-summary-value:not(:has(.asst-icon)), .asst-routes-summary-status { color: var(--asst-text-2); }
+    .asst-routes-summary-status { max-width: 12ch; overflow-wrap: anywhere; font-size: 12px; }
     .asst-routes-row[data-issue="true"] .asst-routes-summary-status { color: var(--asst-warn); }
-    .asst-routes-chevron svg { width: 12px; height: 12px; }
-    .asst-routes-toggle[aria-expanded="true"] .asst-routes-chevron { transform: rotate(180deg); }
-    .asst-routes-modal .asst-routes-row-main { padding: 0 4px; }
-    .asst-routes-modal .asst-routes-row-main > :not([hidden]) { white-space: normal; margin: 0 0 8px; line-height: 1.45; }
-    .asst-routes-details { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 24px; gap: 12px 8px; padding: 8px; margin-bottom: 8px; border-radius: var(--asst-r-field); background: var(--asst-fill-1); }
-    .asst-routes-details[hidden] { display: none; }
-    .asst-routes-details .asst-routes-cell { flex-direction: column; gap: 4px; min-width: 0; }
-    .asst-routes-details .asst-routes-cell-label { display: block; color: var(--asst-text-2); font-size: 12px; }
-    .asst-routes-details .asst-routes-model-cell, .asst-routes-details .asst-routes-account-cell { grid-column: 1 / -1; }
-    .asst-routes-details .asst-routes-reset-cell { align-self: end; }
-    .asst-routes-modal .asst-routes-mode-desc, .asst-routes-modal .asst-routes-session-note { white-space: normal; }
-    .asst-routes-modal .asst-routes-ask-head .asst-routes-session-note { flex-basis: 100%; text-align: start; }
-    @media (max-width: 700px) {
-      .asst-routes-modal .asst-routes-list { grid-template-columns: 1fr; gap: 12px; }
-      .asst-routes-modal .asst-routes-details { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px; }
-      .asst-routes-modal .asst-routes-details :is(.asst-routes-effort-cell, .asst-routes-run-cell) { grid-column: auto; }
-      .asst-routes-modal .asst-routes-summary-status { max-width: 54px; }
+    .asst-routes-reveal { display: flow-root; flex-shrink: 0; }
+    @media (prefers-reduced-motion: no-preference) {
+      .asst-routes-reveal[data-opening] { overflow: clip; animation: asst-routes-reveal var(--asst-dur-base) var(--asst-ease-standard); }
+    }
+    @keyframes asst-routes-reveal {
+      from { max-height: 0; }
+      to { max-height: var(--asst-routes-reveal-height); }
+    }
+    .asst-routes-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; gap: 8px 12px; padding: 8px 12px 12px; margin-block: 2px 8px; border-inline-start: 2px solid var(--asst-line-2); background: var(--asst-fill-1); }
+    .asst-routes-details .asst-routes-row-main { grid-column: 1 / -1; }
+    .asst-routes-details .asst-routes-row-main > :not([hidden]) { white-space: normal; overflow-wrap: anywhere; line-height: 1.45; }
+    .asst-routes-details .asst-routes-cell { flex-direction: column; gap: 4px; }
+    .asst-routes-details .asst-routes-cell-label { display: block; font-size: 12px; color: var(--asst-text-2); }
+    .asst-routes-details .asst-routes-model-cell { grid-column: 1 / -1; }
+    .asst-routes-details .asst-routes-reset-cell { grid-column: 3; grid-row: 4; align-self: end; }
+    .asst-routes-details .asst-routes-run-cell { grid-column: 2 / -1; }
+    .asst-routes-details .asst-routes-account-cell { grid-column: 1 / 3; }
+    .asst-routes-details .asst-dd { height: auto; padding-block: 3px; }
+    .asst-routes-details .asst-dd .asst-dd-label { white-space: normal; overflow-wrap: anywhere; line-height: 1.3; }
+    .asst-routes-overlay[hidden] { display: none; }
+    @media (pointer: coarse), (max-width: 600px) {
+      .asst-routes-overlay :is(.asst-routes-mode, .asst-routes-toggle, .asst-routes-disclosure, .asst-routes-list-actions .asst-btn) { min-height: 44px; }
+    }
+    @media (max-width: 600px) {
+      .asst-routes-overlay .asst-modal-body { padding: 12px; }
+      .asst-routes-overlay .asst-routes-ask-head { grid-template-columns: minmax(0, 1fr); }
+      .asst-routes-group { display: block; }
+      .asst-routes-group > h3 { padding-bottom: 0; }
+      .asst-routes-toggle { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr) 12px; gap: 2px 8px; }
+      .asst-routes-summary-status { grid-column: 2; max-width: none; }
+      .asst-routes-toggle .asst-routes-chevron { grid-area: 1 / 3; }
+      .asst-routes-overlay .asst-routes-details .asst-routes-account-cell { grid-column: 1 / 3; }
+      .asst-routes-task-head { gap: 0 8px; }
     }
 
     /* ── Frame lightbox ─────────────────────────────────────────────── */
@@ -2041,8 +2094,9 @@ export function injectAssistantStyles() {
     /* ── Narrow / short containers (the tab or float window) ──────────
        Toolbar priority, highest first: route mode · Computer · project ·
        MCP. The composer row (attach · model · effort · permission mode ·
-       test density · account) keeps model; account hides ≤720px, where test
-       density is its gauge alone. A capsule that runs out of
+       test density · agent density · account) keeps model; account hides
+       ≤720px, where test density and agent density are their glyphs alone
+       (agents-p4). A capsule that runs out of
        room drops its label half first and stays a glyph (its words remain in
        aria-label and the tooltip): route mode and Computer ≤960px, the mode
        ≤540px, every composer field but the model ≤440px, where the model
@@ -2064,9 +2118,9 @@ export function injectAssistantStyles() {
     }
     @container asst (max-width: 720px) {
       :is(.asst-dd-mcp, .asst-dd-account, .asst-dd-project, .asst-bar-group[data-group="context"]) { display: none !important; }
-      .asst-composer-brain .asst-dd.asst-dd-tests { display: grid; place-content: center; place-items: center; padding: 0; }
-      .asst-composer-brain .asst-dd.asst-dd-tests > :is(.asst-dd-label, .asst-dd-caret) { display: none; }
-      .asst-composer-brain .asst-dd.asst-dd-tests > .asst-icon:not([hidden]) { margin: 0; padding: 0 var(--cap-glyph-pad); box-shadow: none; }
+      .asst-composer-brain .asst-dd:is(.asst-dd-tests, .asst-dd-agents) { display: grid; place-content: center; place-items: center; padding: 0; }
+      .asst-composer-brain .asst-dd:is(.asst-dd-tests, .asst-dd-agents) > :is(.asst-dd-label, .asst-dd-caret) { display: none; }
+      .asst-composer-brain .asst-dd:is(.asst-dd-tests, .asst-dd-agents) > .asst-icon:not([hidden]) { margin: 0; padding: 0 var(--cap-glyph-pad); box-shadow: none; }
       .asst-route-keys { display: none; }
     }
     @container asst (max-width: 540px) {

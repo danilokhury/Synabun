@@ -69,7 +69,7 @@ export function sameMoreLoginProfiles(a, b) {
  *   ml           the list as readMoreLoginProfiles gives it (or the loading placeholder)
  *   chosenId     the field's value ('' = the default); chosenName its display name
  *   context      'schedule' | 'group' | 'run'
- *   inheritLabel the first choice's label when an empty value is not the Browser settings default
+ *   inheritLabel the first choice's label when an empty value is not the default AI browser
  *   say          (key, params) → text
  * → { entries, helpKey, helpParams, warn, firefox, missing }; entries are cc-dropdown's ({ value, label, selected,
  *   disabled }). The chosen profile is always among them and selected, usable or not: it is never dropped quietly.

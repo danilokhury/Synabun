@@ -7,8 +7,10 @@
 // session history, plugins AND credentials under CLAUDE_CONFIG_DIR (on macOS
 // the Keychain entry is keyed to that directory too), so pointing a spawn at a
 // different directory switches the logged-in account. Shared, non-identity
-// resources are symlinked back to ~/.claude so skills/commands/settings stay in
-// sync; identity-bearing files stay isolated.
+// resources are linked back to ~/.claude so skills/commands/settings stay in
+// sync; identity-bearing files stay isolated. How a file and a folder are linked
+// on each system (and kept in step where a link cannot be made) is
+// lib/claude-account-links.js.
 //
 // Default follows CLAUDE_CONFIG_DIR when set, otherwise ~/.claude.
 //
@@ -23,11 +25,12 @@
 // launchFor() is the one place a Claude Code process gets its credential.
 
 import {
-  existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync,
+  existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { readClaudeProfileApiKey, saveClaudeProfileApiKey, clearClaudeProfileApiKey } from './claude-profile-api-key.js';
+import { SHARED_FILE_NAMES, sameSharedRecords, syncSharedEntries } from './claude-account-links.js';
 
 export const DEFAULT_ACCOUNT_ID = 'default';
 // `rules` carries SynaBun's rules file (rules/synabun.md) to accounts created
@@ -134,6 +137,9 @@ export function createClaudeAccounts({
   log = () => {},
   now = Date.now,
   pollIntervalMs = 2000,
+  platform = process.platform,
+  // The file system the shared links are made with (node:fs; a test stands in for Windows rights).
+  linkFs = undefined,
   // async (id) => Claude Code's own `auth status --json` for that account
   // ({ loggedIn, email, orgName, subscriptionType, authMethod }), or null.
   readNativeStatus = null,
@@ -296,6 +302,8 @@ export function createClaudeAccounts({
     if (!profile || !profile.home) {
       return { ok: false, accountId: wanted, code: 'account_unavailable', message: 'That Claude account is no longer set up in SynaBun.' };
     }
+    // The account reads the default's settings (its allow list included): in step before every launch.
+    if (wanted !== DEFAULT_ACCOUNT_ID) syncShared(wanted);
     const { row, key } = describeProfile(profile, data);
     const launchEnv = {};
     if (wanted !== DEFAULT_ACCOUNT_ID) launchEnv.CLAUDE_CONFIG_DIR = profile.home;
@@ -403,23 +411,40 @@ export function createClaudeAccounts({
     for (const listener of [...listeners]) { try { listener({ accountId, ...extra }); } catch {} }
   }
 
-  function linkShared(home) {
-    const linked = [];
-    for (const name of SHARED_LINKS) {
-      const source = resolve(defaultHome, name);
-      const target = resolve(home, name);
-      if (!existsSync(source)) continue;
-      try {
-        if (lstatSync(target)) continue;
-      } catch {}
-      try {
-        symlinkSync(source, target, process.platform === 'win32' ? 'junction' : undefined);
-        linked.push(name);
-      } catch (error) {
-        log('claude-accounts', `link ${name} failed: ${error?.message || error}`);
+  // The shared entries of one account put in order (lib/claude-account-links.js). A file shared by a hard link
+  // or a copy is recorded on the account's row (`shared`), because only those are kept in step by SynaBun.
+  function linkShared(home, recordedModes = {}, { linkMissing = true } = {}) {
+    return syncSharedEntries({
+      defaultHome, home, names: SHARED_LINKS, fileNames: SHARED_FILE_NAMES, recorded: recordedModes, linkMissing,
+      platform, fs: linkFs, now, log, tag: 'claude-accounts',
+    });
+  }
+  /**
+   * Put the shared entries of one account (or every named account) in order (a missing one linked only with
+   * `linkMissing`, which only making the account asks for), a junction to a file (Windows, made by an older SynaBun)
+   * replaced, a hard link or a copy two writes apart brought back in step.
+   * Never throws; returns what it did per account.
+   */
+  function syncShared(id = null, { linkMissing = false } = {}) {
+    const results = [];
+    try {
+      const data = load();
+      let changed = false;
+      for (const account of data.accounts) {
+        if (id && account.id !== id) continue;
+        if (!account.home || !existsSync(account.home)) continue;
+        const result = linkShared(account.home, account.shared || {}, { linkMissing });
+        if (!sameSharedRecords(account.shared || {}, result.modes)) {
+          if (Object.keys(result.modes).length) account.shared = result.modes; else delete account.shared;
+          changed = true;
+        }
+        results.push({ id: account.id, linked: result.linked, repaired: result.repaired });
       }
+      if (changed) save(data);
+    } catch (error) {
+      log('claude-accounts', `shared files check failed: ${error?.message || error}`);
     }
-    return linked;
+    return results;
   }
   function seedClaudeJson(home) {
     const target = resolve(home, '.claude.json');
@@ -437,7 +462,7 @@ export function createClaudeAccounts({
     if (!account) throw new ClaudeAccountError('ACCOUNT_NOT_FOUND', `Claude account not found: ${id}`, 404);
     mkdirSync(resolve(account.home, 'projects'), { recursive: true });
     mkdirSync(resolve(account.home, 'todos'), { recursive: true });
-    const linked = linkShared(account.home);
+    const { linked } = syncShared(wanted, { linkMissing: true })[0] || { linked: [] };
     const seededJson = seedClaudeJson(account.home);
     return { home: account.home, linked, seededJson };
   }
@@ -535,7 +560,7 @@ export function createClaudeAccounts({
     list, listForClient, describe, describeForClient, profileFor, readApiKey, saveApiKey, clearApiKey, get, find, homeFor, envFor,
     launchFor, unusableReason, setMode, noteNativeStatus, forgetNativeStatus, noteSubscriptionSignIn, setNativeStatusReader,
     refreshStatus, stale, subscribe,
-    create, rename, remove, seedHome, recordIdentity, watchLogin, loginCommand,
+    create, rename, remove, seedHome, syncShared, recordIdentity, watchLogin, loginCommand,
     readIdentity: (id) => (id === DEFAULT_ACCOUNT_ID ? readClaudeIdentity(defaultHome, defaultConfigFile) : readClaudeIdentity(homeFor(id))),
   };
 }

@@ -24,6 +24,32 @@
   ],
   "bridges": {
     "codex": {
+      "agent-forge": [
+        {
+          "digest": "55c19a925599f4e5f93c45b52eabeaa8a9b72f70c8b1aa30055cd45ecc45188c",
+          "sep": "\\",
+          "generators": [
+            "g3"
+          ],
+          "skillMd": [
+            "f307dffbdeb0"
+          ],
+          "firstCommit": "28fd65720aa8",
+          "firstDate": "2026-11-15"
+        },
+        {
+          "digest": "efe8e3151f97e31a09cc9ba52635da53eb55d79c3341856b99769f17795352fd",
+          "sep": "/",
+          "generators": [
+            "g3"
+          ],
+          "skillMd": [
+            "f307dffbdeb0"
+          ],
+          "firstCommit": "28fd65720aa8",
+          "firstDate": "2026-11-15"
+        }
+      ],
       "leonardo": [
         {
           "digest": "7865862f6cb04aba6b68641bfa5d308b16c9c78ac3bbc7f486a8d12d0094724b",
@@ -212,6 +238,20 @@
       ]
     },
     "opencode": {
+      "agent-forge": [
+        {
+          "digest": "6d42616e24a211f48b06ea8a35ed17913395c7c3b06a4b079e9c6c01c73ce3b6",
+          "sep": "any",
+          "generators": [
+            "g3"
+          ],
+          "skillMd": [
+            "f307dffbdeb0"
+          ],
+          "firstCommit": "28fd65720aa8",
+          "firstDate": "2026-11-15"
+        }
+      ],
       "leonardo": [
         {
           "digest": "64b005834dd226dfc4287e2b27e8a6931a386268a5907494c30ccbaec4aeab32",

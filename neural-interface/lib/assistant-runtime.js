@@ -1,3 +1,4 @@
+import { buildAssistantHandoff, providerBinding } from './assistant-continuity.js';
 import { OPENCODE_BRAIN_TOOLS } from './assistant-tools.js';
 import { storedToolList, toolListRecord } from './tool-lists.js';
 // ═══════════════════════════════════════════
@@ -21,7 +22,10 @@ import { acpPolicyInput, acpReadOnlyKind, acpToolName } from './antigravity/tool
 import { antigravityUsageTokens } from './assistant-usage.js';
 import { UNPRICED_PROVIDER_REASON } from './assistant-budget-split.js';
 import { buildAssistantPersona, formatMailbox, reconcileRouteItems } from './assistant-persona.js';
+// Agents P2: the mailbox lives in the coordination store (durable, acknowledged, critical first).
+import { createCoordinationService, sharedCoordinationService } from './coordination/service.js';
 import { normalizeTestDensity, testDensityStamp } from './assistant-test-density.js';
+import { agentDensityStamp, normalizeAgentDensity } from './agents/density.js'; // agents-p4
 import { codexUsageCostUsd, floorCents } from './assistant-budget.js';
 import { MIN_SPEND_USD } from './assistant-budget-split.js';
 import { CLAUDE_ESTIMATE_SOURCE, createClaudeMeter, createCodexMeter, createOpenCodeMeter, totalTokens, withTotal, zeroTokens } from './assistant-usage.js';
@@ -30,7 +34,7 @@ import { normalizeRouteMode } from './assistant-config.js';
 import { TASK_CLASS_META } from './assistant-router.js';
 import { chooseUsageAccount } from './account-usage.js';
 import { defaultIsHidden, enabledStandIn, findModel, providerAllHidden, selectSheetModels } from './assistant-catalog.js';
-import { normalizeEffort } from './effort-levels.js';
+import { EFFORT_OFF, normalizeEffort } from './effort-levels.js';
 import { claudeRouteAvailability, createRouteGate, isReplyTool, mcpStatusRouteAvailability, ROUTE_GATE_LOOP_MESSAGE } from './assistant-route-gate.js';
 import { claudeReadOnlyPermission, planDenyMessage, planToolDecision, readOnlyDenyMessage, readOnlyToolDecision } from './assistant-plan-permissions.js';
 import { codexRouteGateBootstrap } from './assistant-route-gate-codex.js';
@@ -47,11 +51,8 @@ export const BRAIN_PROVIDERS = new Set(['claude-code', 'codex', 'opencode', 'ant
 // the first prompt. Legacy "Assistant N" titles still count as unnamed.
 export const DEFAULT_SESSION_TITLE = 'SynaBun';
 export function isDefaultSessionTitle(title) { return !title || /^(?:SynaBun|Assistant(?: \d+)?)$/.test(String(title).trim()); }
-// suspended / resumed: a Claude Code worker a server restart cut off, and its resume on the next start
-// (lib/assistant-dispatch.js); a run that could not be resumed arrives as interrupted, with why.
-const MAILBOX_REASONS = new Set(['turn_completed', 'needs_input', 'permission_request', 'failed', 'interrupted', 'stalled', 'budget_warning', 'budget_exceeded', 'budget_unpriced', 'queue_started', 'user_intervened', 'stopped', 'suspended', 'resumed']);
-// A stopped run reaches the brain when the user stopped it or it ran out of money.
-const MAILBOX_STOP_REASONS = new Set(['user', 'budget_cap', 'session_budget_cap', 'budget_unpriced', 'budget_share']);
+// Which dispatcher events reach a session's mailbox, and with what priority, is decided where they are recorded:
+// lib/coordination/service.js (RUN_EVENT_REASONS, MAILBOX_STOP_REASONS).
 /** The `[SynaBun Budget]` line: a change of the session budget reaches the brain as one line before its next turn. */
 export const BUDGET_HEADER = '[SynaBun Budget]';
 /**
@@ -186,6 +187,7 @@ export function normalizeBrain(input = {}, defaults = {}, { catalog = null, cust
     agent: input?.agent ? String(input.agent) : null,
     // OpenCode and Antigravity sign in inside their own CLI: SynaBun keeps no account of theirs.
     accountId: provider === 'antigravity' ? null : input?.accountId ? String(input.accountId) : (provider === 'opencode' ? null : 'default'),
+    accountPolicy: ['claude-code', 'codex'].includes(provider) && (input?.accountId === 'auto' || input?.accountPolicy === 'auto') ? 'auto' : 'manual',
     cwd: input?.cwd ? String(input.cwd) : (input?.project ? String(input.project) : (defaults.cwd || null)),
     tools: provider === 'opencode' ? (storedToolList(input, { customPresets }) ?? storedToolList(defaults, { customPresets }) ?? [...OPENCODE_BRAIN_TOOLS]) : ['all'],
     permissionMode: input?.permissionMode && !legacyPlan ? String(input.permissionMode) : 'default',
@@ -284,8 +286,15 @@ export function createAssistantRuntime({
   // X-Synabun-Terminal, and that id is proven by the brain's launch credential (bind), never by a second secret;
   // revoked when the brain goes. (Codex and OpenCode brains name a pin server.js binds where it starts their process.)
   terminalTokens = null,
+  // The coordination service (lib/coordination/service.js): the durable mailbox. Given none, the runtime takes the
+  // dispatcher's, else the one server.js shares (shareCoordinationService), else one in memory (a test: nothing
+  // survives the process).
+  coordination: givenCoordination = null,
 } = {}) {
   if (!dataDir) throw new Error('createAssistantRuntime requires dataDir');
+  const borrowedCoordination = givenCoordination || dispatcher?.coordination || sharedCoordinationService();
+  const coordination = borrowedCoordination || createCoordinationService({ log });
+  const ownsCoordination = !borrowedCoordination;
   const normalizeSessionBrain = (input, defaults, options) => normalizeBrain(input, defaults, { ...options, ...toolListOptions() });
   const settings = {
     idleDisposeMs: Math.max(60_000, Number(config.idleDisposeMinutes || 120) * 60_000),
@@ -297,7 +306,21 @@ export function createAssistantRuntime({
     // reconcile); past it the turn is settled as not reconciled and the next turn may start.
     openCodeReconcileMs: Number(config.openCodeReconcileMs) > 0 ? Number(config.openCodeReconcileMs) : 10_000,
     bufferCap: 500,
-    mailboxBatchMs: Number(config.mailboxBatchMs) || 2000,
+    // Agents P2: there is no batch window any more. A critical event (a question, a permission, a failure, a stall)
+    // starts its turn at once when the session is free. Other events wait this long first, so results that arrive
+    // together go in one turn: 150 ms at most (`mailboxBatchMs`, the old 2 s window's name, is read as this).
+    mailboxDebounceMs: Math.max(0, Math.min(150, Number(config.mailboxDebounceMs ?? config.mailboxBatchMs ?? 100) || 0)),
+    // While the brain is busy the mailbox waits for its turn to end; this covers a brain that frees up without one.
+    busyRecheckMs: Math.max(10, Number(config.busyRecheckMs ?? config.mailboxBatchMs ?? 1000) || 1000),
+    // A mailbox turn that could not be started leaves its events open and is tried again after these waits; then
+    // it holds until a turn of the session ends, a new event arrives or the budget changes.
+    mailboxRetryDelaysMs: Array.isArray(config.mailboxRetryDelaysMs) ? config.mailboxRetryDelaysMs.map((ms) => Math.max(0, Number(ms) || 0)) : [1000, 5000, 30_000],
+    // Events one mailbox message carries; more follow in the next one (none is dropped).
+    mailboxItems: Math.max(1, Number(config.mailboxItems) || coordination.limits.mailboxItems),
+    // After a restart: how long after the server answers the open mailboxes are delivered again.
+    mailboxBootDelayMs: Math.max(0, Number(config.mailboxBootDelayMs ?? 1500) || 0),
+    // false: the scheduler never starts a mailbox turn by itself (a test starts each one with deliverMailbox).
+    mailboxAuto: config.mailboxAuto !== false,
     retention: 200,
     defaultBrain: config.defaultBrain || {},
     personaExtra: config.persona?.extra || '',
@@ -315,6 +338,8 @@ export function createAssistantRuntime({
   let unsubscribeDispatcher = null;
   let unsubscribePolicy = null;
   let unsubscribeUsage = null;
+  let unsubscribeMailbox = null;
+  let mailboxBootTimer = null;
   const usageTimers = new Map();
   const usageSentAt = new Map();
   const meters = { 'claude-code': createClaudeMeter, codex: createCodexMeter, opencode: createOpenCodeMeter, ...(meterFactories || {}) };
@@ -456,7 +481,12 @@ export function createAssistantRuntime({
       // A draft: opened by a panel and not chatted in yet. Kept in memory only, listed nowhere, and
       // gone when it is closed or left without a socket (draftTimer); its first prompt stores it (startChat).
       draft: false, draftTimer: null,
-      mailbox: [], mailboxTimer: null, obligations: new Set(), rememberedThisTurn: false, disposeTimer: null, personaText: '',
+      // Agents P2: what the brain has not been told yet is read from the coordination store (a look, nothing is
+      // handed out); nothing of it is kept here. mailboxTimer: the debounce of non-critical events; mailboxRetry*:
+      // a turn that could not be started is tried again.
+      get mailbox() { return mailboxPeek(this.record.id); },
+      mailboxTimer: null, mailboxAttempts: 0, mailboxRetryTimer: null, mailboxHeld: false,
+      obligations: new Set(), rememberedThisTurn: false, disposeTimer: null, personaText: '',
       // The last human prompt and where it came from ('ui', 'whatsapp', 'api'): a route continuation
       // answers there (lastPromptOrigin; the transcript's after a restart).
       lastPrompt: '', lastPromptOrigin: null, mailboxTurn: false, nudgedRuns: new Set(),
@@ -505,6 +535,10 @@ export function createAssistantRuntime({
       // fallback retry, and the generation each route card was raised in.
       // Closing (endSessionWork): the close under way (a promise), and the generation it started.
       gen: 0, work: new Map(), workActive: null, workTimer: null, workPumpQueued: false, routeGens: new Map(),
+      // The routes whose "do it here" continuation reached the brain (routerContinue never runs one twice).
+      continuedRoutes: new Set(),
+      // What the running (or last) turn was sent on: { model, effort } (runTurn), null for a new brain.
+      turnRun: null,
       closing: null, closedGen: 0,
       // User context (assistant-user-context.js): what the live brain was built for (a layer
       // switched since restarts an idle brain), the human turns sent and not ended yet (oldest
@@ -925,6 +959,8 @@ export function createAssistantRuntime({
   }
   /** The session's Test density: its own value, else the default level (assistant-test-density.js). */
   function testDensityOf(record) { return normalizeTestDensity(record?.testDensity); }
+  /** agents-p4: the session's Agent density: its own value, else the default level, Solo (lib/agents/density.js). */
+  function agentDensityOf(record) { return normalizeAgentDensity(record?.agentDensity); }
   function computerSupported() { try { return !!desktop?.isSupported?.(); } catch { return false; } }
   /**
    * Effective computer toggle: explicit per-session value, else the service default (ON after setup).
@@ -1007,6 +1043,7 @@ export function createAssistantRuntime({
     if (!persisted) delete out.usageState;
     // The user-context state (frozen digest, delivery ledgers) is the server's own.
     if (!persisted) delete out.userContext;
+    if (!persisted) { delete out.providerBinding; delete out.providerHandoff; delete out.accountLimits; }
     if (withLive && live) {
       out.running = live.running;
       out.attached = live.sockets.size;
@@ -1024,10 +1061,14 @@ export function createAssistantRuntime({
       out.computerRemote = computer ? { state: computer.state, reason: computer.reason, level: computer.level, approved: live.computerTurn?.approved === true } : null;
       out.testDensity = testDensityOf(record);
       out.testDensityExplicit = normalizeTestDensity(record.testDensity, null);
+      // agents-p4: how many workers one task may get (the control next to Test density); null = not set, the default.
+      out.agentDensity = agentDensityOf(record);
+      out.agentDensityExplicit = normalizeAgentDensity(record.agentDensity, null);
       // `rename`: this server keeps a rename on the record (userRenamed), so a panel writes it here.
       // `adminSandbox`: the global setting is served here (PUT /api/assistant/admin-sandbox).
       // `drafts`: a session is stored and listed from its first prompt on; `remove`: DELETE stops its work and purges it.
-      out.features = { routing: !!router, computer: computerSupported(), testDensity: true, rename: true, adminSandbox: !!adminSandbox, drafts: true, remove: true };
+      // `agentDensity` (agents-p4): this server keeps the session's Agent density and enforces it on teams.
+      out.features = { routing: !!router, computer: computerSupported(), testDensity: true, agentDensity: true, rename: true, adminSandbox: !!adminSandbox, drafts: true, remove: true };
       out.draft = live.draft === true;
       if (adminSandbox) { try { out.adminSandbox = adminSandbox.enabled() === true; } catch { out.adminSandbox = false; } }
       out.budget = sessionMoney(record.id);
@@ -1074,9 +1115,18 @@ export function createAssistantRuntime({
     const live = sessions.get(sessionId);
     return live?.turnTaskId || live?.record.taskId || metered('task', () => usage?.currentTask?.(sessionId)?.id) || null;
   }
+  // Task identity also works when metering is absent or unavailable; continue the existing task sequence.
+  function nextTaskId(live) {
+    const prior = Number(/^task-(\d+)$/.exec(live.record.taskId || '')?.[1]) || 0;
+    live.record.taskSequence = Math.max(live.record.taskSequence || 0, prior) + 1;
+    return `task-${live.record.taskSequence}`;
+  }
   /** The session's current task, made when it has none yet. Never throws. */
   function ensureTaskId(sessionId) {
-    return metered('task', () => usage?.ensureTask?.(sessionId)?.id) || null;
+    const live = sessions.get(sessionId);
+    const taskId = metered('task', () => usage?.ensureTask?.(sessionId)?.id) || live?.record.taskId || (live ? nextTaskId(live) : null);
+    if (live && !live.record.taskId) live.record.taskId = taskId;
+    return taskId;
   }
   /**
    * What the gauge, the usage endpoint and agent_usage show. `session` is the headline: every
@@ -1151,8 +1201,17 @@ export function createAssistantRuntime({
     for (const ws of sockets) { if (ws.readyState === 1) { try { ws.send(raw); } catch {} } }
   }
   /** `next`: a limitNotice() value. True when the session's notice changed (and the sockets heard). */
-  function setLimit(live, next) {
-    if (next === undefined || limitKey(next) === limitKey(live.limit)) return false;
+  function setLimit(live, next, { remember = true } = {}) {
+    if (next === undefined) return false;
+    const key = providerBinding(live.record);
+    live.record.accountLimits ||= {};
+    if (remember) {
+      const previous = live.record.accountLimits[key];
+      if (next?.status === 'rejected') live.record.accountLimits[key] = { ...next };
+      else delete live.record.accountLimits[key];
+      if (JSON.stringify(previous) !== JSON.stringify(live.record.accountLimits[key])) touch(live);
+    }
+    if (limitKey(next) === limitKey(live.limit)) return false;
     live.limit = next ? { ...next, provider: live.brainProvider || live.record.brain?.provider || null, at: iso(now()) } : null;
     sendLimit(live);
     return true;
@@ -1433,7 +1492,8 @@ export function createAssistantRuntime({
     // The CLI began a turn on its own (a background agent finished, a wakeup fired).
     if (packet.type === 'turn_started' && !live.running) {
       // A turn the CLI started itself is a new turn for the route gate too.
-      live.gate?.startTurn();
+      const priorGate = live.gate?.snapshot();
+      live.gate?.startTurn({ open: priorGate?.state === 'open' && priorGate.taskId === live.record.taskId, taskId: live.record.taskId, cli: true });
       live.running = true;
       beginComputerTurn(live);
       if (usage) {
@@ -1668,6 +1728,8 @@ export function createAssistantRuntime({
   }
   function onTurnFinished(live) {
     if (live.mailboxTurn) { live.mailboxTurn = false; }
+    // The brain just worked: a mailbox held after a turn that could not be started is tried again.
+    releaseMailboxHold(live);
     // Non-Claude brains have no Stop hook: nudge once per run when obligations remain.
     if (live.brainProvider !== 'claude-code' && live.obligations.size && !live.rememberedThisTurn) {
       for (const runId of [...live.obligations]) {
@@ -1800,11 +1862,11 @@ export function createAssistantRuntime({
     if (live.workTimer) { clearTimeout(live.workTimer); live.workTimer = null; }
     if (shuttingDown || live.closing || sessions.get(live.record.id) !== live || live.record.status === 'ended' || activeWork(live)) return;
     const entry = nextWork(live);
-    // The mailbox waits for its batch window and the plan card.
-    if (!entry && !(live.mailbox.length && !live.mailboxTimer && !live.planCard)) return;
+    // The mailbox waits for its debounce, the plan card, and the retry of a turn that could not be started.
+    if (!entry && !(settings.mailboxAuto && !live.mailboxTimer && !live.planCard && !live.mailboxRetryTimer && !live.mailboxHeld && mailboxCount(live))) return;
     if (sessionBusy(live)) {
       // The running turn's end pumps again; this covers a brain that frees up without one.
-      live.workTimer = setTimeout(() => { live.workTimer = null; pumpWork(live); }, settings.mailboxBatchMs);
+      live.workTimer = setTimeout(() => { live.workTimer = null; pumpWork(live); }, settings.busyRecheckMs);
       live.workTimer.unref?.();
       return;
     }
@@ -1976,7 +2038,7 @@ export function createAssistantRuntime({
   function onBudgetSplit(sessionId, budget = null, { reason = null } = {}) {
     sendBudget(sessionId, budget, { reason });
     const live = sessions.get(String(sessionId || ''));
-    if (live && live.mailbox.length && !brainBudgetBlock(live)) { live.budgetHoldNotified = false; live.budgetShareTriedAt = 0; scheduleMailbox(live, 0); }
+    if (live && mailboxCount(live) && !brainBudgetBlock(live)) { live.budgetHoldNotified = false; live.budgetShareTriedAt = 0; scheduleMailbox(live, 0); }
   }
   /**
    * Before a brain turn: when the brain's provider share is used up but the session has money left,
@@ -2014,7 +2076,7 @@ export function createAssistantRuntime({
       try { dispatcher?.checkSession?.(live.record.id); } catch {}
       sendCost(live);
       sendBudget(live.record.id, null, { reason: 'budget_changed' });
-      if (live.mailbox.length && !brainBudgetBlock(live)) { live.budgetHoldNotified = false; scheduleMailbox(live, 0); }
+      if (mailboxCount(live) && !brainBudgetBlock(live)) { live.budgetHoldNotified = false; scheduleMailbox(live, 0); }
     }
   }
   async function personaFor(live) {
@@ -2029,6 +2091,8 @@ export function createAssistantRuntime({
     try { setupState = desktop?.setupState?.() || null; } catch {}
     // This prompt states the level: a "[SynaBun Tests]" line follows only a later change.
     live.testDensityStamp = testDensityStamp(testDensityOf(live.record));
+    // agents-p4: …and the Agent density: a "[SynaBun Agents]" line follows only a later change.
+    live.agentDensityStamp = agentDensityStamp(agentDensityOf(live.record));
     // …and the budget: a "[SynaBun Budget]" line follows only a later change of the setting.
     const budgetSetting = budgetSettingNow();
     const money = sessionMoney(live.record.id);
@@ -2052,6 +2116,8 @@ export function createAssistantRuntime({
       computer: { available: computerSupported(), enabled: computerEffective(live.record), setupState, remote: computerDecision(live, { untrusted: false }) },
       taskClasses: TASK_CLASS_META,
       testDensity: testDensityOf(live.record),
+      // agents-p4: the cap on workers per task, and the teams section that goes with it.
+      agentDensity: agentDensityOf(live.record),
       // The session budget as the brain starts: the setting and, with a budget, the split so far.
       budget: budgetSetting ? { ...budgetSetting, view: money } : null,
       clarify: !!clarifier,
@@ -2074,10 +2140,24 @@ export function createAssistantRuntime({
     const remote = remotePolicyFor(live);
     if (remote) live.record.brain = clampedBrain(live, live.record.brain);
     const brain = live.record.brain;
-    const sink = { send: (packet) => onBrainPacket(live, packet) };
+    // A bare legacy/mismatched id has no proven account owner. Seed from our journal.
+    const binding = providerBinding(live.record);
+    if (live.record.providerBinding !== binding) {
+      live.record.providerSessionId = null;
+      live.record.providerThreadId = null;
+      live.record.providerHandoff = null;
+    }
+    live.record.providerBinding = binding;
+    if (!live.record.providerSessionId && !live.record.providerThreadId) {
+      const runs = dispatcher?.list?.({ assistantSessionId: live.record.id, limit: 500 }) || [];
+      live.record.providerHandoff = buildAssistantHandoff(live.record, readTranscript(live.record.id, 10000), runs);
+    }
     const basePersona = await personaFor(live);
     if (stale()) return null;
     if (live.brain) return live.brain;
+    const epoch = live.brainEpoch = (live.brainEpoch || 0) + 1;
+    const current = () => live.brainEpoch === epoch;
+    const sink = { send: (packet) => { if (current()) onBrainPacket(live, packet); } };
     // What SynaBun has learned about the user rides after the persona, in the same system-level
     // slot (Claude systemPromptAppend, Codex developerInstructions, OpenCode agent prompt), frozen
     // per provider conversation so the prompt cache holds.
@@ -2086,7 +2166,7 @@ export function createAssistantRuntime({
       try { userSuffix = userContext.personaSuffix(live.record) || userSuffix; }
       catch (error) { log('assistant:user-context', error?.message || String(error)); }
     }
-    const persona = userSuffix.text ? `${basePersona}\n\n${userSuffix.text}` : basePersona;
+    const persona = [basePersona, userSuffix.text, live.record.providerHandoff].filter(Boolean).join('\n\n');
     live.personaText = persona;
     // Computer use: one unforgeable grant per brain (the MCP `computer` group is
     // advertised only to callers presenting it). Revoked when the brain goes.
@@ -2128,11 +2208,11 @@ export function createAssistantRuntime({
         const extended = /\[extended\]$/.test(String(live.record.brain?.model || info.id || ''));
         return codexUsageCostUsd(usage, price, { contextWindow: extended ? info.contextWindow || null : null });
       },
-      onCodexThread: (threadId) => { if (threadId) live.record.providerThreadId = threadId; if (live.turnTaskId) pollCodex(live, { force: true }); },
-      onCodexUsage: () => { if (live.turnTaskId) pollCodex(live); },
-      onOpenCodeEvent: (type, event) => openCodeEvent(live, type, event),
+      onCodexThread: (threadId) => { if (!current()) return; if (threadId) live.record.providerThreadId = threadId; if (live.turnTaskId) pollCodex(live, { force: true }); },
+      onCodexUsage: () => { if (current() && live.turnTaskId) pollCodex(live); },
+      onOpenCodeEvent: (type, event) => { if (current()) openCodeEvent(live, type, event); },
       // Also a resume into another session: what the meter counts as the main loop follows it.
-      onOpenCodeRoot: (sessionId) => { live.record.providerSessionId = sessionId; metered('meter-state', () => live.brainMeter?.setRoot?.(sessionId)); saveMeter(live); },
+      onOpenCodeRoot: (sessionId) => { if (!current()) return; live.record.providerSessionId = sessionId; metered('meter-state', () => live.brainMeter?.setRoot?.(sessionId)); saveMeter(live); },
       desktopGrant: live.desktopGrant || null,
       brainCredential: live.brainCredential || null,
       // A remote session's level (lib/remote-policy.js): the Claude brain allows
@@ -2208,6 +2288,7 @@ export function createAssistantRuntime({
       if (identity.providerSessionId) live.record.providerSessionId = identity.providerSessionId;
       if (identity.providerThreadId) live.record.providerThreadId = identity.providerThreadId;
     } catch {}
+    live.brainEpoch = (live.brainEpoch || 0) + 1;
     live.brain = null;
     // Its credential dies with it: a file send presenting it is refused from here on, and so is its pin.
     live.brainCredential = null;
@@ -2223,6 +2304,8 @@ export function createAssistantRuntime({
     live.turnTasks.length = 0;
     live.turnTaskId = null;
     live.running = false;
+    // The next brain starts on the session's own model and effort.
+    live.turnRun = null;
     closePlanCard(live, 'brain_disposed');
     live.planTurn = false;
     live.brainUserContext = null;
@@ -2391,6 +2474,19 @@ export function createAssistantRuntime({
       budgetBlock = brainBudgetBlock(live);
     }
     if (budgetBlock) return refuse(live, budgetBlock.code, budgetBlock.message, { request });
+    if (live.switching) await live.switching;
+    if (cancelled()) return dropTurn(live, request);
+    if (live.record.brain.accountPolicy === 'auto') {
+      await accountUsage?.refresh(live.record.brain.provider);
+      if (cancelled()) return dropTurn(live, request);
+      const rows = conversationAccounts(live.record.brain, live);
+      const active = rows.find(row => row.id === live.record.brain.accountId);
+      if (!active || active.signedIn !== true || active.mode !== 'subscription' || active.usage?.limited) {
+        try { await updateSession(live.record.id, { brain: { accountId: 'auto' } }, { fromTurn: true }); }
+        catch (error) { return refuse(live, error.code || 'ACCOUNT_UNAVAILABLE', error.message, { request }); }
+        if (cancelled()) return dropTurn(live, request);
+      }
+    }
     // A Claude brain whose account cannot run (signed out, its key unreadable, removed) is refused with
     // why, before a process starts under it: the CLI would only answer "not logged in" mid-turn.
     if (!live.brain && ['claude-code', 'codex'].includes(live.record.brain?.provider)) {
@@ -2437,6 +2533,7 @@ export function createAssistantRuntime({
     // A Codex / OpenCode turn's recall result, for the user-context block below.
     let turnRecalled = null;
     if (!system) {
+      if (origin === 'ui' && !untrusted) { live.record.lastOwnerTurnAt = now(); persist(); }
       live.lastPrompt = prompt;
       live.lastPromptOrigin = origin ? String(origin) : null;
       // A prompt from elsewhere (WhatsApp, the API) is news to the panel: it goes live too.
@@ -2488,6 +2585,15 @@ export function createAssistantRuntime({
           live.testDensityStamp = tests;
         }
       } catch {}
+      // agents-p4: Agent density changed since the brain last saw it: one "[SynaBun Agents]" line, in the same place.
+      try {
+        const agents = agentDensityStamp(agentDensityOf(live.record));
+        if (live.agentDensityStamp === undefined) live.agentDensityStamp = agents;
+        else if (live.agentDensityStamp !== agents) {
+          finalText = finalText.endsWith(prompt) ? `${finalText.slice(0, finalText.length - prompt.length)}${agents}\n\n${prompt}` : `${agents}\n\n${finalText}`;
+          live.agentDensityStamp = agents;
+        }
+      } catch {}
       // The budget changed since the brain last saw it: one "[SynaBun Budget]" line, in the same place.
       const budgetNote = budgetLine(live);
       if (budgetNote) finalText = finalText.endsWith(prompt) ? `${finalText.slice(0, finalText.length - prompt.length)}${budgetNote}\n\n${prompt}` : `${budgetNote}\n\n${finalText}`;
@@ -2500,9 +2606,10 @@ export function createAssistantRuntime({
         finalText = finalText.endsWith(prompt) ? `${finalText.slice(0, finalText.length - prompt.length)}${clarified.note}\n\n${prompt}` : `${clarified.note}\n\n${finalText}`;
       }
       // A human prompt is a new task; the reply to a clarify question stays in the one that asked.
-      if (usage) taskId = clarified?.note
+      taskId = clarified?.note
         ? (live.record.taskId || ensureTaskId(live.record.id))
-        : metered('task', () => usage.beginTask(live.record.id, { title: prompt.split('\n')[0].slice(0, 80), at: now() })?.id);
+        : metered('task', () => usage?.beginTask(live.record.id, { title: prompt.split('\n')[0].slice(0, 80), at: now(), afterSequence: live.record.taskSequence || 0 })?.id) || nextTaskId(live);
+      router?.expireOtherTasks?.(live.record.id, taskId);
       // An image the brain's model cannot see: run this turn on a vision model
       // of the same provider (the conversation stays in the same session).
       if (Array.isArray(images) && images.length && !turnModel) {
@@ -2535,7 +2642,7 @@ export function createAssistantRuntime({
       appendTranscript(live.record.id, { at: iso(now()), packet: continued });
       sendToSockets(live, continued);
     }
-    if (usage) {
+    {
       taskId ||= live.record.taskId || ensureTaskId(live.record.id);
       // record.taskId is the latest human task: a system turn that carries its own names only its turn.
       if (!system || !live.record.taskId) live.record.taskId = taskId;
@@ -2569,7 +2676,20 @@ export function createAssistantRuntime({
     // Every turn names its model: the brain was built from an older snapshot of
     // the record, and routed/continuation turns override it for one turn only.
     const effectiveModel = turnModel || live.record.brain.model || null;
-    const effectiveEffort = brainEffort(live.record.brain.provider, effectiveModel, turnEffort || live.record.brain.effort || null);
+    const askedEffort = turnEffort || live.record.brain.effort || null;
+    const effectiveEffort = brainEffort(live.record.brain.provider, effectiveModel, askedEffort);
+    // Off (`none`) asked of a Claude model that cannot turn its thinking off runs at the lowest level
+    // (effort-levels.js thinkingAlwaysOn): said once per model in this session, so nothing claims "thinking off".
+    if (String(askedEffort || '').toLowerCase() === EFFORT_OFF && effectiveEffort && effectiveEffort !== EFFORT_OFF && effectiveEffort !== 'off' && live.record.brain.provider === 'claude-code') {
+      const said = live.effortOffNoted || (live.effortOffNoted = new Set());
+      const key = String(effectiveModel || 'default');
+      if (!said.has(key)) {
+        said.add(key);
+        const packet = { type: 'event', event: { type: 'system', subtype: 'status', text: `Effort none runs as ${effectiveEffort} on ${effectiveModel || 'the default model'}: this model cannot turn its thinking off.` } };
+        appendTranscript(live.record.id, { at: iso(now()), packet });
+        sendToSockets(live, packet);
+      }
+    }
     // User context (assistant-user-context.js): a human turn's trace and learning start here.
     // A Codex / OpenCode turn gets its per-turn block now (its recall result is known); a Claude
     // turn gets it in the in-process UserPromptSubmit hook, which finds the handle in turnMeta.
@@ -2617,11 +2737,22 @@ export function createAssistantRuntime({
     // Every turn starts unrouted; a continuation or a route_decided "here" turn starts open.
     // Plan mode never routes: the brain explores read-only (the plan policy) and
     // the approved plan is routed on the next turn.
-    ensureGate(live)?.startTurn({ open: gateOpen || live.record.brain?.planMode === true, carry: gateCarry });
+    ensureGate(live)?.startTurn({ open: gateOpen || live.record.brain?.planMode === true, carry: gateCarry, taskId });
+    // What this turn runs on, as the router compares a re-routed task with it (routerSession `turn`). The
+    // brain process keeps it: a turn the CLI starts by itself afterwards (a task notification) runs on it too.
+    const previousRun = live.turnRun;
+    live.turnRun = { model: effectiveModel, effort: askedEffort };
     try {
       await brain.sendUserTurn({ text: finalText, images, cwd, model: effectiveModel, effort: effectiveEffort, permissionMode: permissionMode || remote ? live.record.brain.permissionMode : null, planMode: live.record.brain.planMode === true });
+      if (system && work?.kind === 'continuation' && work.routeId) {
+        const continued = live.continuedRoutes || (live.continuedRoutes = new Set());
+        continued.add(String(work.routeId));
+        while (continued.size > 100) continued.delete(continued.values().next().value);
+        try { router?.continuationStarted?.(work.routeId); } catch (error) { log('assistant:route-continuation', error?.message || String(error)); }
+      }
     } catch (error) {
       live.running = false;
+      live.turnRun = previousRun;
       endComputerTurn(live, 'turn_failed');
       // The prompt never reached the brain: its task leaves the FIFO, a turn still in flight keeps its own.
       const queued = live.turnTasks.lastIndexOf(taskId);
@@ -2656,17 +2787,64 @@ export function createAssistantRuntime({
     return true;
   }
 
-  // ── mailbox ────────────────────────────────────────────────────────────────
-  function enqueueMailbox(live, item) {
-    live.mailbox.push({ ...item, at: iso(now()) });
-    if (live.mailbox.length > 40) live.mailbox.splice(0, live.mailbox.length - 40);
-    scheduleMailbox(live);
+  // ── mailbox (Agents P2: the coordination store) ────────────────────────────
+  // What a session's brain has not been told yet is the open events addressed to it in the coordination store
+  // (lib/coordination/service.js), not a list in memory: nothing is dropped for being many, a restart loses
+  // nothing, and an event is acknowledged only once the turn that carries it was started.
+  //   critical (a question, a permission, a failure, a stall, an interrupted run, the budget spent): its turn starts
+  //   at once when the session is free;
+  //   everything else waits `mailboxDebounceMs` (150 ms at most) so results that arrive together go in one turn;
+  //   while the brain is busy everything waits in the store, low-priority progress folded, and goes when it is free.
+  function mailboxCount(live, options) {
+    try { return coordination.mailbox.count(live.record.id, options); } catch { return 0; }
   }
-  /** Items that arrive together go in one turn: the scheduler delivers them once this window closes. */
-  function scheduleMailbox(live, delay = settings.mailboxBatchMs) {
-    if (!live.mailbox.length || live.mailboxTimer) return;
+  /** A look at what a session has open (the `live.mailbox` view): nothing is handed out or acknowledged. */
+  function mailboxPeek(sessionId) {
+    try { return coordination.mailbox.pending(sessionId, { limit: 1000, peek: true }).items; } catch { return []; }
+  }
+  /** Something the brain must hear that is not a run's own event (a memory reminder, a route's or a clarify card's outcome). */
+  function enqueueMailbox(live, item) {
+    try { coordination.mailbox.post(live.record.id, item); }
+    catch (error) { log('assistant:mailbox-error', `${live.record.id}: ${error?.message || error}`); }
+    // The store's wake-up (onMailboxEvent) schedules the delivery.
+  }
+  /** An event was addressed to this session (the store's wake-up, after its append committed). */
+  function onMailboxEvent(live, event) {
+    // News is a reason to try a held mailbox again.
+    releaseMailboxHold(live, { pump: false });
+    scheduleMailbox(live, event?.priority === 'critical' ? 0 : settings.mailboxDebounceMs);
+  }
+  /**
+   * `delay` 0: now, as soon as the session is free (a critical event, a budget that was raised). Otherwise events
+   * that arrive together go in one turn: the scheduler delivers them once this short window closes.
+   */
+  function scheduleMailbox(live, delay = settings.mailboxDebounceMs) {
+    if (!(delay > 0)) {
+      if (live.mailboxTimer) { clearTimeout(live.mailboxTimer); live.mailboxTimer = null; }
+      releaseMailboxHold(live, { pump: false });
+      pumpSoon(live);
+      return;
+    }
+    if (live.mailboxTimer || !mailboxCount(live)) return;
     live.mailboxTimer = setTimeout(() => { live.mailboxTimer = null; pumpWork(live); }, delay);
     live.mailboxTimer.unref?.();
+  }
+  /** A mailbox turn that could not be started waits (mailboxRetryDelaysMs), then holds; this lets it go again. */
+  function releaseMailboxHold(live, { pump = true } = {}) {
+    const held = live.mailboxHeld || !!live.mailboxRetryTimer;
+    if (live.mailboxRetryTimer) { clearTimeout(live.mailboxRetryTimer); live.mailboxRetryTimer = null; }
+    live.mailboxHeld = false;
+    live.mailboxAttempts = 0;
+    if (held && pump) pumpSoon(live);
+  }
+  function holdMailbox(live, result) {
+    live.mailboxAttempts = (Number(live.mailboxAttempts) || 0) + 1;
+    const delay = settings.mailboxRetryDelaysMs[live.mailboxAttempts - 1];
+    log('assistant:mailbox', `${live.record.id}: the mailbox turn did not start (${result?.code || 'no result'}); its events stay open${delay === undefined ? ' until the session works again' : `, next try in ${delay} ms`}`);
+    if (delay === undefined) { live.mailboxHeld = true; return; }
+    if (live.mailboxRetryTimer) clearTimeout(live.mailboxRetryTimer);
+    live.mailboxRetryTimer = setTimeout(() => { live.mailboxRetryTimer = null; pumpWork(live); }, delay);
+    live.mailboxRetryTimer.unref?.();
   }
   /**
    * A result / needs_input item for a turn the brain already read with
@@ -2682,6 +2860,10 @@ export function createAssistantRuntime({
     try { mark = dispatcher?.deliveryState?.(item.run.runId) || null; } catch { mark = null; }
     return !!mark && Number(mark.turn) >= turn;
   }
+  /** Events the brain read by itself meanwhile are settled without a turn. → how many. */
+  function settleRead(live) {
+    try { return coordination.mailbox.discard(live.record.id, (item) => alreadyRead(item)); } catch { return 0; }
+  }
   /**
    * Out of money: the events wait (a raise or No limit re-schedules them), said once. The brain's
    * provider share used up while the session has money left: the budget is divided again, then the
@@ -2695,35 +2877,41 @@ export function createAssistantRuntime({
       coverBrainTurn(live).then((covered) => {
         live.budgetCovering = false;
         live.budgetShareTriedAt = covered ? 0 : now();
-        if (live.mailbox.length) scheduleMailbox(live, 0);
+        if (mailboxCount(live)) scheduleMailbox(live, 0);
       }).catch(() => { live.budgetCovering = false; live.budgetShareTriedAt = now(); });
       return false;
     }
     if (live.budgetCovering) return false;
     if (!live.budgetHoldNotified) {
       live.budgetHoldNotified = true;
-      sendToSockets(live, { type: 'error', code: budgetBlock.code, message: `${budgetBlock.message} ${live.mailbox.length} agent event${live.mailbox.length === 1 ? '' : 's'} will reach the brain after that.` });
+      const waiting = mailboxCount(live);
+      sendToSockets(live, { type: 'error', code: budgetBlock.code, message: `${budgetBlock.message} ${waiting} agent event${waiting === 1 ? '' : 's'} will reach the brain after that.` });
     }
     return false;
   }
-  /** The mailbox now, if the scheduler would start it (no batch window: it is asked for). */
+  /** The mailbox now, if the scheduler would start it (no debounce: it is asked for). */
   function deliverMailbox(live) {
-    if (shuttingDown || live.closing || !live.mailbox.length || sessions.get(live.record.id) !== live || live.record.status === 'ended') return Promise.resolve(null);
+    if (shuttingDown || live.closing || !mailboxCount(live) || sessions.get(live.record.id) !== live || live.record.status === 'ended') return Promise.resolve(null);
     if (sessionBusy(live) || live.planCard || nextWork(live) || !mailboxAllowed(live)) { pumpSoon(live); return Promise.resolve(null); }
     return startWork(live, { kind: 'mailbox', gen: null });
   }
   /** The mailbox's turn (the scheduler's 'mailbox' work). */
   async function runMailboxTurn(live) {
-    // Read while this batch waited (inside the 2 s window, or while the brain
-    // was busy with the turn that waited for it): not news any more.
-    let unread = live.mailbox.splice(0, live.mailbox.length).filter((item) => !alreadyRead(item));
+    // Read while it waited (inside the debounce, or while the brain was busy with the turn that waited for it):
+    // not news any more.
+    settleRead(live);
+    let batch = null;
+    try { batch = coordination.mailbox.pending(live.record.id, { limit: settings.mailboxItems }); }
+    catch (error) { log('assistant:mailbox-error', `${live.record.id}: ${error?.message || error}`); return null; }
+    let unread = batch.items;
+    let more = batch.more;
     if (!unread.length) { scheduleDispose(live); return null; }
     // A decided route whose card carried the owner's computer approval is carried out in a turn of
     // its own: nothing else in the mailbox rides on that approval. The rest waits for the next turn.
     const marked = live.computerRouteGrant?.routeId || null;
     const own = marked ? unread.filter((item) => item?.kind === 'route_decided' && String(item.route?.routeId || '') === marked) : [];
     if (own.length && own.length < unread.length) {
-      live.mailbox.unshift(...unread.filter((item) => !own.includes(item)));
+      more += unread.length - own.length;
       unread = own;
     }
     // A route decided with no run attached whose run exists by now is not asked to be dispatched again.
@@ -2732,26 +2920,44 @@ export function createAssistantRuntime({
     const items = reconcileRouteItems(unread, sessionRuns);
     // A budget change since the brain last saw it rides first (a raise is what released a held mailbox).
     const budgetNote = budgetLine(live);
-    const text = budgetNote ? `${budgetNote}\n\n${formatMailbox(items)}` : formatMailbox(items);
+    const body = formatMailbox(items, { more });
+    const text = budgetNote ? `${budgetNote}\n\n${body}` : body;
     sendToSockets(live, { type: 'event', event: { type: 'synabun.mailbox', items } });
     appendTranscript(live.record.id, { at: iso(now()), packet: { type: 'event', event: { type: 'synabun.mailbox', items } } });
     live.mailboxTurn = true;
     // The user picked "here" on a card: that turn does the task, so it starts open.
     const decidedHere = items.some((item) => item.kind === 'route_decided' && item.route?.target?.kind === 'direct' && !(item.runIds || []).length);
     const firstRun = items.find((item) => item.run);
-    const taskId = firstRun?.run?.turns?.find((turn) => turn.n === firstRun.turn)?.taskId || firstRun?.run?.taskId || live.record.taskId || null;
+    const taskId = firstRun?.taskId || firstRun?.run?.turns?.find((turn) => turn.n === firstRun.turn)?.taskId || firstRun?.run?.taskId || live.record.taskId || null;
     // The decided "here" routes this turn carries out (one of them may hold the owner's computer approval).
     const computerRoutes = items.filter((item) => item.kind === 'route_decided' && item.route?.target?.kind === 'direct' && !(item.runIds || []).length).map((item) => String(item.route?.routeId || '')).filter(Boolean);
-    const result = await runQuery(live, { text, system: true, taskId, gateOpen: decidedHere, computerRoutes });
-    // A human prompt reached the brain first: the items go after its turn.
-    if (result?.code === 'ASSISTANT_BUSY') { live.mailbox.unshift(...items); live.mailboxTurn = false; }
+    let result = null;
+    try { result = await runQuery(live, { text, system: true, taskId, gateOpen: decidedHere, computerRoutes }); }
+    catch (error) {
+      // A start that threw is a start that failed: its events stay open and the retry rules below apply (never a spin).
+      log('assistant:mailbox-error', `${live.record.id}: ${error?.message || error}`);
+      result = { ok: false, code: 'TURN_FAILED', message: error?.message || String(error) };
+    }
+    if (result?.ok) {
+      // The turn that carries them was started: only now are they acknowledged. A turn that was refused, failed
+      // or found the brain busy leaves every one of them open, also across a restart.
+      try { coordination.mailbox.ack(live.record.id, items.map((item) => item.eventId).filter(Boolean)); }
+      catch (error) { log('assistant:mailbox-error', `${live.record.id}: ${error?.message || error}`); }
+      live.mailboxAttempts = 0;
+      return result;
+    }
+    live.mailboxTurn = false;
+    // A human prompt reached the brain first (ASSISTANT_BUSY): the events go after its turn, whose end pumps. A
+    // turn dropped because the session closed needs no retry. Anything else is tried again, then held.
+    if (result?.code !== 'ASSISTANT_BUSY' && result?.code !== 'TURN_CANCELLED') holdMailbox(live, result);
     return result;
   }
   function onDispatchEvent(payload) {
     const run = payload?.run;
     if (!run?.assistantSessionId) return;
     const live = sessions.get(run.assistantSessionId);
-    if (!live) return;
+    // A session that is gone hears nothing: what was addressed to it is settled, so it does not wait in the store for good.
+    if (!live) { dropMailbox(run.assistantSessionId); return; }
     // The conversation's thread record: its runs, their outcomes and follow-ups.
     try { userContext?.onDispatch(live.record, payload); } catch {}
     if (!live.record.dispatchRunIds?.includes(run.runId)) { live.record.dispatchRunIds = [...(live.record.dispatchRunIds || []), run.runId].slice(-100); touch(live); }
@@ -2762,27 +2968,15 @@ export function createAssistantRuntime({
     if (payload.reason === 'completed' || payload.reason === 'failed' || payload.reason === 'stopped' || payload.reason === 'interrupted') {
       sendToSockets(live, { type: 'event', event: { type: 'synabun.dispatch_result', run, result: run.lastResult || null } });
     }
-    if (!MAILBOX_REASONS.has(payload.reason)) return;
-    if (payload.reason === 'stopped' && !MAILBOX_STOP_REASONS.has(run.completionReason)) return;
-    // needs_input already carries the question; its turn_completed twin would
-    // hand the brain the same event twice.
-    if (payload.reason === 'turn_completed' && run.lastResult?.status === 'needs_input') return;
-    const kind = payload.reason === 'turn_completed' ? 'result' : payload.reason;
-    const carriesResult = kind === 'result' || kind === 'needs_input';
-    const item = {
-      kind, run, summary: run.lastResult?.summary ? clip(run.lastResult.summary, 400) : null, question: run.lastResult?.question || null,
-      files: run.lastResult?.files || [], follow_ups: run.lastResult?.follow_ups || [], request: payload.request || null, error: run.error || null,
-      text: payload.text || null,
-      turn: Number.isFinite(Number(payload.turn)) ? Number(payload.turn) : null,
-      // Jev's reading of the result: a "done" its own output does not show, and a status read without a ## Result block.
-      unverified: carriesResult ? (run.lastResult?.unverifiedClaim?.evidence || null) : null,
-      resultSource: carriesResult ? (run.lastResult?.source || null) : null,
-      // Image / video creation: the files this turn generated ({ kind, path, url, mime, bytes }).
-      media: carriesResult && Array.isArray(run.lastResult?.media) ? run.lastResult.media : [],
-    };
-    // Already read by the brain (agent_wait in the same turn that dispatched it): no second turn.
-    if (alreadyRead(item)) return;
-    enqueueMailbox(live, item);
+    // Agents P2: the event is in the coordination log. The dispatcher appended it in the step that changed the run;
+    // recording it here again stores nothing (same id), and is what a dispatcher without the service relies on.
+    // Which reasons reach the brain, and how urgently, is the service's rule. The store's wake-up schedules the turn.
+    const recorded = coordination.recordDispatch(payload);
+    // Already read by the brain (agent_wait in the same turn that dispatched it): no second turn. Only this event is
+    // looked at here; the whole mailbox is gone through once, when a turn is composed.
+    if (recorded?.delivered && alreadyRead({ kind: payload.reason === 'turn_completed' ? 'result' : payload.reason, turn: payload.turn, run })) {
+      try { coordination.mailbox.ack(live.record.id, [recorded.id]); } catch {}
+    }
   }
   function onRunRemoved(payload) {
     const live = payload?.assistantSessionId ? sessions.get(payload.assistantSessionId) : null;
@@ -2796,10 +2990,33 @@ export function createAssistantRuntime({
     }
     // A result can be waiting in the mailbox while the user clears its run.
     // Do not let that stale result (or its memory reminder) start another turn.
-    live.mailbox = live.mailbox.filter((item) => !removed.has(String(item?.run?.runId || item?.runId || '')));
-    if (!live.mailbox.length && live.mailboxTimer) {
+    try { coordination.mailbox.discard(live.record.id, (item) => removed.has(String(item?.run?.runId || item?.runId || ''))); } catch {}
+    if (!mailboxCount(live) && live.mailboxTimer) {
       clearTimeout(live.mailboxTimer);
       live.mailboxTimer = null;
+    }
+  }
+  /**
+   * Everything open for a session that no longer exists is settled (nobody will ever read it). Never while the
+   * sessions index could not be read: a session this start does not know yet may be there after the next one.
+   */
+  function dropMailbox(sessionId) {
+    if (!indexReady) return;
+    try { if (coordination.mailbox.count(sessionId)) coordination.mailbox.discard(sessionId, null); } catch {}
+  }
+  /**
+   * After a restart: what a session's brain was not told before the server went down is still open in the store,
+   * and is delivered now. A session that was removed gets nothing; one that is closed waits until it is opened again.
+   */
+  function resumeMailboxes() {
+    if (shuttingDown) return;
+    let open = [];
+    try { open = coordination.mailbox.sessions(); } catch { open = []; }
+    for (const { sessionId } of open) {
+      const live = sessions.get(sessionId);
+      if (!live) { dropMailbox(sessionId); continue; }
+      if (live.record.status === 'ended') continue;
+      scheduleMailbox(live, 0);
     }
   }
   function onPermissionBroadcast(message) {
@@ -2808,7 +3025,7 @@ export function createAssistantRuntime({
     if (message.type === 'assistant:permission-request') {
       sendToSockets(live, { type: 'event', event: { type: 'synabun.dispatch_control_request', runId: message.runId, request_id: message.request?.requestId, provider: dispatcher?.get?.(message.runId)?.provider || null, request: message.request } });
     } else if (message.type === 'assistant:permission-resolved') {
-      live.mailbox = live.mailbox.filter((item) => !(item.run?.runId === message.runId && item.request?.requestId === message.requestId));
+      try { coordination.mailbox.discard(live.record.id, (item) => item.run?.runId === message.runId && item.request?.requestId === message.requestId); } catch {}
       sendToSockets(live, { type: 'event', event: { type: 'synabun.dispatch_control_resolved', runId: message.runId, request_id: message.requestId, resolvedBy: message.resolvedBy, behavior: message.behavior } });
     }
   }
@@ -2879,14 +3096,26 @@ export function createAssistantRuntime({
    * they cannot. The record is flagged before it is persisted: after a restart without a new
    * registration the session reads as read-only.
    */
-  async function resolveAutoAccount(brain) {
+  function conversationAccounts(brain, live) {
+    return (accountUsage?.list()?.[brain.provider] || []).map(row => {
+      const key = providerBinding({ id: live?.record.id, brain: { ...brain, accountId: row.id } });
+      const limit = live?.record.accountLimits?.[key];
+      return limit && (!limit.resetsAt || limit.resetsAt > now())
+        ? { ...row, usage: { ...row.usage, limited: true, resetsAt: limit.resetsAt ? iso(limit.resetsAt) : null } } : row;
+    });
+  }
+  async function resolveAutoAccount(brain, live = null) {
     if (brain.accountId !== 'auto' || !['claude-code', 'codex'].includes(brain.provider)) return brain;
     await accountUsage?.refresh(brain.provider);
-    const rows = accountUsage?.list()?.[brain.provider] || [];
+    const rows = conversationAccounts(brain, live);
     const key = brain.provider === 'codex' ? 'codexAccount' : 'claudeAccount';
-    const { row } = chooseUsageAccount(rows, 'auto', configStore?.workers?.()?.[key] || 'default');
+    const { row, reason } = chooseUsageAccount(rows, 'auto', configStore?.workers?.()?.[key] || 'default');
     if (!row) throw Object.assign(new Error('Auto requires a signed-in subscription account.'), { code: 'ACCOUNT_NO_SUBSCRIPTION', status: 409 });
-    return { ...brain, accountId: row.id };
+    if (reason === 'accounts_all_limited') {
+      const reset = row.usage?.resetsAt;
+      throw Object.assign(new Error(`All signed-in ${brain.provider === 'codex' ? 'Codex' : 'Claude'} subscriptions are limited. ${reset ? `Soonest reset: ${reset}.` : 'Reset time is unknown.'} This chat is preserved; retry after reset or choose another provider.`), { code: 'ACCOUNTS_ALL_LIMITED', status: 409, resetsAt: reset || null });
+    }
+    return { ...brain, accountId: row.id, accountPolicy: 'auto' };
   }
   async function createSession({ brain = {}, label = null, cwd = null, windowId = null, fallback = false, channel = null, draft = false } = {}, internal = {}) {
     if (brain?.mcpProfile !== undefined) throw Object.assign(new Error('Use tools: [group ids].'), { code: 'MCP_PROFILE_REMOVED', status: 400 });
@@ -2941,6 +3170,10 @@ export function createAssistantRuntime({
   function applyTestDensity(live, level) {
     live.record.testDensity = normalizeTestDensity(level, null);
   }
+  /** agents-p4: null, '' or an unknown value clears the session's own level: it reads as the default (Solo). */
+  function applyAgentDensity(live, level) {
+    live.record.agentDensity = normalizeAgentDensity(level, null);
+  }
   function applyComputerUse(live, enabled) {
     // A remote session's computer use is not a per-conversation choice: the owner's switch and
     // the level decide (remoteComputerUse). A PATCH, the socket and updateSession change nothing.
@@ -2949,7 +3182,18 @@ export function createAssistantRuntime({
     live.record.computerUse = value;
     try { desktop?.onSessionToggle?.(live.record.id, computerEffective(live.record)); } catch {}
   }
-  async function updateSession(id, patch = {}) {
+  async function updateSession(id, patch = {}, internal = {}) {
+    const live = sessions.get(id);
+    if (!live) return null;
+    const previous = live.switching;
+    const pending = (async () => {
+      if (previous) await previous.catch(() => {});
+      return applySessionUpdate(id, patch, internal);
+    })();
+    live.switching = pending;
+    try { return await pending; } finally { if (live.switching === pending) live.switching = null; }
+  }
+  async function applySessionUpdate(id, patch = {}, { fromTurn = false } = {}) {
     const live = sessions.get(id);
     if (!live) return null;
     // A rename (tab, float header, sidepanel ✎) is the session's one name: every list reads it
@@ -2963,6 +3207,7 @@ export function createAssistantRuntime({
     if (patch.routing && typeof patch.routing === 'object' && 'mode' in patch.routing) applyRouteMode(live, patch.routing.mode);
     if ('computerUse' in patch) applyComputerUse(live, patch.computerUse);
     if ('testDensity' in patch) applyTestDensity(live, patch.testDensity);
+    if ('agentDensity' in patch) applyAgentDensity(live, patch.agentDensity); // agents-p4
     if (patch.brain && typeof patch.brain === 'object') {
       // A provider switch that names no model starts from the new provider's
       // default, never from the old provider's model id.
@@ -2975,15 +3220,22 @@ export function createAssistantRuntime({
       // An effort the panel cleared (its Auto row: `effort: null`) is the model's default. normalizeBrain
       // would fall back to the one before it, and Off (`none`, no thinking) or a level would stay on.
       if (Object.hasOwn(patch.brain, 'effort') && (patch.brain.effort === null || patch.brain.effort === '')) next = { ...next, effort: null };
-      next = await resolveAutoAccount(next);
+      if (switching || patch.brain.accountId) next.accountPolicy = patch.brain.accountId === 'auto' || (!switching && patch.brain.accountPolicy === 'auto') ? 'auto' : 'manual';
+      next = await resolveAutoAccount(next, live);
       const modelChanged = next.model !== live.record.brain.model || next.provider !== live.record.brain.provider;
       if (modelChanged) next = (await enabledBrain(next)).brain;
       // A remote session keeps what was asked for and runs what its level allows.
       if ('permissionMode' in patch.brain || 'planMode' in patch.brain) next = clampModeWrite(live, next);
       else next = clampedBrain(live, next);
       const providerChanged = patch.restartBrain === true || next.provider !== live.record.brain.provider || next.accountId !== live.record.brain.accountId || next.cwd !== live.record.brain.cwd || JSON.stringify(next.tools) !== JSON.stringify(live.record.brain.tools);
+      const accountChanged = next.provider !== live.record.brain.provider || next.accountId !== live.record.brain.accountId;
+      if (accountChanged && (live.running || live.brain?.isBusy?.() || (!fromTurn && live.turnPending > 0))) {
+        throw Object.assign(new Error('Finish or stop the current turn before switching accounts.'), { code: 'ASSISTANT_BUSY', status: 409 });
+      }
+      // Dispose under the OLD account: identity, meter and late callbacks belong to it.
+      if (providerChanged) await disposeBrain(live, 'switched');
       // A usage limit is the account's: another provider or account starts without the notice.
-      if (next.provider !== live.record.brain.provider || next.accountId !== live.record.brain.accountId) setLimit(live, null);
+      if (next.provider !== live.record.brain.provider || next.accountId !== live.record.brain.accountId) setLimit(live, null, { remember: false });
       live.record.brain = next;
       // The panel's brain names its working folder `project` and never sends `cwd`. A project picked
       // there (the toolbar's Working project, the empty state's picker) moves the folder the way a
@@ -2993,10 +3245,14 @@ export function createAssistantRuntime({
       if (folder && folder !== next.cwd) live.record.brain = { ...next, cwd: folder };
       live.record.project = detectProject(live.record.brain.cwd) || live.record.project || 'global';
       if (providerChanged) {
-        await disposeBrain(live, 'switched');
+        // Always seed again on a switch (including switching back). An old account's
+        // session may predate turns or worker results now in this chat's journal.
+        live.record.providerBinding = null;
+        live.record.providerHandoff = null;
+        live.record.memoryGeneration = (live.record.memoryGeneration || 1) + 1;
         live.record.providerSessionId = null;
         live.record.providerThreadId = null;
-        // Another conversation: its user-context digest is built (and frozen) anew.
+        // A fresh provider session: rebuild its digest; the chat handoff stays authoritative.
         try { userContext?.conversationReplaced(live.record); } catch {}
         if (live.record.usageState) delete live.record.usageState[next.provider === 'claude-code' ? 'claude' : next.provider];
         if (live.record.usageState) delete live.record.usageState.codexThreadId;
@@ -3064,6 +3320,9 @@ export function createAssistantRuntime({
       await disposeBrain(live, 'closed');
       for (const ws of live.sockets) { try { ws.close(1000, 'session destroyed'); } catch {} }
       sessions.delete(id);
+      if (live.mailboxTimer) { clearTimeout(live.mailboxTimer); live.mailboxTimer = null; }
+      if (live.mailboxRetryTimer) { clearTimeout(live.mailboxRetryTimer); live.mailboxRetryTimer = null; }
+      dropMailbox(id);
       const usageTimer = usageTimers.get(id);
       if (usageTimer) clearTimeout(usageTimer);
       usageTimers.delete(id);
@@ -3225,7 +3484,7 @@ export function createAssistantRuntime({
     const superseded = movedOn === true && (inner.decline === true || inner.behavior === 'deny');
     const sid = live.record.id;
     // Route cards are answered by the router and never reach the brain.
-    if (router?.owns?.(rid, sid)) {
+    if (router?.owns?.(rid, sid) || router?.closedRoute?.(rid, sid)) {
       if (superseded && typeof router.cancel === 'function') {
         controlResolved(live, rid, origin);
         router.cancel(rid, 'superseded', { sessionId: sid });
@@ -3372,7 +3631,8 @@ export function createAssistantRuntime({
     if (live.disposeTimer) { clearTimeout(live.disposeTimer); live.disposeTimer = null; }
     if (live.draftTimer) { clearTimeout(live.draftTimer); live.draftTimer = null; }
     live.sockets.add(ws);
-    live.record.status = live.record.status === 'ended' ? 'idle' : live.record.status;
+    // A closed session opened again: what its workers reported meanwhile waited in the store and goes now.
+    if (live.record.status === 'ended') { live.record.status = 'idle'; if (mailboxCount(live)) scheduleMailbox(live, 0); }
     const engine = live.brain ? { type: 'engine', engine: live.brainProvider === 'claude-code' ? 'sdk' : live.brainProvider, brain: live.brainProvider, sdkVersion } : { type: 'engine', engine: 'assistant', brain: live.record.brain.provider, sdkVersion };
     try { ws.send(JSON.stringify(engine)); } catch {}
     try { ws.send(JSON.stringify({ type: 'assistant:session', session: view(live), reason: 'attached' })); } catch {}
@@ -3447,6 +3707,13 @@ export function createAssistantRuntime({
         broadcast('assistant:session-updated', live);
         sendToSockets(live, { type: 'assistant:session', session: view(live), reason: 'tests' });
         return;
+      // agents-p4: the Agent density control (the owner's panel socket; an agent has no way to send this).
+      case 'set_agent_density':
+        applyAgentDensity(live, msg.level);
+        touch(live);
+        broadcast('assistant:session-updated', live);
+        sendToSockets(live, { type: 'assistant:session', session: view(live), reason: 'agents' });
+        return;
       case 'set_computer_use':
         applyComputerUse(live, msg.enabled);
         touch(live);
@@ -3500,6 +3767,10 @@ export function createAssistantRuntime({
       }
       case 'resume':
         if (msg.providerSessionId) {
+          if (['claude-code', 'codex'].includes(live.record.brain.provider) && (live.record.providerBinding !== providerBinding(live.record) || ![live.record.providerSessionId, live.record.providerThreadId].includes(msg.providerSessionId))) {
+            sendToSockets(live, { type: 'error', code: 'SESSION_ACCOUNT_MISMATCH', message: 'That provider session is not bound to this chat and account. Open its own conversation instead.' });
+            return;
+          }
           const moved = msg.providerSessionId !== live.record.providerSessionId;
           live.record.providerSessionId = msg.providerSessionId;
           // A provider conversation adopted (/resume <id>): the session holds a chat now.
@@ -3532,6 +3803,12 @@ export function createAssistantRuntime({
     return live ? testDensityOf(live.record) : null;
   }
 
+  /** agents-p4: the dispatcher's and the team scheduler's reading of a session's Agent density (wired in server.js); null for an unknown session. */
+  function agentDensityFor(id) {
+    const live = sessions.get(id);
+    return live ? agentDensityOf(live.record) : null;
+  }
+
   // ── router sinks (wired lazily in server.js; see assistant-router.js) ──────
   /** What the budget planner needs of a session: its brain, project, and whether it is still open. */
   function budgetSession(id) {
@@ -3549,7 +3826,16 @@ export function createAssistantRuntime({
     // remote: a decided route authorizes one dispatch only (assistant-router.js).
     // computer: what remoteComputerUse says for the running turn ("ask": a computer route card done here also asks for the Mac).
     const computer = policy ? computerDecision(live) : null;
-    return { brain: live.record.brain, routingMode, running: live.running, remote: !!policy, computer: computer ? { state: computer.state, reason: computer.reason } : null };
+    // turn: what the brain's running turn is on (a re-routed task continues in place when it is the approved one).
+    const turn = live.turnRun ? { model: live.turnRun.model ?? null, effort: live.turnRun.effort ?? null } : null;
+    // closing: the session is closing or has ended (a continuation it refuses can never run: the router answers expired).
+    const closing = !!live.closing || live.record.status === 'ended';
+    // pendingWork: the brain's CLI runs background work it will report back on (a background Bash, an agent, a
+    // wakeup). A thinking on/off switch restarts Claude Code and would end it, so an effort-only "here" pick that
+    // needs one waits (the router's thinkingWaits; the bridge defers the switch as well).
+    let pendingWork = false;
+    try { pendingWork = live.brain?.hasPendingWork?.() === true; } catch { pendingWork = false; }
+    return { brain: live.record.brain, routingMode, agentDensity: agentDensityFor(id), taskId: currentTask(id) || ensureTaskId(id), latestTaskId: live.record.taskId, running: live.running, remote: !!policy, computer: computer ? { state: computer.state, reason: computer.reason } : null, turn, closing, pendingWork };
   }
   /**
    * The panel's route chip counts pending routes from the session view, so a card
@@ -3584,6 +3870,11 @@ export function createAssistantRuntime({
     const live = sessions.get(id);
     if (!live) return;
     emitRouteEvent(live, phase, route);
+    if (phase === 'continuation_delayed') {
+      const packet = { type: 'event', event: { type: 'system', subtype: 'status', text: route.reason } };
+      appendTranscript(id, { at: iso(now()), packet });
+      sendToSockets(live, packet);
+    }
     if (phase !== 'card' && phase !== 'pending' && phase !== 'auto') publishPendingRoutes(live);
   }
   function routerMailbox(id, item) { const live = sessions.get(id); if (live && item) enqueueMailbox(live, item); }
@@ -3602,10 +3893,29 @@ export function createAssistantRuntime({
    * arrives after a newer prompt, a Stop or the session closing is refused
    * (false): the router then approves nothing and the card expires.
    */
-  function routerContinue(id, { target = null, route = null } = {}) {
+  function routerContinue(id, { target = null, route = null, retry = false, reroute = false } = {}) {
     const live = sessions.get(id);
     if (!live || !target) return false;
-    const gen = live.routeGens.get(String(route?.routeId || '')) ?? live.gen;
+    // Idempotent by route: the router's watchdog delivers a continuation that has not started once more, and a
+    // route asked again with its task_key delivers it again. One this session already ran is done (the router
+    // hears it started, and nothing runs twice); one still queued (behind a running turn, a busy brain) or on its
+    // way to the brain is left where it is. Only one that was dropped (a turn that failed to start, a newer
+    // prompt) is queued again, below.
+    const routeId = String(route?.routeId || '');
+    if (routeId) {
+      if (live.continuedRoutes?.has(routeId)) {
+        try { router?.continuationStarted?.(routeId); } catch {}
+        return true;
+      }
+      const queued = live.work.get('continuation');
+      if (queued?.routeId === routeId && workCurrent(live, queued)) return true;
+      const active = activeWork(live);
+      if (active?.kind === 'continuation' && active.routeId === routeId) return true;
+    }
+    // A re-route (agent_route again for an approved task) is asked in the turn running now, whatever the
+    // generation the route's card was raised in or it was first delivered in: it continues after this turn,
+    // in this generation (and the watchdog's retries follow it there). A retry keeps its own generation.
+    const gen = reroute ? live.gen : (live.routeGens.get(routeId) ?? live.gen);
     if (gen !== live.gen || live.record.status === 'ended' || live.closing) {
       log('assistant:work', `${id}: a late "do it here" pick (${route?.routeId || 'route'}) was dropped: a newer prompt or a Stop came after its turn`);
       return false;
@@ -3613,9 +3923,20 @@ export function createAssistantRuntime({
     const row = target.model ? findModel(catalog?.peek?.() || null, target.provider, target.model)?.row : null;
     const label = row?.label || target.model || 'the chosen model';
     const summary = route?.summary || '';
-    const text = `[SynaBun Router] The user chose to run ${summary ? `"${summary}"` : 'this task'} here on ${label}${target.effort ? ` (effort ${target.effort})` : ''}. Continue that task now on this model, from where the conversation left off.`;
+    // An effort-only pick is a continuation on the brain's own model with the picked effort, for this task only.
+    const effortText = !target.effort ? '' : String(target.effort).toLowerCase() === EFFORT_OFF ? ' (thinking off)' : ` (effort ${target.effort})`;
+    const text = `[SynaBun Router] The user chose to run ${summary ? `"${summary}"` : 'this task'} here on ${label}${effortText}. Continue that task now on this model, from where the conversation left off.`;
     // `origin`: where the prompt this task came from was written, so the continuation answers there.
-    queueWork(live, { kind: 'continuation', gen, options: { text, turnModel: target.model || null, turnEffort: target.effort || null, gateOpen: true, origin: lastPromptOrigin(live) } });
+    // A route with no card (approved at once) belongs to the generation it was first delivered in: a later delivery
+    // after a newer prompt or a Stop is refused like a late pick. A re-route moves it to this generation.
+    if (routeId && (reroute || !live.routeGens.has(routeId))) {
+      live.routeGens.delete(routeId);
+      live.routeGens.set(routeId, gen);
+      while (live.routeGens.size > 50) live.routeGens.delete(live.routeGens.keys().next().value);
+    }
+    if (reroute) log('assistant:work', `${id}: ${routeId || 'a route'} was routed again in a later turn; its continuation is queued`);
+    else if (retry) log('assistant:work', `${id}: the "do it here" continuation of ${routeId || 'a route'} had not started; queued again`);
+    queueWork(live, { kind: 'continuation', gen, routeId: route?.routeId, options: { text, turnModel: target.model || null, turnEffort: target.effort || null, gateOpen: true, origin: lastPromptOrigin(live) } });
     return true;
   }
   function routerSinks() {
@@ -4037,22 +4358,30 @@ export function createAssistantRuntime({
     if (unsubscribeDispatcher) { try { unsubscribeDispatcher(); } catch {} unsubscribeDispatcher = null; }
     if (unsubscribePolicy) { try { unsubscribePolicy(); } catch {} unsubscribePolicy = null; }
     if (unsubscribeUsage) { try { unsubscribeUsage(); } catch {} unsubscribeUsage = null; }
+    if (unsubscribeMailbox) { try { unsubscribeMailbox(); } catch {} unsubscribeMailbox = null; }
+    if (mailboxBootTimer) { clearTimeout(mailboxBootTimer); mailboxBootTimer = null; }
     for (const timer of usageTimers.values()) clearTimeout(timer);
     usageTimers.clear();
     packetObservers.clear();
     shuttingDown = true;
     for (const live of sessions.values()) {
       if (live.mailboxTimer) clearTimeout(live.mailboxTimer);
+      if (live.mailboxRetryTimer) clearTimeout(live.mailboxRetryTimer);
       if (live.disposeTimer) clearTimeout(live.disposeTimer);
       if (live.draftTimer) clearTimeout(live.draftTimer);
       if (live.workTimer) clearTimeout(live.workTimer);
       await disposeBrain(live, 'shutdown').catch(() => {});
-      live.record.status = 'idle';
+      // A session the user closed stays closed across the restart (loadIndex keeps 'ended'): what its workers
+      // report meanwhile waits in the store until it is opened again, and starts no brain at the next start.
+      if (live.record.status !== 'ended') live.record.status = 'idle';
     }
     persist({ force: true });
     try { userContext?.shutdown(); } catch {}
     // Rows whose append failed get one more try before the process goes.
     metered('flush', () => usage?.flush?.());
+    // A coordination service this runtime made for itself goes with it (a shared one is closed by its owner).
+    // What a brain was not told stays open in the store and is delivered by the next start.
+    if (ownsCoordination) coordination.close();
   }
 
   loadIndex();
@@ -4066,18 +4395,34 @@ export function createAssistantRuntime({
       else if (payload?.type === 'assistant:run-removed') onRunRemoved(payload);
     });
   }
+  // Agents P2: the store wakes the mailbox of the session an event was addressed to (after its append committed).
+  try {
+    unsubscribeMailbox = coordination.mailbox.subscribe((sessionId, event) => {
+      const live = sessions.get(sessionId);
+      if (live) onMailboxEvent(live, event);
+    });
+  } catch (error) { log('assistant:mailbox-error', error?.message || String(error)); }
+  // After a restart, once this server answers its workers: the mailboxes that were open are delivered again.
+  if (coordination.durable) {
+    Promise.resolve().then(() => dispatcher?.whenServerReady?.()).catch(() => {}).then(() => {
+      if (shuttingDown) return;
+      mailboxBootTimer = setTimeout(() => { mailboxBootTimer = null; resumeMailboxes(); }, settings.mailboxBootDelayMs);
+      mailboxBootTimer.unref?.();
+    });
+  }
   const originalBroadcast = broadcastSync;
   // Permission broadcasts come from the dispatcher through broadcastSync; observe them here too.
   broadcastSync = (message) => { try { originalBroadcast(message); } catch {} if (message?.type === 'assistant:permission-request' || message?.type === 'assistant:permission-resolved') onPermissionBroadcast(message); };
 
   return {
+    lastOwnerTurnAt: (sessionId) => sessions.get(sessionId)?.record.lastOwnerTurnAt ?? null,
     handleWebSocket, listSessions, getSession, createSession, updateSession, closeSession, destroySession, removeSession,
     resolveTerminal, accountInUse, ownsIsolatedServe, noteDispatch, subscribe, shutdown,
     // The sessions index written now, synchronously: the server's exit handler runs it on every way out,
     // since an exit through process.exit() never reaches shutdown()'s own write.
     flushIndex: () => persist({ force: true }),
     observeBroadcast: onPermissionBroadcast,
-    testDensityFor, routerSession, routerSend, routerEvent, routerMailbox, routerContinue, routerSinks, routerRouted, routerRouteFailed, routerComputerApproved, gateCheck, isPlanning, isPlanReadOnly,
+    testDensityFor, agentDensityFor, routerSession, routerSend, routerEvent, routerMailbox, routerContinue, routerSinks, routerRouted, routerRouteFailed, routerComputerApproved, gateCheck, isPlanning, isPlanReadOnly,
     clarifySession, clarifyEvent, clarifyGate, clarifySinks,
     getComputerUse, getComputerTurn, supersedeComputerApproval, abortTurn, notifySession,
     brainSpend, brainSpendByProvider, budgetSession, onBudgetChanged, onBudgetSplit, sendBudget, currentTask, usageView,
@@ -4085,6 +4430,8 @@ export function createAssistantRuntime({
     observe, submit, stopTurn, answerControl, answerDispatchControl, pendingControls, isBusy, sessionPolicy, sessionChannel,
     // whatsapp_send_file's caller identity (POST /api/assistant/whatsapp/send-file).
     sessionForBrainCredential,
-    _internals: { sessions, ensureBrain, disposeBrain, runQuery, enqueueMailbox, deliverMailbox, settings, ensureGate, onBrainPacket, onTurnFinished, remoteHooks, packetObservers, userContext },
+    // Agents P2: the coordination service the mailbox reads from.
+    coordination,
+    _internals: { sessions, ensureBrain, disposeBrain, runQuery, enqueueMailbox, deliverMailbox, resumeMailboxes, settings, ensureGate, onBrainPacket, onTurnFinished, remoteHooks, packetObservers, userContext },
   };
 }

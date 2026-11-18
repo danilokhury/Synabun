@@ -1,6 +1,6 @@
 {
   "name": "synabun",
-  "version": "2.3.1",
+  "version": "2.4.0",
   "mcpName": "io.github.danilokhury/synabun",
   "description": "Local-first persistent vector memory, MCP tooling, and multi-agent workflows for AI assistants",
   "license": "Apache-2.0",
@@ -38,6 +38,8 @@
     "lib/release-scan.mjs",
     "lib/release-publish.mjs",
     "lib/release-npm-ci.mjs",
+    "browser-extension/",
+    "docs/browser-extension-bridge.md",
     "neural-interface/server.js",
     "neural-interface/lib/",
     "neural-interface/i18n/",

@@ -37,6 +37,7 @@
 
 import { normalizeProvider } from './asst-state.js';
 import { sanitizeInto } from './asst-sanitize.js';
+import { decorateCodeBlocks } from '../ui-code-copy.js';
 import { fill, maskEcho, redactInput } from './asst-tool-kinds.js';
 import { mascotSvg, paintMascot, stillFrame } from '../synabun-mascot.js';
 import { splitRecommended } from './asst-followups.js';
@@ -1068,6 +1069,8 @@ function renderPlanBody(body, n, hooks) {
   // The plan is the brain's text: whatever hooks.md returns, only the allowlist reaches the page.
   try { sanitizeInto(planEl, typeof hooks.md === 'function' ? hooks.md(n.plan) : escapeHtml(n.plan).replace(/\n/g, '<br>')); }
   catch { planEl.textContent = n.plan; } // no DOM to parse into (a test DOM): the plain text
+  // A block of the plan gets the shared Copy button (../ui-code-copy.js).
+  try { decorateCodeBlocks(planEl); } catch { /* a test DOM without selectors */ }
   body.appendChild(planEl);
 }
 

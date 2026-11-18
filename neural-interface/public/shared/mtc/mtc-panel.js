@@ -749,7 +749,9 @@ function renderPills() {
       pill.tabIndex = 0;
       pill.setAttribute('role', 'button');
       pill.innerHTML = `<span class="mtc-pill-ring" aria-hidden="true"><i></i></span><span class="term-minimized-pill-icon mtc-mark">${ICON}</span><span class="term-minimized-pill-label"></span><button class="term-minimized-pill-close" data-tooltip="${esc(T('closeTab'))}" aria-label="${esc(T('closeTab'))}">&times;</button>`;
-      const openIt = () => { const idx = _tabs.indexOf(tab); if (idx < 0) return; if (!_visible) setVisible(true); switchTab(idx); try { focusSidepanel(PANEL_OWNER); } catch {} };
+      // A closed panel goes to this tab first and is shown after: showing it first drew, and loaded the session
+      // of, the tab it was left on before the one that was clicked.
+      const openIt = () => { const idx = _tabs.indexOf(tab); if (idx < 0) return; switchTab(idx); if (!_visible) setVisible(true); try { focusSidepanel(PANEL_OWNER); } catch {} };
       pill.addEventListener('click', openIt);
       pill.addEventListener('keydown', (event) => { if (event.target !== pill) return; if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openIt(); } });
       pill.querySelector('.term-minimized-pill-close')?.addEventListener('click', (event) => { event.stopPropagation(); const idx = _tabs.indexOf(tab); if (idx >= 0) closeTab(idx); });

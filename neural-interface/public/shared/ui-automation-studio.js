@@ -936,8 +936,8 @@ function showLaunchInline(params) {
 
   const iterCount = params.iterations || 10;
   const timeCount = params.maxMinutes || 30;
-  // The MoreLogin profile of this one launch (morelogin-profile-field.js). Every dialog opens on the default of
-  // Settings → Browser: a profile is never carried over from the launch before.
+  // The MoreLogin profile of this one launch (morelogin-profile-field.js). Every dialog opens on the default
+  // AI browser: a profile is never carried over from the launch before.
   ensureMoreLoginProfiles();
 
   contentEl.innerHTML = `
@@ -1509,7 +1509,7 @@ async function confirmLaunch() {
   const effort = normalizeEffortForProfile(_launchProfile, _launchEffort) || undefined;
   const tools = strictToolHost(_launchProfile) ? _launchTools : undefined;
   const codexAccountId = _launchProfile === 'codex' ? (_launchAccount || 'default') : undefined;
-  // Read before the panel closes. None chosen (or the field not shown): the default of Settings → Browser.
+  // Read before the panel closes. None chosen (or the field not shown): the default AI browser.
   const moreLoginChoice = readMoreLoginField('as-launch-mlprofile');
   const moreloginEnvId = moreLoginChoice?.moreloginEnvId || undefined;
   const moreloginEnvName = moreloginEnvId ? (moreLoginChoice.moreloginEnvName || undefined) : undefined;

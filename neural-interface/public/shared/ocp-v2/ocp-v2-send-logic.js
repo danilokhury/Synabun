@@ -196,8 +196,8 @@ function applyAskEvent(open, eventType, ev) {
     return known?.owner !== owner;
   }
   if (ANSWERED.has(eventType)) return open.delete(askIdOf(ev));
-  if (eventType === 'session.idle' || eventType === 'session.error') {
-    const sid = String(ev?.sessionID || ev?.sessionId || '');
+  if (eventType === 'session.idle' || eventType === 'session.error' || eventType === 'session.deleted') {
+    const sid = String(ev?.sessionID || ev?.sessionId || ev?.info?.id || '');
     let gone = false;
     for (const [id, entry] of open) if (entry.owner === sid) { open.delete(id); gone = true; }
     return gone;
@@ -249,6 +249,15 @@ export function createAskTracker({ parentOf = new Map(), attempts = ASK_READ_ATT
     }
   };
   const under = (owner, root) => owner === root || knownDescendant(owner, root, parentOf);
+  const openAsksOf = (sid) => {
+    const requests = [];
+    if (sid) for (const [id, ask] of open) if (under(ask.owner, sid)) requests.push({ id, ...ask });
+    return requests;
+  };
+  const hasOpenAsks = (sid) => {
+    if (sid) for (const { owner } of open.values()) if (under(owner, sid)) return true;
+    return false;
+  };
   const expect = (sessionId, kinds) => {
     let set = pending.get(sessionId);
     if (!set) pending.set(sessionId, (set = new Set()));
@@ -274,15 +283,17 @@ export function createAskTracker({ parentOf = new Map(), attempts = ASK_READ_ATT
   return {
     note(eventType, ev) {
       replay?.push([eventType, ev]);
-      if (applyAskEvent(open, eventType, ev) && !held) changed();
+      if (applyAskEvent(open, eventType, ev)) changed();
     },
+    // Pills need a concrete request. A reconnect can pause a turn clock while lists are still out.
+    hasOpenAsks,
+    openAsksOf,
     waits(sessionId) {
       const sid = String(sessionId || '');
       if (!sid) return false;
       if (held) return true;
       for (const [root, kinds] of pending) if (kinds.size && under(sid, root)) return true;
-      for (const { owner } of open.values()) if (owner === sid || knownDescendant(owner, sid, parentOf)) return true;
-      return false;
+      return hasOpenAsks(sid);
     },
     hold() {
       generation += 1;

@@ -48,7 +48,7 @@
 // model, or a card without that sentence, approves the route only.
 
 import { CONTROL_KINDS, buildControlResponse, describeToolInput, normalizeAnswers, normalizeControlRequest } from '../../public/shared/assistant/asst-control.js';
-import { buildRouteResponse, normalizeRouteRequest, routeOptions } from '../../public/shared/assistant/asst-route.js';
+import { buildRouteResponse, normalizeRouteRequest, routeHereModelLabel, routeOptions, routeTitleWithEffort, routeTitleWithoutEffort } from '../../public/shared/assistant/asst-route.js';
 import { isComputerTool, isDeniedRemoteTool, providerLabel } from '../remote-policy.js';
 
 // Codes a person can read out loud: no 0/O, 1/I/L, 2/Z, 5/S, 8/B.
@@ -260,14 +260,20 @@ function questionLines(card, lead, leadMany) {
   if (questions.length === 1) return [`${lead}${questionLine(questions[0])}`];
   return [leadMany, ...questions.map((q) => `- ${questionLine(q)}`), 'One message with your answers is fine.'];
 }
-/** What picking a route choice means, in words: "do it here with Sonnet 5" / "hand it to GPT-6 Sol". */
-function choiceName(choice) {
-  // The router labels a "here" option "Do it here with <model>": the sentence names the model only.
-  const strip = (value) => clean(value).replace(/^do it here with /i, '');
-  return strip(choice.label) || strip(choice.title) || 'that model';
-}
 /** A choice that runs in this conversation: "here" on its model, or on another model of its provider. */
 const runsHere = (choice) => !!choice?.here || choice?.kind === 'direct';
+/**
+ * What picking a route choice means, in words: "do it here with Sonnet 5 · high" / "hand it to GPT-6 Sol".
+ * The router labels a "here" option "Do it here with <model>": the sentence names the model, then its effort
+ * in the card's words (" · xhigh", thinking off " · off"; no effort, nothing), as the card's title does, so
+ * two choices done here on one model read apart. A worker's label already ends in its effort when it has one.
+ */
+function choiceName(choice) {
+  const strip = (value) => clean(value).replace(/^do it here with /i, '');
+  if (!runsHere(choice)) return strip(choice.label) || strip(choice.title) || 'that model';
+  const model = clean(routeHereModelLabel(choice)) || routeTitleWithoutEffort(strip(choice.title), choice.effort);
+  return model ? routeTitleWithEffort(model, choice.effort) : 'that model';
+}
 function routePhrase(choice, { it = 'it' } = {}) {
   return runsHere(choice) ? `do ${it} here with ${choiceName(choice)}` : `hand ${it} to ${choiceName(choice)}`;
 }
@@ -415,6 +421,8 @@ function matchOption(options, text) {
   const hits = (options || []).filter((option) => plain(option.label) === said);
   return hits.length === 1 ? hits[0] : null;
 }
+// A route name as typed or as written: "Opus 5.5 · high" and "opus 5.5 high" are one name.
+const routePlain = (value) => plain(value).replace(/\s*·\s*/g, ' ').replace(/\s+/g, ' ').trim();
 const PICK_LEAD = /^(?:please )?(?:use|with|on|pick|choose|take|try|go with|lets use|lets go with|hand it to|give it to|send it to|run it on|make it) /;
 /**
  * The offered route choice a reply names, else null. The reply is the name and
@@ -422,7 +430,7 @@ const PICK_LEAD = /^(?:please )?(?:use|with|on|pick|choose|take|try|go with|lets
  * such a verb) and an optional "please" / "instead". "don't use haiku" names nothing.
  */
 function matchRouteChoice(card, text) {
-  let said = plain(text);
+  let said = routePlain(text);
   if (!said) return null;
   said = said.replace(/^(?:yes|yep|yeah|ok|okay|sure) (?=\S)/, '');
   const afterNo = said.replace(/^(?:no|nope|nah) /, '');
@@ -435,10 +443,16 @@ function matchRouteChoice(card, text) {
   const firstHere = card.routeChoices.find((choice) => choice.here) || card.routeChoices.find(runsHere) || null;
   const firstWorker = card.routeChoices.find((choice) => !runsHere(choice)) || null;
   const names = (choice) => {
-    const list = [choice.label, choiceName(choice), choice.model, choice.title, String(choice.model || '').split('/').pop()].map(plain).filter(Boolean);
-    if (choice === firstHere) list.push('here', 'do it here', 'do it yourself', 'yourself', 'you do it', `here with ${plain(choice.label)}`);
+    const list = [choice.label, choiceName(choice), choice.model, choice.title, String(choice.model || '').split('/').pop()];
+    // A choice done here is also named as the sentence says it: "do it here with Opus 5.5 · high".
+    if (runsHere(choice)) list.push(`do it here with ${choiceName(choice)}`, `here with ${choiceName(choice)}`);
+    if (choice === firstHere) {
+      list.push('here', 'do it here', 'do it yourself', 'yourself', 'you do it');
+      // "here with <model>" without an effort is this one only while no other choice done here is on that model.
+      if (!card.routeChoices.some((other) => other !== choice && runsHere(other) && routePlain(other.label) === routePlain(choice.label))) list.push(`here with ${choice.label}`);
+    }
     if (choice === firstWorker) list.push('dispatch', 'dispatch it', 'a worker', 'worker', 'hand it off', 'delegate', 'delegate it');
-    return [...new Set(list)];
+    return [...new Set(list.map(routePlain).filter(Boolean))];
   };
   // A whole name first: "do it here" is the "here" option even when another option's label starts with it
   // ("Do it here with Haiku 4.5"); only then the start of a name ("sonnet" for "Sonnet 5").

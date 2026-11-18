@@ -19,6 +19,7 @@ import { frameRect, onFrameChange, clampBox, clampBoxLoose } from './app-frame.j
 import { notify, NOTIF_TYPE } from './ui-notifications.js';
 import { getProviderMeta } from './provider-icons.js';
 import { readinessKind, typeWhenReady } from './term-ready.js';
+import { closeBrowserTabs } from './term-browser-tabs.js';
 import { initRendererManager, acquireRenderer, disposeRenderer, hasWebgl, noteFocus, adoptRenderer, rendererState, rendererStats } from './term-renderer.js';
 import { mountAssistant } from './assistant/asst-panel.js';
 import { getAssistantSession } from './assistant/asst-api.js';
@@ -1742,6 +1743,9 @@ function pickProject(profile) {
     // Cancel on outside click or Escape
     overlay.addEventListener('click', (e) => { if (e.target === overlay) { overlay.remove(); resolve(undefined); } });
     document.addEventListener('keydown', function onEsc(e) {
+      // The picker closed some other way (a project picked, a click outside): this listener goes with it,
+      // instead of one more staying on the document after every launch.
+      if (!overlay.isConnected) { document.removeEventListener('keydown', onEsc); return; }
       if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', onEsc); resolve(undefined); }
     });
 
@@ -2918,20 +2922,20 @@ async function openBrowserSession(url, fresh, _unused, force) {
 
   // fresh=true: close ALL existing browser sessions so MCP tools auto-select ours
   if (fresh) {
+    // The server's sessions: a request that fails must not stop the fresh one from opening, and is said.
+    const endedIds = [];
     try {
       const existing = await fetchBrowserSessions();
       const sessions = existing?.sessions || [];
       for (const s of sessions) {
-        await deleteBrowserSession(s.id).catch(() => {});
+        await deleteBrowserSession(s.id).then(() => { endedIds.push(s.id); }, () => {});
       }
-      // Also close any existing browser tabs in the UI
-      if (!_streamOff) {
-        document.querySelectorAll('.term-tab[data-profile="browser"]').forEach(tab => {
-          const idx = Array.from(document.querySelectorAll('.term-tab')).indexOf(tab);
-          if (idx >= 0 && _sessions[idx]) closeTab(idx);
-        });
-      }
-    } catch (e) { /* ignore cleanup errors */ }
+    } catch (e) {
+      console.warn('[browser] could not end the old browser sessions:', e);
+    }
+    // Their tabs in the panel (term-browser-tabs.js). Outside the catch above on purpose: it once hid a call
+    // to a function that did not exist, and the old tabs stayed for good.
+    if (!_streamOff) closeBrowserTabs(_sessions, closeSession, { deletedIds: endedIds });
   }
 
   const startUrl = url || 'https://www.google.com';

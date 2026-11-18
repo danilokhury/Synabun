@@ -79,6 +79,9 @@ export const ADMIN_ONLY_PREFIXES = Object.freeze([
   // The Skills Service's installs, rollbacks and removals, the move of the old bridges, and its settings: the
   // owner's, from the app's own page (lib/skills/api-v2.js refuses guests and agents on its own too).
   '/api/skills-studio/v2/installations', '/api/skills-studio/v2/migrations', '/api/skills-studio/v2/config',
+  // Agent definitions (their instructions, what they may touch) and their runs: the owner's (lib/agents-studio-api.js
+  // refuses guests on every route on its own too). The Assistant and agents reach it with their own headers.
+  '/api/agents-studio',
   '/api/tunnel/start', '/api/tunnel/stop',
   '/api/bridges', '/api/keybinds',
   '/api/cli',

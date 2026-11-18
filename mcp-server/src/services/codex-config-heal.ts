@@ -384,6 +384,13 @@ function writeTarget(configPath: string): string {
 function atomicWrite(configPath: string, content: string): void {
   const target = writeTarget(configPath);
   const mode = existsSync(target) ? statSync(target).mode : null;
+  // A file with other names (on Windows a named Codex account shares config.toml by a hard link when it may not
+  // make a symbolic link, neural-interface/lib/claude-account-links.js) is written in place: a rename would
+  // leave the other names the old file, and the accounts would stop reading the same configuration.
+  if (mode !== null && statSync(target).nlink > 1) {
+    writeFileSync(target, content, 'utf-8');
+    return;
+  }
   const tmpPath = `${target}.synabun-${process.pid}.tmp`;
   writeFileSync(tmpPath, content, 'utf-8');
   if (mode !== null) chmodSync(tmpPath, mode);

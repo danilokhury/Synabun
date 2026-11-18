@@ -142,7 +142,7 @@ export function isLocalMarkerHost(hostname, extraNames = []) {
  * The pages the cookie is set on: the app's shells and the detached side panel's window, each the first page a
  * browser window loads. The Studio's library read sets it too (server.js), as does GET /api/page-session.
  */
-export const PAGE_SECRET_PATHS = Object.freeze(['/', '/index.html', '/index2d.html', '/onboarding.html', '/sidepanel-session.html']);
+export const PAGE_SECRET_PATHS = Object.freeze(['/', '/index.html', '/index2d.html', '/onboarding.html', '/sidepanel-session.html', '/extension-setup']);
 /** The route an open tab asks for this boot's cookie after a restart (public/shared/page-session.js). */
 export const PAGE_SECRET_REFRESH_PATH = '/api/page-session';
 /** The app's service worker (public/sw.js): a browser that may not hold the secret gets SERVICE_WORKER_NOOP instead. */

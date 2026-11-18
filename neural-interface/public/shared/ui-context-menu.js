@@ -32,7 +32,7 @@ import { t } from './i18n.js';
 import { state, emit } from './state.js';
 import { actionForKey, getShortcutLabel, hasAction, runAction } from './ui-keybinds.js';
 import { isGuest, hasPermission } from './ui-sync.js';
-import { sendToPanel } from './ui-claude-panel.js';
+import { sendToPanel } from './claude-panel-lazy.js';
 import { closeMemoryCard, focusLinkedMemories, getOpenCardsSnapshot } from './ui-detail.js';
 import { formatMemoryForCLI } from './ui-terminal.js';
 import { fetchMemory } from './api.js';

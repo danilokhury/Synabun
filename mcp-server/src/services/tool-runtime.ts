@@ -18,7 +18,8 @@ import { ALWAYS_ON_TOOLS, SELECTABLE_GROUP_IDS, TOOL_LIST_LIMITS, TOOL_GROUPS, i
 import { parseToolList, resolveToolList, type AddedGroup, type CustomPresets } from './tool-list.js';
 
 export type ToolMode = 'strict' | 'focus';
-export type CallerCapability = 'computer';
+/** `team` (agents-p4): the caller is a run that works a slice of a team. */
+export type CallerCapability = 'computer' | 'team';
 
 /** The list of this runtime (comma-joined group ids) and the file its tool_groups changes go to. */
 export const TOOLS_ENV = 'SYNABUN_TOOLS';
@@ -42,6 +43,18 @@ export const ROLE_GATED_GROUPS: Readonly<Record<string, CallerRole>> = Object.fr
 export const CAPABILITY_GATED_GROUPS: Readonly<Record<string, CallerCapability>> = Object.freeze(Object.fromEntries(
   TOOL_GROUPS.filter((group) => group.gate === 'grant:computer').map((group) => [group.id, 'computer' as const]),
 ));
+
+/** agents-p4. Groups the caller's context unlocks: `team` for a run that works a slice of a team, on any platform. */
+export const CONTEXT_GATED_GROUPS: Readonly<Record<string, CallerCapability>> = Object.freeze(Object.fromEntries(
+  TOOL_GROUPS.filter((group) => group.gate === 'context:team').map((group) => [group.id, 'team' as const]),
+));
+/** The launch variable of a stdio child whose run works a team slice: `<team>/<slice>` (never a secret, never a proof). */
+export const TEAM_ENV = 'SYNABUN_TEAM';
+/** `<team>/<slice>` as the Neural Interface writes it: two slugs. Anything else is no team context. */
+export function sanitizeTeamContext(value: string | undefined | null): string | null {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?\/[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(text) ? text : null;
+}
 
 export function isRoleGatedGroup(group: string): boolean {
   return Object.prototype.hasOwnProperty.call(ROLE_GATED_GROUPS, group);
@@ -307,7 +320,11 @@ export class ToolRuntime {
     // stdio children of the Codex/OpenCode assistant brains receive the role through their launch env; HTTP
     // sessions bind it later (setRole). The desktop grant the same way (setCapabilities).
     this.role = options.role !== undefined ? options.role : sanitizeRole(process.env.SYNABUN_ROLE);
-    this.capabilities = new Set(options.capabilities ?? (sanitizeDesktopGrant(process.env.SYNABUN_DESKTOP_GRANT) ? ['computer'] : []));
+    this.capabilities = new Set(options.capabilities ?? [
+      ...(sanitizeDesktopGrant(process.env.SYNABUN_DESKTOP_GRANT) ? ['computer' as const] : []),
+      // agents-p4: a stdio child launched for a team slice (index.ts main() also asks the Neural Interface).
+      ...(sanitizeTeamContext(process.env[TEAM_ENV]) ? ['team' as const] : []),
+    ]);
     this.platform = options.platform || process.platform;
     this.groups = sortGroups(selection.groups).filter(isSelectableGroup);
     this.mode = selection.mode;
@@ -393,6 +410,8 @@ export class ToolRuntime {
     for (const [group, capability] of Object.entries(CAPABILITY_GATED_GROUPS)) {
       if (this.capabilities.has(capability) && (capability !== 'computer' || this.platform === 'darwin')) active.add(group);
     }
+    // agents-p4: the team channel, for a run that works a slice of a team.
+    for (const [group, capability] of Object.entries(CONTEXT_GATED_GROUPS)) if (this.capabilities.has(capability)) active.add(group);
     return active;
   }
 

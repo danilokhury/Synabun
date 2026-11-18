@@ -1,3 +1,4 @@
+import { sessionProjectItems } from '../session-project-items.js';
 import { answerWorkerQuestion } from '../worker-questions.js';
 import { cxpText, cxpSessionLabel } from './cdx-copy.js';
 import { codexWantsRolloutPreview, rolloutPreviewApplies } from './cdx-preview.js';
@@ -38,9 +39,11 @@ import { skillHintEntries, skillsForPrompt, skillsListRequest } from './cdx-skil
 import { syncSidepanelLayout, focusSidepanel, isHostedSessionFocused } from '../ui-sidepanel-windows.js';
 import { notify, NOTIF_TYPE } from '../ui-notifications.js';
 import { createStickyScrollController } from '../ui-scroll-follow.js';
+import { createDomChangeFlag } from '../dom-change-flag.js';
+import { isFarRowStyleRecord, stripFarRowStyles, watchTranscriptRows } from '../transcript-rows.js';
 import { requestGeneratedSessionTitle } from '../session-title.js';
 import { fileLinkText } from '../ui-file-links.js';
-import { WORKER_END_CLASS, backToAssistant, buildWorkerEndCard, endWorkerRunOnClose, forgetWorkerEnd } from '../ui-worker-end.js';
+import { WORKER_END_CLASS, buildWorkerEndCard, endWorkerRunOnClose, forgetWorkerEnd, leaveWorkerTab } from '../ui-worker-end.js';
 import {
   CODEX_COMMANDS, CODEX_COMMAND_BY_NAME, parseCodexCommand, codexCommandHints,
   capabilityAvailability, latestCompletedCodexText, configValue,
@@ -595,8 +598,14 @@ function buildWsCallbacks(tab, options = {}) {
         registerOwnedThreadFromItem(_boundTab, msg.params.item);
       }
       if (shouldBufferSocketMessage('notify', msg)) {
-        bufferSocketMessage('notify', msg);
-        return;
+        const completedTurnId = msg.method === 'turn/completed' && msg.params?.turn?.id;
+        if (completedTurnId && completedTurnId === _activeTurnId
+          && (!msg.threadId || msg.threadId === _threadId)) {
+          resolveBlockedTurn(msg.params.turn.status === 'interrupted' ? 'cancelled' : 'resolved');
+        } else {
+          bufferSocketMessage('notify', msg);
+          return;
+        }
       }
       if (msg.method && msg.params !== undefined) {
         handleNotify(msg.method, msg.params);
@@ -723,12 +732,9 @@ function buildWsCallbacks(tab, options = {}) {
       resolveGenericRequest(msg);
     },
 
-    onClosed(msg) {
-      if (shouldBufferSocketMessage('closed', msg)) {
-        bufferSocketMessage('closed', msg);
-        return;
-      }
-      applySocketClosed(msg);
+    onClosed() {
+      if (hasBlockingServerRequests()) resolveBlockedTurn('cancelled');
+      applySocketClosed();
     },
 
     onMessageError(err, raw) {
@@ -1012,7 +1018,7 @@ function shouldBufferSocketMessage(kind, payload) {
   if (kind === 'error' && payload?.requestId && (_renameRequests.has(payload.requestId)
     || _sessionListRequest?.requestId === payload.requestId || _threadStartRequest?.requestId === payload.requestId
     || _pendingQueryRequestId === payload.requestId)) return false;
-  return kind === 'notify' || kind === 'error' || kind === 'closed';
+  return kind === 'notify' || kind === 'error';
 }
 
 function bufferSocketMessage(kind, payload) {
@@ -1096,11 +1102,7 @@ function applyBufferedSocketMessage(entry) {
     handleNotify(entry.payload.method, entry.payload.params);
     return;
   }
-  if (entry.kind === 'error') {
-    applySocketError(entry.payload);
-    return;
-  }
-  if (entry.kind === 'closed') applySocketClosed(entry.payload);
+  if (entry.kind === 'error') applySocketError(entry.payload);
 }
 
 function flushBufferedSocketMessages() {
@@ -1108,6 +1110,18 @@ function flushBufferedSocketMessages() {
   const queued = _bufferedSocketMessages.splice(0);
   if (_boundTab) _boundTab.bufferedSocketMessages = _bufferedSocketMessages;
   for (const entry of queued) applyBufferedSocketMessage(entry);
+}
+
+function resolveBlockedTurn(label) {
+  // A terminal event can arrive without a separate serverRequest/resolved for each card.
+  for (const requestId of _blockingServerRequests.keys()) {
+    resolveRequestCard(requestId, label);
+    clearCodexRequestNotif(requestId, _boundTab);
+  }
+  _blockingServerRequests.clear();
+  flushBufferedSocketMessages();
+  updateTrayPillRunning();
+  saveTabs();
 }
 
 
@@ -1298,6 +1312,7 @@ function writeThreadSnapshot(tab, { force = false } = {}) {
     return;
   }
   const snapshotEl = messagesEl.cloneNode(true);
+  stripFarRowStyles(snapshotEl); // the sizes of rows far from the screen are today's, not the transcript's
   stripMcpAppRuntime(snapshotEl);
   // A worker's end card is drawn again from its run, never restored from markup.
   snapshotEl.querySelectorAll(`.${WORKER_END_CLASS}`).forEach((node) => node.remove());
@@ -1331,6 +1346,9 @@ function writeThreadSnapshot(tab, { force = false } = {}) {
   };
   persistThreadSnapshots(threadId);
   tab._lastSnapshotWriteAt = Date.now();
+  // What is stored now is what the tab shows (threadSnapshotBehind).
+  threadSnapshotFlag(tab)?.clear();
+  tab._snapshotMetaKey = threadSnapshotMetaKey(tab);
   if (t0) codexPerfLog('snapshot:write', {
     force,
     ms: Math.round((performance.now() - t0) * 10) / 10,
@@ -1338,6 +1356,39 @@ function writeThreadSnapshot(tab, { force = false } = {}) {
     children: messagesEl.childElementCount,
     itemCount,
   });
+}
+
+// ── Is the stored snapshot behind the tab? ──
+// The transcript is watched for any change (dom-change-flag.js); the fields stored next to it are compared.
+function threadSnapshotFlag(tab) {
+  const el = tab?.messagesEl;
+  if (!el) return null;
+  if (tab._snapshotFlagEl !== el) {
+    tab._snapshotFlag?.disconnect();
+    // The far-row declarations (transcript-rows.js) are not part of what is stored: scrolling is no change.
+    tab._snapshotFlag = createDomChangeFlag(el, { ignore: (record) => isFarRowStyleRecord(record, el) });
+    tab._snapshotFlagEl = el;
+  }
+  return tab._snapshotFlag;
+}
+
+function threadSnapshotMetaKey(tab) {
+  return JSON.stringify([
+    tab.threadId || '', String(tab.accountId || 'default'), normalizeSessionLabel(tab.sessionLabel || ''),
+    normalizeThreadTokenUsage(tab.threadTokenUsage), normalizeContextTrackerMeta(tab.threadContextMeta),
+    normalizeSnapshotSourceType(tab.transcriptSourceType), normalizeSnapshotItemCount(tab.transcriptItemCount),
+    Number(tab.transcriptSourceUpdatedAt) || null,
+  ]);
+}
+
+export function threadSnapshotBehind(tab) {
+  if (!tab) return false;
+  if (tab.snapshotTimer || tab.snapshotIdleHandle) return true; // a write is due
+  if (tab.items instanceof Map) {
+    for (const itemState of tab.items.values()) if (itemState?._bodyDirty) return true; // a card not drawn yet
+  }
+  const flag = threadSnapshotFlag(tab);
+  return !flag || flag.changed() || tab._snapshotMetaKey !== threadSnapshotMetaKey(tab);
 }
 
 export function scheduleThreadSnapshotSave(tab = _boundTab, { force = false } = {}) {
@@ -1532,6 +1583,7 @@ function setPlanApprovalPending(tab = _boundTab, value) {
   if (!tab) return;
   tab.planApprovalPending = !!value;
   syncPlanHandoffFlags(tab);
+  paintTrayPill(tab.pillEl, tab);
 }
 
 function shouldHoldForPlanApproval(tab = activeTab()) {
@@ -1580,7 +1632,6 @@ export function clearPlanHandoffState(tab = _boundTab, { keepFilePath = false } 
   tab.showPostPlanActions = false;
   tab.postPlanHeader = 'PLAN COMPLETE';
   tab.planTurnActive = false;
-  tab.planApprovalPending = false;
   tab.lastPlanTurnId = '';
   tab.planRequestId = null;
   if (!keepFilePath) tab.planFilePath = '';
@@ -1590,10 +1641,10 @@ export function clearPlanHandoffState(tab = _boundTab, { keepFilePath = false } 
     _showPostPlanActions = false;
     _postPlanHeader = 'PLAN COMPLETE';
     _planTurnActive = false;
-    _planApprovalPending = false;
     _lastPlanTurnId = '';
     if (!keepFilePath) _planFilePath = '';
   }
+  setPlanApprovalPending(tab, false);
   removePostPlanCards(tab.messagesEl);
   tab.messagesEl?.querySelectorAll('.cxp-plan-document-msg, .cxp-plan-draft-msg').forEach((node) => node.remove());
   tab.messagesEl?.querySelectorAll('[data-plan-source-hidden]').forEach((node) => {
@@ -1729,8 +1780,7 @@ export function extractLatestPlanText(tab = _boundTab) {
 
 export function capturePlanContent(tab = _boundTab) {
   if (!tab) return '';
-  syncPlanMirrors(tab);
-  if (tab === _boundTab) _planContent = tab.planContent;
+  syncCanonicalPlan(tab);
   return getPlanMarkdown(tab);
 }
 
@@ -1745,6 +1795,7 @@ function syncCanonicalPlan(tab) {
     _planTurnActive = tab.planTurnActive;
     _lastPlanTurnId = tab.lastPlanTurnId || '';
   }
+  paintTrayPill(tab.pillEl, tab);
 }
 
 async function planRequest(body) {
@@ -2051,11 +2102,7 @@ export function projectItems() {
 }
 
 export function projectItemsForValue(value) {
-  const items = projectItems();
-  if (value && !items.some((item) => item.value === value)) {
-    items.unshift({ value, label: basenamePath(value) || value });
-  }
-  return items;
+  return sessionProjectItems(_projects, value);
 }
 
 function persistProjectThreads() {
@@ -2600,6 +2647,8 @@ function createMessagesEl(tab) {
   messages.style.display = 'none';
   container.appendChild(messages);
   tab.scrollController = createStickyScrollController(messages, { active: false });
+  // Rows far from the screen are skipped by the engine, at their exact size (transcript-rows.js).
+  tab.rowWatcher = watchTranscriptRows(messages);
   return messages;
 }
 
@@ -2657,6 +2706,8 @@ function disposeDiscardedTab(tab) {
   }
   tab.scrollController?.destroy();
   tab.scrollController = null;
+  tab.rowWatcher?.disconnect();
+  tab.rowWatcher = null;
   disposeOutputBlocks(tab.messagesEl);
   tab.messagesEl?.remove();
   tab.pillEl?.remove();
@@ -2708,8 +2759,15 @@ function createTrayPill(tab) {
   pill.addEventListener('click', async () => {
     const idx = _tabs.indexOf(tab);
     if (idx < 0) return;
-    if (!_getVisible()) _setVisible(true);
-    switchTab(idx);
+    // A closed panel goes to this tab first and is shown after: showing it first connected the tab it was
+    // left on (a Codex process started for a session nobody asked for, released a moment later), and the
+    // session that was clicked waited behind it.
+    if (!_getVisible()) {
+      switchTab(idx);
+      _setVisible(true);
+    } else {
+      switchTab(idx);
+    }
     focusSidepanel(PANEL_OWNER);
   });
   pill.querySelector('.term-minimized-pill-close')?.addEventListener('click', (event) => {
@@ -2733,7 +2791,10 @@ export function renderPills() {
     if (!tab.pillEl) continue;
     // Read directly from tab to avoid nested withTab clobbering uncommitted state
     const label = tab.pillEl.querySelector('.term-minimized-pill-label');
-    if (label) label.textContent = tab.sessionLabel || 'New session';
+    // Written only when it changed: the same text again is still a new text node, which the tray's
+    // observer (ui-navbar.js) answers by going through every pill.
+    const name = tab.sessionLabel || 'New session';
+    if (label && label.textContent !== name) label.textContent = name;
     paintTrayPill(tab.pillEl, tab);
     const shouldShow = hasMeaningfulTrayState(tab) && (!_getVisible() || tab !== active);
     tab.pillEl.style.display = shouldShow ? '' : 'none';
@@ -2812,7 +2873,9 @@ export function switchTab(idx) {
   if (previous && input) {
     previous.draft = input.value;
     commitBoundState();
-    flushThreadSnapshotSave(previous);
+    // Only when the stored snapshot is behind what the tab shows: writing it clones and serialises the whole
+    // transcript and uploads it, inside the click that opens the next session.
+    if (threadSnapshotBehind(previous)) flushThreadSnapshotSave(previous);
   }
   if (previous && previous !== next && !tabHasActiveWriterWork(previous)) {
     disconnectTab(previous);
@@ -2998,6 +3061,7 @@ export function closeTab(idx, { detachAutomation = false } = {}) {
   if (tab.automationRunId) forgetWorkerEnd(tab.automationRunId);
   wsDisconnectTab(tab, { releaseWriter: !tabHasActiveWriterWork(tab) });
   tab.closed = true;
+  tab.planApprovalPending = false;
   tab.titleRequestController?.abort();
   tab.titleRequestController = null;
   tab.authView?.dispose();
@@ -3024,6 +3088,8 @@ export function closeTab(idx, { detachAutomation = false } = {}) {
   }
   tab.scrollController?.destroy();
   tab.scrollController = null;
+  tab.rowWatcher?.disconnect();
+  tab.rowWatcher = null;
   disposeOutputBlocks(tab.messagesEl);
   if (tab.messagesEl) retireMcpAppNode(tab.messagesEl, () => tab.messagesEl.remove());
   tab.pillEl?.remove();
@@ -3063,11 +3129,10 @@ export function placeWorkerEnd(tab) {
   if (!view) return;
   messagesEl.appendChild(buildWorkerEndCard(view, {
     classes: { card: 'cxp-worker-end', title: 'cxp-post-plan-header', detail: 'cxp-post-plan-note', button: 'cxp-request-btn' },
-    onBack: () => {
+    onBack: () => leaveWorkerTab(view, () => {
       const idx = _tabs.indexOf(tab);
       if (idx >= 0) closeTab(idx);
-      backToAssistant(view.assistantSessionId);
-    },
+    }),
   }));
   if (isActiveTab(tab)) scrollEnd(true);
 }
@@ -3129,11 +3194,10 @@ export function saveTabs() {
           releasedRunId: tab.releasedRunId || null,
           // Whether it was working when this was written: after a reload its placeholder pill says so and
           // the panel boots to ask (ui-sidepanel-tray.js), and the tab reattaches at once (restoreTabs).
-          // Never restored as running: only the reattach's answer says that. `needsYou`: an approval or a
-          // question card waited on the user; the reattach replays the request the bridge still holds.
+          // Reattach confirms running and replays requests. A completed plan is saved with the tab.
           running: !!tab.running,
           startingThread: !!tab.startingThread,
-          needsYou: tab.blockingServerRequests?.size > 0 || !!tab.automationAwaits,
+          needsYou: tab.blockingServerRequests?.size > 0 || !!tab.automationAwaits || !!tab.planApprovalPending,
         };
       });
     const localRunIds = new Set(localTabs.map((tab) => tab.automationRunId).filter(Boolean));
@@ -3267,21 +3331,23 @@ export function updateTrayPillLabel() {
 }
 
 /**
- * What a tab's tray pill says: it needs you while an approval or a question card waits on your answer
- * (its blocking server requests), or, for a dispatched worker, while its turn ended asking you something
- * (the run's outcome: automationAwaits), else it works while a turn runs or a thread is being made.
+ * A request, dispatched worker question, or plan review takes priority over running.
  * sidepanel-session-status.js reads the same classes for a detached window's pill.
  */
-function paintTrayPill(pill, { running, startingThread, blockingServerRequests, automationAwaits }) {
+function paintTrayPill(pill, { running, startingThread, blockingServerRequests, automationAwaits, planApprovalPending }) {
   if (!pill) return;
-  const needsYou = blockingServerRequests?.size > 0 || !!automationAwaits;
+  const needsYou = blockingServerRequests?.size > 0 || !!automationAwaits || !!planApprovalPending;
   pill.classList.toggle('cxp-pill-attention', needsYou);
   pill.classList.toggle('cxp-pill-running', !needsYou && !!(running || startingThread));
 }
 
 export function updateTrayPillRunning() {
   paintTrayPill(_trayPill, {
-    running: _running, startingThread: _startingThread, blockingServerRequests: _blockingServerRequests, automationAwaits: _boundTab?.automationAwaits,
+    running: _running,
+    startingThread: _startingThread,
+    blockingServerRequests: _blockingServerRequests,
+    automationAwaits: _boundTab?.automationAwaits,
+    planApprovalPending: _boundTab?.planApprovalPending,
   });
 }
 
@@ -3440,7 +3506,7 @@ export function renderStoredTranscript(snapshot, emptyText = freshThreadText()) 
   removePostCompactionCards(_messagesEl);
   _messagesEl.querySelectorAll('button,input,select,textarea').forEach((node) => { node.disabled = true; });
   // Presentation controls remain useful in an idle saved transcript.
-  _messagesEl.querySelectorAll('.cxp-output-control, .cxp-copy-btn').forEach(node => { node.disabled = false; });
+  _messagesEl.querySelectorAll('.cxp-output-control, .sb-code-copy').forEach(node => { node.disabled = false; });
   hydrateOutputControls(_messagesEl);
   // Restore expansion state when present; old snapshots default to collapsed cards.
   _messagesEl.querySelectorAll('.cxp-card').forEach((card) => {
@@ -5005,6 +5071,7 @@ export function setRunning(next, turnId = null) {
     resetStallTimer();
   }
   if (!next) {
+    if (wasRunning && _boundTab?.planApprovalPending) setPlanApprovalPending(_boundTab, false);
     _pendingQueryRequestId = null;
     _activeTurnId = null;
     _turnStartedAt = null;
@@ -7860,7 +7927,8 @@ export function initContextBridge() {
     setShowPostPlanActions: (v) => { _showPostPlanActions = v; if (_boundTab) _boundTab.showPostPlanActions = !!v; },
     setPlanFeedbackDraft: (v) => { if (_boundTab) _boundTab.planFeedbackDraft = v || ''; },
     setPlanTurnActive: (v) => { _planTurnActive = !!v; if (_boundTab) _boundTab.planTurnActive = !!v; },
-    setPlanApprovalPending: (v) => { _planApprovalPending = !!v; if (_boundTab) _boundTab.planApprovalPending = !!v; },
+    syncCanonicalPlan,
+    setPlanApprovalPending: (v) => setPlanApprovalPending(_boundTab, v),
     setLastPlanTurnId: (v) => { _lastPlanTurnId = v || ''; if (_boundTab) _boundTab.lastPlanTurnId = v || ''; },
     setShowPostCompactionPrompt: (v) => { _showPostCompactionPrompt = !!v; },
     setPostCompactionPending: (v) => { _postCompactionPending = !!v; },

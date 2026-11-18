@@ -154,7 +154,9 @@ async function end(entry) {
       // A restored, unopened window may still own a server-side turn.
       const raw = storage.getItem(`synabun-${entry.provider}-panel-tabs-${entry.id}`);
       const sessions = entry.provider === 'opencode'
-        ? JSON.parse(storage.getItem(`opencode-v2-tabs-${entry.id}`) || '[]').map(sessionId => ({ sessionId }))
+        ? JSON.parse(storage.getItem(`opencode-v2-tabs-${entry.id}`) || '[]')
+          .map(tab => typeof tab === 'string' ? { sessionId: tab } : tab)
+          .filter(tab => typeof tab?.sessionId === 'string' && tab.sessionId)
         : JSON.parse(raw || '{"tabs":[]}').tabs;
       for (const session of sessions) {
         await fetch('/api/sidepanel/kill-session', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -221,7 +223,13 @@ export function initDetachedAgentSessions() {
       if (entry.title === next) return;
       entry.title = next; if (entry.label) entry.label.textContent = next; renderPill(entry); save();
     },
-    fail: (id, error) => { const entry = entries.get(id); if (entry) showError(entry, error); },
+    fail(id, error) {
+      const entry = entries.get(id);
+      if (!entry) return;
+      showError(entry, error);
+      entry.status = 'idle';
+      renderPill(entry);
+    },
     // What the window's sessions do, sent by the window when it changes (sidepanel-session-status.js).
     status(id, status) {
       const entry = entries.get(id);

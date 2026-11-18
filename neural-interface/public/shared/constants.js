@@ -66,6 +66,10 @@ export const KEYS = {
   ACTIVE_WORKSPACE:    'neural-active-workspace',  // sessionStorage
   GRID_SNAP:           'neural-grid-snap',
   TOPRIGHT_TOOLS_HIDDEN: 'neural-topright-tools-hidden',  // the workspace tools toggle is off ('true')
+  TRAY_AUTO_CLOSE: 'neural-tray-auto-close',
+  TRAY_COL_RUNNING_COLLAPSED: 'neural-tray-col-running-collapsed',
+  TRAY_COL_WAITING_COLLAPSED: 'neural-tray-col-waiting-collapsed',
+  TRAY_COL_DONE_COLLAPSED: 'neural-tray-col-done-collapsed',
   WHITEBOARD_TOOLBAR_HIDDEN: 'neural-whiteboard-toolbar-hidden',  // the whiteboard rail (#wb-toolbar) is hidden behind the logo button ('true')
   CATEGORIES_VISIBLE:  'neural-categories-visible',
   WHITEBOARD:          'neural-whiteboard',
@@ -106,6 +110,7 @@ export const KEYS = {
   ASSISTANT_DOCK_SHOW_ALL:'neural-assistant-dock-show-all',
   ASSISTANT_ROUTE_MODE:   'neural-assistant-route-mode', // last-used route mode (always-ask|ask-unsure|never)
   ASSISTANT_TEST_DENSITY: 'neural-assistant-test-density', // last-used test density (none|light|standard|thorough)
+  ASSISTANT_AGENT_DENSITY: 'neural-assistant-agent-density', // agents-p4: last-used Agent density (solo|pair|team|swarm)
   // Assistant sidepanel — open tabs {v:1, activeIdx, tabs:[{sessionId,label,userRenamed}]}
   ASSISTANT_PANEL_TABS:   'synabun-assistant-panel-tabs',
 };
@@ -117,6 +122,7 @@ export const DEFAULT_KEYBINDS = {
   'toggle-categories':   'c',
   'open-skills':         'k',
   'open-automations':    'z',
+  'open-agents':         'g',
   'toggle-terminal':     't',
   'toggle-terminal-alt': 'Ctrl+`',
   'focus-search':        '/',
@@ -142,6 +148,7 @@ export const KEYBIND_META = {
   'toggle-categories':   { label: 'Toggle Categories',     group: 'Navigation' },
   'open-skills':         { label: 'Open Skills Studio',    group: 'Navigation' },
   'open-automations':    { label: 'Open Automation Studio', group: 'Navigation' },
+  'open-agents':         { label: 'Open Agents Studio',    group: 'Navigation' },
   'toggle-terminal':     { label: 'Toggle Terminal',       group: 'Navigation' },
   'toggle-terminal-alt': { label: 'Toggle Terminal (alt)', group: 'Navigation' },
   'focus-search':        { label: 'Focus Search',          group: 'Navigation' },

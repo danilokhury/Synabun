@@ -292,6 +292,8 @@ export function normalizeClaudeRows(rows, { pricing = null } = {}) {
       contextWindow: num(m.contextWindow),
       price: Array.isArray(p) ? { input: p[0], output: p[1], cacheRead: p[3] ?? null, unit: 'usd_per_mtok', basis: 'list' } : listed,
       efforts: sortEfforts(arr(m.effortLevels)), defaultEffort: null,
+      // false: the CLI cannot turn this model's thinking off (effort-levels.js supportsEffortOff); null: not said.
+      thinkingOff: typeof m.supportsThinkingOff === 'boolean' ? m.supportsThinkingOff : null,
       isDefault: m.id === 'default' || m.tier === 'default',
       status: m.cliReady === false ? 'unavailable' : 'active',
     };

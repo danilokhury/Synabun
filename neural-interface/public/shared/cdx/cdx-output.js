@@ -57,7 +57,17 @@ function releaseMeasurements(root) {
   }
 }
 
+// A closed side panel is not drawn (ui-sidepanel-windows.js: data-sp-visible="false", content-visibility: hidden).
+// A block in it cannot be judged now: checkVisibility() says no for everything in there, and reading its height
+// would make the engine lay the whole closed panel out. The note stays as it is and the block is measured when it
+// is next on screen (the observer that builds the diffs lazily): when the panel is shown, or when it scrolls near.
+const CLOSED_PANEL = '.sp-sidepanel[data-sp-visible="false"]';
+
 export function updateOverflowNote(block, note) {
+  if (observer && block.closest?.(CLOSED_PANEL)) {
+    if (!pending.has(block)) { pending.set(block, () => queueMeasurement(block)); observer.observe(block); }
+    return !note.hidden;
+  }
   const clipped = outputOverflows(block.scrollHeight, block.clientHeight) && block.checkVisibility?.() !== false;
   if (note.hidden !== !clipped) note.hidden = !clipped;
   const ids = (block.getAttribute('aria-describedby') || '').split(/\s+/).filter(id => id && id !== note.id);

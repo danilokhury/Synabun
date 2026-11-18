@@ -520,7 +520,7 @@ export function getAllMemories({ includeVectors = false, includeTrash = false } 
            related_memory_ids, file_checksums, trashed_at, source_session_chunks
            ${vectorCol}
     FROM memories ${where}
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, id DESC
   `).all();
 
   return rows.map(row => {
@@ -531,6 +531,27 @@ export function getAllMemories({ includeVectors = false, includeTrash = false } 
     }
     return result;
   });
+}
+
+/**
+ * One page of the live memories, in the order of getAllMemories() (newest first; equal times by id, so the pages
+ * of an unchanged store are the same every time and never overlap), and how many live memories there are.
+ * GET /api/memories?links=false&offset=…&limit=… (the page's progressive memory list) reads only its own rows.
+ * @param {{ offset?: number, limit: number }} options
+ * @returns {{ rows: Array<object>, total: number }}
+ */
+export function getMemoriesPage({ offset = 0, limit } = {}) {
+  const d = getDb();
+  const total = d.prepare('SELECT COUNT(*) AS n FROM memories WHERE trashed_at IS NULL').get().n;
+  const rows = d.prepare(`
+    SELECT id, content, category, subcategory, project, tags, importance, source,
+           created_at, updated_at, accessed_at, access_count, related_files,
+           related_memory_ids, file_checksums, trashed_at, source_session_chunks
+    FROM memories WHERE trashed_at IS NULL
+    ORDER BY created_at DESC, id DESC
+    LIMIT ? OFFSET ?
+  `).all(limit, offset);
+  return { rows: rows.map((row) => ({ id: row.id, ...rowToPayload(row) })), total };
 }
 
 /**

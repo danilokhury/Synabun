@@ -1,14 +1,13 @@
 // SynaBun sidepanel tray placeholders.
 // Renders minimized pills for persisted sidepanel tabs before a panel is booted.
-// A tab saved while it was working may still be working (its turn outlives the
-// page on the server): its provider's panel boots then, hidden, and asks, and
-// its own pills (its styles, the sessions' real state) take the placeholders'
-// places. Panels whose saved tabs were all idle stay lazy.
+// A turn or prompt can outlive the page on the server. A provider can boot
+// hidden to check and replace its placeholders with live pills. Panels whose
+// saved tabs were all idle stay lazy.
 
 import { storage } from './storage.js';
 import { emit } from './state.js';
 import { getProviderMeta } from './provider-icons.js';
-import { toggleClaudePanel, isClaudePanelOpen, bootClaudePanel } from './ui-claude-panel.js';
+import { toggleClaudePanel, isClaudePanelOpen, bootClaudePanel } from './claude-panel-lazy.js';
 import { toggleCodexPanel, isCodexPanelOpen, bootCodexPanel } from './ui-codex-panel.js';
 import { toggleOpencodePanel, isOpencodePanelOpen, bootOpencodePanel } from './ui-opencode-panel-v2.js';
 import { toggleAntigravityPanel, isAntigravityPanelOpen, bootAntigravityPanel } from './ui-antigravity-panel.js';
@@ -39,8 +38,8 @@ const PROVIDERS = {
   opencode: {
     providerId: 'opencode',
     windowKey: 'ocp-window-id',
-    // OCP v2 stores a plain string[] of session IDs, now scoped per window so
-    // a claimed automation cannot become an editable tab in another window.
+    // OCP v2 scopes the tab list per window so a claimed automation cannot
+    // become an editable tab in another window.
     tabsKeyPrefix: 'opencode-v2-tabs',
     automationKeyPrefix: 'opencode-v2-automations',
     v2Plain: true,
@@ -49,9 +48,8 @@ const PROVIDERS = {
     busyKeyPrefix: 'opencode-v2-busy',
     legacyV1Prefix: 'synabun-ocp-tabs',
     legacyV1CleanupFlag: 'opencode-v1-cleanup-done',
-    // The v2 panel's own pill (the v1 panel and its ocp-session-pill styles are gone), so a
-    // working placeholder wears ocpv2-pill-running like the real one.
     pillClass: 'ocpv2-session-pill',
+    attentionClass: 'ocpv2-pill-waiting',
     eventName: 'opencode-panel:show',
   },
   antigravity: {
@@ -160,7 +158,7 @@ function hasCodexState(tab) {
 }
 
 function hasOpenCodeState(tab) {
-  // v2 plain payload only carries sessionId — that's enough to be meaningful.
+  // A saved session ID is enough for a placeholder.
   if (tab.sessionId) return true;
   const label = normalizeLabel(tab.sessionTitle);
   const draft = normalizeLabel(tab.draft);
@@ -228,10 +226,9 @@ function isRunning(tab) {
   return !!(tab.running || tab.startingThread || Number(tab.backgroundWork) > 0);
 }
 
-// Waiting on the user when it was saved (Claude, Codex: `needsYou`): its placeholder says so before it says
-// working, and the panel boots to ask, as for a working tab (the reattach brings the card back).
+// A saved prompt takes precedence over a running turn. Reattaching the panel can recover the prompt.
 function needsYou(tab) {
-  return tab.needsYou === true;
+  return tab?.needsYou === true;
 }
 
 function isForeignActiveAutomation(tab) {
@@ -255,21 +252,25 @@ function readPayload(key, meta = null) {
         ? parseJson(storage.getItem(`${meta.busyKeyPrefix}-${windowId}`), [])
         : [];
       const busy = new Set(Array.isArray(busyRows) ? busyRows : []);
-      const tabs = arr
-        .filter((s) => typeof s === 'string' && s)
-        .map((sid) => {
-          const automation = automationBySession.get(sid);
-          return {
-            sessionId: sid,
-            automationRunId: automation?.runId || null,
-            automationActive: !!automation?.running,
-            automationOwnerId: automation?.ownerId || null,
-            // An automation's pill follows its turn: a warm worker saved between turns ('idle') rests.
-            running: (!!automation?.running && automation.turn !== 'idle') || busy.has(sid),
-          };
-        });
-      if (!tabs.length) return null;
-      return { key, activeIdx: 0, tabs, v2Plain: true };
+      const savedTabs = arr.filter((tab) => {
+        const id = typeof tab === 'string' ? tab : tab?.sessionId;
+        return typeof id === 'string' && id.length > 0;
+      });
+      if (!savedTabs.length) return null;
+      const tabs = savedTabs.map((tab) => {
+        const sid = typeof tab === 'string' ? tab : tab.sessionId;
+        const automation = automationBySession.get(sid);
+        return {
+          sessionId: sid,
+          needsYou: needsYou(tab),
+          automationRunId: automation?.runId || null,
+          automationActive: !!automation?.running,
+          automationOwnerId: automation?.ownerId || null,
+          // An automation's pill follows its turn: a warm worker saved between turns ('idle') rests.
+          running: (!!automation?.running && automation.turn !== 'idle') || busy.has(sid),
+        };
+      });
+      return { key, activeIdx: 0, tabs, savedTabs, v2Plain: true };
     }
     return null;
   }
@@ -295,8 +296,7 @@ function providerPayloads(provider) {
   const predicate = statePredicate(provider);
 
   if (meta.v2Plain) {
-    // OCP v2: single global key. Wipe legacy v1 per-window entries once so they
-    // can never resurface as phantom placeholder pills next to the real ones.
+    // Wipe legacy v1 entries once so they can't resurface next to the real pills.
     cleanupLegacyV1Once(meta);
   }
 
@@ -441,15 +441,10 @@ function writeProviderPayload(provider, payload, removeIndex) {
   }
 
   if (payload.v2Plain) {
-    // v2 stores a plain string[] of session IDs, not a {tabs, activeIdx}
-    // envelope. Rewrite in the same shape so the panel reads it cleanly when
-    // it boots next.
-    const ids = payload.tabs
-      .filter((_, index) => index !== removeIndex)
-      .map((t) => t.sessionId)
-      .filter(Boolean);
-    if (!ids.length) storage.removeItem(payload.key);
-    else storage.setItem(payload.key, JSON.stringify(ids));
+    // Preserve saved tab records, including the waiting state of other sessions.
+    const remainingTabs = payload.savedTabs.filter((_, index) => index !== removeIndex);
+    if (!remainingTabs.length) storage.removeItem(payload.key);
+    else storage.setItem(payload.key, JSON.stringify(remainingTabs));
     const meta = PROVIDERS[provider];
     const windowId = windowIdFromKey(meta, payload.key);
     if (windowId && meta?.automationKeyPrefix) {
@@ -625,7 +620,7 @@ function createPlaceholder(provider, payload, tab, index) {
 /**
  * Whether a provider's panel should boot, hidden, to ask after its tabs: one of this window's own
  * saved tabs (the ones its restore brings back; never another window's, which a click migrates)
- * was working when it was saved. Pure: `pills` is meaningfulPills(), `currentKey` this window's key.
+ * was working or waiting when it was saved. `pills` is meaningfulPills(), `currentKey` this window's key.
  */
 export function placeholdersNeedBoot(pills, currentKey) {
   return (Array.isArray(pills) ? pills : [])
@@ -641,7 +636,7 @@ export function savedTabsStatus(provider, windowId) {
   const meta = PROVIDERS[provider];
   if (!meta || !windowId) return 'idle';
   const tabs = readPayload(`${meta.tabsKeyPrefix}-${windowId}`, meta)?.tabs || [];
-  if (tabs.some((tab) => needsYou(tab))) return 'action';
+  if (tabs.some(needsYou)) return 'action';
   return tabs.some((tab) => isRunning(tab)) ? 'working' : 'idle';
 }
 

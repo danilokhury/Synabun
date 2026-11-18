@@ -11,7 +11,7 @@
 //   • The server builds the review (what will actually run and where) from the stored records: scheduleReview /
 //     templateReview. It shows the effective instructions (the template's task and context, every day theme's text,
 //     the two numbers a launch reads from `overrides`) and the account (the MoreLogin profile the run uses, by name,
-//     or the default browser of Settings → Browser), who chose that profile, and whether it is on the owner's list.
+//     or SynaBun's own browser when the default AI browser is no profile), who chose that profile, and whether it is on the owner's list.
 //   • Its digest (reviewDigest) is a SHA-256 over the stored fields a launch reads for that content, never over the
 //     display text: the schedule's template, day themes, overrides, group, own profile, the marks; the template's task
 //     and context; the group's profile; the default browser. Anything an agent (or anybody) changes there after the
@@ -93,7 +93,7 @@ function groupCore(group) {
   };
 }
 
-/** The default browser of Settings → Browser, as far as the account goes. */
+/** The default AI browser (a profile of Settings → Connected tools → MoreLogin, else SynaBun's own), as far as the account goes. */
 function defaultCore(browserDefault) {
   const mode = ['attach', 'morelogin'].includes(browserDefault?.connectMode) ? browserDefault.connectMode : 'mirror';
   return { connectMode: mode, moreloginEnvId: mode === 'morelogin' ? str(browserDefault?.moreloginEnvId) : null };

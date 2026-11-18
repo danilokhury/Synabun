@@ -1,3 +1,4 @@
+import { sessionProjectItems } from '../session-project-items.js';
 import { t } from '../i18n.js';
 import { migrateStoredTools } from '../tool-list-storage.js';
 import { wireDropdowns, closeDropdowns, setDropdownDisabled, dropdownOf } from '../cc-dropdown.js';
@@ -307,12 +308,8 @@ function wireProjectDd() {
 }
 
 function paintProjectMenu() {
-  const projects = _ctx.getProjects?.() || [];
-  const items = projects.map((p) => {
-    const path = (p && (p.path || p)) || '';
-    const label = typeof path === 'string' ? path.split('/').filter(Boolean).pop() : '';
-    return { value: String(path), label: label || String(path), title: String(path) };
-  }).filter((it) => it.value);
+  const items = sessionProjectItems(_ctx.getProjects?.() || [], getState().cwd || '')
+    .map(item => ({ ...item, title: item.value }));
 
   ddPopulate(_projectDd, items, getState().cwd || '', (value) => {
     _ctx.setActiveProject?.(value);

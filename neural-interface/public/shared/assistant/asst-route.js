@@ -39,6 +39,7 @@ import {
   routeKindLabel,
   routeTargetLabel,
   routeEffortWord,
+  routeLabelEffortWord,
   ROUTE_EFFORT_OFF,
   OPTIONAL_PROVIDERS,
   UNPRICED_PROVIDERS,
@@ -57,7 +58,9 @@ export function routeEffortChoices(provider, row) {
   const offId = ROUTE_EFFORT_OFF;
   const rest = levels.filter(e => String(e.id).toLowerCase() !== offId).map(e => ({ id: e.id, label: e.label || e.id, off: false }));
   const listsOff = levels.some(e => String(e.id).toLowerCase() === offId);
-  const canOff = provider === 'claude-code' ? rest.length > 0 : provider === 'antigravity' ? false : listsOff;
+  // (A Claude model whose CLI cannot turn its thinking off, `thinkingOff: false`, offers no Off.)
+  const alwaysOn = provider === 'claude-code' && !!row && (row.thinkingOff === false || row.supportsThinkingOff === false);
+  const canOff = provider === 'claude-code' ? rest.length > 0 && !alwaysOn : provider === 'antigravity' ? false : listsOff;
   return canOff ? [{ id: offId, label: 'Off', off: true }, ...rest] : rest;
 }
 function num(v) { const n = Number(v); return v != null && v !== '' && typeof v !== 'boolean' && Number.isFinite(n) ? n : null; }
@@ -157,6 +160,12 @@ function normalizeRouteSides(sides) {
   return { direct: side(src.direct), dispatch: side(src.dispatch) };
 }
 
+export function routeSplitText(split, t) {
+  if (!split || !Number.isInteger(split.workers)) return '';
+  const label = tf(t)( 'assistant.routes.splitWorkers', '{count} workers planned', { count: split.workers });
+  return `${label}: ${arr(split.slices).map(String).join(' · ')}${split.reason ? ` — ${split.reason}` : ''}`;
+}
+
 /** Normalize a route control packet (or its `request`) into the card model. */
 export function normalizeRouteRequest(packet) {
   const p = obj(packet);
@@ -176,11 +185,13 @@ export function normalizeRouteRequest(packet) {
     runIds: arr(req.runIds).map(String).filter(Boolean),
     workflowId: str(req.workflowId) || null,
     sessionId: str(req.sessionId) || null,
+    taskId: str(req.taskId) || null, taskKey: str(req.taskKey),
     mode: normalizeRouteMode(req.mode, null),
     reasons: arr(req.reasons).map(String).filter(Boolean),
     taskClass: str(req.taskClass) || 'general',
     taskClassLabel: str(req.taskClassLabel) || humanizeClass(req.taskClass),
     summary: str(req.summary),
+    plannedSplit: obj(req.plannedSplit),
     confidence: num(req.confidence),
     needsVision: req.needsVision === true,
     // Image / video creation: the medium the model must generate ('image' | 'video'), always on a worker.
@@ -282,6 +293,49 @@ function badgeText(o, n, tr) {
   }
 }
 
+// ── The effort in a row's title ───────────────────────────────────────────
+// Two "here" rows can be on one model and differ only by effort (the brain's suggestion and the saved
+// route, in Always ask): the title names the effort, so the row the card opens on reads as what it is.
+// A title is read for the card's own words ("off" for `none`, the id otherwise) and the router's
+// (lib/assistant-router.js effortWord: "thinking off"); it is written in the card's.
+
+/** Whether `title` already ends in `effort` (" · high", " · thinking off"). */
+export function routeTitleHasEffort(title, effort) {
+  return !!routeLabelEffortWord(title, effort);
+}
+
+/** `title` without its trailing effort (`effort` as it was), else as it is. */
+export function routeTitleWithoutEffort(title, effort) {
+  const text = str(title);
+  const word = routeLabelEffortWord(text, effort);
+  return word ? text.slice(0, text.length - word.length - 3) : text;
+}
+
+/** `base` with ` · <effort>` in the card's words (none → "off"); no effort (or the auto "off"): `base`. */
+export function routeTitleWithEffort(base, effort) {
+  const text = str(base);
+  const level = str(effort);
+  return level && level !== 'off' && !routeTitleHasEffort(text, level) ? `${text} · ${routeEffortWord(level)}` : text;
+}
+
+/**
+ * A row with another effort (the card's effort field): its title with the new effort in place of the
+ * one it named → { title, titleEffort }. A worker row whose label never named an effort gets one too.
+ */
+export function routeRetitled(o, effort) {
+  const base = o?.titleEffort ? routeTitleWithoutEffort(o.title, o.effort) : str(o?.title);
+  const title = routeTitleWithEffort(base, effort);
+  return { title, titleEffort: routeTitleHasEffort(title, effort) };
+}
+
+/**
+ * A "here" option's model as the router labels it ("Do it here with ‹model›"), without the lead and
+ * without an effort a label may carry: what the title and a decided route name. '' with no label.
+ */
+export function routeHereModelLabel(o) {
+  return routeTitleWithoutEffort(str(o?.label).replace(/^do it here with\s+/i, ''), o?.effort);
+}
+
 /**
  * Display options for the card: the default (suggested) first and preselected,
  * then "Do it here with ‹current model›", remembered, cheaper, stronger.
@@ -327,18 +381,23 @@ export function routeOptions(n, { brainLabel = '', t = null } = {}) {
   const hereModel = brainLabel || routeTargetLabel(n.brain) || tr('assistant.routes.currentModel', 'the current model');
   // The router labels every option done here "Do it here with <model>" (English): the title names the model once,
   // in the user's language ("Do it here with Do it here with Sonnet 5" before).
-  const labelOf = (o) => str(o.label).replace(/^do it here with\s+/i, '');
+  const labelOf = routeHereModelLabel;
   return kept.map((o, i) => {
     const isHere = hereRow(o);
     const label = routeTargetLabel(o);
+    // "here" is the brain's own model: prefer its display label over a raw id. Another model of its
+    // provider (a continuation) is done here too, and says so the same way. A row done here names its
+    // effort ("… · high"); a worker row's label already does when it has one.
+    const title = isHere ? routeTitleWithEffort(tr('assistant.routes.doHere', 'Do it here with {model}', { model: labelOf(o) || hereModel }), o.effort)
+      : o.kind === 'direct' ? routeTitleWithEffort(tr('assistant.routes.doHere', 'Do it here with {model}', { model: labelOf(o) || modelShortName(o.model) || o.id }), o.effort)
+        : (label || o.id);
     return {
       ...o,
       number: i + 1,
       here: isHere,
-      // "here" is the brain's own model: prefer its display label over a raw id. Another model of its
-      // provider (a continuation) is done here too, and says so the same way.
-      title: isHere ? tr('assistant.routes.doHere', 'Do it here with {model}', { model: labelOf(o) || hereModel })
-        : o.kind === 'direct' ? tr('assistant.routes.doHere', 'Do it here with {model}', { model: labelOf(o) || modelShortName(o.model) || o.id }) : (label || o.id),
+      title,
+      // The grey line under the title leaves the effort out when the title already says it.
+      titleEffort: routeTitleHasEffort(title, o.effort),
       badgeText: badgeText(o, n, tr),
       disabledReason: o.budget === 'share_used_up' || o.budget === 'unpriced' ? routeBudgetReason({ provider: o.provider, unpriced: o.budget === 'unpriced' }, t) : o.disabledReason,
       selected: o.id === defaultId,
@@ -393,7 +452,7 @@ export function routeCardSides(n, options, { t = null } = {}) {
 
 /** control_response payload for a route card. `decline:true` is the Cancel answer. */
 export function buildRouteResponse(n, choice = {}) {
-  if (choice.decline) return { kind: 'route', optionId: null, remember: false, decline: true };
+  if (choice.decline) return { kind: 'route', optionId: null, remember: false, decline: true, ...(choice.reason ? { reason: choice.reason } : {}) };
   const optionId = str(choice.optionId) || n?.defaultOptionId || null;
   const out = { kind: 'route', optionId, remember: choice.remember === true && n?.remember?.available === true };
   if (optionId === 'other') {
@@ -512,6 +571,7 @@ export function routeLineParts(route, phase = 'decided', { brainLabel = '', t = 
     default: decided = r.remembered ? tr('assistant.routes.remembered', 'your saved choice') : '';
   }
   const meta = [];
+  if (r.plannedSplit?.workers) meta.push(tf(t)('assistant.routes.splitWorkers', '{count} workers planned', { count: r.plannedSplit.workers }));
   const accountLabel = routeDisplayAccount(target, t);
   if (accountLabel) meta.push(accountLabel);
   if (effort && effort !== 'off') meta.push(routeEffortWord(effort));
@@ -671,6 +731,8 @@ export function createRouteLine(route, opts = {}) {
 
     detail.innerHTML = '';
     const rows = [];
+    const splitText = routeSplitText(current.route.plannedSplit, opts.t);
+    if (splitText) rows.push(['split', splitText]);
     if (p.reason) rows.push(['reason', p.reason]);
     if (p.decidedText) rows.push(['decided', p.decidedText]);
     if (p.alternatives.length) rows.push(['alternatives', `${tr('assistant.routes.alternatives', 'Also considered')}: ${p.alternatives.join(' · ')}`]);
@@ -851,6 +913,8 @@ export function renderRouteCard(container, input, hooks = {}) {
   const status = head.querySelector('.asst-control-status');
 
   if (n.summary) card.appendChild(el('div', 'asst-route-summary', n.summary));
+  const splitText = routeSplitText(n.plannedSplit, hooks.t);
+  if (splitText) card.appendChild(el('div', 'asst-route-summary asst-route-split', splitText));
   const reasons = routeReasonLabels(n, hooks.t);
   if (reasons.length) card.appendChild(el('div', 'asst-route-reasons', reasons.join(' · ')));
   // Asked from WhatsApp: on the phone, a yes to one option of this card also allows controlling the Mac.
@@ -894,7 +958,7 @@ export function renderRouteCard(container, input, hooks = {}) {
     row.setAttribute('aria-disabled', o.disabled ? 'true' : 'false');
     row.tabIndex = -1;
     const kindWord = o.kind && o.kind !== 'direct' ? routeKindWord(o.kind, hooks.t) : '';
-    const sub = [kindWord, routeDisplayAccount(o, hooks.t), o.effort && o.effort !== 'off' ? routeEffortWord(o.effort) : '', o.price ? priceText(o.price) : '', o.vision ? tr('assistant.brain.vision', 'vision') : '', o.reason].filter(Boolean).join(' · ');
+    const sub = [kindWord, routeDisplayAccount(o, hooks.t), o.effort && o.effort !== 'off' && !o.titleEffort ? routeEffortWord(o.effort) : '', o.price ? priceText(o.price) : '', o.vision ? tr('assistant.brain.vision', 'vision') : '', o.reason].filter(Boolean).join(' · ');
     row.innerHTML = `
       <span class="asst-route-num" aria-hidden="true">${esc(o.number)}</span>
       <span class="asst-route-opt-icon asst-icon" aria-hidden="true"${o.provider ? ` style="color:${esc(providerColor(o.provider))}"` : ''}>${providerIconHtml(o.provider, hooks)}</span>
@@ -1004,7 +1068,9 @@ export function renderRouteCard(container, input, hooks = {}) {
     if (busy()) return;
     const from = selected();
     if (!from) return;
-    state.others[state.side] = { ...from, accountId: from.accountChoice || from.accountId || null, accountChoice: Object.hasOwn(patch, 'accountId') ? patch.accountId : from.accountChoice || null, disabled: false, disabledReason: null, accountError: null, ...patch, id: 'other', number: sideOptions().length + 1, badge: null, badgeText: tr('assistant.routes.badge.other', 'Your choice') };
+    // Another effort: the title names the new one in place of the old (never both).
+    const titled = Object.hasOwn(patch, 'effort') ? routeRetitled(from, patch.effort) : {};
+    state.others[state.side] = { ...from, accountId: from.accountChoice || from.accountId || null, accountChoice: Object.hasOwn(patch, 'accountId') ? patch.accountId : from.accountChoice || null, disabled: false, disabledReason: null, accountError: null, ...patch, ...titled, id: 'other', number: sideOptions().length + 1, badge: null, badgeText: tr('assistant.routes.badge.other', 'Your choice') };
     state.picks[state.side] = 'other';
     renderOptions();
   }
@@ -1153,7 +1219,7 @@ export function renderRouteCard(container, input, hooks = {}) {
       decidedBy: 'user',
       optionId: selectedId(),
       remembered: state.remember,
-      target: o ? { kind: o.kind || 'direct', provider: o.provider, model: o.model, effort: o.effort, accountId: o.accountId || null, label: (o.kind === 'direct' ? str(o.label).replace(/^do it here with\s+/i, '') : o.label) || (o.here ? routeTargetLabel(o) : o.title) } : null,
+      target: o ? { kind: o.kind || 'direct', provider: o.provider, model: o.model, effort: o.effort, accountId: o.accountId || null, label: (o.kind === 'direct' ? routeHereModelLabel(o) : o.label) || (o.here ? routeTargetLabel(o) : o.title) } : null,
       alternatives: allOptions().filter(x => x.id !== selectedId()).map(x => ({ provider: x.provider, model: x.model, effort: x.effort, label: x.label })),
     };
   }
@@ -1216,7 +1282,7 @@ export function renderRouteCard(container, input, hooks = {}) {
     }
     error.hidden = true;
     setPending(true, tr('assistant.routes.cancelling', 'Cancelling…'));
-    try { hooks.onRespond?.(buildRouteResponse(n, { decline: true }), n); } catch { /* ignore */ }
+    try { hooks.onRespond?.(buildRouteResponse(n, { decline: true, reason: 'cancelled' }), n); } catch { /* ignore */ }
     state.grace = setTimeout(() => { state.grace = null; if (!state.collapsed) collapse('declined', { target: null }); }, 1800);
   }
 
@@ -1255,7 +1321,7 @@ export function renderRouteCard(container, input, hooks = {}) {
     }
     if (e.key === 'Escape') {
       e.preventDefault(); e.stopPropagation();
-      cancel();
+      returnFocus();
       return;
     }
     if (e.key === ' ' && e.target?.classList?.contains('asst-route-option')) {

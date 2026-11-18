@@ -294,6 +294,15 @@ a.cp-chip:hover { text-decoration: underline; }
 .cp-session-card textarea.cp-elicit-input { resize: vertical; font-family: "SF Mono", Menlo, monospace; }
 .cp-session-card .cp-session-field input[type="checkbox"] { align-self: flex-start; accent-color: #d4a848; }
 .cp-session-card:not(.active-perm) { opacity: 0.7; }
+/* Its choice fields are the app's dropdown (cc-dropdown.js) in the look of the card's own inputs. */
+.cp-session-card .cc-dropdown { display: block; }
+.cp-session-card .cc-dropdown-trigger { width: 100%; min-width: 0; box-sizing: border-box; background: rgba(0,0,0,0.35); border: 1px solid rgba(180,140,60,0.2); border-radius: 6px; color: rgba(255,255,255,0.88); font: 10.5px/1.5 Inter, sans-serif; letter-spacing: normal; padding: 3px 6px; text-align: left; }
+.cp-session-card .cc-dropdown-trigger:focus { outline: none; }
+.cp-session-card .cc-dropdown-trigger:focus-visible, .cp-session-card .cc-dropdown.open .cc-dropdown-trigger { border-color: rgba(212,168,72,0.5); }
+.cp-session-card .cc-dropdown.disabled .cc-dropdown-trigger { cursor: default; }
+.cp-session-card .cc-dropdown-item { font: 10.5px/1.4 Inter, sans-serif; }
+.cp-session-card .cc-dropdown-item.highlight { background: rgba(255,255,255,0.06); color: var(--t-bright); }
+.cp-session-card .cc-dropdown-item[aria-disabled="true"], .cp-session-card .cc-dropdown-item[aria-disabled="true"]:hover { opacity: .45; cursor: default; background: none; color: var(--t-secondary); }
 
 /* ═══ Statusline: usage limit ═══ */
 .cp-sl-limit { font: 600 9.5px/1 "SF Mono", Menlo, monospace; border-radius: 8px; padding: 2px 6px; white-space: nowrap; flex-shrink: 0; cursor: default; color: #d4a848; background: rgba(212,168,72,0.12); }

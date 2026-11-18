@@ -13,8 +13,8 @@ import { getDefaultStore } from './ocp-v2-state.js';
 import { notify as uiNotify, NOTIF_TYPE } from '../ui-notifications.js';
 import { nativeLoopWindowId } from '../ui-native-window-id.js';
 import { registerAutomationSession, automationRunAnswersAsks } from './ocp-v2-automation-ownership.js';
-import { applyEvent, resolveEventTargets, askNotifies } from './ocp-v2-events.js';
-import { createCapabilities, gatedRequest } from './ocp-v2-caps.js';
+import { applyEvent, resolveEventTargets, askNotifies, eventSessionId, permissionRequestId } from './ocp-v2-events.js';
+import { createCapabilities, gatedRequest, replyFailed } from './ocp-v2-caps.js';
 import { shouldAutoAccept, autoAcceptRequest, autoAcceptInherited } from './ocp-v2-approvals.js';
 import { verifyDescendant, descendantState, knownDescendant, createReconnectNotifier, requestOwner } from './ocp-v2-rehydrate.js';
 import { createAskTracker, createTurnClock, readOpenAsks, unreadAsksNotice, TURN_LIMIT_MS } from './ocp-v2-send-logic.js';
@@ -246,6 +246,10 @@ function handleMessage(msg) {
 }
 
 function handleEvent(eventType, ev) {
+  if (eventType === 'session.idle' || eventType === 'session.error' || eventType === 'session.deleted') {
+    const sessionId = eventSessionId(ev);
+    if (sessionId) clearStoredAsks((owner) => owner === sessionId);
+  }
   // session.created → broadcast to manager listeners (child-panel spawning).
   // Don't dispatch as a state mutation — the spawned panel's own subscribeSession
   // call will catch its own subsequent message events.
@@ -285,8 +289,27 @@ const _parentOf = new Map();
 const _asks = createAskTracker({ parentOf: _parentOf });
 /** True while `sessionId`, or a sub-agent below it, waits on a permission or a question. */
 export const sessionWaitsOnUser = (sessionId) => _asks.waits(sessionId);
+export const sessionHasOpenAsks = (sessionId) => _asks.hasOpenAsks(sessionId);
 /** `listener()` whenever what waits on the user may have changed; returns an unsubscribe. */
 export const onAsksChanged = (listener) => _asks.subscribe(listener);
+
+function storedAsks(belongsTo) {
+  const asks = [];
+  for (const store of _allStores) {
+    const state = store.getState();
+    for (const req of state.pendingPermissions || []) {
+      if (belongsTo(requestOwner(req) || state.sessionId)) asks.push([store, 'removePendingPermission', permissionRequestId(req)]);
+    }
+    for (const req of state.pendingQuestions || []) {
+      if (belongsTo(requestOwner(req) || state.sessionId)) asks.push([store, 'removePendingQuestion', req.id]);
+    }
+  }
+  return asks;
+}
+
+function clearStoredAsks(belongsTo) {
+  for (const [store, remove, id] of storedAsks(belongsTo)) store[remove](id);
+}
 
 function rememberParent(ev) {
   const info = ev?.info || ev?.session || ev || {};
@@ -382,6 +405,7 @@ function underSession(sessionId, isAncestor) {
 
 // The sessions whose lists were read (or are out) since the socket opened.
 const _asksRead = new Set();
+let _askTabs = new Map(); // session ID → cwd, including tabs with no bound panel
 // Bound sessions waiting for the socket to say what it serves before their lists are read.
 const _asksUnread = new Set();
 let _asksReady = false;
@@ -389,9 +413,20 @@ let _asksReadyTimer = null;
 let _asksFlushTimer = null;
 const asksKnown = (sessionId) => _asksRead.has(sessionId) || underSession(sessionId, (id) => _asksRead.has(id));
 
+export function trackTabAsks(tabs) {
+  for (const sessionId of _askTabs.keys()) {
+    if (tabs.has(sessionId) || hasSessionStore(sessionId)) continue;
+    _asksRead.delete(sessionId);
+    _asksUnread.delete(sessionId);
+    _asks.release([sessionId]);
+  }
+  _askTabs = tabs;
+  for (const sessionId of tabs.keys()) readAsksOf(sessionId);
+}
+
 function askSession(sessionId, kinds) {
   const s = [...(_storesBySession.get(sessionId) || [])][0]?.getState?.() || {};
-  return { sessionId, cwd: s.cwd || s.sessionInfo?.directory || undefined, ...(kinds ? { kinds } : {}) };
+  return { sessionId, cwd: s.cwd || s.sessionInfo?.directory || _askTabs.get(sessionId), ...(kinds ? { kinds } : {}) };
 }
 
 // `want`: null for every bound session (not one under another), else the sessions (and lists) to read.
@@ -400,7 +435,7 @@ function askSession(sessionId, kinds) {
 // learned (a list holding a request whose place is not known yet is unresolved meanwhile: its session waits).
 // After a reconnect the tree is known; only a sub-agent spawned during the outage is looked up.
 function readAsks(want, { attempt = 1, partial = false } = {}) {
-  const bound = new Set(_storesBySession.keys());
+  const bound = new Set([..._storesBySession.keys(), ..._askTabs.keys()]);
   const sessions = want
     ? want.filter(({ sessionId }) => bound.has(sessionId)).map(({ sessionId, kinds }) => askSession(sessionId, kinds))
     : [...bound].filter((sessionId) => !underSession(sessionId, (id) => bound.has(id))).map((sessionId) => askSession(sessionId));
@@ -450,7 +485,7 @@ function flushAsksSoon() {
     // A sub-agent read in the same go as its parent is read with it.
     const batch = [..._asksUnread];
     const known = batch.filter((sessionId) => _storesBySession.has(sessionId)
-      && (asksKnown(sessionId) || underSession(sessionId, (id) => id !== sessionId && batch.includes(id) && _storesBySession.has(id))));
+      && (asksKnown(sessionId) || underSession(sessionId, (id) => id !== sessionId && batch.includes(id) && (hasSessionStore(id) || _askTabs.has(id)))));
     const sessions = batch.filter((sessionId) => !known.includes(sessionId));
     _asksUnread.clear();
     if (known.length) _asks.release(known);
@@ -673,6 +708,28 @@ async function answerOpenCodeWorker({ sessionId, requestId, answers }, reject = 
   return { ok: true, data: true };
 }
 
+async function settleAsk(eventType, sessionId, requestId, response) {
+  const result = await response;
+  if (!replyFailed(result)) {
+    const event = { sessionID: sessionId, requestID: requestId };
+    _asks.note(eventType, event);
+    handleEvent(eventType, event);
+  }
+  return result;
+}
+
+async function abortSession(sessionId) {
+  const pending = _asks.openAsksOf(sessionId);
+  const stored = storedAsks((owner) => owner === sessionId || knownDescendant(owner, sessionId, _parentOf));
+  const result = await request({ type: 'message:abort', sessionId });
+  if (!replyFailed(result)) {
+    // Stop can finish after a new turn has started. Clear only the requests seen when Stop was pressed.
+    for (const ask of pending) _asks.note(`${ask.kind}.replied`, { requestID: ask.id, sessionID: ask.owner });
+    for (const [store, remove, id] of stored) store[remove](id);
+  }
+  return result;
+}
+
 export const api = {
   init:           ()              => request({ type: 'init', windowId: nativeLoopWindowId }),
   // options: { search, archived, roots, limit }. A server without
@@ -687,13 +744,20 @@ export const api = {
   // `human` / `greetingId`: lib/greeting/ (a server that does not know them ignores them).
   send: ({ sessionId, parts, model, agent, mode, variant, cwd, tools, noAbortPrev, human, greetingId }) =>
     request({ type: 'message:send', sessionId, parts, model, agent, mode, variant, cwd, tools, noAbortPrev: !!noAbortPrev, ...(human ? { human: true } : {}), ...(greetingId ? { greetingId } : {}) }, TURN_LIMIT_MS, { turnOf: sessionId }),
-  abort: (sessionId) => request({ type: 'message:abort', sessionId }),
+  abort: abortSession,
   compact: ({ sessionId, cwd, tools } = {}) => request({ type: 'session:compact', sessionId, cwd, tools }, 5 * 60 * 1000),
   permissionReply: ({ sessionId, permissionId, response, cwd, message }) =>
-    request({ type: 'permission:reply', sessionId, permissionId, response, cwd, message }),
+    settleAsk('permission.replied', sessionId, permissionId,
+      request({ type: 'permission:reply', sessionId, permissionId, response, cwd, message })),
   questionList:   ({ cwd, sessionId } = {})   => workerQuestionRuns.has(sessionId) ? Promise.resolve({ data: workerQuestions(workerQuestionRuns.get(sessionId)) }) : request({ type: 'question:list', cwd, sessionId }),
-  questionReply:  ({ requestId, answers, cwd, sessionId }) => workerQuestionRuns.has(sessionId) ? answerOpenCodeWorker({ requestId, answers, sessionId }) : request({ type: 'question:reply', requestId, answers, cwd, sessionId }),
-  questionReject: ({ requestId, sessionId })  => workerQuestionRuns.has(sessionId) ? answerOpenCodeWorker({ requestId, sessionId }, true) : request({ type: 'question:reject', requestId, sessionId }),
+  questionReply: ({ requestId, answers, cwd, sessionId }) =>
+    settleAsk('question.replied', sessionId, requestId, workerQuestionRuns.has(sessionId)
+      ? answerOpenCodeWorker({ requestId, answers, sessionId })
+      : request({ type: 'question:reply', requestId, answers, cwd, sessionId })),
+  questionReject: ({ requestId, sessionId }) =>
+    settleAsk('question.rejected', sessionId, requestId, workerQuestionRuns.has(sessionId)
+      ? answerOpenCodeWorker({ requestId, sessionId }, true)
+      : request({ type: 'question:reject', requestId, sessionId })),
   toolsGet:  (sessionId) => gated({ type: 'mcp:tools:get', sessionId }),
   toolsSet:  (sessionId, tools) => gated({ type: 'mcp:tools:set', sessionId, tools }, 45_000),
 

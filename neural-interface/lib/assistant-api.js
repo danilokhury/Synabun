@@ -8,6 +8,7 @@
 // Mounted from server.js with `app.use('/api/assistant', createAssistantApi(deps))`.
 
 import { dispatchInput } from './assistant-tools.js';
+import { expandAgentProposals, getAgentResolver } from './agents/resolve.js'; // agents-p1
 import { Router } from 'express';
 import { DispatchError } from './assistant-dispatch.js';
 import { openServable } from './assistant-media.js';
@@ -21,6 +22,8 @@ import { noStore, requireJson, requireLocal, requireLocalHost, sendGuardError } 
 import { setUntrustedFileHeaders } from './untrusted-file-headers.js';
 import { PEER_VERDICT, peerAuthority } from './peer-identity.js';
 import { sendPeerUnavailable } from './owner-authority.js';
+import { registerAssistantTeamRoutes } from './teams/api.js'; // agents-p4
+import { sharedTeamScheduler } from './teams/scheduler.js'; // agents-p4
 
 /** The header whatsapp_send_file's caller proves it is the WhatsApp conversation's own brain with (assistant-runtime.js BRAIN_CREDENTIAL_RE). */
 export const BRAIN_CREDENTIAL_HEADER = 'x-synabun-brain-token';
@@ -155,6 +158,9 @@ export function createAssistantApi({
   // after this router), and the port the server listens on (the Host check of that route).
   whatsapp = null,
   port = 3344,
+  // agents-p4: the team scheduler (lib/teams/scheduler.js), or what returns it. Default: the one server.js shares
+  // (shareTeamScheduler); none: the team routes answer 503.
+  teamScheduler = sharedTeamScheduler,
   // The Admin sandbox setting (lib/agent-sandbox-setting.js): one global value for every agent SynaBun starts.
   adminSandbox = null,
   // Protect workers (lib/worker-guard-setting.js): what capability read-only / workspace means for every worker.
@@ -169,6 +175,8 @@ export function createAssistantApi({
   // that names a worker's run, or a brain's id, without it is refused (403 TERMINAL_TOKEN_REQUIRED / _INVALID) instead
   // of reading that run as its own worker. Without it (a test, an older host) every pin is taken as it is said.
   terminalVerdict = null,
+  // agents-p1: the agent resolver (lib/agents/resolve.js), or what returns it. Default: the one of the process.
+  agents = getAgentResolver,
 } = {}) {
   if (!dispatcher) throw new Error('createAssistantApi requires a dispatcher');
   const router = Router();
@@ -179,6 +187,16 @@ export function createAssistantApi({
     if (isGuestRequest(req)) return res.status(403).json(OWNER_ONLY);
     next();
   });
+
+  // agents-p1: the agents the owner approved, as agent_catalog lists them (what a dispatch names with agent_ref):
+  // every one, or the ones on `provider` / whose id, name or description holds `q`. [] on a server without agents.
+  function runnableAgents({ provider = null, q = null } = {}) {
+    let rows = [];
+    try { rows = (typeof agents === 'function' ? agents() : agents)?.runnable?.() || []; } catch { rows = []; }
+    const needle = q ? String(q).trim().toLowerCase() : '';
+    return rows.filter((row) => (!provider || row.provider === provider)
+      && (!needle || [row.id, row.name, row.description].some((value) => String(value || '').toLowerCase().includes(needle))));
+  }
 
   // Resolve who is calling: the UI (the page secret cookie, no pin), a dispatched worker (run id pin →
   // forbidden for orchestration), or nobody known. A brain is NOT decided here: a pin only records which
@@ -354,6 +372,25 @@ export function createAssistantApi({
       }
     });
   }
+  /**
+   * A brain read these events with agent_wait until:"event" (Agents P2): once the response is out they are settled
+   * in its mailbox by their ids, so they do not come back as a mailbox turn. Asking again with the same after_seq
+   * still returns them (the wait reads the log), which is how a lost answer is recovered.
+   */
+  function noteBrainEvents(req, res, events) {
+    if (typeof dispatcher.markEventsDelivered !== 'function' || !Array.isArray(events) || !events.length) return;
+    const caller = brainCaller(req);
+    if (!caller?.assistantSessionId) return;
+    const ids = events.map((event) => event?.id).filter(Boolean);
+    if (!ids.length) return;
+    res.on('finish', () => { try { dispatcher.markEventsDelivered(caller.assistantSessionId, ids); } catch {} });
+  }
+  /** agent_wait's `kinds`: a list, or one comma-separated value (a query string). → string[] | null */
+  function waitKinds(value) {
+    if (value === undefined || value === null || value === '') return null;
+    const list = (Array.isArray(value) ? value : String(value).split(',')).map((kind) => String(kind).trim()).filter(Boolean);
+    return list.length ? list : null;
+  }
   /** Where a session's conversation happens: 'whatsapp' (WhatsApp Link), or null (the panel). */
   function channelOf(assistantSessionId) {
     if (!assistantSessionId) return null;
@@ -426,7 +463,7 @@ export function createAssistantApi({
           ...(claudeAccounts ? { 'claude-code': usage()?.['claude-code'] || claudeAccounts.listForClient() } : {}),
           ...(codexAccounts ? { codex: usage()?.codex || codexAccounts.listForClient() } : {}),
         };
-        return res.json({ ok: true, generatedAt: new Date(now()).toISOString(), ...brief, accounts, claudeWorkerAccount: claudeWorkerAccountId(), codexWorkerAccount: codexWorkerAccountId(), limits: dispatcher.limits, runs: dispatcher.list({ activeOnly: true }), totals: dispatcher.totals() });
+        return res.json({ ok: true, generatedAt: new Date(now()).toISOString(), ...brief, accounts, claudeWorkerAccount: claudeWorkerAccountId(), codexWorkerAccount: codexWorkerAccountId(), limits: dispatcher.limits, runs: dispatcher.list({ activeOnly: true }), totals: dispatcher.totals(), agents: runnableAgents({ provider, q }) });
       }
       // The catalog says how long one of its builds is good for (one without a verified list is redone
       // within seconds), so it is asked every time: this answer is reused only while it hands back the
@@ -471,6 +508,7 @@ export function createAssistantApi({
         // The MoreLogin profile of the worker's browser tab (an id or a name); none = the default browser.
         moreloginProfile: body.moreloginProfile ?? body.morelogin_profile ?? null,
         workflowId: body.workflowId || body.workflow_id,
+        workerIndex: body.workerIndex ?? body.worker_index,
         parentRunId: body.parentRunId || body.parent_run_id,
         outputSchema: body.outputSchema || body.output_schema,
         idempotencyKey: body.idempotencyKey || body.idempotency_key,
@@ -742,7 +780,9 @@ export function createAssistantApi({
   router.post('/route', orchestrationGuard, async (req, res) => {
     if (!requireRouter(res)) return;
     try {
-      const body = req.body || {};
+      // agents-p1: a proposal that names an agent (agent_ref) gets the provider, model, effort and account the agent
+      // runs on, where it names none itself (lib/agents/resolve.js); a body without one is passed on as it is.
+      const body = expandAgentProposals(agents, req.body || {});
       const sessionId = req.assistantCaller.assistantSessionId || body.assistantSessionId || body.assistant_session_id || null;
       if (!sessionId) return res.status(400).json({ ok: false, code: 'SESSION_REQUIRED', error: 'assistant_session_id is required' });
       const budget = callerBudgetMs(req);
@@ -852,15 +892,21 @@ export function createAssistantApi({
       const body = req.body || {};
       const target = { runId: body.runId || body.run_id || null, runIds: body.runIds || body.run_ids || null, workflowId: body.workflowId || body.workflow_id || null };
       const chat = chatWait(req, target);
+      const brain = brainCaller(req);
       const result = await dispatcher.wait({
         ...target,
         assistantSessionId: req.assistantCaller.assistantSessionId || null,
         until: body.until || 'idle',
-        mode: body.mode || 'all',
+        // 'all' for a state wait (a barrier), 'any' for an event wait (the next event of any of the runs).
+        mode: body.mode || null,
         timeoutMs: chat ? CHAT_WAIT_MS : (body.timeoutMs ?? (body.timeout_seconds ? Number(body.timeout_seconds) * 1000 : 30_000)),
+        // Agents P2 (until "event"): the cursor of an earlier answer, the kinds wanted, and, for a brain that passes
+        // no cursor, what it has not been told yet.
+        afterSeq: body.afterSeq ?? body.after_seq ?? null,
+        kinds: waitKinds(body.kinds),
+        unseenFor: brain?.assistantSessionId || null,
       });
-      const brain = brainCaller(req);
-      if (brain) noteBrainRead(req, res, result?.done, 'agent_wait');
+      if (brain) { noteBrainRead(req, res, result?.done, 'agent_wait'); noteBrainEvents(req, res, result?.events); }
       res.json(brain ? brainWaitView(chat ? chatWaitView(result) : result) : result);
     } catch (error) { sendError(res, error); }
   });
@@ -913,6 +959,8 @@ export function createAssistantApi({
         format,
         tail: clampInt(req.query.tail, 1, 500, 40),
         maxChars: clampInt(req.query.maxChars, 200, 20_000, 4000),
+        // Agents P2: where the page starts (omit it for the end of the text, as before).
+        offset: req.query.offset === undefined || req.query.offset === '' ? null : clampInt(req.query.offset, 0, 100_000_000, 0),
       });
       // Only the full text is a read of the result; a tail of events is not.
       if (format === 'text') {
@@ -968,13 +1016,17 @@ export function createAssistantApi({
   router.get('/runs/:runId/wait', orchestrationGuard, async (req, res) => {
     try {
       const chat = chatWait(req, { runId: req.params.runId });
+      const brain = brainCaller(req);
+      const after = req.query.afterSeq ?? req.query.after_seq;
       const result = await dispatcher.wait({
         runId: req.params.runId,
         until: req.query.until || 'idle',
         timeoutMs: chat ? CHAT_WAIT_MS : clampInt(req.query.timeout, 1000, 120_000, 30_000),
+        afterSeq: after === undefined || after === '' ? null : Number(after),
+        kinds: waitKinds(req.query.kinds),
+        unseenFor: brain?.assistantSessionId || null,
       });
-      const brain = brainCaller(req);
-      if (brain) noteBrainRead(req, res, result?.done, 'agent_wait');
+      if (brain) { noteBrainRead(req, res, result?.done, 'agent_wait'); noteBrainEvents(req, res, result?.events); }
       res.json(brain ? brainWaitView(chat ? chatWaitView(result) : result) : result);
     } catch (error) { sendError(res, error); }
   });
@@ -1121,6 +1173,12 @@ export function createAssistantApi({
     // Test density is the user's setting too: an agent cannot raise or lower it.
     if (req.body && 'testDensity' in req.body && (req.get('x-synabun-terminal') || req.get('x-synabun-desktop-grant'))) {
       return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Only the user can change the Test density.' });
+    }
+    // agents-p4: Agent density is the user's setting as well: no agent raises the number of workers it may be given.
+    // Any agent header refuses it, and so does a caller that is not the owner's own page (callerContext: the page
+    // secret where one is wired; a worker's or a brain's pin is never the page).
+    if (req.body && 'agentDensity' in req.body && (req.get('x-synabun-terminal') || req.get('x-synabun-desktop-grant') || req.get('x-synabun-role') || req.get('x-synabun-brain-token') || callerContext(req).kind !== 'ui')) {
+      return uiOnly(req, res, 'Only the user can change the Agent density.');
     }
     try {
       const session = await runtime.updateSession(req.params.id, req.body || {});
@@ -1459,6 +1517,17 @@ export function createAssistantApi({
     log('assistant-api', error?.message || String(error));
     sendError(res, error);
   });
+
+  // ── agents-p4 BEGIN: teams (lib/teams/api.js) ──────────────────────────────
+  // agent_team (a brain by its launch credential, or the owner's page) and a worker's `team` tool (a run that proves
+  // its pin and works a team slice now; its team is read from the scheduler, never from the request).
+  registerAssistantTeamRoutes(router, {
+    scheduler: teamScheduler, orchestrationGuard, callerContext,
+    density: (sessionId) => { try { return dispatcher.agentDensity?.(sessionId) ?? null; } catch { return null; } },
+    // A planning brain starts, retries, lands and discards no team (planState: null for the owner's page).
+    planning: (req, sessionId) => planState(req, sessionId),
+  });
+  // ── agents-p4 END ──────────────────────────────────────────────────────────
 
   return router;
 }

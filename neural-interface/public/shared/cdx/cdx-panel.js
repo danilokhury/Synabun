@@ -86,7 +86,6 @@ let _freshThread = false;
 let _threadId = null;
 let _project = '';
 let _boundTab = null;
-let _tabs = [];
 let _activeTabIdx = -1;
 let _sessionLabel = 'New session';
 let _items = new Map();
@@ -154,7 +153,6 @@ export function syncBoundState(s) {
   _threadId = s.threadId ?? _threadId;
   _project = s.project ?? _project;
   _boundTab = s.boundTab ?? _boundTab;
-  _tabs = s.tabs ?? _tabs;
   _activeTabIdx = s.activeTabIdx ?? _activeTabIdx;
   _sessionLabel = s.sessionLabel ?? _sessionLabel;
   _items = s.items ?? _items;
@@ -518,7 +516,9 @@ function applyVisibility(nextVisible) {
   if (_visible) {
     window.addEventListener('keydown', _cdxPanelEscHandler, { capture: true });
     document.addEventListener('keydown', _cdxDocEscHandler, { capture: true });
-    if (!_tabs.length) createTab({ project: storage.getItem(STOR.project) || '' });
+    // The tabs are cdx-tabs.js's own (allTabs()), never a copy kept here: a copy that nothing kept up to date
+    // read as empty, and every show made a blank tab and put it in front of the one a pill had just chosen.
+    if (!allTabs().length) createTab({ project: storage.getItem(STOR.project) || '' });
     state.lastActivePanel = 'codex';
     updateActiveTabView();
     loadRecallProfile();
@@ -535,22 +535,22 @@ function applyVisibility(nextVisible) {
 //  loadBranches — Fetch git branches for project
 // ═══════════════════════════════════════════
 
+let _branchRequest = 0;
 async function loadBranches(path) {
+  const request = ++_branchRequest;
   const $branch = panelEl('#cxp-branch');
   if (!$branch) return;
-  if (!path) { $branch.dataset.current = ''; ddPopulate($branch, [], ''); return; }
+  $branch.dataset.current = '';
+  ddPopulate($branch, [], '');
+  if (!path) return;
   try {
     const res = await fetch(`/api/terminal/branches?path=${encodeURIComponent(path)}`).then(r => r.json());
+    if (request !== _branchRequest || activeTab()?.project !== path) return;
     $branch.dataset.current = res.current || '';
-    const tab = activeTab();
-    if (tab && tab.project === path) tab.branch = res.current || '';
-    if (res.branches?.length) {
-      const items = res.branches.map(b => ({ value: b, label: b }));
-      ddPopulate($branch, items, res.current || '');
-    } else {
-      ddPopulate($branch, [], '');
-    }
-  } catch {}
+    activeTab().branch = res.current || '';
+    const items = (Array.isArray(res.branches) ? res.branches : []).map(b => ({ value: b, label: b }));
+    ddPopulate($branch, items, res.current || '');
+  } catch { /* keep the cleared selector */ }
 }
 
 // ═══════════════════════════════════════════
@@ -826,7 +826,7 @@ function wireEvents() {
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result.ok) throw new Error(result.error || 'Branch checkout failed');
       branchDd.dataset.current = result.branch || branch;
-      for (const entry of _tabs) {
+      for (const entry of allTabs()) {
         if (entry.project === project) entry.branch = result.branch || branch;
       }
       hideComposerHints();
@@ -931,7 +931,7 @@ function wireEvents() {
 
   on('codex-panel:show', async (data) => {
     if (data?.tabId) {
-      const idx = _tabs.findIndex((entry) => entry.id === data.tabId);
+      const idx = allTabs().findIndex((entry) => entry.id === data.tabId);
       if (idx >= 0) switchTab(idx);
     }
     setVisible(true);
@@ -940,7 +940,7 @@ function wireEvents() {
 
   const findPlanEditorTab = ({ source, tabId, planId, accountId, threadId } = {}) => {
     if (source !== 'codex' || !tabId || !planId || !accountId || !threadId) return null;
-    return _tabs.find((entry) => entry.id === tabId
+    return allTabs().find((entry) => entry.id === tabId
       && entry.planDocument?.id === planId
       && entry.planDocument?.accountId === accountId
       && entry.planDocument?.threadId === threadId) || null;
@@ -1162,6 +1162,7 @@ export async function attachCodexAutomation(run, {
   tab.automationAwaits = runAwaitsAnswer(run);
   tab.automationOwnerId = nativeLoopWindowId;
   tab.threadId = threadId;
+  const projectChanged = !!run.cwd && run.cwd !== tab.project;
   tab.project = run.cwd || tab.project;
   tab.automationTitle = run.title || tab.automationTitle || tab.sessionLabel || 'Automation';
   tab.sessionLabel = tab.automationTitle;
@@ -1208,6 +1209,7 @@ export async function attachCodexAutomation(run, {
     const idx = allTabs().indexOf(tab);
     if (idx >= 0) switchTab(idx);
   }
+  if (projectChanged && isActiveTab(tab)) updateActiveTabView();
   if (!restart.active && isActiveTab(tab) && _visible) connectTab(tab);
   return { ok: true, tabId: tab.id };
 }

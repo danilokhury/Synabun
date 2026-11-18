@@ -429,29 +429,32 @@ export function createServeRecords({
    * not carry this start's token (macOS, Linux), or whose start time is not to the fraction of a second (Windows);
    * nor while the machine, the user or the boot cannot be told. A live record of another start under the same pid
    * is never written over. Resolves the record or null.
+   * `quiet`: why nothing was recorded is not logged. For the try right after the spawn, which can come before the
+   * process shows its environment, when a second try follows once it answers (and logs if that one fails too).
    */
-  async function record({ kind, id = null, port, pid, token } = {}) {
+  async function record({ kind, id = null, port, pid, token, quiet = false } = {}) {
     const n = Number(pid);
     if (!kinds.includes(kind) || !isPid(n) || !isPort(Number(port)) || !TOKEN.test(str(token))) return null;
+    const say = quiet ? () => {} : log;
     const at = await scopeLater();
-    if (!at) { log(`no record for the ${kind} ${noun} on port ${port}: the machine, the user or the boot could not be read`); return null; }
+    if (!at) { say(`no record for the ${kind} ${noun} on port ${port}: the machine, the user or the boot could not be read`); return null; }
     const identity = await readIdentityAsync(n);
-    if (!identity) { log(`no record for the ${kind} ${noun} on port ${port}: the identity of process ${n} could not be read`); return null; }
+    if (!identity) { say(`no record for the ${kind} ${noun} on port ${port}: the identity of process ${n} could not be read`); return null; }
     const entry = {
       v: RECORD_VERSION, kind, id: id == null ? null : String(id), port: Number(port),
       pid: n, startedAt: identity.startedAt, command: identity.command, token,
       scope: { ...at }, owner: owner(), recordedAt: new Date(now()).toISOString(),
     };
-    if (!whole(entry)) { log(`no record for the ${kind} ${noun} on port ${port}: process ${n} is not a ${noun} on that port (${identity.command})`); return null; }
+    if (!whole(entry)) { say(`no record for the ${kind} ${noun} on port ${port}: process ${n} is not a ${noun} on that port (${identity.command})`); return null; }
     if (platform === 'win32') {
-      if (!FINE_START.test(entry.startedAt)) { log(`no record for the ${kind} ${noun} on port ${port}: the start time of process ${n} is not precise enough to tell it apart`); return null; }
+      if (!FINE_START.test(entry.startedAt)) { say(`no record for the ${kind} ${noun} on port ${port}: the start time of process ${n} is not precise enough to tell it apart`); return null; }
     } else {
-      if (String(identity.uid ?? '') !== at.uid) { log(`no record for the ${kind} ${noun} on port ${port}: process ${n} is not this user's`); return null; }
-      if (await readTokenAsync(n, token, identity.command) !== true) { log(`no record for the ${kind} ${noun} on port ${port}: process ${n} does not carry this start's token`); return null; }
+      if (String(identity.uid ?? '') !== at.uid) { say(`no record for the ${kind} ${noun} on port ${port}: process ${n} is not this user's`); return null; }
+      if (await readTokenAsync(n, token, identity.command) !== true) { say(`no record for the ${kind} ${noun} on port ${port}: process ${n} does not carry this start's token`); return null; }
     }
     const onFile = readFile(`${n}.json`);
     if (onFile && str(onFile.token) && onFile.token !== token && !issued.has(onFile.token) && await verify(onFile) === 'same') {
-      log(`no record for the ${kind} ${noun} on port ${port}: process ${n} is on record for another start`);
+      say(`no record for the ${kind} ${noun} on port ${port}: process ${n} is on record for another start`);
       return null;
     }
     if (!write(entry)) return null;
@@ -521,7 +524,9 @@ export function createServeRecords({
     const pids = await listeners(Number(port));
     if (exited()) return { state: 'foreign' };
     if (!Array.isArray(pids)) return { state: 'unknown' };
-    if (!pids.length) return { state: 'foreign' };
+    // Windows can miss a listener that just answered. This is not evidence of a competing process; the native
+    // boundary still consumes [] directly when confirming that a stopped listener is gone.
+    if (!pids.length) return { state: platform === 'win32' ? 'unknown' : 'foreign' };
     let ours = null;
     for (const listener of pids) {
       if (listener !== n && await descendsFrom(listener, n) !== true) return { state: 'foreign', pids };

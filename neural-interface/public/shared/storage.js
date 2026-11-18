@@ -62,7 +62,12 @@ export function isShowcaseMode() {
 async function _hydrate() {
   let serverData = null;
   try {
-    const res = await fetch('/api/ui-state');
+    // index.html asks for it before any module loads (window.__synPrefetch.early): the graph no longer waits
+    // for its last module to be fetched before this request goes out. Taken once.
+    const early = globalThis.__synPrefetch?.early;
+    const pending = early?.['/api/ui-state'];
+    if (early) early['/api/ui-state'] = null;
+    const res = await (pending || fetch('/api/ui-state'));
     if (res.ok) serverData = await res.json();
   } catch { /* server unreachable */ }
 

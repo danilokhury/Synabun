@@ -4,10 +4,13 @@
 // fields of the same object.
 
 import { cpCtx } from './cp-ctx.js';
-import { normalizeSession, parseList, parseMcpServerLines, formatMcpServerLines, parseAgentsJson, formatAgentsJson } from './cp-session-model.js';
+import { dropdownHTML, wireDropdowns, closeDropdowns } from '../cc-dropdown.js';
+import { normalizeSession, parseList, parseMcpServerLines, formatMcpServerLines, parseAgentsJson, formatAgentsJson, THINKING_ALWAYS_ON_NOTE } from './cp-session-model.js';
 
 function field(labelText, control, hint = '') {
-  const row = document.createElement('label');
+  // A dropdown's row is not a <label>: a click inside a label is sent on to its first button, which would
+  // open the menu again right after a choice closed it. The dropdown is named by its own aria-label.
+  const row = document.createElement(control.classList?.contains('cp-session-dropdown') ? 'div' : 'label');
   row.className = 'cp-elicit-field cp-session-field';
   const label = document.createElement('span');
   label.className = 'cp-elicit-label';
@@ -22,24 +25,33 @@ function field(labelText, control, hint = '') {
   return row;
 }
 
-function select(options, value) {
-  const el = document.createElement('select');
-  el.className = 'cp-elicit-input';
-  for (const [v, label] of options) {
-    const opt = document.createElement('option');
-    opt.value = v;
-    opt.textContent = label;
-    el.appendChild(opt);
-  }
-  // A stored value the session does not list (yet) stays selectable.
-  if (value && !options.some(([v]) => v === value)) {
-    const opt = document.createElement('option');
-    opt.value = value;
-    opt.textContent = value;
-    el.appendChild(opt);
-  }
-  el.value = value || '';
-  return el;
+/**
+ * The entries of a choice field (cc-dropdown.js): `options` as [value, label] pairs, `value` chosen. A stored
+ * value the session does not list (yet) stays selectable, last. `disabled` maps a value to the note it shows:
+ * the option stays listed, cannot be chosen, and carries the note as its sub-line and tooltip.
+ */
+export function choiceEntries(options, value, disabled = {}) {
+  const chosen = value || '';
+  const entries = options.map(([v, label]) => ({
+    value: v,
+    label,
+    selected: v === chosen,
+    ...(Object.hasOwn(disabled, v) ? { disabled: true, caption: disabled[v] } : {}),
+  }));
+  if (value && !options.some(([v]) => v === value)) entries.push({ value, label: value, selected: true });
+  return entries;
+}
+
+let dropdownSeq = 0;
+
+// A choice field is the app's dropdown (a native <select> is not allowed: tests/no-native-select.test.mjs).
+// To the card it reads like the <select> it replaced: `.value` is the hidden input's, which a choice sets.
+function choice(name, options, value, disabled) {
+  const wrap = document.createElement('div');
+  wrap.className = 'cp-session-dropdown';
+  wrap.innerHTML = dropdownHTML(`cp-session-${++dropdownSeq}`, choiceEntries(options, value, disabled), { label: name });
+  Object.defineProperty(wrap, 'value', { get: () => wrap.querySelector('input[type="hidden"]')?.value ?? '' });
+  return wrap;
 }
 
 function input(type, value, placeholder = '') {
@@ -73,13 +85,14 @@ function area(value, placeholder, rows = 2) {
  * @param o.agents        [{name, description}]
  * @param o.outputStyles  string[]
  * @param o.fastSupported whether the model in use supports fast mode
+ * @param o.thinkingAlwaysOn the model in use cannot run with thinking off (its CLI said so): Off is not offered
  * @param o.advanced      the bridge reads the advanced fields (tools, MCP servers, agents, skills, overlay, debug)
  * @param o.onSave        (session) => void
  */
 export function renderSessionSettingsCard(tab, o = {}) {
   const $msgs = tab.messagesEl;
   if (!$msgs) return null;
-  $msgs.querySelectorAll('.cp-session-card.active-perm').forEach(n => n.remove());
+  $msgs.querySelectorAll('.cp-session-card.active-perm').forEach(n => { n._cpDropdowns?.abort(); n.remove(); });
   const s = normalizeSession(o.session);
 
   const el = document.createElement('div');
@@ -95,15 +108,21 @@ export function renderSessionSettingsCard(tab, o = {}) {
 
   const fast = checkbox(s.fastMode);
   fast.disabled = !o.fastSupported && !s.fastMode;
-  const thinking = select([['default', 'Model default'], ['off', 'Off']], s.thinking);
+  // A model that always thinks (cp-session-model.js thinkingAlwaysOn) offers no Off, and a saved Off shows as
+  // what runs: the model default.
+  const alwaysOn = o.thinkingAlwaysOn === true;
+  // (Off stays listed there, disabled, with the reason under it.)
+  const thinking = choice('Thinking', [['default', 'Model default'], ['off', 'Off']], alwaysOn ? 'default' : s.thinking,
+    alwaysOn ? { off: THINKING_ALWAYS_ON_NOTE } : {});
+  if (alwaysOn) thinking.title = `Off: ${THINKING_ALWAYS_ON_NOTE}`;
   const style = (o.outputStyles || []).length
-    ? select([['', 'Default'], ...o.outputStyles.filter(n => n && n !== 'default').map(n => [n, n])], s.outputStyle)
+    ? choice('Output style', [['', 'Default'], ...o.outputStyles.filter(n => n && n !== 'default').map(n => [n, n])], s.outputStyle)
     : input('text', s.outputStyle, 'Default');
   const agent = (o.agents || []).length
-    ? select([['', 'None'], ...o.agents.map(a => [a.name, a.description ? `${a.name}: ${String(a.description).slice(0, 60)}` : a.name])], s.agent)
+    ? choice('Run as agent', [['', 'None'], ...o.agents.map(a => [a.name, a.description ? `${a.name}: ${String(a.description).slice(0, 60)}` : a.name])], s.agent)
     : input('text', s.agent, 'None');
   const fallback = (o.models || []).length
-    ? select([['', 'None'], ...o.models.map(m => [m.value, m.displayName || m.value])], s.fallbackModel)
+    ? choice('Fallback model', [['', 'None'], ...o.models.map(m => [m.value, m.displayName || m.value])], s.fallbackModel)
     : input('text', s.fallbackModel, 'None');
   const budget = input('number', s.maxBudgetUsd, 'No limit');
   const turns = input('number', s.maxTurns, 'No limit');
@@ -121,7 +140,9 @@ export function renderSessionSettingsCard(tab, o = {}) {
 
   form.append(
     field('Fast mode', fast, o.fastSupported ? 'Faster output at a higher price, on models that support it.' : 'The model in use does not report fast mode support.'),
-    field('Thinking', thinking, 'Off starts the session without extended thinking.'),
+    field('Thinking', thinking, alwaysOn
+      ? `Off is not available: ${THINKING_ALWAYS_ON_NOTE}. It runs with adaptive thinking at the model's default effort.`
+      : 'Off starts the session without extended thinking.'),
     field('Output style', style),
     field('Run as agent', agent, "The main conversation uses the agent's prompt, tools and model."),
     field('Fallback model', fallback, 'Used when the main model is overloaded or unavailable.'),
@@ -154,8 +175,8 @@ export function renderSessionSettingsCard(tab, o = {}) {
     adv.agents = area(formatAgentsJson(s.agents), '{ "reviewer": { "description": "…", "prompt": "…", "tools": ["Read"], "model": "haiku" } }', 4);
     adv.skills = area(s.skills.join('\n'), 'Empty: every skill');
     adv.language = input('text', s.overlay.language, 'From your settings');
-    adv.autoCompact = select([['default', 'From your settings'], ['on', 'On'], ['off', 'Off']], s.overlay.autoCompact);
-    adv.cacheTtl = select([['', 'From your settings'], ['5m', '5 minutes'], ['1h', '1 hour']], s.overlay.promptCacheTtl);
+    adv.autoCompact = choice('Auto-compact', [['default', 'From your settings'], ['on', 'On'], ['off', 'Off']], s.overlay.autoCompact);
+    adv.cacheTtl = choice('Prompt cache lifetime', [['', 'From your settings'], ['5m', '5 minutes'], ['1h', '1 hour']], s.overlay.promptCacheTtl);
     adv.advisor = input('text', s.overlay.advisorModel, 'From your settings');
     adv.debug = checkbox(s.debug);
     const details = document.createElement('details');
@@ -197,7 +218,10 @@ export function renderSessionSettingsCard(tab, o = {}) {
   cancel.textContent = 'Close';
   const close = () => {
     el.classList.remove('active-perm');
-    el.querySelectorAll('button, input, select, textarea').forEach(n => { n.disabled = true; });
+    closeDropdowns(el);
+    el.querySelectorAll('button, input, textarea').forEach(n => { n.disabled = true; });
+    el.querySelectorAll('.cc-dropdown').forEach(n => n.classList.add('disabled'));
+    el._cpDropdowns?.abort();
   };
   save.addEventListener('click', () => {
     let advanced = {};
@@ -224,7 +248,8 @@ export function renderSessionSettingsCard(tab, o = {}) {
       ...s,
       ...advanced,
       fastMode: fast.checked,
-      thinking: thinking.value,
+      // (A saved Off stays saved on a model that always thinks: it applies again on a model that can.)
+      thinking: alwaysOn && s.thinking === 'off' ? 'off' : thinking.value,
       outputStyle: style.value,
       agent: agent.value,
       fallbackModel: fallback.value,
@@ -249,6 +274,9 @@ export function renderSessionSettingsCard(tab, o = {}) {
   body.appendChild(actions);
   el.appendChild(body);
   $msgs.appendChild(el);
+  // The dropdowns: mouse, keyboard, outside click and Escape. Taken off when the card closes or is replaced.
+  el._cpDropdowns = new AbortController();
+  wireDropdowns(el, { signal: el._cpDropdowns.signal });
   if (tab === cpCtx.activeTab()) cpCtx.scrollEnd();
   return el;
 }

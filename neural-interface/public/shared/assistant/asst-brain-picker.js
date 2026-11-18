@@ -40,6 +40,7 @@ import { accountChoiceItems, accountManageItem, accountMenuRow, accountModeItem,
 import { closeMenu, currentMenu, isMenuOpen, openMenu } from './asst-menu.js';
 import { createMascotControl } from './asst-mascot.js';
 import { modelChipForms, modelChipName, modelChipTag } from './asst-model-chip.js';
+import { closedSidepanelOf, createShownGate } from '../sidepanel-shown.js';
 import {
   ACCOUNT_PROVIDERS,
   BRAIN_PROVIDERS,
@@ -59,6 +60,10 @@ import {
   TEST_DENSITIES,
   normalizeTestDensity,
   testDensityBars,
+  // agents-p4: Agent density
+  AGENT_DENSITIES,
+  agentDensityFigures,
+  normalizeAgentDensity,
 } from './asst-state.js';
 
 let _projectsCache = null;
@@ -91,6 +96,48 @@ const TEST_DENSITY_COPY = {
   standard: ['Standard', 'Adds focused tests and runs the area\'s suite once.'],
   thorough: ['Thorough', 'Full coverage, whole suite, live checks.'],
 };
+
+// ── agents-p4: Agent density (how many workers ONE task may get) ──
+// Four figures in the 24 box, `filled` of them at full strength: solo 1 · pair 2 · team 3 · swarm 4.
+function agentsIcon(filled) {
+  const figure = (index, head, body) => `<g${index < filled ? '' : ' opacity=".3"'}><circle cx="${head[0]}" cy="${head[1]}" r="2"/><path d="${body}"/></g>`;
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${
+    figure(0, [8, 8], 'M4.5 12.5a3.5 3.5 0 0 1 7 0')}${figure(1, [16, 8], 'M12.5 12.5a3.5 3.5 0 0 1 7 0')}${
+    figure(2, [8, 15.5], 'M4.5 20a3.5 3.5 0 0 1 7 0')}${figure(3, [16, 15.5], 'M12.5 20a3.5 3.5 0 0 1 7 0')}</svg>`;
+}
+// English copy of the Agent density menu (i18n: assistant.agentDensity.levels.* / .cap.* / .desc.*): the level's
+// name, its cap as the menu's tag, and one sentence.
+const AGENT_DENSITY_COPY = {
+  solo: ['Solo', '1 worker', 'One worker per task. A task is never split.'],
+  pair: ['Pair', '2 workers', '2 workers on code, complex, research or review tasks. Fewer only with a reason.'],
+  team: ['Team', '4 workers', '4 workers on code, complex, research or review tasks. Fewer only with a reason.'],
+  swarm: ['Swarm', '6 workers', '6 workers on code, complex, research or review tasks. Fewer only with a reason.'],
+};
+
+/** "Team" — the level's name (a missing or unknown level is the default one, Solo). */
+export function agentDensityLabel(level, t) {
+  const id = normalizeAgentDensity(level);
+  return tf(t)(`assistant.agentDensity.levels.${id}`, AGENT_DENSITY_COPY[id][0]);
+}
+
+/** "up to 4" — the most workers one task gets at the level, as the menu and the status line say it. */
+export function agentDensityCap(level, t) {
+  const id = normalizeAgentDensity(level);
+  return tf(t)(`assistant.agentDensity.cap.${id}`, AGENT_DENSITY_COPY[id][1]);
+}
+
+/**
+ * The rows of the Agent density menu, as openMenu takes them (without their handlers): one radio row per level
+ * with its cap as the tag. DOM-free, so the menu's content is tested without a page.
+ */
+export function agentDensityMenuItems(current, t) {
+  const now = normalizeAgentDensity(current);
+  return AGENT_DENSITIES.map((id) => ({
+    kind: 'radio', id, label: agentDensityLabel(id, t), tag: agentDensityCap(id, t),
+    desc: tf(t)(`assistant.agentDensity.desc.${id}`, AGENT_DENSITY_COPY[id][2]),
+    selected: id === now,
+  }));
+}
 
 // English copy of the Admin sandbox row (i18n: assistant.adminSandbox.hint). Names only Codex: the
 // one provider it changes (lib/agent-sandbox-elevation.js; Claude Code and OpenCode are no-ops).
@@ -753,12 +800,13 @@ function menuItemsSignature(items) {
 
 // ── Picker ──────────────────────────────────────────────────────────────────
 
-// Creation order is DOM order within a slot: model · effort · variant · mode · tests · account in the composer.
+// Creation order is DOM order within a slot: model · effort · variant · mode · tests · agents · account in the composer.
 // `effort` is the OpenCode agent for OpenCode; `variant` is OpenCode's effort (the model's variants).
 // `tests` is the session's Test density, not a brain field: it shows only while the host supplies a level.
-const FIELDS = ['model', 'effort', 'variant', 'mode', 'tests', 'account', 'project'];
+// `agents` (agents-p4) is the session's Agent density, next to it, under the same rule.
+const FIELDS = ['model', 'effort', 'variant', 'mode', 'tests', 'agents', 'account', 'project'];
 // Slot of each field: the composer row (the brain and how it acts) · the toolbar (where it works).
-const FIELD_GROUP = { model: 'brain', effort: 'brain', variant: 'brain', mode: 'brain', tests: 'brain', account: 'brain', project: 'context', mcp: 'context' };
+const FIELD_GROUP = { model: 'brain', effort: 'brain', variant: 'brain', mode: 'brain', tests: 'brain', agents: 'brain', account: 'brain', project: 'context', mcp: 'context' };
 
 /**
  * createBrainPicker(host, hooks) — `host` is either one element (all fields in
@@ -768,6 +816,7 @@ const FIELD_GROUP = { model: 'brain', effort: 'brain', variant: 'brain', mode: '
  *          getMenuAnchor() → fallback anchor (the toolbar "⋯"),
  *          menuPlacement: 'below' (default) | 'above' | 'auto',
  *          getTestDensity() → level | null (null hides the field), onTestDensity(level),
+ *          getAgentDensity() → level | null (null hides the field), onAgentDensity(level),
  *          onProjects(projects) — the registered projects were (re)loaded }
  */
 export function createBrainPicker(host, hooks = {}) {
@@ -885,7 +934,7 @@ export function createBrainPicker(host, hooks = {}) {
     const acc = accountOf(brain);
     if (!acc) return brain.accountId === 'auto' ? autoAccountLabel(hooks.t) : (brain.accountId || t('assistant.brain.accountDefault', 'Default'));
     const row = accountMenuRow(acc, { provider: accountProvider(brain), t: hooks.t });
-    return [row.name, row.badge.text].filter(Boolean).join(' · ');
+    return [brain.accountPolicy === 'auto' ? t('assistant.brain.accountAutoShort', 'Auto') : '', row.name, row.badge.text].filter(Boolean).join(' · ');
   }
 
   // The model menu's own row first: it also names the "[1m]" / "[extended]" variants the provider list lacks.
@@ -904,7 +953,7 @@ export function createBrainPicker(host, hooks = {}) {
     // Antigravity signed out: a warning cue on the chip (its words are the tooltip's and the Model menu's).
     if (brain.provider === 'antigravity') return catalogProviderInfo('antigravity')?.signedIn === false ? { text: '!', tone: 'warn' } : null;
     if (!ACCOUNT_PROVIDERS.has(brain.provider)) return null;
-    if (brain.accountId === 'auto') return { text: t('assistant.brain.accountAutoShort', 'Auto'), tone: 'muted' };
+    if (brain.accountId === 'auto' || brain.accountPolicy === 'auto') return { text: t('assistant.brain.accountAutoShort', 'Auto'), tone: 'muted' };
     const accounts = brain.provider === 'codex' ? getCachedCodexAccounts() : getCachedClaudeAccounts();
     const acc = accountOf(brain);
     const signedOut = acc?.signedIn === false;
@@ -964,6 +1013,12 @@ export function createBrainPicker(host, hooks = {}) {
   function testDensity() {
     const level = typeof hooks.getTestDensity === 'function' ? hooks.getTestDensity() : null;
     return level ? normalizeTestDensity(level) : null;
+  }
+
+  /** agents-p4: the session's Agent density, or null while the host has none to show (a server that does not know it). */
+  function agentDensity() {
+    const level = typeof hooks.getAgentDensity === 'function' ? hooks.getAgentDensity() : null;
+    return level ? normalizeAgentDensity(level) : null;
   }
 
   function setBtn(field, { label, icon, color, hidden, disabled, tooltip, aria }) {
@@ -1048,6 +1103,10 @@ export function createBrainPicker(host, hooks = {}) {
     btn.removeAttribute('data-squeezed');
     const label = btn.querySelector('.asst-dd-label');
     const slot = btn.parentElement;
+    // Inside a closed side panel there is nothing to fit and nobody to see it: the whole chip, and the fit
+    // when the panel is shown. Asking whether the button is rendered is itself a layout read, and in there it
+    // made the engine lay the hidden panel out (sidepanel-shown.js).
+    if (closedSidepanelOf(btn)) { drawChipForm(chipForms[0]); fitGate.request(); return; }
     // Nothing to measure (not on screen, no layout): the whole chip, until the row has a width.
     if (chipForms.length === 1 || !isRendered(btn) || !slot || typeof label?.getBoundingClientRect !== 'function') { drawChipForm(chipForms[0]); return; }
     const row = slot.parentElement || null;
@@ -1080,6 +1139,8 @@ export function createBrainPicker(host, hooks = {}) {
     if (fitFrame || destroyed || typeof requestAnimationFrame !== 'function') return;
     fitFrame = requestAnimationFrame(() => { fitFrame = 0; fitModelChip(); });
   };
+  // The fit a closed side panel put off (fitModelChip): on the frame after the panel is shown.
+  const fitGate = createShownGate(buttons.model, scheduleFit);
   const fitObserver = typeof ResizeObserver === 'function' && fitHost ? new ResizeObserver((entries) => {
     const w = Math.round(entries[entries.length - 1]?.contentRect?.width || 0);
     if (w !== fitWidth) { fitWidth = w; scheduleFit(); }
@@ -1111,6 +1172,11 @@ export function createBrainPicker(host, hooks = {}) {
     const testsLabel = tests ? testDensityLabel(tests, hooks.t) : '';
     setBtn('tests', { label: testsLabel, icon: testsIcon(testDensityBars(tests)), hidden: !tests, tooltip: `${t('assistant.tests.title', 'Test density')}: ${testsLabel}` });
     if (tests) buttons.tests.dataset.level = tests; else delete buttons.tests.dataset.level;
+    // agents-p4: Agent density, right after Test density: the level's name, the cap in the tooltip.
+    const agents = agentDensity();
+    const agentsLabel = agents ? agentDensityLabel(agents, hooks.t) : '';
+    setBtn('agents', { label: agentsLabel, icon: agentsIcon(agentDensityFigures(agents)), hidden: !agents, tooltip: agents ? `${t('assistant.agentDensity.title', 'Agent density')}: ${agentsLabel} (${agentDensityCap(agents, hooks.t)})` : '' });
+    if (agents) buttons.agents.dataset.level = agents; else delete buttons.agents.dataset.level;
     renderTools(brain);
     renderEmptyProject(brain);
   }
@@ -1178,13 +1244,15 @@ export function createBrainPicker(host, hooks = {}) {
       { field: 'project', label: t('assistant.brain.project', 'Working project'), value: brain.project || v.project, icon: ICON_FOLDER, hidden: false },
       { field: 'mode', label: t('assistant.brain.mode', 'Permission mode'), value: v.mode, icon: ICON_SHIELD, hidden: false },
       { field: 'tests', label: t('assistant.tests.title', 'Test density'), value: testDensity() ? testDensityLabel(testDensity(), hooks.t) : '', icon: testsIcon(testDensityBars(testDensity())), hidden: !testDensity() },
+      // agents-p4
+      { field: 'agents', label: t('assistant.agentDensity.title', 'Agent density'), value: agentDensity() ? `${agentDensityLabel(agentDensity(), hooks.t)} (${agentDensityCap(agentDensity(), hooks.t)})` : '', icon: agentsIcon(agentDensityFigures(agentDensity())), hidden: !agentDensity() },
       { field: 'account', label: t('assistant.brain.accountShort', 'Account'), value: accountValue(brain), icon: ICON_ACCOUNT, hidden: !ACCOUNT_PROVIDERS.has(brain.provider) },
     ];
   }
 
   function commit(patch, field) {
     const before = currentBrain();
-    const draft = { ...before, ...patch };
+    const draft = { ...before, ...patch, ...(field === 'account' ? { accountPolicy: patch.accountId === 'auto' ? 'auto' : 'manual' } : {}) };
     const next = resolveBrainDefaults(draft, snapshot(normalizeBrain(draft)));
     const requiresSwitch = brainRequiresSwitch(before, next);
     hooks.onChange?.(next, { requiresSwitch, field, previous: before });
@@ -1276,6 +1344,17 @@ export function createBrainPicker(host, hooks = {}) {
           onSelect: () => { hooks.onTestDensity?.(id); render(); },
         })),
         placement, role: 'menu', className: 'asst-tests-menu',
+      });
+      return;
+    }
+    // agents-p4: the session's own setting too: nothing to load. A radio menu, each level with its cap.
+    if (field === 'agents') {
+      const current = agentDensity();
+      if (!current) return;
+      openMenu(anchor, {
+        title: t('assistant.agentDensity.title', 'Agent density'),
+        items: agentDensityMenuItems(current, hooks.t).map((item) => ({ ...item, onSelect: () => { hooks.onAgentDensity?.(item.id); render(); } })),
+        placement, role: 'menu', className: 'asst-tests-menu asst-agents-menu',
       });
       return;
     }
@@ -1408,6 +1487,7 @@ export function createBrainPicker(host, hooks = {}) {
       read: () => ({
         accounts: codex ? getCachedCodexAccounts() : getCachedClaudeAccounts(),
         currentId: currentBrain().accountId,
+        accountPolicy: currentBrain().accountPolicy,
         workerId: codex ? getCodexWorkerAccountId() : getClaudeWorkerAccountId(),
         running: hooks.getRunning?.() === true,
       }),
@@ -1446,6 +1526,7 @@ export function createBrainPicker(host, hooks = {}) {
       t: hooks.t,
       rows: accounts.map((a) => accountMenuRow(a, { provider: p, t: hooks.t })),
       currentId: brain.accountId,
+      accountPolicy: brain.accountPolicy,
       onAuto: () => commit({ accountId: 'auto' }, 'account'),
       onPick: (id) => commit({ accountId: id }, 'account'),
       onSignIn: (id) => hooks.onManageAccounts?.(brain.provider, id),
@@ -1470,7 +1551,7 @@ export function createBrainPicker(host, hooks = {}) {
     if (provider === before.provider) return;
     await ensureLoaded(provider);
     if (destroyed) return;
-    const draft = { ...before, provider, model: model || '', effort: null, agent: null, accountId: null, tools: null };
+    const draft = { ...before, provider, model: model || '', effort: null, agent: null, accountId: null, accountPolicy: 'manual', tools: null };
     // resolveBrainDefaults reads the new provider's catalog.
     const next = resolveBrainDefaults(draft, {
       models: { [provider]: resolvableModels(provider, draft.model) },
@@ -1481,7 +1562,8 @@ export function createBrainPicker(host, hooks = {}) {
       projects: _projectsCache || [],
     });
     if (model && !next.model) next.model = model;
-    hooks.onChange?.(next, { requiresSwitch: true, field: 'provider', previous: before });
+    const applied = await hooks.onChange?.(next, { requiresSwitch: true, field: 'provider', previous: before });
+    if (applied === false) return false;
     render();
   }
 
@@ -1511,6 +1593,6 @@ export function createBrainPicker(host, hooks = {}) {
     mountEmptyProject,
     setBrain() { render(); },
     close: closeMenu,
-    destroy() { toolsLife.abort(); toolsSlot.remove(); destroyed = true; fitObserver?.disconnect(); if (fitFrame && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(fitFrame); for (const off of offAccounts) { try { off?.(); } catch {} } closeMenu(); heroProjectMascot?.destroy(); Object.values(buttons).forEach((b) => b.remove()); heroProject?.remove(); heroProject = null; root.remove(); },
+    destroy() { toolsLife.abort(); toolsSlot.remove(); destroyed = true; fitGate.cancel(); fitObserver?.disconnect(); if (fitFrame && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(fitFrame); for (const off of offAccounts) { try { off?.(); } catch {} } closeMenu(); heroProjectMascot?.destroy(); Object.values(buttons).forEach((b) => b.remove()); heroProject?.remove(); heroProject = null; root.remove(); },
   };
 }

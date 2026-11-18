@@ -11,11 +11,17 @@
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <link rel="manifest" href="/manifest.json">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="/vendor/caveat/caveat.css">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
-<link href="https://db.onlinewebfonts.com/c/3284c3a32cf946466fb963369b3c5b2d?family=Disket+Mono" rel="stylesheet">
+<!-- Inter, JetBrains Mono and Space Grotesk are served from here (vendor/fonts/: the rules Google Fonts served, the same
+     weights, font-display and unicode-range subsets, the files and their licences; scripts/vendor-fonts.mjs). No
+     request leaves for another site before the first frame. Inter's latin file is what the first frame draws with:
+     it is asked for now, beside the style sheets, so the loading overlay's text never shows in a fallback font. -->
+<link rel="preload" href="/vendor/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/vendor/fonts/fonts.css">
+<!-- Disket Mono is the heading of one dialog (Automation Studio's welcome, .as-welcome-hero h2) and of nothing
+     on the first view. Its sheet used to hold the first paint of the whole page until another site answered;
+     it loads beside the page now (print until loaded, then all), long before that dialog can be opened. -->
+<link href="https://db.onlinewebfonts.com/c/3284c3a32cf946466fb963369b3c5b2d?family=Disket+Mono" rel="stylesheet" media="print" onload="this.media='all'">
 <link rel="stylesheet" href="/shared/styles.css">
 <!-- three.js is vendored (scripts/build-vendor.mjs); only the map renderer imports it.
      The import map must come before any module load, the preload included. -->
@@ -26,6 +32,30 @@
   }
 }
 </script>
+<!-- What the first frame (the loading overlay) needs: variant/3d/main.js and every module it imports, asked for at
+     once instead of one import level after another. The rest of the app (variant/3d/app.js) is imported by main.js
+     once the overlay shows. tests/boot-critical-path.test.mjs keeps this list equal to main.js's imports. -->
+<link rel="modulepreload" href="/shared/page-session.js">
+<link rel="modulepreload" href="/variant/3d/main.js">
+<link rel="modulepreload" href="/shared/storage.js">
+<link rel="modulepreload" href="/shared/registry.js">
+<link rel="modulepreload" href="/shared/html-shell.js">
+<link rel="modulepreload" href="/shared/view-variant.js">
+<link rel="modulepreload" href="/shared/i18n.js">
+<link rel="modulepreload" href="/shared/ui-loading.js">
+<link rel="modulepreload" href="/shared/memory-list.js">
+<link rel="modulepreload" href="/shared/ui-sidepanel-runtime.js">
+<link rel="modulepreload" href="/shared/storage-retry.js">
+<link rel="modulepreload" href="/shared/app-frame.js">
+<link rel="modulepreload" href="/shared/constants.js">
+<link rel="modulepreload" href="/shared/api.js">
+<link rel="modulepreload" href="/shared/state.js">
+<link rel="modulepreload" href="/shared/loading-teardown.js">
+<link rel="modulepreload" href="/shared/start-bridge.js">
+<link rel="modulepreload" href="/shared/synabun-mascot.js">
+<link rel="modulepreload" href="/shared/desktop-bridge.js">
+<link rel="modulepreload" href="/shared/synabun-ticker.js">
+<link rel="modulepreload" href="/shared/synabun-mascot-assets.js">
 <link rel="modulepreload" href="/vendor/three/three-0.169.0.min.js">
 <style>
   /* ═══════════════════════════════════════════
@@ -45,14 +75,24 @@
 </style>
 <script>if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{})</script>
 <script>
-  // Start both data requests before any module loads: the map paints as soon as
-  // /api/map lands, and the memory list is already on its way.
-  window.__synPrefetch = {
-    map: fetch('/api/map').then((r) => r.ok ? r.json().then((j) => { j._etag = r.headers.get('ETag'); return j; }) : null).catch(() => null),
-    memories: fetch('/api/memories?links=false&fields=graph')
-      .then((r) => r.ok ? r.json() : { error: new Error('HTTP ' + r.status) })
-      .catch((error) => ({ error })),
-  };
+  // Start the requests the first frame and the map wait for before any module loads: the stored UI state and the
+  // English strings (storage.js and i18n.js take them, once), the server's health (app.js boot), the map (it paints
+  // as soon as /api/map lands) and the first page of the memory list (shared/memory-list.js reads the others; the
+  // address must stay memoryPageUrl(0): each page's answer is kept by its URL, for its 304).
+  (function () {
+    function early(url) { var p = fetch(url); p.catch(function () {}); return p; }
+    window.__synPrefetch = {
+      early: {
+        '/api/ui-state': early('/api/ui-state'),
+        '/i18n/en.json': early('/i18n/en.json'),
+        '/api/health': early('/api/health'),
+      },
+      map: fetch('/api/map').then((r) => r.ok ? r.json().then((j) => { j._etag = r.headers.get('ETag'); return j; }) : null).catch(() => null),
+      memories: fetch('/api/memories?links=false&fields=graph&offset=0&limit=2500')
+        .then((r) => r.ok ? r.json() : { error: new Error('HTTP ' + r.status) })
+        .catch((error) => ({ error })),
+    };
+  })();
 </script>
 </head>
 <body>

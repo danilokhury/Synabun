@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Connect your browser — SynaBun</title>
+<link rel="stylesheet" href="/vendor/fonts/fonts.css">
+<link rel="stylesheet" href="/shared/extension-setup/es-page.css">
+</head>
+<body>
+<!-- SynaBun's "Connect your browser" page (docs/browser-extension-bridge.md → One-button setup; the approved design is
+     docs/design/browser-extension → "Setup guide"). Three numbered steps only the owner may do, beside the setup's
+     status, then automatic pairing. Every string comes from i18n browserExtension.setup.* (es-page.js); es-view.js
+     decides. Stable hooks: #es-setup[data-state], #es-title, #es-lead, #es-live[data-tone], #es-browser,
+     #es-steps > li[data-step][data-done], #es-extensions-url + #es-copy-url, #es-folder + #es-copy-folder + #es-reveal,
+     #es-alternatives, #es-reload, #es-restart, #es-copied. The ticket element is the only thing the extension's content
+     script reads; it is filled only while the extension is on this page and the server waits for it. -->
+<main id="es-setup" class="es-setup" data-state="idle" data-layout="result" aria-busy="true">
+  <div class="es-top">
+    <p class="es-brand"><img src="/icon-192.png" alt="" width="32" height="32"><span>SynaBun</span></p>
+    <p id="es-browser" class="es-browser" hidden><span id="es-browser-label"></span> <strong id="es-browser-name"></strong></p>
+  </div>
+  <header class="es-header">
+    <p class="es-eyebrow" id="es-eyebrow" hidden></p>
+    <h1 id="es-title" class="es-title"></h1>
+    <p id="es-lead" class="es-lead"></p>
+  </header>
+  <div class="es-grid">
+    <ol id="es-steps" class="es-steps es-surface" hidden>
+      <li class="es-step" data-step="open" data-done="false">
+        <span class="es-step-number" aria-hidden="true">1</span>
+        <div class="es-step-main">
+          <h2 class="es-step-title" id="es-step-open-title"></h2>
+          <p class="es-step-text" id="es-step-open"></p>
+          <div class="es-row es-address"><code id="es-extensions-url" class="es-code"></code><button type="button" class="es-button" id="es-copy-url" data-action="copy-url"></button></div>
+        </div>
+      </li>
+      <li class="es-step" data-step="developer" data-done="false">
+        <span class="es-step-number" aria-hidden="true">2</span>
+        <div class="es-step-main">
+          <h2 class="es-step-title" id="es-step-developer-title"></h2>
+          <p class="es-step-text" id="es-step-developer"></p>
+        </div>
+      </li>
+      <li class="es-step" data-step="load" data-done="false">
+        <span class="es-step-number" aria-hidden="true">3</span>
+        <div class="es-step-main">
+          <h2 class="es-step-title" id="es-step-load-title"></h2>
+          <p class="es-step-text" id="es-step-load"></p>
+          <div class="es-folder">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h5l3 3h6a2 2 0 0 1 2 2v10H3V6Z"></path></svg>
+            <div class="es-folder-text"><span class="es-caption" id="es-folder-label"></span><code id="es-folder" class="es-code"></code></div>
+          </div>
+          <div class="es-row"><button type="button" class="es-button" id="es-reveal" data-action="reveal"></button><button type="button" class="es-button es-button-ghost" id="es-copy-folder" data-action="copy-folder"></button></div>
+        </div>
+      </li>
+      <li class="es-step" data-step="pair" data-done="false">
+        <span class="es-step-number" aria-hidden="true">4</span>
+        <div class="es-step-main">
+          <h2 class="es-step-title" id="es-step-pair-title"></h2>
+          <p class="es-step-text" id="es-step-pair"></p>
+        </div>
+      </li>
+    </ol>
+    <div class="es-aside">
+      <section class="es-surface es-status" id="es-status" aria-labelledby="es-status-title">
+        <span class="es-symbol" aria-hidden="true">
+          <svg data-sym="warn" viewBox="0 0 24 24"><path d="M20 7a9 9 0 0 0-15-1L2 9m0-6v6h6M4 17a9 9 0 0 0 15 1l3-3m0 6v-6h-6"></path></svg>
+          <svg data-sym="ok" viewBox="0 0 24 24"><path d="m5 12 4 4 10-10"></path></svg>
+          <svg data-sym="err" viewBox="0 0 24 24"><path d="m12 3 10 18H2L12 3ZM12 9v5M12 17h.01"></path></svg>
+          <svg data-sym="idle" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"></path></svg>
+        </span>
+        <div class="es-status-body">
+          <h2 class="es-status-title" id="es-status-title"></h2>
+          <p id="es-live" class="es-live" role="status" aria-live="polite" data-tone=""></p>
+          <p id="es-help" class="es-note" hidden></p>
+          <section id="es-alternatives" class="es-alternatives" hidden aria-labelledby="es-alternatives-title">
+            <h3 id="es-alternatives-title" class="es-subtitle"></h3>
+            <div id="es-alternatives-list" class="es-row"></div>
+          </section>
+          <p id="es-reload" class="es-note es-warn" hidden></p>
+          <div class="es-row es-actions" id="es-actions" hidden>
+            <a class="es-button es-button-primary" id="es-back" href="/" hidden></a>
+            <button type="button" class="es-button es-button-primary" id="es-restart" data-action="restart" hidden></button>
+          </div>
+          <p id="es-pin" class="es-note" hidden></p>
+          <p id="es-copied" class="es-note es-copied" role="status" aria-live="polite"></p>
+        </div>
+      </section>
+      <section class="es-surface es-info" id="es-full" aria-labelledby="es-full-title">
+        <h3 id="es-full-title" class="es-subtitle"></h3>
+        <p id="es-full-help" class="es-note"></p>
+      </section>
+      <details class="es-surface es-info es-help" id="es-trouble">
+        <summary id="es-trouble-title"></summary>
+        <p id="es-trouble-help" class="es-note"></p>
+        <p id="es-policy-help" class="es-note"></p>
+      </details>
+    </div>
+  </div>
+  <div id="synabun-setup-ticket" hidden></div>
+</main>
+<script type="module" src="/shared/page-session.js"></script>
+<script type="module" src="/shared/extension-setup/es-page.js"></script>
+</body>
+</html>

@@ -22,6 +22,8 @@
 // standing layer hints: a moving layer is promoted (will-change) only while
 // its scene is live and on screen.
 //
+import { installInteractionHold } from './asst-interaction-hold.js';
+
 export const SCENE_STYLE_ID = 'asst-scene-styles';
 
 export const SCENE_CSS = `
@@ -176,7 +178,8 @@ export const SCENE_CSS = `
   }
 
   /* ── Motion ─────────────────────────────────────────────────────────── */
-  body.ui-interacting .asst-scene *,
+  /* A scene carries data-ui-held while the UI is dragged (asst-interaction-hold.js): see the rack's sheet. */
+  .asst-scene[data-ui-held] *,
   body.ui-interacting .asst-run-stage-sweep::after { animation-play-state: paused !important; }
   @media (prefers-reduced-motion: reduce) {
     .asst-run-stage-wrap,
@@ -192,7 +195,9 @@ export const SCENE_CSS = `
 
 /** Add the stage and scene stylesheet once, right after the rack's (else the main assistant styles, else the head's end). */
 export function injectSceneStyles(doc = globalThis.document) {
-  if (!doc || doc.getElementById(SCENE_STYLE_ID)) return;
+  if (!doc) return;
+  installInteractionHold(doc); // the sheet's data-ui-held rule does nothing without it
+  if (doc.getElementById(SCENE_STYLE_ID)) return;
   const style = doc.createElement('style');
   style.id = SCENE_STYLE_ID;
   style.textContent = SCENE_CSS;

@@ -125,10 +125,6 @@ export function injectStyles() {
       opacity: 1;
       overflow: visible;
     }
-    /* Windows: the shell is 92% opaque, so the blur behind it barely shows, yet Chromium recomputes it on every
-       repaint inside the panel (a transcript rendering, a stream). There it goes; the colour stays. */
-    html.platform-win32 .codex-panel,
-    html.desktop-titlebar--win32 .codex-panel { backdrop-filter: none; -webkit-backdrop-filter: none; }
     /* A floating terminal is promoted above the panel when focused. Raise the
        whole stacking context while a footer menu is open so it stays visible. */
     .codex-panel:has(.cxp-dropdown.open) {
@@ -1446,9 +1442,11 @@ export function injectStyles() {
     }
     .cxp-msg-user-image {
       display: block;
-      width: min(220px, 100%);
+      width: auto;
+      height: auto;
+      max-width: min(220px, 100%);
       max-height: 180px;
-      object-fit: cover;
+      object-fit: contain;
       border-radius: var(--cxp-radius-sm);
       margin-bottom: var(--cxp-space-2);
     }
@@ -1553,32 +1551,7 @@ export function injectStyles() {
       background: transparent;
       padding: 0;
     }
-    .cxp-copy-btn {
-      position: absolute;
-      top: 6px;
-      right: 6px;
-      min-height: 24px;
-      padding: 2px 8px;
-      border-radius: var(--cxp-radius-sm);
-      font-size: var(--cxp-fs-sm);
-      font-family: var(--cxp-font);
-      color: var(--cxp-text-2);
-      background: var(--cxp-pop);
-      border: 1px solid var(--cxp-border);
-      cursor: pointer;
-      opacity: 0;
-      transition: opacity var(--cxp-dur-fast), color var(--cxp-dur-fast);
-      z-index: 1;
-    }
-    .cxp-msg-body pre:hover .cxp-copy-btn,
-    .cxp-card-pre:hover .cxp-copy-btn,
-    .cxp-copy-btn:focus-visible {
-      opacity: 1;
-    }
-    .cxp-copy-btn:hover {
-      color: var(--cxp-text);
-      border-color: var(--cxp-border-strong);
-    }
+    /* A code block's Copy button is the shared one (../code-copy.js, ../ui-code-copy.js), styled there. */
     .cxp-file-link {
       color: var(--cxp-link);
       text-decoration: none;
@@ -3132,9 +3105,10 @@ export function injectStyles() {
       border: 1px solid var(--cxp-border);
     }
     .cxp-image-chip img {
+      display: block;
       width: 100%;
       height: 100%;
-      object-fit: cover;
+      object-fit: contain;
     }
     .cxp-image-chip-remove {
       position: absolute;
@@ -3289,15 +3263,13 @@ export function injectStyles() {
     .cxp-output-source > .cxp-output-controls .cxp-output-control { background: var(--cxp-pop); min-height: 24px; padding: 2px 8px; }
     /* Reserve room above the first line, even when controls wrap at narrow widths. */
     .cxp-readable > .cxp-structured-tree, .cxp-readable > .cxp-output-raw,
-    .cxp-output-source > .cxp-output-raw, .cxp-card-pre:has(> .cxp-copy-btn),
-    .cxp-msg-body pre:has(> .cxp-copy-btn) { padding-top: calc(var(--cxp-space-4) * 2); }
+    .cxp-output-source > .cxp-output-raw { padding-top: calc(var(--cxp-space-4) * 2); }
     .cxp-diff-view > .cxp-output-controls { margin: 0; }
     .cxp-diff-view > .cxp-output-controls > .cxp-card-meta { flex: 1; margin: 0; }
     .cxp-diff-view > .cxp-output-controls > .cxp-output-control { opacity: 0; }
     .cxp-diff-view:hover > .cxp-output-controls > .cxp-output-control,
     .cxp-diff-view:focus-within > .cxp-output-controls > .cxp-output-control { opacity: 1; }
     .cxp-output-note[hidden] { display: none; }
-    .cxp-copy-btn:focus-visible { outline: 2px solid var(--cxp-focus); outline-offset: -2px; }
     .cxp-output-control {
       border: 1px solid var(--cxp-border); border-radius: var(--cxp-radius-sm);
       background: transparent; color: var(--cxp-text-2); padding: 4px 8px;

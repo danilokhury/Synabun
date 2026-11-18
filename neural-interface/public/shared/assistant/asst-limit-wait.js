@@ -9,9 +9,10 @@
 // waits with "Reset time unknown" and offers the retry at once. While it
 // blocks, a host that passes onSwitchProvider also offers "Continue with
 // another provider" (the host owns the picker and what a pick does); a host
-// that passes onClose always offers Close, which only dismisses the card —
-// the limit itself is untouched — and Esc does the same while focus is
-// inside. The clock is the shared ticker at 1 fps, only while it counts and
+// that passes onClose always offers the × in the card's corner (Dismiss),
+// which only dismisses the card — the limit itself is untouched; the dock
+// keeps that episode's card hidden, asst-limit-dismissals.js — and Esc does
+// the same while focus is inside. The clock is the shared ticker at 1 fps, only while it counts and
 // only while the card is on the page; under prefers-reduced-motion the mascot
 // is a still and nothing eases. Its sheet is its own (injectLimitWaitStyles),
 // like the rack's.
@@ -22,6 +23,7 @@ import { syncEmpty } from '../shown-children.js';
 import { limitCountdown, resetMs } from './asst-limit.js';
 
 const RING_R = 24;
+const ICON_X = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 6 6 18M6 6l12 12"/></svg>';
 const DAY_MS = 86_400_000;
 
 function el(tag, className, text) {
@@ -48,7 +50,7 @@ function localTime(ms, now) {
  * `resetsAt`: epoch ms / s or ISO, or null (unknown). `since`: when the wait began (the ring's start).
  * `provider`: the name in the meta line ("Codex"). `onRetry()`: Retry now; null: no button.
  * `onSwitchProvider(anchorEl)`: Continue with another provider, while blocking; null: no button.
- * `onClose()`: Close (and Esc, while focus is inside); null: no button.
+ * `onClose()`: the × Dismiss button in the corner (and Esc, while focus is inside); null: no button.
  */
 export function createLimitWait(opts = {}) {
   injectLimitWaitStyles();
@@ -114,13 +116,21 @@ export function createLimitWait(opts = {}) {
     actions.appendChild(retryBtn);
   }
 
-  // Dismisses the card only; the limit itself is untouched (the host decides how it resurfaces).
+  // Dismisses the card only; the limit itself is untouched (the host decides how it resurfaces). An icon
+  // button in the card's corner, named for screen readers and tooltips; it never sits in the actions row,
+  // so a settled card with no action left still has it.
   let closeBtn = null;
   if (typeof opts.onClose === 'function') {
-    closeBtn = el('button', 'asst-btn asst-btn-secondary asst-limit-wait-close', t('common.close', 'Close'));
+    const label = t('assistant.limitWait.dismiss', 'Dismiss');
+    closeBtn = el('button', 'asst-iconbtn asst-limit-wait-close');
     closeBtn.type = 'button';
+    closeBtn.innerHTML = ICON_X;
+    closeBtn.setAttribute('aria-label', label);
+    closeBtn.dataset.tooltip = label;
+    closeBtn.dataset.tooltipPos = 'left';
     closeBtn.addEventListener('click', () => { if (!destroyed) opts.onClose(); });
-    actions.appendChild(closeBtn);
+    card.classList.add('has-close');
+    card.appendChild(closeBtn);
     // Not a dialog (role="group"): Esc closes it only while focus is inside.
     card.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape' || destroyed) return;
@@ -261,6 +271,7 @@ export function createLimitWait(opts = {}) {
 const CSS = `
   .asst-limit-wait {
     --lw-tone: var(--asst-brand);
+    position: relative;
     display: grid;
     grid-template-columns: 56px minmax(0, 1fr);
     align-items: center;
@@ -304,6 +315,18 @@ const CSS = `
   .asst-limit-wait-meta { color: var(--asst-text-3); font-size: 11.5px; overflow-wrap: anywhere; }
   .asst-limit-wait-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
   .asst-limit-wait-actions[data-empty] { display: none; }
+  .asst-limit-wait.has-close { padding-right: 36px; }
+  .asst-limit-wait-close.asst-iconbtn {
+    --cap-h: var(--asst-pill-h-sm);
+    --cap-r: var(--asst-pill-r-sm);
+    --cap-icon: 12px;
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    height: var(--cap-h);
+    color: var(--asst-text-3);
+  }
+  .asst-limit-wait-close.asst-iconbtn:is(:hover, :focus-visible):not(:disabled) { color: var(--asst-text); }
   .asst-limit-wait-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .asst-limit-row .asst-msg-content { width: 100%; }
   .asst-run .asst-limit-wait { grid-column: 2 / span 2; margin-top: 8px; padding: 10px 12px; }

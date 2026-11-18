@@ -1,4 +1,7 @@
 const DEFAULT_THRESHOLD_PX = 48;
+// A side panel that is closed (ui-sidepanel-windows.js keeps data-sp-visible on every registered panel).
+const HOST_VISIBLE_ATTR = 'data-sp-visible';
+const CLOSED_HOST = `.sp-sidepanel[${HOST_VISIBLE_ATTR}="false"]`;
 
 const controllers = new WeakMap();
 
@@ -59,10 +62,45 @@ export function createStickyScrollController(container, options = {}) {
     lastScrollTop = container.scrollTop;
   };
 
+  // A transcript inside a closed side panel is not drawn (ui-sidepanel-windows.js: data-sp-visible="false",
+  // content-visibility: hidden). Scrolling it reads its height, which makes the engine lay the whole hidden
+  // panel out: once per frame for as long as a session streams there. The follow is kept instead and the
+  // scroll is made when the panel is shown: the attribute changes inside the task that opens it, the
+  // observer answers right after that task and the frame that draws the panel is already at the bottom.
+  let waitingHost = null;
+  let hostObserver = null;
+  const stopWaitingForHost = () => {
+    try { hostObserver?.disconnect(); } catch { /* already gone */ }
+    hostObserver = null;
+    waitingHost = null;
+  };
+  const closedHost = () => (typeof container.closest === 'function' ? container.closest(CLOSED_HOST) : null);
+  const waitForHost = (host) => {
+    if (waitingHost === host) return true;
+    const HostObserver = view.MutationObserver || globalThis.MutationObserver;
+    if (typeof HostObserver !== 'function') return false;
+    stopWaitingForHost();
+    waitingHost = host;
+    hostObserver = new HostObserver(() => {
+      if (disposed) { stopWaitingForHost(); return; }
+      if (host.getAttribute(HOST_VISIBLE_ATTR) === 'false' && host.contains(container)) return;
+      stopWaitingForHost();
+      scrollToBottom();
+    });
+    hostObserver.observe(host, { attributes: true, attributeFilter: [HOST_VISIBLE_ATTR] });
+    return true;
+  };
+
   const scrollToBottom = ({ force = false, immediate = false } = {}) => {
     if (disposed) return false;
     if (force) setFollowing(true);
     if (!following || !active) return false;
+    const host = closedHost();
+    if (host && waitForHost(host)) {
+      cancelScheduled();
+      return true;
+    }
+    if (!host && waitingHost) stopWaitingForHost(); // moved out of the closed panel (a detached window)
     if (immediate) {
       cancelScheduled();
       writeBottom();
@@ -185,6 +223,7 @@ export function createStickyScrollController(container, options = {}) {
       if (disposed) return;
       disposed = true;
       cancelScheduled();
+      stopWaitingForHost();
       resizeObserver?.disconnect();
       observedChildren.clear();
       mutationObserver?.disconnect();

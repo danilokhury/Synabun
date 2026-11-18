@@ -216,7 +216,7 @@ export function createSkillCreations({
     if (!ok) throw new CreationError(400, problems.length === 1 ? `The request is not valid (${problems[0].field}: ${problems[0].code}).` : `${problems.length} problems with the request.`, 'invalid_request', { problems });
     const missing = request.sources.find((s) => typeof gather[s.kind === 'import' ? 'importSource' : s.kind] !== 'function');
     if (missing) throw new CreationError(409, `This server cannot read a ${missing.kind} source.`, 'source_unavailable', { problems: [{ field: 'sources', code: `${missing.kind}-unavailable` }] });
-    if (request.sources.some((s) => s.kind === 'url') && !canBrowse()) throw new CreationError(409, 'A web page is read with the SynaBun browser, which cannot open pages now (Settings → Browser).', 'needs_browser');
+    if (request.sources.some((s) => s.kind === 'url') && !canBrowse()) throw new CreationError(409, 'A web page is read with the SynaBun browser, which cannot open pages now (Settings → Browser, or the profile chosen in Settings → Connected tools → MoreLogin (Default AI browser)).', 'needs_browser');
     // A project target is one of the registered projects (the install plan reads its folders).
     const registered = new Set(safeList(projects).map((p) => resolve(String(p))));
     const strange = request.targets.map((t, i) => ({ t, i })).filter(({ t }) => t.scope === 'project' && !registered.has(resolve(t.projectPath)));

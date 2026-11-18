@@ -88,15 +88,15 @@ export async function handleBrowserWait(args: {
 // ── browser_session ──
 
 export const browserSessionSchema = {
-  action: z.enum(['list', 'status', 'create', 'close']).describe('"list" = the open sessions with your own tabs (id, address, title; your current tab marked), "status" = the session and tab your browser calls use now, with its address and whether SynaBun replaced a lost tab, "create" = open a new browser tab of your own (starting the browser if needed) and continue there, "close" = close a session.'),
+  action: z.enum(['list', 'status', 'create', 'close']).describe('"list" = the open sessions with your own tabs (id, address, title; your current tab marked), and in the owner\'s everyday browser with full control also the owner\'s open tabs you can take over, "status" = the session and tab your browser calls use now, with its address and whether SynaBun replaced a lost tab, "create" = open a new browser tab of your own (starting the browser if needed) and continue there, "close" = close a session.'),
   url: z.string().optional().describe('Starting URL for "create" action (default: about:blank).'),
   sessionId: z.string().optional().describe('Session ID for "close" action. Required for close when multiple sessions exist (or pass your tabId).'),
-  tabId: z.string().optional().describe('Your tab id, as the other browser tools take it. "status" / "list": says whether it is still your current tab (a lost tab names the tab that replaced it). "close": closes only this tab of yours; a tab that is not yours is refused and nothing is closed. Ignored by "create", which always opens a new tab of your own.'),
+  tabId: z.string().optional().describe('Your tab id, as the other browser tools take it. "status" / "list": says whether it is still your current tab (a lost tab names the tab that replaced it). "close": closes only this tab of yours; a tab that is not yours is refused and nothing is closed. "create": in the owner\'s everyday browser with full control, the id of one of the owner\'s open tabs that "list" shows: you take that tab over (it becomes yours until you close it, and closing it leaves it open for the owner) instead of opening a new one. Otherwise "create" ignores it and opens a new tab of your own.'),
   moreloginProfile: z.string().optional().describe('"create" only: the MoreLogin profile (its id or its name, as the morelogin tool\'s "list" shows it) to work in from now on. The new tab opens in that profile and your later browser calls stay there; the default browser and other sessions are not touched. "default" goes back to the default profile. The same as calling morelogin with action "use" first, with the same rule: only a profile the owner allowed agents to choose (morelogin "list" says which); a refusal for a profile not on that list means tell the user to switch it on in SynaBun\'s Settings, never another profile. Omit it to stay in the profile you work in.'),
 };
 
 export const browserSessionDescription =
-  'Manage browser sessions — list open sessions and your tabs in them, see which tab you work in ("status"), create a new one, or close one (pass your tabId to close only that tab of yours). Use "status" to find your current tab id. When a browser tool\'s answer starts with "Your tab … was lost; a replacement tab … is open", continue in that tab (no create). Use "create" when your browser session or tab was lost (closed, disconnected, "Session not found", "Tab … not found"): it opens a new tab of your own in the SynaBun browser, starting the browser when it is not running, and in a loop or a dispatched run your next browser calls go to it. Only if create fails too, stop and report it; never switch to another browser. To work in a MoreLogin profile other than the default (a second account, while other automations use the default one), pass moreloginProfile to "create" or call morelogin with action "use": your browser tools then drive that profile in a tab of your own and nobody else is moved (only a profile the owner allowed agents to choose; when it is refused as not on the owner\'s list, tell the user to switch it on in SynaBun\'s Settings and stop). Closing a session other automations still use closes only your own tab in it; the session stays open for them.';
+  'Manage browser sessions — list open sessions and your tabs in them, see which tab you work in ("status"), create a new one, or close one (pass your tabId to close only that tab of yours). Use "status" to find your current tab id. When a browser tool\'s answer starts with "Your tab … was lost; a replacement tab … is open", continue in that tab (no create). Use "create" when your browser session or tab was lost (closed, disconnected, "Session not found", "Tab … not found"): it opens a new tab of your own in the SynaBun browser, starting the browser when it is not running, and in a loop or a dispatched run your next browser calls go to it. Only if create fails too, stop and report it; never switch to another browser. To work in a MoreLogin profile other than the default (a second account, while other automations use the default one), pass moreloginProfile to "create" or call morelogin with action "use": your browser tools then drive that profile in a tab of your own and nobody else is moved (only a profile the owner allowed agents to choose; when it is refused as not on the owner\'s list, tell the user to switch it on in SynaBun\'s Settings and stop). Closing a session other automations still use closes only your own tab in it; the session stays open for them. In the owner\'s everyday browser (the extension, full control) "list" also shows the owner\'s open tabs; "create" with one of their ids as tabId takes that tab over.';
 
 export async function handleBrowserSession(args: {
   action: string;
@@ -114,6 +114,29 @@ export async function handleBrowserSession(args: {
     const body = args.action === 'list' ? formatSessionList(status) : formatRouteStatus(status);
     const note = args.tabId ? namedTabLine(status, args.tabId) : null;
     return text(note ? `${body}\n${note}` : body);
+  }
+
+  // Taking over one of the owner's tabs in the everyday browser (the extension bridge in full control): only when the
+  // server lists owner tabs. Everywhere else create ignores tabId, as it always did, and opens a tab of the caller's own.
+  const takeOver = args.action === 'create' && args.tabId && !args.moreloginProfile ? await ni.browserRouteStatus() : null;
+  const listed = takeOver && !takeOver.error ? takeOver.ownerTabs : undefined;
+  const target = listed?.find(t => t.id === args.tabId && !t.owner);
+  if (listed && !target && !takeOver!.sessions.some(s => s.tabs.some(t => t.id === args.tabId))) {
+    return text(`Create refused: tab ${args.tabId} is not one of the owner's open tabs you can take over (browser_session list marks available tabs and their owners). Nothing changed. Call create without tabId to open a new tab of your own.`);
+  }
+  if (target && args.tabId) {
+    const result = await ni.createSession(args.url, args.tabId);
+    if (ni.isBrowserStarting(result)) return text(String(result.error || 'The browser is still starting. Call browser_session with action "create" again in a moment.'));
+    if (result.error) return text(`Take-over failed: ${result.error}\nNothing of yours changed if the tab was refused. Never switch to another browser or tool.`);
+    const sessionId = String(result.sessionId);
+    const tabId = typeof result.tabId === 'string' ? result.tabId : args.tabId;
+    const at = typeof result.url === 'string' && result.url !== 'about:blank' ? result.url : target.url;
+    const lines = [`Took over the owner's tab ${tabId} (session ${sessionId}) at ${at || 'about:blank'}${target.title ? ` "${target.title}"` : ''}. It is yours until you close it; closing it leaves it open for the owner.`];
+    lines.push(result.repinned === true
+      ? `This run's browser now works there: your next browser calls go to it with or without ids (pass sessionId "${sessionId}" and tabId "${tabId}" if you pass ids; never the old ones).`
+      : `Continue there: pass sessionId "${sessionId}" and tabId "${tabId}" to your next browser calls.`);
+    if (typeof result.navigateError === 'string') lines.push(`Opening ${args.url} in it failed: ${result.navigateError}. Open it with browser_navigate.`);
+    return text(lines.join('\n'));
   }
 
   if (args.action === 'create') {
@@ -158,8 +181,12 @@ export async function handleBrowserSession(args: {
     const resolved = await ni.resolveSession(named);
     if ('error' in resolved) return text(resolved.error);
 
-    const result = await ni.closeSession(resolved.sessionId);
+    const result = await ni.closeSession(resolved.sessionId, args.tabId);
     if (result.error) return text(`Close failed: ${result.error}`);
+    if (result.profileMode === 'extension') {
+      const count = Array.isArray(result.releasedTabIds) ? result.releasedTabIds.length : result.releasedTabId ? 1 : 0;
+      return text(`Released ${count} of your tabs from session ${resolved.sessionId}${args.tabId ? ` (tab ${args.tabId})` : ''}. Agent-opened tabs were closed; taken-over tabs stay open for the owner. Other agents' tabs stay open.`);
+    }
     if (result.sessionKept === true) {
       // Other automations (scheduled runs) work in tabs of this browser: the server closed only this caller's tab.
       const others = Number(result.otherOwners) || 0;
@@ -196,17 +223,32 @@ export function namedTabLine(status: ni.BrowserRouteStatus, tabId: string): stri
 }
 
 const quoteTitle = (title: string | undefined) => (title ? ` "${title}"` : '');
+/**
+ * A tab's address as browser_session list shows it: origin and path, never the query string or fragment, which carry
+ * sign-in and challenge tokens (`?jsc_token=…`, `?__cf_chl_rt_tk=…`). Navigate, snapshot and content keep the full URL
+ * of the caller's own page; only the listing is cut. Anything that is not an http(s) address shows as itself when it is
+ * about:blank, else as nothing.
+ */
+export function listedAddress(url: string | undefined): string {
+  if (!url) return 'about:blank';
+  if (url === 'about:blank') return url;
+  try {
+    const u = new URL(url);
+    return u.protocol === 'http:' || u.protocol === 'https:' ? `${u.origin}${u.pathname}` : u.protocol === 'about:' ? `about:${u.pathname}` : `${u.protocol}…`;
+  } catch { return '(address withheld)'; }
+}
 const otherTabsText = (n: number) => `${n} tab${n === 1 ? '' : 's'} of other automations or the owner`;
 
 /** browser_session list: every session the caller can see, with its own tabs only. */
 export function formatSessionList(status: ni.BrowserRouteStatus): string {
-  if (status.sessions.length === 0) return 'No browser sessions open. browser_navigate opens one by itself.';
+  const owners = ownerTabLines(status);
+  if (status.sessions.length === 0) return ['No browser sessions open. browser_navigate opens one by itself.', ...owners].join('\n');
   const lines = [`${status.sessions.length} session(s); only your own tabs are listed:`];
   for (const session of status.sessions) {
     lines.push(`  ${session.id}${session.servesDefault ? '' : ` — not ${status.profile ? 'the profile you work in' : 'the default browser'} (${session.profile}); SynaBun's browser tools do not use it`}`);
     for (const tab of session.tabs) {
       const isCurrent = status.current?.open && status.current.sessionId === session.id && status.current.tabId === tab.id;
-      lines.push(`    tab ${tab.id} — ${tab.url || 'about:blank'}${quoteTitle(tab.title)}${isCurrent ? '  ← your current tab' : ''}`);
+      lines.push(`    tab ${tab.id} — ${listedAddress(tab.url)}${quoteTitle(tab.title)}${isCurrent ? '  ← your current tab' : ''}`);
     }
     if (!session.tabs.length) lines.push(`    no tab of yours${session.otherTabs ? ` (+${otherTabsText(session.otherTabs)})` : ''}`);
     else if (session.otherTabs) lines.push(`    +${otherTabsText(session.otherTabs)}`);
@@ -214,7 +256,19 @@ export function formatSessionList(status: ni.BrowserRouteStatus): string {
   if (status.current && !status.current.open) lines.push(lostTabLine(status.current));
   else if (!status.current) lines.push('You have no tab of your own yet: browser_navigate opens one.');
   if (status.profile) lines.push(profileLineOf(status.profile));
+  lines.push(...owners);
   return lines.join('\n');
+}
+
+/** The owner's open tabs in the everyday browser (full control), which create with that tabId takes over. */
+const OWNER_TABS_SHOWN = 200;
+function ownerTabLines(status: ni.BrowserRouteStatus): string[] {
+  if (!status.ownerTabs) return [];
+  if (!status.ownerTabs.length) return ['The owner\'s everyday browser (full control) has no other open tab you can take over.'];
+  const lines = [`The owner's open tabs in the everyday browser (full control); create with an available tabId takes it over:`];
+  for (const tab of status.ownerTabs.slice(0, OWNER_TABS_SHOWN)) lines.push(`    tab ${tab.id} — ${listedAddress(tab.url)}${quoteTitle(tab.title)} — ${tab.owner === 'you' ? 'yours' : tab.owner ? `held by ${tab.owner}` : 'owner; available'}`);
+  if (status.ownerTabs.length > OWNER_TABS_SHOWN) lines.push(`    +${status.ownerTabs.length - OWNER_TABS_SHOWN} more`);
+  return lines;
 }
 
 /** The profile a caller works in when it is not the default. */

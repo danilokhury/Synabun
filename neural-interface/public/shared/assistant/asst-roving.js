@@ -12,6 +12,14 @@
 // is re-checked on DOM changes AND on resize — otherwise a hidden control
 // could leave the bar without a tab stop.
 
+//
+// Which controls show is a layout question (getClientRects). Inside a closed side panel nothing shows and
+// nothing can take focus, so the question is not asked there: it made the engine lay the hidden panel out on
+// every change of the bar, from the first load on. The tab stop is settled when the panel is shown
+// (sidepanel-shown.js).
+
+import { createShownGate } from '../sidepanel-shown.js';
+
 const KEYS = new Set(['ArrowLeft', 'ArrowRight', 'Home', 'End']);
 
 /** @returns {{ sync(preferred?: Element): void, items(): HTMLElement[], destroy(): void }} */
@@ -22,11 +30,18 @@ export function createRovingToolbar(toolbar, { selector = 'button', lead = null 
   // The arrow order: the lead controls first, then the bar's own.
   const order = () => [...(lead ? [...lead.querySelectorAll(selector)].filter(usable) : []), ...items()];
 
-  function sync(preferred = null) {
+  function settle(preferred = null) {
     const list = items();
     if (!list.length) return;
     const current = (preferred && list.includes(preferred) && preferred) || list.find((b) => b.tabIndex === 0) || list[0];
     for (const b of all()) b.tabIndex = b === current ? 0 : -1;
+  }
+  // The one a caller asked for while the panel was closed is the one settled on when it is shown.
+  let wanted = null;
+  const gate = createShownGate(toolbar, () => { const preferred = wanted; wanted = null; settle(preferred); });
+  function sync(preferred = null) {
+    if (preferred) wanted = preferred;
+    gate.request();
   }
 
   const onFocusIn = (e) => {
@@ -65,6 +80,7 @@ export function createRovingToolbar(toolbar, { selector = 'button', lead = null 
     sync,
     items,
     destroy() {
+      gate.cancel();
       mutations?.disconnect();
       resizes?.disconnect();
       toolbar.removeEventListener('focusin', onFocusIn);

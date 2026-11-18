@@ -1,6 +1,6 @@
 // The "MoreLogin profile" field of everything that starts a browser run: a schedule, a schedule group, a quick timer
 // and a manual launch (Schedules window, Automation Studio). One list (GET /api/browser/morelogin-envs, the one
-// Settings → Browser reads), one field, drawn in the look of the form it sits in.
+// MoreLogin tab of Settings reads), one field, drawn in the look of the form it sits in.
 //
 //   1. Markup: moreLoginFieldHTML({ id, value, savedName, context, variant, ... }) where the form's rows are built.
 //   2. Wiring: wireMoreLoginFields(root, { signal }) once per window (the Refresh button; cc-dropdown.js wires the popup).
@@ -9,7 +9,7 @@
 // The field shows where MoreLogin is in use (it is the default browser, or installed) and for a record that has a
 // profile saved; until then it is an empty hidden element that fills in when the list arrives. A saved profile
 // MoreLogin no longer lists stays selected and is said as such: it is never dropped quietly. The first choice is
-// always "Browser settings default" (or what the record inherits): an empty value, which is what every record without
+// always "Default AI browser" (or what the record inherits): an empty value, which is what every record without
 // the field means. When the list arrives or is refreshed, each field on screen is redrawn in place with the choice it
 // shows, so the form around it keeps its focus, its scroll and what was typed.
 //
@@ -100,7 +100,7 @@ export function moreLoginProfileName(id, savedName = null) {
  *   variant       'sched' (the Schedules window's form rows) | 'as' (Automation Studio's labelled blocks)
  *   wrapClass     'as' only: the block's own class (as-launch-section, as-qt-group)
  *   dropdownClasses  extra classes of the popup
- *   inheritLabel  the first choice's label when an empty value is not the Browser settings default (a group's profile)
+ *   inheritLabel  the first choice's label when an empty value is not the default AI browser (a group's profile)
  */
 export function moreLoginFieldHTML(options) {
   const previous = _fields.get(options.id);

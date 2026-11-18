@@ -11,11 +11,11 @@ import { state, emit, on } from './state.js';
 import { KEYS } from './constants.js';
 import { storage } from './storage.js';
 import { isGuest, hasPermission } from './ui-sync.js';
-import { openSettingsModal } from './ui-settings.js';
+import { openSettingsModal } from './ui-settings-entry.js';
 import { fetchRulesStatus } from './api.js';
 import { registerContextMenuArea } from './context-menu-areas.js';
 import { frameRect } from './app-frame.js';
-import { windowTakesKey } from './window-keys.js';
+import { windowTakesKey, escapeBelongsElsewhere } from './window-keys.js';
 import { readListItems, writeListItems, fitListLevels, indentListItem, outdentListItem, listMarkers } from './whiteboard-list.js';
 
 // ── Helpers ──
@@ -938,7 +938,12 @@ function updateElementDOM(dom, el) {
     }
   } else if (el.type === 'image') {
     const img = dom.querySelector('img');
-    if (img && img.src !== el.dataUrl) img.src = el.dataUrl;
+    // Reading img.src makes the engine parse the whole data URL (megabytes for a photo) to hand it back: once
+    // per image per update, so on every frame of any drag. The last value written is remembered instead.
+    if (img && dom._wbImgSrc !== el.dataUrl) {
+      if (img.src !== el.dataUrl) img.src = el.dataUrl;
+      dom._wbImgSrc = el.dataUrl;
+    }
   } else if (el.type === 'section') {
     const def = SECTION_TYPES[el.sectionType] || SECTION_TYPES.content;
     const color = el.color || def.color;
@@ -2604,8 +2609,10 @@ function onMouseMove(e) {
 
   // While actively dragging/drawing, suppress ambient transitions + glow/pulse
   // animations (consumed by the body.ui-interacting CSS kill-switch at
-  // styles.css:7231). classList.add is idempotent — cheap to call each move.
-  if (_drag || _marquee || _shapeCreating || _sectionCreating || _penPoints) {
+  // styles.css:7231). Set once per gesture: adding a class that is already there still tells every
+  // observer of <body>'s class that it changed, so each move of a gesture woke them all.
+  if ((_drag || _marquee || _shapeCreating || _sectionCreating || _penPoints)
+    && !document.body.classList.contains('ui-interacting')) {
     document.body.classList.add('ui-interacting');
   }
 
@@ -3069,6 +3076,29 @@ export function isEditorPanelKeyTarget(el) {
   return !!el?.closest?.('#fe-editor-panel');
 }
 
+/**
+ * Whether the board has something an Escape would cancel, from a reading of its state (tests/whiteboard-escape.test.mjs):
+ * a tool other than select, a selection, multi-select mode, something being drawn (a shape, a section, an arrow, a
+ * pen stroke), a drag or a marquee, a text or list left in edit, its context menu or its handles.
+ */
+export function boardEscapeWork(s) {
+  return !!(s && (
+    (s.tool && s.tool !== 'select') || s.selected > 0 || s.multiSelect || s.creating || s.gesture || s.editing || s.menu
+  ));
+}
+
+function boardHasEscapeWork() {
+  return boardEscapeWork({
+    tool: _activeTool,
+    selected: _selectedIds.size + (_selectedId ? 1 : 0),
+    multiSelect: _multiSelectMode,
+    creating: !!(_shapeCreating || _sectionCreating || _arrowCreating || _penPoints),
+    gesture: !!(_drag || _marquee),
+    editing: !!_root?.querySelector?.('.wb-text.editing, .wb-list.editing'),
+    menu: !!(_ctxMenu || _rotateEl || _moveEl),
+  });
+}
+
 function onKeyDown(e) {
   if (!isWhiteboardActive()) return;
 
@@ -3185,6 +3215,12 @@ function onKeyDown(e) {
       return;
     }
     if (e.key === 'Escape') {
+      // Escape is the board's only when it has something of its own to cancel (a tool, a selection, a shape, a
+      // section or an arrow being drawn, a drag, its menu or handles), and not while a dialog, picker, menu or
+      // dropdown outside the board is open: those close on Escape first (window-keys.js). Otherwise the key goes
+      // on, untouched, to whoever listens for it (the terminal's folder picker, the workspaces dropdown and its
+      // dialogs used to never hear it while the board showed).
+      if (!boardHasEscapeWork() || escapeBelongsElsewhere(e, ae)) return;
       if (_shapeCreating) {
         _elements = _elements.filter(el => el.id !== _shapeCreating.id);
         _shapeCreating = null;
@@ -3651,6 +3687,15 @@ const focusMenuArea = {
 // INIT
 // ═══════════════════════════════════════════
 
+// The saved board's first load (initWhiteboard → loadPersisted, which never rejects). Focus Mode's first view is this
+// board: the 3D page shows itself once it is drawn (variant/3d/app.js boot).
+let _boardLoaded = null;
+
+/** Resolves once the saved board was read and drawn (or could not be read); at once before initWhiteboard. */
+export function whiteboardLoaded() {
+  return _boardLoaded || Promise.resolve();
+}
+
 export function initWhiteboard() {
   _root = $('wb-root');
   _toolbar = $('wb-toolbar');
@@ -3679,7 +3724,7 @@ export function initWhiteboard() {
   // server returns the saved board (loadPersisted is async — fetches /api/whiteboard).
   renderAll();
   updateUndoButtons();
-  loadPersisted().then(() => { renderAll(); updateUndoButtons(); });
+  _boardLoaded = loadPersisted().then(() => { renderAll(); updateUndoButtons(); });
 
   // Mouse events
   _root.addEventListener('mousedown', onMouseDown);

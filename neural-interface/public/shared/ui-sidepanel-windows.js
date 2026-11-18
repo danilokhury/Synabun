@@ -53,7 +53,20 @@ function injectStyles() {
   style.id = 'sidepanel-window-styles';
   style.textContent = `
     html .sp-sidepanel { z-index: var(--sp-window-layer, 11000) !important; }
-    html .sp-sidepanel[data-sp-visible="false"] { visibility: hidden; pointer-events: none; }
+    /* A closed panel stays in the page with its transcripts (thousands of elements each). content-visibility
+       takes what is inside it out of style and layout as well as paint until it is shown again: every restyle
+       of the whole page (a variable on <html>, a class on <body>, each frame of a drag) used to walk all of
+       them, and a session streaming in a closed panel was laid out every frame. The panel's own box is sized by
+       its position and width, never by what it holds, so nothing moves; engines without the property keep
+       visibility: hidden alone.
+       Its glass goes with it: a panel nobody sees must not keep a blurred surface the size of the panel for
+       the compositor to carry (five panels, each 28px of blur over hundreds of thousands of pixels). The same
+       rule that hides it takes the filter, and showing it gives it back in the same frame, so the glass of a
+       panel on screen is what it always was, on every platform (Windows included: tests/windows-visuals.test.mjs). */
+    html .sp-sidepanel[data-sp-visible="false"] {
+      visibility: hidden; pointer-events: none; content-visibility: hidden;
+      backdrop-filter: none; -webkit-backdrop-filter: none;
+    }
     html .sp-sidepanel.sp-floating {
       right: auto; bottom: auto; min-width: 0; max-width: none; min-height: 0;
       transform: none !important; transition: opacity .15s ease;

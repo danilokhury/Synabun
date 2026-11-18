@@ -449,7 +449,18 @@ if (typeof document !== 'undefined' && typeof MutationObserver !== 'undefined') 
     for (const entry of entries) sceneVisibility.set(entry.target, entry.isIntersecting);
     syncSceneArt();
   });
-  const observer = new MutationObserver(() => syncSceneArt());
+  // One pass per frame, however much the page changed. This observer hears every node added and every class
+  // changed anywhere in the document (a streamed token, a tooltip, a pill), and a pass reads layout
+  // (getClientRects) for each live scene on screen: run straight from the callback, it forced a layout after
+  // every one of those changes for as long as a worker's scene was showing. A hidden page draws no frame, so
+  // there the pass runs at once (it reads no layout then: nothing is animated in a hidden page).
+  let scenePass = 0;
+  const scheduleSceneSync = () => {
+    if (scenePass) return;
+    if (document.hidden || typeof requestAnimationFrame !== 'function') { syncSceneArt(); return; }
+    scenePass = requestAnimationFrame(() => { scenePass = 0; syncSceneArt(); });
+  };
+  const observer = new MutationObserver(scheduleSceneSync);
   observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true,
     attributeFilter: ['data-live', 'data-offscreen', 'class'] });
   document.addEventListener('visibilitychange', () => syncSceneArt());

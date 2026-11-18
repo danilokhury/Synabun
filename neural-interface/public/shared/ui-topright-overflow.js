@@ -83,15 +83,37 @@ export function initToprightOverflow() {
     // The dock's dividers: the 2px margins and gaps they free are not counted above, so the row only gets narrower.
     tidyDividers();
     if (controls.classList.contains('has-overflow') !== hidden.length > 0) controls.classList.toggle('has-overflow', hidden.length > 0);
+    lastAmbient = ambientKey();
     if (!hidden.length && open) close();
     else if (open) render();
   };
 
+  // What a class or a style on <html> / <body> can change for the row: its band (max-width), its gaps, and
+  // which rules apply (the class lists). A pass puts every button back in the row, measures it and takes the
+  // overflowed ones out again: two layouts. <html> and <body> change all the time for other reasons (a
+  // variable written on each frame of a drag, the cursor and user-select of every drag, the same class set
+  // again), and none of that moves the row: when those were the only wake-ups and this key is what it was
+  // after the last pass, there is nothing to fit. A size change of the row or of a button always fits.
+  let lastAmbient = null;
+  const ambientKey = () => [
+    document.documentElement.className, document.body.className,
+    getComputedStyle(controls).maxWidth, getComputedStyle(controls).columnGap,
+    getComputedStyle(inner).columnGap, getComputedStyle(group).columnGap,
+  ].join('|');
+
   let frame = 0;
-  const schedule = () => {
+  let ambientOnly = true; // every wake-up since the last pass was a class or a style of <html> / <body>
+  const schedule = (ambient) => {
+    if (ambient !== true) ambientOnly = false;
     if (frame) return;
-    frame = requestAnimationFrame(() => { frame = 0; fit(); });
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      const nothingMoved = ambientOnly && lastAmbient !== null && ambientKey() === lastAmbient;
+      ambientOnly = true;
+      if (!nothingMoved) fit();
+    });
   };
+  const scheduleAmbient = () => schedule(true);
 
   const render = () => {
     menu.textContent = '';
@@ -192,8 +214,8 @@ export function initToprightOverflow() {
   ro.observe(controls);
   for (const e of entries) ro.observe(e.item);
   ro.observe(inner.querySelector('#workspace-overlay') || inner);
-  new MutationObserver(schedule).observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class'] });
-  new MutationObserver(schedule).observe(document.body, { attributes: true, attributeFilter: ['style', 'class'] });
+  new MutationObserver(scheduleAmbient).observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class'] });
+  new MutationObserver(scheduleAmbient).observe(document.body, { attributes: true, attributeFilter: ['style', 'class'] });
   new MutationObserver(schedule).observe(controls, { attributes: true, attributeFilter: ['class'] });
   for (const e of entries) new MutationObserver(schedule).observe(e.item, { attributes: true, attributeFilter: ['style'] });
   const bg = $('static-bg');

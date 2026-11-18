@@ -822,6 +822,11 @@ export class NativeLoopRuntime {
   async _drive(record) {
     let failures = 0;
     while (this.isAlive(record.runId)) {
+      // Asked to end when its turn ends (finishAfterTurn): stopped here, before another iteration starts.
+      if (record.finishAfterTurn) {
+        await this.stop(record.runId, record.finishAfterTurn);
+        return;
+      }
       const state = this._readState(record.runId);
       if (!state || state.active === false) {
         await this.stop(record.runId, state ? 'state_inactive' : 'state_removed');
@@ -999,6 +1004,21 @@ export class NativeLoopRuntime {
     this._releaseRuntimeRefs(record);
     this._emit('sidepanel:run-stopped', record);
     try { await this.onFinish(cleanDescriptor(record)); } catch {}
+    return true;
+  }
+
+  /**
+   * A loop that cannot go on (server.js: its MoreLogin profile was closed outside SynaBun and SynaBun does not reopen it
+   * for that loop): it ends with `reason` once its current turn ends, never by starting the next iteration. The turn
+   * under way is not cut short (it reports the refusal it got). A task run (a dispatched run, runMode 'task') is left
+   * alone: its brain decides what comes next. Returns whether the stop was set.
+   */
+  finishAfterTurn(runId, reason = 'stopped') {
+    const record = this.records.get(runId);
+    if (!record || record.runMode === 'task' || record.stopping || !['starting', 'running'].includes(record.status)) return false;
+    if (record.finishAfterTurn) return true;
+    record.finishAfterTurn = String(reason || 'stopped').slice(0, 64);
+    this.log(runId, 'native:finish-after-turn', `loop ends when its current turn ends (${record.finishAfterTurn})`, { iteration: record.currentIteration || null });
     return true;
   }
 

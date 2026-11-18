@@ -201,8 +201,21 @@ function detectLocale() {
   return choice === SYSTEM_LOCALE ? getSystemLocale() : choice;
 }
 
+/**
+ * A request index.html started before any module loaded (window.__synPrefetch.early[url], a fetch() promise), taken
+ * once: a later load of the same file fetches it again. null when the page started none.
+ */
+function takeEarlyFetch(url) {
+  const early = globalThis.__synPrefetch?.early;
+  const pending = early?.[url];
+  if (!pending) return null;
+  early[url] = null;
+  return pending;
+}
+
 async function loadMessages(locale) {
-  const resp = await fetch(LOCALE_FILES[locale] || `/i18n/${locale}.json`);
+  const url = LOCALE_FILES[locale] || `/i18n/${locale}.json`;
+  const resp = await (takeEarlyFetch(url) || fetch(url));
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   return resp.json();
 }
