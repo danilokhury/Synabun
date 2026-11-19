@@ -32,6 +32,26 @@ const MAX_MSG_CHARS = 8 * 1024;
 const MAX_CLAUDE_FILE = 50 * 1024 * 1024;
 const MAX_CODEX_FILE = 50 * 1024 * 1024;
 
+// The synchronous API is also used by explicit rebuilds. At startup, let
+// socket callbacks and timers run between sessions once a slice is spent.
+function finishScan(scan) {
+  let result = scan.next();
+  while (!result.done) result = scan.next();
+  return result.value;
+}
+
+async function finishBackgroundScan(scan) {
+  let sliceStart = performance.now();
+  for (;;) {
+    const result = scan.next();
+    if (result.done) return result.value;
+    if (performance.now() - sliceStart >= 12) {
+      await new Promise(resolve => setImmediate(resolve));
+      sliceStart = performance.now();
+    }
+  }
+}
+
 const TAG_RE = /<\/?(?:ide_opened_file|ide_selection|system-reminder|antml:[a-z_]+)[^>]*>[^\n]*/gi;
 const GENERIC_TAG_RE = /<\/?[a-z_-]+[^>]*>/gi;
 const BLOCK_TAG_RE = /<(system-reminder|ide_opened_file|ide_selection)>[\s\S]*?<\/\1>/gi;
@@ -140,7 +160,12 @@ function parseClaudeSession(filePath) {
   };
 }
 
-export function rebuildClaudeCache({ project, onProgress } = {}) {
+export function rebuildClaudeCache(options = {}) {
+  const scan = scanClaudeCache(options);
+  return options.background ? finishBackgroundScan(scan) : finishScan(scan);
+}
+
+function* scanClaudeCache({ project, onProgress }) {
   const emit = onProgress || (() => {});
   const homeDir = process.env.USERPROFILE || process.env.HOME;
   const projectsDir = join(homeDir, '.claude', 'projects');
@@ -166,6 +191,7 @@ export function rebuildClaudeCache({ project, onProgress } = {}) {
     try { files = readdirSync(projDir.path).filter(f => f.endsWith('.jsonl')); } catch { continue; }
 
     for (const file of files) {
+      yield;
       total++;
       const filePath = join(projDir.path, file);
       let stat;
@@ -289,7 +315,12 @@ function parseCodexSession(filePath) {
   };
 }
 
-export function rebuildCodexCache({ project, projects, accounts, onProgress } = {}) {
+export function rebuildCodexCache(options = {}) {
+  const scan = scanCodexCache(options);
+  return options.background ? finishBackgroundScan(scan) : finishScan(scan);
+}
+
+function* scanCodexCache({ project, projects, accounts, onProgress }) {
   const emit = onProgress || (() => {});
   const homeDir = process.env.USERPROFILE || process.env.HOME;
   const configuredAccounts = Array.isArray(accounts) && accounts.length
@@ -312,6 +343,7 @@ export function rebuildCodexCache({ project, projects, accounts, onProgress } = 
 
   const liveSessionIds = new Set();
   for (const session of catalog) {
+    yield;
     const filePath = session.rolloutPath;
     if (!filePath) continue;
     total++;
@@ -384,7 +416,12 @@ export function rebuildCodexCache({ project, projects, accounts, onProgress } = 
 
 // OpenCode 2 keeps its sessions in session_v2 and their text in session_message rows
 // (lib/opencode-db-schema.js); a file without those tables has nothing to index.
-export function rebuildOpencodeCache({ getOpencodeDb, onProgress } = {}) {
+export function rebuildOpencodeCache(options = {}) {
+  const scan = scanOpencodeCache(options);
+  return options.background ? finishBackgroundScan(scan) : finishScan(scan);
+}
+
+function* scanOpencodeCache({ getOpencodeDb, onProgress }) {
   const emit = onProgress || (() => {});
   if (typeof getOpencodeDb !== 'function') return { sessions: 0, updated: 0 };
 
@@ -423,6 +460,7 @@ export function rebuildOpencodeCache({ getOpencodeDb, onProgress } = {}) {
   } catch { partStmt = null; }
 
   for (const row of sessions) {
+    yield;
     const sessionId = row.id;
     const modifiedIso = row.time_updated ? new Date(row.time_updated).toISOString() : null;
     // Unchanged since the last pass (same update time and message count): skip it,

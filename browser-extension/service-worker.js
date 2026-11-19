@@ -25,6 +25,14 @@ const send = value => {
   }); return outbound;
 };
 const engine = createEngine(chrome, {
+  async readUpload(id, index, timeout) {
+    const response = await fetch(`http://127.0.0.1:${port}/upload/${index}`, {
+      method: 'POST', headers: { Authorization: `Bearer ${id}` }, redirect: 'error',
+      credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(Math.ceil(timeout)),
+    });
+    if (!response.ok) fail(response.status === 400 ? await response.text() : 'CANCELLED');
+    return response.blob();
+  },
   save: async value => {
     const { tabs, ...prefs } = value;
     await chrome.storage.session.set({ bridgeTabs: tabs });

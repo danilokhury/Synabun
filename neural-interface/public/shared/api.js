@@ -47,7 +47,8 @@ function jsonBody(data) {
 // ─── Health ──────────────────────────────
 
 export async function fetchHealth() {
-  const res = await fetch('/api/health', { signal: AbortSignal.timeout(3000) });
+  const res = await fetch('/api/health', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
+  if (!res.ok) throw new Error('Health check failed: ' + res.status);
   return res.json();
 }
 

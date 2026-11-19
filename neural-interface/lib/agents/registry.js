@@ -24,7 +24,7 @@
 // itself enforces: only an actor of kind `owner` approves.
 
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, rmSync, rmdirSync, statSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, rmdirSync, statSync, unlinkSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import * as YAML from 'yaml';
 import { createFrontmatter } from '../../public/shared/skills/ss-frontmatter.js';
@@ -269,15 +269,45 @@ export function parseClaudeAgent(markdown, { fileName = '', id = null, scope = n
   };
 }
 
+export function loadBuiltinAgents(path = new URL('./builtins.json', import.meta.url)) {
+  try {
+    const rows = JSON.parse(readFileSync(path, 'utf8'));
+    if (!Array.isArray(rows)) throw new Error('expected an array');
+    return rows;
+  } catch (error) {
+    console.warn('Unable to load built-in agents:', error.message);
+    return [];
+  }
+}
+
 /**
  * @param {object} o
  * @param {string} o.dir DATA_HOME/data/agents
+ * @param {object[]} [o.builtins] trusted definitions shipped with the application
  * @param {() => string|number} [o.now] the time (ISO text or epoch milliseconds)
  * @param {(event: object) => void} [o.emit] told of every change: { action, id, scope, revision, status }
  * @param {() => Iterable<string>|null} [o.knownMcpServers] the MCP servers that exist, for validation (null: not checked)
  */
-export function createAgentRegistry({ dir, now = () => new Date().toISOString(), emit = () => {}, knownMcpServers = () => null } = {}) {
+export function createAgentRegistry({ dir, builtins = [], now = () => new Date().toISOString(), emit = () => {}, knownMcpServers = () => null } = {}) {
   if (!dir || typeof dir !== 'string') throw new Error('createAgentRegistry needs { dir }');
+  // Shipped revision 1 lives only in the package. Owner revisions use the normal data directory.
+  const library = new Map();
+  const classAgents = new Map();
+  const released = '2026-11-19T00:00:00.000Z';
+  for (const row of Array.isArray(builtins) ? builtins : []) {
+    try {
+      const checked = validateAgentDefinition({ ...row, revision: 1, status: 'approved',
+        author: { kind: 'system' }, createdAt: released, approvedAt: released }, { requireMeta: true });
+      if (!checked.ok || row.id !== checked.value.id || checked.value.taskClasses.length !== 1 ||
+          checked.value.scope.kind !== 'global' || library.has(row.id) || classAgents.has(checked.value.taskClasses[0])) {
+        throw new Error(checked.errors[0]?.message || 'expected a unique global id and a unique task class');
+      }
+      library.set(row.id, checked.value);
+      classAgents.set(checked.value.taskClasses[0], row.id);
+    } catch (error) {
+      console.warn('Skipping built-in agent:', row?.id, error.message);
+    }
+  }
   const stamp = () => iso(now());
   const announce = (event) => { try { emit(event); } catch { /* a listener's own failure */ } };
   const validationOptions = () => { let servers = null; try { servers = knownMcpServers() || null; } catch { servers = null; } return servers ? { knownMcpServers: servers } : {}; };
@@ -342,17 +372,23 @@ export function createAgentRegistry({ dir, now = () => new Date().toISOString(),
   function load(id, scope) {
     const agentId = requireId(id);
     const where = scopeOf(scope);
-    if (!existsSync(agentDir(agentId, where))) return null;
-    const numbers = revisionNumbers(agentId, where);
+    const bundled = where.kind === 'global' && library.get(agentId);
+    const stored = existsSync(agentDir(agentId, where));
+    if (!bundled && !stored) return null;
+    const numbers = stored ? revisionNumbers(agentId, where) : [];
     const revisions = numbers.map((n) => ({ number: n, ...(readRecord(revisionPath(agentId, where, n)) || { definition: null, damaged: true }) }));
-    let draft = readRecord(draftPath(agentId, where), { draft: true });
+    let draft = stored ? readRecord(draftPath(agentId, where), { draft: true }) : null;
     // An approval writes the revision, then removes the draft: a draft whose number is already stored is that leftover.
     if (draft?.definition && numbers.includes(draft.definition.revision)) {
       try { unlinkSync(draftPath(agentId, where)); } catch { /* removed by the next write */ }
       draft = null;
     }
+    const meta = stored ? readJson(metaPath(agentId, where)) : undefined;
+    // An independently created owner agent (even a draft or damaged revision) keeps its entire history.
+    if (bundled && meta == null && !numbers.includes(1) && (!draft || draft.definition?.revision > 1)) {
+      revisions.unshift({ number: 1, definition: { ...structuredClone(bundled), source: 'builtin' }, updatedAt: bundled.createdAt });
+    }
     if (!draft && !revisions.length) return null;
-    const meta = readJson(metaPath(agentId, where));
     const approved = [...revisions].reverse().find((rev) => rev.definition?.status === 'approved' && !rev.damaged) || null;
     return { id: agentId, scope: where, meta: isObject(meta) ? meta : null, draft, revisions, approved };
   }
@@ -383,6 +419,7 @@ export function createAgentRegistry({ dir, now = () => new Date().toISOString(),
       provider: shown?.provider || null, model: shown?.model || null, effort: shown?.effort || null,
       capability: shown?.capability || null, usesBrowser: !!shown?.usesBrowser, usesComputer: !!shown?.usesComputer,
       taskClasses: shown?.taskClasses || [], icon: shown?.icon || null, color: shown?.color || null,
+      ...(shown?.source ? { source: shown.source } : {}),
       status: overallStatus(found),
       approvedRevision: found.approved?.definition.revision ?? null,
       approvedEtag: found.approved?.definition.etag ?? null,
@@ -417,15 +454,20 @@ export function createAgentRegistry({ dir, now = () => new Date().toISOString(),
     try { const meta = readJson(join(dir, id, key, 'agent.json')); scope = isObject(meta?.scope) ? scopeOf(meta.scope) : null; } catch { scope = null; }
     return scope && scopeKey(scope) === key ? scope : null;
   }
+  function scopeKeys(id) {
+    let keys = [];
+    try { keys = readdirSync(join(dir, id)); } catch { /* bundled only */ }
+    if (library.has(id) && !keys.includes('global')) keys.push('global');
+    return keys.sort();
+  }
+
   function everyAgent() {
     let ids = [];
-    try { ids = readdirSync(dir); } catch { return []; }
+    try { ids = readdirSync(dir); } catch { /* a new installation has no owner agents */ }
     const out = [];
-    for (const id of ids.sort()) {
+    for (const id of [...new Set([...ids, ...library.keys()])].sort()) {
       if (!ID_RE.test(id)) continue;
-      let keys = [];
-      try { keys = readdirSync(join(dir, id)); } catch { continue; }
-      for (const key of keys.sort()) {
+      for (const key of scopeKeys(id)) {
         const scope = storedScope(id, key);
         const found = scope ? load(id, scope) : null;
         if (found) out.push(found);
@@ -461,9 +503,7 @@ export function createAgentRegistry({ dir, now = () => new Date().toISOString(),
   function scopesOf(id) {
     let agentId;
     try { agentId = requireId(id); } catch { return []; }
-    let keys = [];
-    try { keys = readdirSync(join(dir, agentId)); } catch { return []; }
-    return keys.sort().map((key) => storedScope(agentId, key)).filter((scope) => scope && load(agentId, scope));
+    return scopeKeys(agentId).map((key) => storedScope(agentId, key)).filter((scope) => scope && load(agentId, scope));
   }
 
   function get({ id, scope } = {}) { return detail(require(id, scope)); }
@@ -661,6 +701,7 @@ export function createAgentRegistry({ dir, now = () => new Date().toISOString(),
     };
     const withdrawStored = (rev) => {
       if (!rev?.definition) throw new AgentRegistryError(404, 'revision_not_found', 'There is no such revision.');
+      if (rev.definition.source === 'builtin') throw new AgentRegistryError(409, 'builtin_read_only', 'Bundled revisions are read-only.');
       const next = move(rev.definition, 'withdrawn', actor);
       // The content of a stored revision is never changed: only its status moves.
       if (next.etag !== rev.definition.etag) throw new AgentRegistryError(500, 'revision_immutable', 'A stored revision cannot change its content.');
@@ -669,7 +710,7 @@ export function createAgentRegistry({ dir, now = () => new Date().toISOString(),
     };
     if (all) {
       withdrawDraft();
-      for (const rev of found.revisions) if (rev.definition?.status === 'approved') withdrawStored(rev);
+      for (const rev of found.revisions) if (rev.definition?.status === 'approved' && rev.definition.source !== 'builtin') withdrawStored(rev);
     } else if (which === null || which === undefined) {
       if (!withdrawDraft()) {
         if (!found.approved) throw new AgentRegistryError(409, 'invalid_transition', 'This agent has nothing to withdraw.');
@@ -696,6 +737,9 @@ export function createAgentRegistry({ dir, now = () => new Date().toISOString(),
   /** Delete an agent of one scope: its draft and every revision. Runs that pinned one keep what they started with. */
   function remove({ id, scope } = {}) {
     const found = require(id, scope);
+    if (!found.draft && found.revisions.every((rev) => rev.definition?.source === 'builtin')) {
+      throw new AgentRegistryError(409, 'builtin_read_only', 'Bundled agents are read-only. Open a draft to customize this agent.');
+    }
     removeFolder(found.id, found.scope);
     announce({ action: 'deleted', id: found.id, scope: found.scope });
     return { removed: true, id: found.id, scope: found.scope };
@@ -830,6 +874,7 @@ export function createAgentRegistry({ dir, now = () => new Date().toISOString(),
   return {
     dir,
     list, get, has, scopesOf, revision, revisions,
+    builtinIdForClass: (taskClass) => classAgents.get(taskClass) || null,
     create, openDraft, updateDraft, discardDraft, copy,
     submit, requestChanges, approve, withdraw, remove,
     diff, exportBundle, importBundle, importClaudeAgent,

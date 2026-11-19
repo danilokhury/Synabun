@@ -49,7 +49,7 @@ export function statusLabel(t, status) {
 /** The labels of where an agent stands: its status with the revision, and a working revision on top of it. */
 export function standingLabels(t, agent) {
   const s = standingOf(agent);
-  return html`${statusLabel(t, s.status)}${s.revision ? html`<span class="ax-rev">${t('agentsStudio.revisionShort', { n: s.revision })}</span>` : ''}${s.pending ? html`<span class="sx-label ax-status ax-status--${s.pending}">${t(`agentsStudio.pending.${s.pending}`, { n: s.draftRevision ?? '' })}</span>` : ''}${s.damaged ? html`<span class="sx-label ax-status ax-status--damaged" title="${t('agentsStudio.damagedHelp')}">${t('agentsStudio.damaged')}</span>` : ''}`;
+  return html`${agent.source === 'builtin' ? html`<span class="sx-chip ax-chip" title="${t('agentsStudio.builtinHelp')}">${t('agentsStudio.builtin')}</span>` : ''}${statusLabel(t, s.status)}${s.revision ? html`<span class="ax-rev">${t('agentsStudio.revisionShort', { n: s.revision })}</span>` : ''}${s.pending ? html`<span class="sx-label ax-status ax-status--${s.pending}">${t(`agentsStudio.pending.${s.pending}`, { n: s.draftRevision ?? '' })}</span>` : ''}${s.damaged ? html`<span class="sx-label ax-status ax-status--damaged" title="${t('agentsStudio.damagedHelp')}">${t('agentsStudio.damaged')}</span>` : ''}`;
 }
 
 export function scopeTag(t, scope, projects = []) {
@@ -78,7 +78,7 @@ export function field({ id, label, control, help = '', count = null, field: name
 
 /** The app's dropdown as markup for `html` (the hidden input has `id`; its change event bubbles). */
 export function dropdown(id, entries, { labelledBy = '', label = '', multiple = false, summary = '', disabled = false, field: name = '', classes = '' } = {}) {
-  return raw(dropdownHTML(id, entries, { labelledBy, label, multiple, summary, disabled, classes: `sx-dd ${classes}`.trim(), inputAttrs: name ? `data-form-field="${name}"` : '' }));
+  return raw(dropdownHTML(id, entries, { labelledBy, label, multiple, summary, disabled, fitTrigger: !!name, classes: `sx-dd ${classes}`.trim(), inputAttrs: name ? `data-form-field="${name}"` : '' }));
 }
 
 /** The problems of one field, as the lines under it. */

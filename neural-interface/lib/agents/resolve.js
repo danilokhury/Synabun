@@ -86,6 +86,13 @@ export function agentRefOf(spec) {
   return ref === undefined ? undefined : String(ref).trim();
 }
 
+function hasNamedProposal(body) {
+  return Array.isArray(body?.proposals) && body.proposals.some(proposal => {
+    const ref = agentRefOf(proposal);
+    return ref && ref !== 'none';
+  });
+}
+
 /**
  * The scopes a ref is looked up in for a run in `projectPath`, first match wins: every project the registry has
  * that agent pinned to and that the run's folder is (or is inside), the deepest first, then the global library.
@@ -268,15 +275,15 @@ export function applyAgent(rawSpec = {}, definition, ctx = {}) {
 
   // ── what it runs on ──
   const provider = given(rawSpec.provider) ? String(rawSpec.provider).trim().toLowerCase() : fields.provider;
-  if (!given(rawSpec.provider)) fill('provider', provider);
+  if (!ctx.routed && !given(rawSpec.provider)) fill('provider', provider);
   const sameProvider = provider === fields.provider;
-  if (sameProvider) {
+  if (!ctx.routed && sameProvider) {
     // "auto" is the dispatch saying it has no preference (the dispatcher reads it as no model): the agent's applies.
     const modelSaid = given(rawSpec.model) && String(rawSpec.model).trim().toLowerCase() !== 'auto';
     if (!modelSaid && fields.model) fill('model', fields.model);
     if (!given(rawSpec.effort) && fields.effort) fill('effort', fields.effort);
     if (!given(firstGiven(rawSpec.accountId, rawSpec.codexAccountId, rawSpec.claudeAccountId)) && fields.accountId) fill('accountId', fields.accountId);
-  } else if (fields.model || fields.effort || fields.accountId) {
+  } else if (!ctx.routed && (fields.model || fields.effort || fields.accountId)) {
     corrections.push(correction('provider', fields.provider, provider, 'explicit_provider', `agent ${name}: the dispatch runs on ${provider}, not the agent's ${fields.provider}, so the agent's model, effort and account were not applied`));
   }
   if (!given(rawSpec.permissionPolicy)) fill('permissionPolicy', fields.permissionPolicy);
@@ -379,11 +386,14 @@ export function stampAgentRun(entry, input) {
   entry.agentRevision = pin.revision;
   entry.agentPin = {
     id: pin.id, revision: pin.revision, etag: pin.etag, scope: pin.scope, name: pin.name, requested: pin.requested,
+    ...(pin.classDefault ? { classDefault: pin.classDefault } : {}),
+    ...(pin.source === 'builtin' ? { source: 'builtin' } : {}),
     ...(pin.status && pin.status !== 'approved' ? { status: pin.status, test: true } : {}),
     corrections: pin.corrections || [],
   };
   if (!Array.isArray(entry.notes)) entry.notes = [];
-  entry.notes.push(`runs as agent "${pin.name}" (${pin.ref}${pin.status && pin.status !== 'approved' ? `, ${pin.status}: a test run` : ''})`);
+  const note = `runs as agent "${pin.name}" (${pin.ref}${pin.status && pin.status !== 'approved' ? `, ${pin.status}: a test run` : ''})`;
+  if (!entry.notes.includes(note)) entry.notes.push(note);
   for (const item of pin.corrections || []) if (item?.text && !entry.notes.includes(item.text)) entry.notes.push(item.text);
   return entry;
 }
@@ -415,12 +425,32 @@ export function createAgentResolver({ registry, limits = null } = {}) {
 
   const resolve = (ref, { projectPath = null } = {}) => resolveAgentRef(ref, { registry, projectPath });
 
+  function builtinTaskClass(definition, requestedClass) {
+    const [taskClass] = definition.taskClasses;
+    if (requestedClass && requestedClass !== taskClass) {
+      throw new AgentResolveError('AGENT_CLASS_MISMATCH', 409, `This bundled agent runs as ${taskClass}.`);
+    }
+    return taskClass;
+  }
+
   /** A definition applied to a spec, with its pin on the result. */
   function prepare(rawSpec, resolved, ctx = {}) {
     let extra = null;
     try { extra = typeof limits === 'function' ? limits({ ...ctx, rawSpec, definition: resolved.definition }) : limits; } catch { extra = null; }
     const applied = applyAgent(rawSpec, resolved.definition, { ...ctx, ref: resolved.ref, limits: { ...(isObject(extra) ? extra : {}), ...(isObject(ctx.limits) ? ctx.limits : {}) } });
+    if (resolved.definition.source === 'builtin' || ctx.classDefault) {
+      applied.spec.taskClass = ctx.classDefault || builtinTaskClass(resolved.definition, rawSpec.taskClass);
+      const ceiling = resolved.definition.capability;
+      const requestedLevel = String(applied.spec.capability).trim().toLowerCase();
+      if (!Object.hasOwn(CAPABILITY_RANK, requestedLevel) || CAPABILITY_RANK[requestedLevel] > CAPABILITY_RANK[ceiling]) {
+        applied.corrections.push(correction('capability', applied.spec.capability, ceiling, 'capability_ceiling',
+          `The bundled ${resolved.name} agent is limited to ${ceiling}.`));
+        applied.spec.capability = ceiling;
+      }
+    }
     applied.spec[AGENT_PIN] = {
+      ...(resolved.definition.source === 'builtin' ? { source: 'builtin' } : {}),
+      ...(ctx.classDefault ? { classDefault: ctx.classDefault } : {}),
       id: resolved.id, revision: resolved.revision, etag: resolved.etag, scope: resolved.scope, name: resolved.name || resolved.id,
       ref: resolved.ref, requested: resolved.requested || resolved.ref, status: resolved.definition.status,
       corrections: applied.corrections, filled: applied.filled,
@@ -436,7 +466,7 @@ export function createAgentResolver({ registry, limits = null } = {}) {
    */
   function intake(rawSpec = {}, ctx = {}) {
     const ref = agentRefOf(rawSpec);
-    if (ref === undefined) return rawSpec;
+    if (ref === undefined || ref === 'none') return rawSpec;
     const resolved = resolve(ref, { projectPath: firstGiven(rawSpec.cwd, rawSpec.project) ?? null });
     return prepare(rawSpec, resolved, ctx);
   }
@@ -447,6 +477,7 @@ export function createAgentResolver({ registry, limits = null } = {}) {
    */
   function prepareRevision(rawSpec, definition, ctx = {}) {
     const def = normalizeAgentDefinition(definition);
+    if (definition.source === 'builtin') def.source = 'builtin';
     const checked = validateAgentDefinition(def);
     if (!checked.ok) throw new AgentResolveError('AGENT_NOT_VALID', 400, 'The definition has errors; fix them before running it.', { errors: checked.errors });
     return prepare(rawSpec, {
@@ -462,12 +493,16 @@ export function createAgentResolver({ registry, limits = null } = {}) {
    * @returns {object} the body, with such proposals filled (the same object when none names an agent)
    */
   function expandProposals(body = {}) {
-    if (!isObject(body) || !Array.isArray(body.proposals) || !body.proposals.some((proposal) => agentRefOf(proposal) !== undefined)) return body;
+    if (!hasNamedProposal(body)) return body;
     const projectPath = firstGiven(body.cwd, body.project) ?? null;
+    let builtinClass;
     const proposals = body.proposals.map((proposal) => {
       const ref = agentRefOf(proposal);
-      if (ref === undefined) return proposal;
+      if (ref === undefined || ref === 'none') return proposal;
       const resolved = resolve(ref, { projectPath });
+      if (resolved.definition.source === 'builtin') {
+        builtinClass = builtinTaskClass(resolved.definition, builtinClass || body.task_class || body.taskClass);
+      }
       const fields = dispatchFields(resolved.definition);
       const provider = given(proposal.provider) ? proposal.provider : fields.provider;
       const same = provider === fields.provider;
@@ -481,7 +516,7 @@ export function createAgentResolver({ registry, limits = null } = {}) {
         agent_ref: resolved.ref,
       };
     });
-    return { ...body, proposals };
+    return { ...body, ...(builtinClass ? { task_class: builtinClass } : {}), proposals };
   }
 
   /**
@@ -502,6 +537,7 @@ export function createAgentResolver({ registry, limits = null } = {}) {
         ref: formatAgentRef({ id: agent.id, scope: agent.scope }), id: agent.id, name: agent.name, description: agent.description,
         provider: agent.provider, model: agent.model, effort: agent.effort, taskClasses: agent.taskClasses,
         scope: agent.scope.kind, ...(agent.scope.kind === 'project' ? { projectPath: agent.scope.path } : {}),
+        ...(agent.source ? { source: agent.source, status: 'approved' } : {}),
         revision: agent.approvedRevision, capability: agent.capability, usesBrowser: agent.usesBrowser, usesComputer: agent.usesComputer,
       });
     }
@@ -522,6 +558,24 @@ export function getAgentResolver() { return current; }
 
 const resolverOf = (agents) => { try { return (typeof agents === 'function' ? agents() : agents) || null; } catch { return null; } };
 
+/** Resolve a worker role without contributing a runtime to the model router. Only implicit lookup is best effort. */
+export function routedAgent(agents, taskClass, projectPath, requested, pinned = null) {
+  if (requested === 'none') return { meta: { agentRequest: 'none' } };
+  const resolver = resolverOf(agents);
+  const id = requested || pinned?.id || resolver?.registry?.builtinIdForClass?.(taskClass);
+  try {
+    if (!id || !resolver) throw new AgentResolveError('AGENTS_UNAVAILABLE', 503, 'No approved class agent is available.');
+    const resolved = pinned || resolver.resolve(id, { projectPath });
+    const meta = { agentRef: resolved.ref, agentRevision: resolved.revision, ...(requested ? { agentRequest: requested } : {}) };
+    return { resolved, resolver, meta };
+  } catch (error) {
+    if (requested) throw error;
+    const note = correction('agentRef', id || taskClass, null, 'class_agent_unavailable',
+      `The ${taskClass} worker will run without its default agent. ${error.message}`);
+    return { note };
+  }
+}
+
 /**
  * The dispatcher's one call: `rawSpec` with the agent it names applied, or `rawSpec` itself when it names none.
  * A spec that names an agent on a server with no resolver is refused, never started as a plain worker.
@@ -529,7 +583,7 @@ const resolverOf = (agents) => { try { return (typeof agents === 'function' ? ag
  */
 export function agentIntake(agents, rawSpec = {}, ctx = {}) {
   const ref = agentRefOf(rawSpec);
-  if (ref === undefined) return rawSpec;
+  if (ref === undefined || ref === 'none') return rawSpec;
   const resolver = resolverOf(agents);
   if (!resolver) throw new AgentResolveError('AGENTS_UNAVAILABLE', 503, 'This dispatch names an agent, and agents are not available on this server. Nothing was started.', { agentRef: ref.slice(0, 200) });
   return resolver.intake(rawSpec, ctx);
@@ -537,7 +591,12 @@ export function agentIntake(agents, rawSpec = {}, ctx = {}) {
 
 /** agent_route's proposals with their agents filled in; the body itself when there is nothing to fill. */
 export function expandAgentProposals(agents, body = {}) {
-  if (!isObject(body) || !Array.isArray(body.proposals) || !body.proposals.some((proposal) => agentRefOf(proposal) !== undefined)) return body;
+  const requested = agentRefOf(body);
+  if (requested && Array.isArray(body.proposals)) {
+    body = { ...body, proposals: body.proposals.map(proposal =>
+      agentRefOf(proposal) || !isObject(proposal) ? proposal : { ...proposal, agent_ref: requested }) };
+  }
+  if (!hasNamedProposal(body)) return body;
   const resolver = resolverOf(agents);
   if (!resolver) throw new AgentResolveError('AGENTS_UNAVAILABLE', 503, 'A proposal names an agent, and agents are not available on this server.');
   return resolver.expandProposals(body);

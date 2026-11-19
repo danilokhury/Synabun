@@ -11,10 +11,10 @@
 //
 // DOM-free and without imports: node --test and the page load the same file.
 
-/** The Connection modes of SynaBun's own local browser (the Browser tab's dropdown). */
-export const LOCAL_CONNECT_MODES = Object.freeze(['mirror', 'attach', 'extension']);
+/** The modes offered in the Browser tab's Connection dropdown. */
+export const LOCAL_CONNECT_OPTIONS = Object.freeze(['attach', 'extension']);
 
-/** The mode a MoreLogin switch-off goes back to (as POST /api/morelogin/use-default { clear: true } does). */
+/** Deprecated in the menu. Still supported for saved configs and as the server's local default. */
 export const LOCAL_DEFAULT_MODE = 'mirror';
 
 const idOf = (value) => (value === undefined || value === null || value === '' ? null : String(value));
@@ -40,7 +40,7 @@ export function aiBrowserOfStatus(status) {
 /** The Connection dropdown's value for a loaded config: a local mode, never 'morelogin' (it has no such option). */
 export function localConnectModeOf(cfg) {
   const mode = cfg && typeof cfg === 'object' ? cfg.connectMode : null;
-  return LOCAL_CONNECT_MODES.includes(mode) ? mode : LOCAL_DEFAULT_MODE;
+  return LOCAL_CONNECT_OPTIONS.includes(mode) ? mode : LOCAL_DEFAULT_MODE;
 }
 
 /**
@@ -54,7 +54,7 @@ export function browserSaveFields(formMode, current) {
   const now = current && typeof current === 'object' ? current : {};
   const envId = idOf(now.envId);
   if (now.moreLogin === true) return { connectMode: 'morelogin', moreloginEnvId: envId };
-  return { connectMode: LOCAL_CONNECT_MODES.includes(formMode) ? formMode : LOCAL_DEFAULT_MODE, moreloginEnvId: envId };
+  return { connectMode: LOCAL_CONNECT_OPTIONS.includes(formMode) ? formMode : LOCAL_DEFAULT_MODE, moreloginEnvId: envId };
 }
 
 /**

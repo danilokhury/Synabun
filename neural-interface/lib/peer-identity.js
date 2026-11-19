@@ -38,7 +38,7 @@
 //     app's pages and every other read still load). A failure that may pass (a timeout, a busy system) is tried once
 //     more at once and is kept on its connection for a moment only (NEGATIVE_TTL_MS), so an open tab recovers by
 //     itself; a client that left is never kept. The server probes netstat and ps once at start (probe()), keeps the
-//     state for GET /api/health (`ownerAuthority`: ok / degraded / unsupported / off), says the change in one loud log
+//     state for GET /api/health (`ownerAuthority`: pending / ok / degraded / unsupported / off), says the change in one loud log
 //     line, and the page shows a banner while it is degraded (public/shared/ui-owner-authority.js).
 // Only a machine elsewhere on the network ('remote', below) still keeps the rules from before without a lookup: what to
 // do about a LAN client is a separate decision (TODO(peer-identity-remote): decide the LAN policy).
@@ -707,15 +707,14 @@ export function createPeerIdentity({ platform = process.platform, selfPid = proc
   const say = (line) => { try { log(line); } catch { /* a logger's own failure */ } };
 
   // ── The state of the owner's authority (GET /api/health `ownerAuthority`, the page's banner) ──
-  // off / unsupported never change. On macOS it is ok until the start probe or a lookup fails (degraded, with the
-  // reason), and ok again after a whole lookup works (one that read the process table, not just this server's own
-  // call, which needs netstat only). Each change is said once, loudly; a lookup that keeps failing is not said again.
+  // On macOS readiness is pending until the start probe or a whole lookup settles.
+  // This describes the verifier. Each request still needs its own peer verdict.
   const iso = (ms) => { try { return new Date(ms).toISOString(); } catch { return null; } };
   let authority = disabled
     ? { state: 'off', reason: 'SYNABUN_PEER_IDENTITY=off', retryable: false, since: iso(now()) }
     : !supported
       ? { state: 'unsupported', reason: unsupportedReason, retryable: false, since: iso(now()) }
-      : { state: 'ok', reason: null, retryable: false, since: iso(now()) };
+      : { state: 'pending', reason: null, retryable: false, since: iso(now()) };
   let probed = null; // the start probe's promise
   function degrade(reason, { retryable = false, source = 'lookup' } = {}) {
     if (!supported) return;
@@ -736,7 +735,7 @@ export function createPeerIdentity({ platform = process.platform, selfPid = proc
     if (!supported || authority.state === 'ok') return;
     const was = authority.reason;
     authority = { state: 'ok', reason: null, retryable: false, since: iso(now()) };
-    say(`[peer-identity] owner authority restored (${source}): local programs are identified again${was ? ` (it was: ${was})` : ''}`);
+    if (was) say(`[peer-identity] owner authority restored (${source}): local programs are identified again (it was: ${was})`);
   }
   /** What a lookup said about the lookup itself: a whole answer restores, a failure degrades (one about a single
    *  connection — it has no address any more — says nothing about the tools). */
@@ -745,7 +744,7 @@ export function createPeerIdentity({ platform = process.platform, selfPid = proc
     if (verdict.status === 'unknown' && verdict.kind === 'failed') { if (!verdict.connection) degrade(verdict.reason, { retryable: verdict.retryable === true }); }
     else if (verdict.status === 'ok' && !verdict.self) restore();
   }
-  /** The state for GET /api/health: { state: 'ok'|'degraded'|'unsupported'|'off', reason, retryable, since }. */
+  /** The state for GET /api/health: { state: 'pending'|'ok'|'degraded'|'unsupported'|'off', reason, retryable, since }. */
   function authorityState() {
     return { state: authority.state, reason: authority.reason, retryable: authority.retryable === true, since: authority.since };
   }
@@ -769,13 +768,19 @@ export function createPeerIdentity({ platform = process.platform, selfPid = proc
         if (!parents.size) failures.push('ps listed no processes');
         else if (!parents.has(selfPid)) failures.push('ps did not list this server');
       } catch (error) { failures.push(`ps: ${failureText(error)}`); retryable = retryable || isTransientLookupError(error); }
+      // A request can finish its full lookup while this boot-time sample is in flight.
+      // Its observed outcome takes precedence over the preflight in either direction.
+      if (authority.state !== 'pending') return authorityState();
       if (failures.length) degrade(failures.join('; '), { retryable, source: 'start probe' });
       else {
         say('[peer-identity] start probe: netstat and ps answer; the owner\'s authority is checked against the calling process');
         restore('start probe');
       }
       return authorityState();
-    })().catch((error) => { degrade(`the probe failed (${error?.message || error})`, { source: 'start probe' }); return authorityState(); });
+    })().catch((error) => {
+      if (authority.state === 'pending') degrade(`the probe failed (${error?.message || error})`, { source: 'start probe' });
+      return authorityState();
+    });
     return probed;
   }
   const isThisMachine = (addr) => {

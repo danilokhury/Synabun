@@ -124,21 +124,21 @@ const multipleText = (options, values) => options.filter(o => values.includes(St
 
 // ── Markup ──
 
-function optionHTML(id, option, index, chosen) {
+function optionHTML(id, option, index, chosen, fitTrigger) {
   const label = String(option.label ?? '');
   const active = Array.isArray(chosen) ? (chosen.includes(String(option.value ?? '')) || (option.automatic && option.selected)) : index === chosen;
   return `<div class="cc-dropdown-item${active ? ' active' : ''}" id="${esc(id)}-opt-${index}" role="option" aria-selected="${active}"`
-    + `${option.disabled ? ' aria-disabled="true"' : ''} data-value="${esc(option.value ?? '')}" data-index="${index}"${option.exclusive ? ' data-exclusive="true"' : ''}${option.scope ? ` data-scope="${esc(option.scope)}"` : ''}${option.automatic ? ' data-automatic="true"' : ''} data-label="${esc(label)}" title="${esc(option.caption || label)}">${Array.isArray(chosen) ? '<span class="cc-dropdown-check" aria-hidden="true"></span>' : ''}<span>${esc(label)}${option.caption ? `<small class="cc-dropdown-caption">${esc(option.caption)}</small>` : ''}</span></div>`;
+    + `${option.disabled ? ' aria-disabled="true"' : ''} data-value="${esc(option.value ?? '')}" data-index="${index}"${option.exclusive ? ' data-exclusive="true"' : ''}${option.scope ? ` data-scope="${esc(option.scope)}"` : ''}${option.automatic ? ' data-automatic="true"' : ''} data-label="${esc(label)}"${fitTrigger ? '' : ` title="${esc(option.caption || label)}"`}>${Array.isArray(chosen) ? '<span class="cc-dropdown-check" aria-hidden="true"></span>' : ''}<span>${esc(label)}${option.caption ? `<small class="cc-dropdown-caption">${esc(option.caption)}</small>` : ''}</span></div>`;
 }
 
 /** The menu's options (and headings) for `entries`, the `chosen` index marked. */
-export function menuHTML(id, entries, chosen = chosenIndex(flatOptions(entries))) {
+export function menuHTML(id, entries, chosen = chosenIndex(flatOptions(entries)), fitTrigger = false) {
   let index = 0;
   let group = 0;
   return (entries || []).filter(Boolean).map((entry) => {
-    if (!Array.isArray(entry.options)) return optionHTML(id, entry, index++, chosen);
+    if (!Array.isArray(entry.options)) return optionHTML(id, entry, index++, chosen, fitTrigger);
     const headId = `${id}-grp-${group++}`;
-    const options = entry.options.filter(Boolean).map(option => optionHTML(id, option, index++, chosen)).join('');
+    const options = entry.options.filter(Boolean).map(option => optionHTML(id, option, index++, chosen, fitTrigger)).join('');
     return `<div class="cc-dropdown-optgroup" role="group" aria-labelledby="${esc(headId)}"><div class="cc-dropdown-group" id="${esc(headId)}" role="presentation">${esc(entry.group ?? '')}</div>${options}</div>`;
   }).join('');
 }
@@ -148,17 +148,17 @@ export function menuHTML(id, entries, chosen = chosenIndex(flatOptions(entries))
  * Name it with `labelledBy` (the id of its visible label) or `label`. `classes` and `attrs` go on
  * the `.cc-dropdown`.
  */
-export function dropdownHTML(id, entries, { classes = '', labelledBy = '', label = '', attrs = '', inputAttrs = '', disabled = false, multiple = false, summary = '' } = {}) {
+export function dropdownHTML(id, entries, { classes = '', labelledBy = '', label = '', attrs = '', inputAttrs = '', disabled = false, multiple = false, summary = '', fitTrigger = false } = {}) {
   const options = flatOptions(entries);
   const chosen = multiple ? multipleValues(options) : chosenIndex(options);
   const current = chosen >= 0 ? options[chosen] : null;
   const name = labelledBy ? ` aria-labelledby="${esc(labelledBy)}"` : label ? ` aria-label="${esc(label)}"` : '';
   const text = multiple ? (summary || multipleText(options, chosen)) : String(current?.label ?? '');
   return `<input type="hidden" id="${esc(id)}" value="${esc(multiple ? chosen.join(',') : current?.value ?? '')}"${disabled ? ' disabled' : ''}${inputAttrs ? ` ${inputAttrs}` : ''}>`
-    + `<div class="cc-dropdown${classes ? ` ${classes}` : ''}${disabled ? ' disabled' : ''}" data-for="${esc(id)}"${multiple ? ' data-multiple="true"' : ''}${attrs ? ` ${attrs}` : ''}>`
+    + `<div class="cc-dropdown${classes ? ` ${classes}` : ''}${disabled ? ' disabled' : ''}" data-for="${esc(id)}"${fitTrigger ? ' data-fit-trigger="true"' : ''}${multiple ? ' data-multiple="true"' : ''}${attrs ? ` ${attrs}` : ''}>`
     + `<button type="button" class="cc-dropdown-trigger" id="${esc(id)}-trigger" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-controls="${esc(id)}-menu"${name}${disabled ? ' disabled' : ''}>`
-    + `<span class="cc-dropdown-value" title="${esc(text)}">${esc(text)}</span>${ARROW}</button>`
-    + `<div class="cc-dropdown-menu" id="${esc(id)}-menu" role="listbox"${multiple ? ' aria-multiselectable="true"' : ''}${name} tabindex="-1">${menuHTML(id, entries, chosen)}</div>`
+    + `<span class="cc-dropdown-value"${fitTrigger ? '' : ` title="${esc(text)}"`}>${esc(text)}</span>${ARROW}</button>`
+    + `<div class="cc-dropdown-menu" id="${esc(id)}-menu" role="listbox"${multiple ? ' aria-multiselectable="true"' : ''}${name} tabindex="-1">${menuHTML(id, entries, chosen, fitTrigger)}</div>`
     + '</div>';
 }
 
@@ -218,7 +218,7 @@ function showChosen(dd, index) {
   if (input) input.value = item ? item.dataset.value ?? '' : '';
   if (label) {
     label.textContent = item ? item.textContent : '';
-    label.title = label.textContent;
+    if (dd.dataset.fitTrigger !== 'true') label.title = label.textContent;
   }
 }
 
@@ -233,7 +233,7 @@ function showMultiple(dd, values) {
   if (input) input.value = values.join(',');
   if (label) {
     label.textContent = multipleText(optionsOf(items), values);
-    label.title = label.textContent;
+    if (dd.dataset.fitTrigger !== 'true') label.title = label.textContent;
   }
 }
 
@@ -285,6 +285,10 @@ function place(dd) {
   const roomWidth = Math.max(0, room.right - room.left);
   style.maxWidth = `${roomWidth}px`;
   style.minWidth = `${Math.min(t.width, roomWidth)}px`;
+  if (dd.dataset.fitTrigger === 'true') {
+    style.width = style.minWidth;
+    style.maxHeight = 'var(--cc-menu-max-height)';
+  }
   const height = menu.offsetHeight;
   const below = room.bottom - t.bottom - GAP;
   const above = t.top - GAP - room.top;
@@ -333,7 +337,7 @@ function close(dd, { focus = false, cancel = false } = {}) {
   if (cancel && changed) {
     if (menu && dd._ccBeforeMenu != null) menu.innerHTML = dd._ccBeforeMenu;
     showMultiple(dd, dd._ccBefore === '' ? [''] : dd._ccBefore.split(','));
-    if (label) { label.textContent = dd._ccBeforeLabel; label.title = label.textContent; }
+    if (label) { label.textContent = dd._ccBeforeLabel; if (dd.dataset.fitTrigger !== 'true') label.title = label.textContent; }
   }
   dd.classList.remove('open', 'drop-up');
   trigger?.setAttribute('aria-expanded', 'false');
@@ -382,7 +386,7 @@ export function setDropdownItems(input, entries) {
   const options = flatOptions(entries);
   const multiple = dd.dataset.multiple === 'true';
   const chosen = multiple ? multipleValues(options) : chosenIndex(options);
-  menu.innerHTML = menuHTML(input.id, entries, chosen);
+  menu.innerHTML = menuHTML(input.id, entries, chosen, dd.dataset.fitTrigger === 'true');
   if (multiple) showMultiple(dd, chosen); else showChosen(dd, chosen);
   if (!wasOpen) return;
   place(dd);
@@ -458,11 +462,13 @@ export function wireDropdowns(root, { signal } = {}) {
 
   // The focus stays on the trigger while a choice is clicked.
   on(root, 'mousedown', (e) => { if (e.target.closest?.('.cc-dropdown-menu')) e.preventDefault(); });
-  on(root, 'mouseover', (e) => {
+  // Scrolling an item under a stationary pointer generates mouseover. Only an actual move
+  // should replace the keyboard highlight after End/PageDown scrolled the listbox.
+  on(root, 'pointermove', (e) => {
     const item = e.target.closest?.('.cc-dropdown-item');
     if (!item || item.getAttribute('aria-disabled') === 'true') return;
     const dd = item.closest('.cc-dropdown');
-    if (isOpen(dd)) highlight(dd, itemsOf(dd).indexOf(item));
+    if (isOpen(dd) && !item.classList.contains('highlight')) highlight(dd, itemsOf(dd).indexOf(item));
   });
 
   on(root, 'keydown', (e) => {

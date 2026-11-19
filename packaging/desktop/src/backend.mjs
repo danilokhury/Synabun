@@ -70,7 +70,7 @@ export function runBackendHelper({ entry, env, preferPort = null, onEvent = () =
 
 /** GET /api/health on the loopback address, without any proxy. Resolves the JSON, or null. */
 export function fetchHealth(port, { timeoutMs = 1500, requestImpl = request } = {}) {
-  return getJson(port, '/api/health', { timeoutMs, requestImpl });
+  return getJson(port, '/api/health', { timeoutMs, requestImpl, okOnly: true });
 }
 
 /**
@@ -215,10 +215,11 @@ export async function stopBackend({
  * that supervisor still takes a moment to write its logs.
  */
 export function watchBackend({
-  port, supervisorPid = null, launcherPid = null, onStopped, health = fetchHealth, alive = pidAlive, supervisorEnded = () => false,
+  port, supervisorPid = null, launcherPid = null, onStopped, onRecovered, health = fetchHealth, alive = pidAlive, supervisorEnded = () => false,
   intervalMs = 3000, graceMs = 8000, restartLimitMs = 3 * 60 * 1000, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, now = () => Date.now(),
 }) {
   let silentSince = null;
+  let stopped = false;
   let fired = false;
   let busy = false;
   const timer = setIntervalImpl(async () => {
@@ -226,15 +227,22 @@ export function watchBackend({
     busy = true;
     try {
       const answer = await health(port, { timeoutMs: 1500 });
-      if (answer?.ok) { silentSince = null; return; }
+      if (fired) return;
+      if (answer?.ok === true && !answer.restarting) {
+        const wasOffline = silentSince !== null;
+        silentSince = null;
+        stopped = false;
+        if (wasOffline) onRecovered?.();
+        return;
+      }
+      if (stopped) return;
       silentSince ??= now();
       let gaveUp = false;
       try { gaveUp = supervisorEnded() === true; } catch {}
       const supervised = !gaveUp && (alive(supervisorPid) || alive(launcherPid));
       const quiet = now() - silentSince;
       if (gaveUp || (!supervised && quiet >= graceMs) || quiet >= restartLimitMs) {
-        fired = true;
-        clearIntervalImpl(timer);
+        stopped = true;
         onStopped?.(gaveUp ? { supervised: false, gaveUp: true } : { supervised });
       }
     } finally {

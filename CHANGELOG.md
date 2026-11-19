@@ -1,3 +1,20 @@
+# SynaBun v.2.4.1
+
+The Assistant can now use a specialist for each type of task. This release also expands file uploads in the Chrome extension and makes desktop startup failures easier to recover from.
+
+## ✨ New
+
+- **Built-in agents for common tasks.** Agents Studio includes 12 specialists for work such as research, coding and design. You can customize which approved agent handles a task. A worker keeps the revision it started with, even if you edit the agent while it runs.
+- **Larger uploads from Chrome.** Browser Bridge can attach up to four files totaling 50 MB from the upload folder shown in Browser Settings. Uploads work in both full-control and shared-tab modes. You can also reload the extension from its popup after an update.
+
+## 🛠 Fixed
+
+- **Desktop startup and recovery.** If the interface fails to load, the desktop app shows a status screen with Retry and Open logs. It can reconnect when the local service recovers.
+- **Large backups and migrations.** Backups and moves to a new data folder can now finish when your library contains very many files or deeply nested folders.
+- **MoreLogin in OpenCode.** OpenCode now applies the configured MoreLogin browser policy when checking whether a task can start.
+
+---
+
 # SynaBun v.2.4.0
 
 You can now save an agent for recurring work, assign a task to a team, and connect the Assistant to the browser you already use.

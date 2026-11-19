@@ -55,7 +55,7 @@ import { RemotePolicyError, clampDispatchSpec, getSessionPolicy, readRegisteredP
 import { validateWorkerReply } from './worker-question.js';
 import { limitFromText } from '../public/shared/assistant/asst-limit.js';
 // agents-p1: a dispatch's agent_ref (lib/agents/resolve.js).
-import { agentCorrections, agentIntake, carryAgentRun, getAgentResolver, stampAgentRun } from './agents/resolve.js';
+import { agentCorrections, agentIntake, agentPinOf, agentRefOf, routedAgent, carryAgentRun, getAgentResolver, stampAgentRun } from './agents/resolve.js';
 // Agents P2 (durable agent messaging): run events, typed waits, the follow-up outbox and the transcript on disk.
 import { createCoordinationService, sharedCoordinationService } from './coordination/service.js';
 import { createRunWaits } from './assistant-run-wait.js';
@@ -622,6 +622,7 @@ export function createAssistantDispatcher({
         entry.tools = []; entry.toolsRequested = [];
         entry.toolListError = { code: error.code, message: error.message, original: row.tools ?? row.mcpProfile };
         delete entry.mcpProfile; delete entry.rawSpec;
+        delete entry.heldAgent;
         entry.state = 'failed'; entry.completionReason = 'tools_invalid';
       }
       // A failure cause being judged when the server went down is never coming.
@@ -739,7 +740,7 @@ export function createAssistantDispatcher({
     // The brief goes to the worker's prompt; views name it only. The meters' state stays inside, and so does what a
     // resume after a restart needs (resumeInfo: the CLI's pid, the turn in progress); `resumes` counts them.
     // agents-p4: a team slice's brief (the TEAM block's content) goes to the worker's prompt; views carry `team` only.
-    const { rawSpec: _rawSpec, brief: _brief, usageState: _usageState, resumeInfo: _resumeInfo, crashed: _crashed, refusedAtShutdown: _refusedAtShutdown, aliveAt: _aliveAt, teamBrief: _teamBrief, ...rest } = entry;
+    const { heldAgent: _heldAgent, rawSpec: _rawSpec, brief: _brief, usageState: _usageState, resumeInfo: _resumeInfo, crashed: _crashed, refusedAtShutdown: _refusedAtShutdown, aliveAt: _aliveAt, teamBrief: _teamBrief, ...rest } = entry;
     return {
       ...rest,
       tools: toolsView({ ...entry, tools: runtimeRun?.tools ?? entry.tools }),
@@ -921,7 +922,7 @@ export function createAssistantDispatcher({
   }
 
   /** `taskClass`: the run's class (its route's, else the spec's); image / video creation needs a model that makes the medium. */
-  function normalizeSpec(spec = {}, { catalogValue = null, taskClass = null } = {}) {
+  function normalizeSpec(spec = {}, { catalogValue = null, taskClass = null, builtin = false } = {}) {
     const provider = String(spec.provider || '').trim().toLowerCase();
     if (!NATIVE_PROVIDERS.has(provider)) throw new DispatchError('INVALID_PROVIDER', `provider must be one of ${[...NATIVE_PROVIDERS].join(', ')}`);
     const task = String(spec.task || '').trim();
@@ -1032,6 +1033,15 @@ export function createAssistantDispatcher({
     }
     // Image / video creation (the router already routed it to a maker; this is the backstop).
     const medium = requiredOutput(taskClass);
+    if (builtin && taskClass === 'computer') {
+      if (!usesComputer) throw new DispatchError('COMPUTER_UNAVAILABLE', 'The bundled desktop operator needs a desktop grant.', { status: 409 });
+      if (designFit(catalogValue, { kind: 'dispatch', provider, model }) !== 'ok') {
+        throw new DispatchError('COMPUTER_NEEDS_VISION', 'The desktop operator needs an available model confirmed to see images.', { status: 409 });
+      }
+    }
+    if (builtin && medium && !catalogValue) {
+      throw new DispatchError('MODEL_CANNOT_GENERATE', `The model catalog is unavailable to confirm ${medium} generation.`, { status: 409 });
+    }
     if (medium && catalogValue) {
       const row = model ? findModel(catalogValue, provider, model)?.row || null : defaultModelRow(catalogValue, provider);
       if (!rowMakes(row, medium)) {
@@ -1504,6 +1514,35 @@ export function createAssistantDispatcher({
     return true;
   }
 
+  function applyRouteAgent(original, input, route, ctx, pinned = null) {
+    // Scope follows the actual worker folder, including team worktrees. Re-read approval
+    // at dispatch: the route may have been proposed before the project or revision was known.
+    const selected = routedAgent(agents, route.taskClass, input.cwd || input.project || PACKAGE_ROOT, route.agentRequest, pinned);
+    if (!selected.resolved) return { input, note: selected.note };
+    const { provider, model, effort, accountId, codexAccountId, claudeAccountId } = input;
+    const spec = selected.resolver.prepare({
+      ...original, provider, model, effort, accountId, codexAccountId, claudeAccountId,
+      taskClass: route.taskClass,
+    }, selected.resolved, { ...ctx, routed: true, classDefault: route.agentRequest ? null : route.taskClass });
+    // An explicit profile was already resolved before routing. A profile inherited from
+    // the role still needs the dispatcher's normal identity check.
+    if (input.moreloginEnvId) {
+      delete spec.moreloginProfile;
+      delete spec.morelogin_profile;
+      Object.assign(spec, { moreloginEnvId: input.moreloginEnvId, moreloginEnvName: input.moreloginEnvName });
+    }
+    return { input: spec, resolved: selected.resolved };
+  }
+
+  function appliedRoute(route, input, note) {
+    const pin = agentPinOf(input);
+    const { agentRef, agentRevision, agentRequest, agentCorrection, ...rest } = route;
+    const requested = agentRefOf(input) || (pin && !pin.classDefault ? pin.requested : agentRequest);
+    return { ...rest, ...(requested ? { agentRequest: requested } : {}),
+      ...(pin ? { agentRef: pin.ref, agentRevision: pin.revision } : {}),
+      corrections: [...(route.corrections || []).filter(c => c.reason !== 'class_agent_unavailable'), ...(note ? [note] : [])] };
+  }
+
   // agents-p4: `team` (lib/teams/brief.js teamBrief) and `runId` are the team scheduler's own (lib/teams/scheduler.js):
   // the slice a run works and the id its claims were taken under. No request body reaches these options.
   async function dispatch(rawSpec = {}, { assistantSessionId = null, origin = 'assistant', brief: carried = null, notes: callerNotes = null, agentOf = null, team = null, runId: givenRunId = null } = {}) {
@@ -1521,7 +1560,9 @@ export function createAssistantDispatcher({
     // agents-p1: the agent the dispatch names (agent_ref) is applied before anything else reads the spec: what the
     // dispatch says itself wins, the definition fills the rest and never widens it (lib/agents/resolve.js). The very
     // same object comes back for a dispatch that names none.
-    rawSpec = agentIntake(agents, rawSpec, { assistantSessionId: sessionId, origin, desktop, resolveExternalTools });
+    const original = rawSpec;
+    const agentContext = { assistantSessionId: sessionId, origin, desktop, resolveExternalTools };
+    rawSpec = agentIntake(agents, rawSpec, agentContext);
     // "true" (a string) is computer use too: normalizeSpec reads it so, and so must the gate.
     rawSpec = { ...rawSpec, usesComputer: rawSpec.usesComputer === true || rawSpec.usesComputer === 'true' };
     // The MoreLogin profile it names for the worker's browser tab, as MoreLogin lists it (refused here when it cannot
@@ -1548,14 +1589,6 @@ export function createAssistantDispatcher({
     // Skills owns the runtime selection and its provider-specific workspace. Never bind Assistant routes.
     if (router && !isSkillsRun(rawSpec) && origin !== 'ui' && sessionId) {
       routed = await router.resolveDispatch({ sessionId, spec: rawSpec, origin, team });
-      // A hold names an open card, but an answer that was already in flight (it waited on the same
-      // catalog read) can decide that card before this continuation runs. Approved for this
-      // session: the dispatch is resolved again with that route_id, so the run starts on it as any
-      // dispatch with an approved route does (its validation, the remote clamps and claim, the
-      // rails). Declined, cancelled or expired: the attachment below fails and it is refused.
-      for (let i = 0; i < 2 && routed?.action === 'hold' && routeApprovedFor(routed.routeId, sessionId); i += 1) {
-        routed = { ...(await router.resolveDispatch({ sessionId, spec: { ...rawSpec, routeId: routed.routeId }, origin, team })), approvedMeanwhile: true };
-      }
     }
     // A remote session's approved route, claimed by resolveDispatch, is used up only by the run it
     // starts: a dispatch refused before its run exists gives the route back, so retrying the route_id
@@ -1564,7 +1597,26 @@ export function createAssistantDispatcher({
     try {
       // An approved route may have moved it to another provider: clamp for that one
       // (a route approved for design brings design's defaults).
-      let input = routed?.spec ? clampRemote(withClassDefaults(routed.spec, knownClass(routed.route?.taskClass)), sessionId, remoteNotes) : rawSpec;
+      let input, agentNote, heldAgent;
+      for (let attempt = 0; ; attempt++) {
+        input = routed?.spec || rawSpec;
+        const route = routed?.route;
+        if (knownClass(route?.taskClass) && !agentPinOf(rawSpec) && !agentRefOf(original) && !agentOf) {
+          const selected = applyRouteAgent(original, input, route, agentContext);
+          input = selected.input.moreloginProfile ? await withBrowserProfile(selected.input) : selected.input;
+          agentNote = selected.note;
+          if (routed.action === 'hold') heldAgent = { input: original, resolved: selected.resolved };
+        }
+        // An in-flight approval may finish during routing or a role's asynchronous profile lookup.
+        // Rebind both the model and the role on the approved route before attaching a waiting run.
+        if (routed?.action !== 'hold' || attempt >= 2 || !routeApprovedFor(routed.routeId, sessionId)) break;
+        routed = { ...(await router.resolveDispatch({ sessionId, spec: { ...rawSpec, routeId: routed.routeId }, origin, team })), approvedMeanwhile: true };
+      }
+      const dispatchRoute = routed?.route;
+      const routeClass = knownClass(dispatchRoute?.taskClass);
+      if (routed?.spec || dispatchRoute) input = clampRemote(withClassDefaults(input, routeClass), sessionId, remoteNotes);
+      if (agentNote) remoteNotes.push(agentNote.text);
+      if (dispatchRoute) routed.route = appliedRoute(dispatchRoute, input, agentNote);
       // UI / callers without an Assistant session bypass the router, but may
       // still ask for Auto. A routed concrete account is never picked again here.
       if (!routed?.route && accountUsage && ['codex', 'claude-code'].includes(input.provider)) {
@@ -1582,8 +1634,12 @@ export function createAssistantDispatcher({
       // A route approved for other work cannot carry image / video creation or design, nor the other way round:
       // the class decides the model's capability check, the worker's media block or rules and what is collected.
       const declaredClass = knownClass(rawSpec.taskClass);
-      const routeClass = knownClass(routed?.route?.taskClass);
-      if (declaredClass && routeClass && runContract(declaredClass) !== runContract(routeClass)) {
+      const pin = agentPinOf(input) || agentOf?.agentPin;
+      const builtin = pin?.source === 'builtin' || !!pin?.classDefault;
+      const classMismatch = builtin && dispatchRoute
+        ? (declaredClass || knownClass(input.taskClass)) !== routeClass
+        : declaredClass && routeClass && runContract(declaredClass) !== runContract(routeClass);
+      if (classMismatch) {
         throw new DispatchError('ROUTE_CLASS_MISMATCH', `Route ${routed.route.routeId || ''} was approved for ${routeClass} work, but this dispatch says task_class "${declaredClass}". Call agent_route with task_class "${declaredClass}" and dispatch with its route_id.`, { status: 409, routeId: routed.route.routeId || null, routeClass, taskClass: declaredClass });
       }
       // The route's spec (a route_id alone can make it a design dispatch, with design's defaults):
@@ -1591,11 +1647,13 @@ export function createAssistantDispatcher({
       if (routed?.spec) refuseBrowserConflict(input);
       // agents-p4: a team's slices start on a route that is approved already; none waits on a card of its own.
       if (team && routed?.action === 'hold') throw new DispatchError('TEAM_ROUTE_REQUIRED', 'A team slice starts on an approved route: route the team\'s task with agent_route first and start the team with that route_id.', { status: 409, routeId: routed.routeId || null });
-      if (routed?.action === 'hold') return holdForRoute(input, routed, { sessionId, origin, idempotencyKey, brief, remoteNotes });
+      if (routed?.action === 'hold') {
+        return holdForRoute(input, routed, { sessionId, origin, idempotencyKey, brief, remoteNotes, agentNote, heldAgent });
+      }
       // The run's class: its route's (the brain may omit task_class with a route_id), else the spec's.
       // Its capability backstop runs in normalizeSpec on the final target, however that was chosen.
       const taskClass = routeClass || knownClass(input.taskClass);
-      const spec = normalizeSpec(input, { catalogValue, taskClass });
+      const spec = normalizeSpec(input, { catalogValue, taskClass, builtin });
       const queuedCount = [...entries.values()].filter((e) => e.state === 'queued' && e.assistantSessionId === sessionId).length;
       if (givenRunId && entries.has(String(givenRunId))) throw new DispatchError('RUN_EXISTS', `Run ${givenRunId} exists already.`, { status: 409 }); // agents-p4
       runId = givenRunId ? String(givenRunId) : randomId();
@@ -1622,7 +1680,7 @@ export function createAssistantDispatcher({
       try { budgetCorrections = await fitBudget(entry, { routed: !!routed?.route }); } catch (error) { entries.delete(runId); throw error; }
       entry.taskId = routed?.route?.taskId || taskAtDispatch(sessionId);
       const launched = await launchOrQueue(entry, spec, { queuedCount, strict: true });
-      const corrections = [...budgetCorrections, ...agentCorrections(input)]; // agents-p1: what the agent's definition was held to
+      const corrections = [...budgetCorrections, ...(agentNote ? [agentNote] : []), ...agentCorrections(input)]; // agents-p1: what the agent's definition was held to
       const withCorrections = corrections.length ? { ...launched, corrections } : launched;
       // The route's own "decided" event (it had no run attached) still tells the brain to dispatch.
       return routed?.approvedMeanwhile
@@ -1705,7 +1763,7 @@ export function createAssistantDispatcher({
   }
 
   /** Accept a dispatch the router is holding for the user's model choice. */
-  function holdForRoute(input, routed, { sessionId, origin, idempotencyKey, brief = null, remoteNotes = [] }) {
+  function holdForRoute(input, routed, { sessionId, origin, idempotencyKey, brief = null, remoteNotes = [], agentNote = null, heldAgent = null }) {
     const task = String(input.task || '').trim();
     if (!task) throw new DispatchError('TASK_REQUIRED', 'task is required');
     if (task.length > 20_000) throw new DispatchError('TASK_TOO_LONG', 'task must be at most 20000 characters');
@@ -1725,6 +1783,7 @@ export function createAssistantDispatcher({
       workflowId: input.workflowId ? String(input.workflowId) : null, parentRunId: input.parentRunId ? String(input.parentRunId) : null,
       usesBrowser: !!input.usesBrowser, usesComputer: input.usesComputer === true, capability: normalizeCapability(input.capability || 'full'),
       idempotencyKey, rawSpec: { ...input }, route: routed.route,
+      ...(heldAgent ? { heldAgent } : {}),
       notes: ['awaiting the user\'s model choice on the route card', ...remoteNotes],
     };
     stampAgentRun(entry, input); // agents-p1
@@ -1751,8 +1810,28 @@ export function createAssistantDispatcher({
     emit(entry, 'route_pending', { routeId: routed.routeId });
     return {
       ok: true, queued: true, awaitingRoute: true, routeId: routed.routeId, run: view(entry),
+      ...(agentNote ? { corrections: [agentNote] } : {}),
       next: 'This run is waiting for the user to pick its model on the route card. Do not dispatch it again. It starts automatically after the pick; the decision arrives as a [SynaBun Mailbox] route_decided event. If the user picks "here" instead, this run never starts and that event asks you to do the task yourself.',
     };
+  }
+
+  function workerForRoutePick(entry, target, agentRequest) {
+    const runtime = { provider: target.provider, model: target.model || null, effort: target.effort ?? null,
+      accountId: target.accountId || null, codexAccountId: null, claudeAccountId: null };
+    if (!entry.heldAgent) return { input: { ...entry.rawSpec, ...runtime } };
+    // Keep the role pinned while the card is open. The final provider can deliver a different
+    // set of external servers, and the owner can select a proposal with a different agent.
+    const original = entry.heldAgent.input;
+    const sameRole = agentRequest === entry.route?.agentRequest;
+    const route = { ...entry.route, agentRequest };
+    const input = { ...original, ...runtime };
+    if (entry.rawSpec?.moreloginEnvId && (sameRole || original.moreloginProfile || original.morelogin_profile || original.moreloginEnvId || original.morelogin_env_id)) {
+      input.moreloginEnvId = entry.rawSpec.moreloginEnvId;
+      input.moreloginEnvName = entry.rawSpec.moreloginEnvName;
+    }
+    const selected = applyRouteAgent(original, input, route, { assistantSessionId: entry.assistantSessionId,
+      origin: entry.origin, desktop, resolveExternalTools }, sameRole ? entry.heldAgent.resolved : null);
+    return { input: withClassDefaults(selected.input, entry.taskClass), route, note: selected.note };
   }
 
   /**
@@ -1762,7 +1841,7 @@ export function createAssistantDispatcher({
    * catalog as it stands: MODEL_CANNOT_SEE, MODEL_UNAVAILABLE) and, for every run, browser
    * settings on that provider (BROWSER_SETTINGS_CONFLICT). Other refusals still come in resolveRoute.
    */
-  function heldRouteRefusal(runId, target) {
+  function heldRouteRefusal(runId, target, { agentRequest } = {}) {
     const entry = entries.get(String(runId || ''));
     if (!entry || entry.state !== 'awaiting_route' || !target?.provider) return null;
     const provider = String(target.provider).trim().toLowerCase();
@@ -1771,25 +1850,45 @@ export function createAssistantDispatcher({
     try { catalogValue = catalog?.peek?.() || null; } catch { catalogValue = null; }
     const refusal = designRefusal(catalogValue, provider, model, entry.taskClass || null);
     if (refusal) return refusal;
+    if (entry.heldAgent) {
+      try {
+        const pick = workerForRoutePick(entry, target, agentRequest);
+        const input = clampRemote(pick.input, entry.assistantSessionId);
+        const pin = agentPinOf(input);
+        normalizeSpec(input, { catalogValue, taskClass: entry.taskClass, builtin: pin?.source === 'builtin' || !!pin?.classDefault });
+        return null;
+      } catch (error) { return error; }
+    }
     const conflict = browserSettingsConflict({ ...(entry.rawSpec || {}), provider, model }, provider);
     return conflict ? new DispatchError('BROWSER_SETTINGS_CONFLICT', conflict, { status: 400 }) : null;
   }
 
   /** The user picked a target for a held run: validate, then start or queue it. */
-  async function resolveRoute(runId, { target, routeId = null, decidedBy = 'user', remembered = false, optionId = null } = {}) {
+  async function resolveRoute(runId, { target, routeId = null, decidedBy = 'user', remembered = false, optionId = null, agentRequest } = {}) {
     const entry = entries.get(runId);
     if (!entry || entry.state !== 'awaiting_route' || !target?.provider) return { ok: false, code: 'NOT_HELD' };
     const catalogValue = await catalogSnapshot();
-    let input = { ...(entry.rawSpec || {}), provider: target.provider, model: target.model || null, effort: target.effort ?? null, accountId: target.accountId || null, codexAccountId: null, claudeAccountId: null };
     let spec;
-    // The picked provider may need another clamp (Codex under strict worker approvals), or the level fell meanwhile.
     const remoteNotes = [];
-    try { input = clampRemote(input, entry.assistantSessionId, remoteNotes); spec = normalizeSpec(input, { catalogValue, taskClass: entry.taskClass || null }); }
+    try {
+      const pick = workerForRoutePick(entry, target, agentRequest);
+      let input = pick.input.moreloginProfile || pick.input.morelogin_profile ? await withBrowserProfile(pick.input) : pick.input;
+      input = clampRemote(input, entry.assistantSessionId, remoteNotes);
+      const pin = entry.heldAgent ? agentPinOf(input) : entry.agentPin;
+      spec = normalizeSpec(input, { catalogValue, taskClass: entry.taskClass || null, builtin: pin?.source === 'builtin' || !!pin?.classDefault });
+      if (pick.route) {
+        if (entry.agentRef && !pin) Object.assign(entry, { agentRef: null, agentRevision: null, agentPin: null });
+        stampAgentRun(entry, input);
+        entry.route = appliedRoute(pick.route, input, pick.note);
+        if (pick.note) remoteNotes.push(pick.note.text);
+      }
+    }
     catch (error) {
       entry.state = 'failed'; entry.completionReason = 'route_invalid'; entry.finishedAt = iso(now()); entry.turnState = 'terminal';
       entry.error = error?.message || String(error);
       entry.notes.push(`route target rejected: ${entry.error}`);
       delete entry.rawSpec;
+      delete entry.heldAgent;
       emit(entry, 'failed');
       return { ok: false, error };
     }
@@ -1800,6 +1899,7 @@ export function createAssistantDispatcher({
       target: describeTarget(target, { catalog: catalogValue }), decidedAt: iso(now()),
     };
     delete entry.rawSpec;
+    delete entry.heldAgent;
     entry.state = 'queued';
     emit(entry, 'route_decided', { routeId });
     try { return await launchOrQueue(entry, spec); }
@@ -1815,6 +1915,7 @@ export function createAssistantDispatcher({
     entry.route = { ...(entry.route || {}), status, decidedBy: reason === 'route_expired' ? 'timeout' : 'user', decidedAt: iso(now()) };
     if (reason === 'route_here') entry.notes.push('the user chose to do this task here, in the conversation: this worker was not started');
     delete entry.rawSpec;
+    delete entry.heldAgent;
     emit(entry, 'stopped');
     return true;
   }
@@ -3747,6 +3848,7 @@ export function createAssistantDispatcher({
       if (index !== -1) queue.splice(index, 1);
       entry.state = 'stopped'; entry.completionReason = reason; entry.finishedAt = iso(now()); entry.turnState = 'terminal';
       delete entry.rawSpec;
+      delete entry.heldAgent;
       if (held) { try { router?.cancelForRun?.(runId, 'run_stopped'); } catch {} }
       emit(entry, 'stopped');
       return { ok: true, run: view(entry) };
@@ -4156,6 +4258,7 @@ export function createAssistantDispatcher({
         pauseWork(entry);
         entry.state = 'interrupted'; entry.completionReason = reason; entry.finishedAt = iso(now()); entry.turnState = 'terminal'; entry.pending = [];
         delete entry.rawSpec;
+        delete entry.heldAgent;
         // What the run's meter can still read is booked now; nothing provisional outlives the process.
         try { finishUsage(entry, live.get(entry.runId) || null); } catch {}
         releaseDesktop(entry);

@@ -487,6 +487,22 @@ function startApp() {
     for (const name of ['maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen', 'enter-html-full-screen', 'leave-html-full-screen', 'focus', 'blur', 'restore']) {
       mainWindow.on(name, sendWindowState);
     }
+    const interfaceFailed = (detail) => {
+      if (quitting || !interfaceTimer) return;
+      clearTimeout(interfaceTimer);
+      interfaceTimer = null;
+      // A pending navigation may still report the previous status URL.
+      mainWindow.webContents.stop();
+      showStatus({ state: 'failed', heading: t('headingFailed'), line: t('failedHint'), detail,
+        actions: [{ id: 'retry', label: t('retry'), primary: true }, { id: 'logs', label: t('openLogs') }] }, { reload: true });
+    };
+    mainWindow.webContents.on('did-start-navigation', (event, legacyUrl, legacyInPlace, legacyMainFrame) => {
+      const { url = legacyUrl, isSameDocument = legacyInPlace, isMainFrame = legacyMainFrame } = typeof legacyUrl === 'object' && legacyUrl ? legacyUrl : event;
+      if (!isMainFrame || isSameDocument) return;
+      clearTimeout(interfaceTimer);
+      interfaceTimer = backend && isBackendUrl(url, backend.port)
+        ? setTimeout(() => interfaceFailed('Interface navigation timed out'), INTERFACE_READY_WAIT_MS * 2) : null;
+    });
     mainWindow.webContents.on('did-finish-load', () => {
       const url = mainWindow.webContents.getURL();
       if (backend && isBackendUrl(url, backend.port)) {
@@ -495,9 +511,9 @@ function startApp() {
         applyOverlay(APP_OVERLAY, 'the interface');
         // Behind the page: the chrome around the app frame, not the status page's black.
         applyBackground(APP_BACKGROUND);
-        if (!revealed) {
+        if (interfaceTimer) {
           clearTimeout(interfaceTimer);
-          interfaceTimer = setTimeout(() => revealMainWindow('the page loaded and said nothing more'), INTERFACE_READY_WAIT_MS);
+          interfaceTimer = setTimeout(() => interfaceFailed('Interface initialization timed out'), INTERFACE_READY_WAIT_MS);
         }
         capture('backend');
         if (updater) mainWindow.webContents.send('synabun:updates:changed', updater.state);
@@ -507,6 +523,7 @@ function startApp() {
       }
     });
     mainWindow.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
+      if (isMainFrame && code !== -3 && backend && isBackendUrl(url, backend.port)) interfaceFailed(description);
       if (isMainFrame && code !== -3) log(`the window could not load ${String(url).slice(0, 160)}: ${description} (${code})`);
     });
     mainWindow.webContents.on('unresponsive', () => log('the window\'s page stopped responding'));
@@ -588,8 +605,6 @@ function startApp() {
    * failure (`beat`) the splash on screen says so for a moment first; one not on screen yet never appears.
    */
   function revealStatusPage(reason, { beat = false } = {}) {
-    clearTimeout(interfaceTimer);
-    interfaceTimer = null;
     const shown = splash?.visible || boot.show;
     if (!revealed) { revealed = true; log(`the window opens on the status page (${reason})`); }
     // Closed by a person during the start: nothing is on screen to say it failed, so a notification does (a click
@@ -644,19 +659,21 @@ function startApp() {
   });
 
   const OPEN_DETAILS = ['failed', 'conflict', 'stopped', 'incomplete'];
-  function showStatus(status) {
+  function showStatus(status, { reload = false } = {}) {
     statusShown = { lang: locale, detailsLabel: t('details'), detailsOpen: firstStart || OPEN_DETAILS.includes(status.state), ...status };
     // The splash follows the start. A start that cannot go on ends on the status page, where the details and the
     // buttons are: the window appears with it (only while the splash covers the start; a window closed to the
     // Dock or the tray stays closed, as before).
     if (OPEN_DETAILS.includes(status.state)) {
+      clearTimeout(interfaceTimer);
+      interfaceTimer = null;
       splashSay({ stage: 'failed' });
       if (!revealed) revealStatusPage(status.state, { beat: true });
     } else if (status.stage) {
       splashSay({ stage: status.stage, version: status.version, progress: status.progress || null });
     }
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    if (isStatusPage(mainWindow.webContents.getURL())) mainWindow.webContents.send('synabun:shell:status', statusShown);
+    if (!reload && isStatusPage(mainWindow.webContents.getURL())) mainWindow.webContents.send('synabun:shell:status', statusShown);
     else { backendShown = false; mainWindow.loadFile(STATUS_PAGE); }
     if (status.state !== lastCapturedState) { lastCapturedState = status.state; capture(`status-${status.state}`); }
   }
@@ -777,11 +794,9 @@ function startApp() {
         // The page the window showed before an update, once; '/' every other time. Behind the splash the window
         // waits for the interface to say it is ready (preload.cjs), and no longer than INTERFACE_READY_WAIT_MS
         // after its page has loaded (or twice that, when the page never says it loaded).
-        if (!revealed) {
-          clearTimeout(interfaceTimer);
-          interfaceTimer = setTimeout(() => revealMainWindow('no answer from the page'), INTERFACE_READY_WAIT_MS * 2);
-        }
-        mainWindow.loadURL(backendUrl(result.port, firstPath));
+        mainWindow.loadURL(backendUrl(result.port, firstPath)).catch(error => {
+          if (error.code !== 'ERR_ABORTED') log(error.message);
+        });
         firstPath = '/';
         const attachedAt = Date.now();
         backend.attachedAt = attachedAt;
@@ -790,6 +805,7 @@ function startApp() {
           // A supervisor that gave up (its record says so) has no server to bring back: the page shows at once,
           // while it still writes its logs.
           supervisorEnded: () => supervisorGaveUp(readSupervisorRecord(join(logsDir, 'supervisor.json')), { supervisorPid: backend?.supervisorPid, since: attachedAt }),
+          onRecovered: () => { if (!quitting && (serverStopped || statusShown?.state === 'failed')) startBackend(); },
           onStopped: () => {
             if (quitting || updater?.state.status === 'installing') return;
             // A crash is started again by the supervisor; this shows when it gave up, and its record says why
@@ -1347,7 +1363,7 @@ function startApp() {
     // The interface is ready to be seen (preload.cjs): the window comes out from behind the splash.
     if (action === 'interface-ready') {
       const reason = ['overlay', 'loaded'].includes(payload?.reason) ? payload.reason : 'page';
-      if (!revealed) revealMainWindow(reason === 'overlay' ? 'the interface finished loading' : 'the page loaded');
+      revealMainWindow(reason === 'overlay' ? 'the interface finished loading' : 'the page loaded');
       return true;
     }
     throw new Error('unknown action');

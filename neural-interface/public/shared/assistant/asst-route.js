@@ -145,6 +145,7 @@ function normalizeRouteOption(o) {
     vision: src.vision === true,
     price: priceOf(src.price),
     contextWindow: num(src.contextWindow),
+    ...(src.agentRef ? { agentRef: str(src.agentRef) } : {}),
     reason: str(src.reason),
     warning: str(src.warning) || null,
     budget: str(src.budget) || null,
@@ -571,6 +572,7 @@ export function routeLineParts(route, phase = 'decided', { brainLabel = '', t = 
     default: decided = r.remembered ? tr('assistant.routes.remembered', 'your saved choice') : '';
   }
   const meta = [];
+  if (kind === 'dispatch' && r.agentRef) meta.push(r.agentRef);
   if (r.plannedSplit?.workers) meta.push(tf(t)('assistant.routes.splitWorkers', '{count} workers planned', { count: r.plannedSplit.workers }));
   const accountLabel = routeDisplayAccount(target, t);
   if (accountLabel) meta.push(accountLabel);
@@ -958,7 +960,7 @@ export function renderRouteCard(container, input, hooks = {}) {
     row.setAttribute('aria-disabled', o.disabled ? 'true' : 'false');
     row.tabIndex = -1;
     const kindWord = o.kind && o.kind !== 'direct' ? routeKindWord(o.kind, hooks.t) : '';
-    const sub = [kindWord, routeDisplayAccount(o, hooks.t), o.effort && o.effort !== 'off' && !o.titleEffort ? routeEffortWord(o.effort) : '', o.price ? priceText(o.price) : '', o.vision ? tr('assistant.brain.vision', 'vision') : '', o.reason].filter(Boolean).join(' · ');
+    const sub = [kindWord, o.agentRef, routeDisplayAccount(o, hooks.t), o.effort && o.effort !== 'off' && !o.titleEffort ? routeEffortWord(o.effort) : '', o.price ? priceText(o.price) : '', o.vision ? tr('assistant.brain.vision', 'vision') : '', o.reason].filter(Boolean).join(' · ');
     row.innerHTML = `
       <span class="asst-route-num" aria-hidden="true">${esc(o.number)}</span>
       <span class="asst-route-opt-icon asst-icon" aria-hidden="true"${o.provider ? ` style="color:${esc(providerColor(o.provider))}"` : ''}>${providerIconHtml(o.provider, hooks)}</span>

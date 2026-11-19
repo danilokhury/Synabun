@@ -3,6 +3,7 @@
   if (globalThis.__synabunBridgeInstalled) return;
   globalThis.__synabunBridgeInstalled = true;
   let generation = crypto.randomUUID().replaceAll('-', ''), documentUrl = location.href;
+  const uploadParts = new Map();
   const refs = new Map(), ids = new WeakMap(); let serial = 0, navigation = null;
   function invalidate() { refs.clear(); generation = crypto.randomUUID().replaceAll('-', ''); documentUrl = location.href; }
   globalThis.addEventListener?.('pageshow', event => { if (event.persisted) invalidate(); });
@@ -153,16 +154,35 @@
     } else if (op === 'upload') {
       if (!el.matches('input[type=file]')) error('NO_MATCH');
       const transfer = new DataTransfer();
-      for (const file of args.files) {
-        const decoded = atob(file.base64); const bytes = Uint8Array.from(decoded, c => c.charCodeAt(0));
-        transfer.items.add(new File([bytes], file.name, { type: 'application/octet-stream' }));
-      }
+      if (!el.multiple && args.files.length > 1) error('UPLOAD_MULTIPLE');
+      const parts = uploadParts.get(args.uploadId);
+      uploadParts.delete(args.uploadId);
+      args.files.forEach((name, index) => {
+        const file = new File(parts?.[index] || [], name, { type: 'application/octet-stream' });
+        if (file.size !== args.sizes[index]) error('OPERATION_FAILED');
+        transfer.items.add(file);
+      });
       due(); el.files = transfer.files; event(el, 'input'); event(el, 'change');
     } else error('UNSUPPORTED_IN_EXTENSION_MODE');
     return state();
   }
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
-    if (sender.id !== chrome.runtime.id || message?.kind !== 'synabun-fixed-command') return;
+    if (sender.id !== chrome.runtime.id) return;
+    if (message?.kind === 'synabun-upload-part') {
+      const { id, index, data, until } = message;
+      if (!(Date.now() < until)) { respond({ ok: false, code: 'TIMEOUT' }); return; }
+      if (!uploadParts.has(id)) {
+        uploadParts.set(id, []);
+        setTimeout(() => uploadParts.delete(id), until - Date.now());
+      }
+      const parts = uploadParts.get(id);
+      const decoded = atob(data);
+      const bytes = new Uint8Array(decoded.length);
+      for (let i = 0; i < decoded.length; i++) bytes[i] = decoded.charCodeAt(i);
+      (parts[index] ||= []).push(bytes);
+      respond({ ok: true }); return;
+    }
+    if (message?.kind !== 'synabun-fixed-command') return;
     execute(message).then(respond, error => respond({ ok: false, code: error.code || 'OPERATION_FAILED' }));
     return true;
   });

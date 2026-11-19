@@ -202,7 +202,7 @@ function refreshChoices(host, ctx, ed) {
     if (busy) {
       if (!input || !made.entries) continue;
       setDropdownItems(input, made.entries);
-      if (made.summary) { const label = el.querySelector('.cc-dropdown-value'); if (label) { label.textContent = made.summary; label.title = made.summary; } }
+      if (made.summary) { const label = el.querySelector('.cc-dropdown-value'); if (label) label.textContent = made.summary; }
       continue;
     }
     const holder = document.createElement('template');

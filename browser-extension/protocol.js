@@ -1,7 +1,7 @@
 // Shared, dependency-free wire contract. Never send credentials or page content to a logger.
 export const VERSION = 1;
 export const MAX_MESSAGE = 4 * 1024 * 1024;
-export const MAX_FILE = 1024 * 1024;
+export const MAX_FILE = 50 * 1024 * 1024;
 export const ID = /^[a-zA-Z0-9_-]{1,128}$/;
 // How long the server waits for the answer to one command (COMMAND_WAIT). Every command carries what is left of that
 // wait when it is sent (`deadline`, relative milliseconds, so the two clocks never have to agree; the HMAC protects it).
@@ -157,9 +157,10 @@ export function command(value) {
       if (!Number.isSafeInteger(v) || v < 0 || v > 1000000) fail('INVALID_MESSAGE');
     } else if (k === 'files') {
       if (!Array.isArray(v) || v.length < 1 || v.length > 4) fail('INVALID_MESSAGE');
-      for (const f of v) {
-        object(f, ['name', 'base64']); string(f.name, 255); string(f.base64, Math.ceil(MAX_FILE / 3) * 4);
-        if (!/^[A-Za-z0-9+/]*={0,2}$/.test(f.base64) || /[\\/]/.test(f.name)) fail('INVALID_MESSAGE');
+      if (value.op !== 'upload') fail('INVALID_MESSAGE');
+      for (const name of v) {
+        string(name, 255);
+        if (!name || /[\\/]/.test(name)) fail('INVALID_MESSAGE');
       }
     } else string(v, k === 'text' || k === 'value' ? 100000 : 8192);
   }
@@ -216,7 +217,12 @@ export const ERROR_TEXT = Object.freeze({
   NAVIGATION_NOT_COMMITTED: 'The navigation did not commit before its deadline: the tab still shows its previous page (the site may still be loading, or the browser dropped the navigation). Nothing was reported as navigated; take a snapshot, then navigate again.',
   SCREENSHOT_PATH_REFUSED: 'The screenshot path is outside the allowed output locations or is protected.',
   NO_MATCH: 'No element matches the target.', AMBIGUOUS_TARGET: 'The selector must match one element or specify nthMatch.',
-  PERMISSION_REQUIRED: 'Enable this feature in the extension popup first (downloads; in restricted mode also agent-created tabs and uploads).', OPERATION_FAILED: 'The browser refused this operation.',
+  UPLOAD_RELOAD_REQUIRED: 'Reload the updated SynaBun Browser Bridge extension to upload files.',
+  UPLOAD_FILE_MISSING: 'File not found in the extension upload folder.',
+  UPLOAD_TOO_LARGE: 'The selected files exceed the 50 MB total upload limit.',
+  UPLOAD_FILE_REFUSED: 'Choose readable regular files inside the extension upload folder shown in Settings → Browser.',
+  UPLOAD_MULTIPLE: 'This file input accepts only one file.',
+  PERMISSION_REQUIRED: 'Enable this feature in the extension popup first (downloads; in restricted mode also agent-created tabs).', OPERATION_FAILED: 'The browser refused this operation.',
   TIMEOUT: 'The operation timed out. Its outcome may be uncertain; observe before retrying.',
   CANCELLED: 'An approval was revoked or the connection ended while this command was pending. It was stopped before its next browser action; one already under way may have happened, so observe before retrying.',
 });

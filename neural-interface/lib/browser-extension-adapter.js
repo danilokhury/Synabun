@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { basename, resolve } from 'node:path';
+import { basename, isAbsolute, resolve } from 'node:path';
 import { readConfinedFile } from './confined-fs.js';
 import { fileURLToPath } from 'node:url';
 import { fail, handle, HISTORY, MAX_FILE, safeError } from '../../browser-extension/protocol.js';
@@ -122,18 +122,24 @@ export function createExtensionAdapter({ bridge, sessions, uploadRoot, caller, o
     for (const owner of [...s._tabOwners.keys()]) await release(id, owner);
     sessions.delete(id); if (sessionId === id) sessionId = null;
   }
-  async function files(paths) {
-    if (!Array.isArray(paths) || !paths.length || paths.length > 4) fail('INVALID_MESSAGE');
-    const result = []; let size = 0;
-    for (const path of paths) {
-      if (typeof path !== 'string') fail('INVALID_MESSAGE');
-      let bytes;
-      try { bytes = readConfinedFile(uploadRoot, resolve(path), { maxBytes: MAX_FILE - size }); }
-      catch (error) { fail(error.status === 413 ? 'MESSAGE_TOO_LARGE' : 'PERMISSION_REQUIRED'); }
-      size += bytes.length;
-      result.push({ name: basename(path), base64: bytes.toString('base64') });
-    }
-    return result;
+  function uploadFiles(paths) {
+    if (!Array.isArray(paths) || !paths.length || paths.length > 4 ||
+        paths.some(path => typeof path !== 'string' || !isAbsolute(path))) fail('INVALID_MESSAGE');
+    let remaining = MAX_FILE;
+    return {
+      names: paths.map(path => basename(path)),
+      read(index) {
+        try {
+          const bytes = readConfinedFile(uploadRoot, resolve(paths[index]), { maxBytes: remaining });
+          remaining -= bytes.length;
+          return bytes;
+        } catch (error) {
+          if (error.status === 404) fail('UPLOAD_FILE_MISSING');
+          if (error.status === 413) fail('UPLOAD_TOO_LARGE');
+          fail('UPLOAD_FILE_REFUSED');
+        }
+      },
+    };
   }
   async function operation(s, owner, tab, action, body = {}) {
     if (!bridge.status().connected) fail('EXTENSION_NOT_CONNECTED');
@@ -157,10 +163,13 @@ export function createExtensionAdapter({ bridge, sessions, uploadRoot, caller, o
     }
     const args = {};
     for (const k of argumentKeys) if (body[k] !== undefined && body[k] !== null) args[k] = ['nthMatch', 'distance', 'maxChars', 'offset', 'timeout'].includes(k) ? Number(body[k]) : body[k];
+    let upload;
     if (op === 'upload') {
-      bridge.authorize(op, tab, agent(owner), args); args.files = await files(body.filePaths);
+      bridge.authorize(op, tab, agent(owner), args);
+      upload = uploadFiles(body.filePaths);
+      args.files = upload.names;
     }
-    const result = finish(s, tab, await bridge.request(op, tab, agent(owner), args));
+    const result = finish(s, tab, await bridge.request(op, tab, agent(owner), args, upload));
     if (op === 'wait' && result.ok) result.state = body.state || 'visible';
     if (op === 'screenshot' && result.ok) {
       const raw = Buffer.from(result.base64, 'base64'), meta = await sharp(raw).metadata();

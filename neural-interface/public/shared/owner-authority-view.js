@@ -6,9 +6,8 @@
 // the connection (lib/peer-identity.js). When it cannot look that process up (netstat or ps missing, denied because
 // the server was started inside a sandbox, slow past its cap), it proves nothing about who is asking and pauses the
 // owner's actions: no page secret, and the owner's writes, reads and sockets answer 503 PEER_UNAVAILABLE. GET
-// /api/health says so (`ownerAuthority: { state: 'degraded', reason, retryable, since }`), and so does every 503
-// PEER_UNAVAILABLE a request of the page gets (public/shared/page-session.js turns it into the
-// `synabun:peer-unavailable` event). This module decides the words of the banner; ui-owner-authority.js asks the
+// /api/health says so (`ownerAuthority: { state: 'degraded', reason, retryable, since }`). A request refused with
+// PEER_UNAVAILABLE prompts the page to check health. This module decides the words of the banner; ui-owner-authority.js asks the
 // server, listens and draws them. `unsupported` (Windows, Linux) and `off` (SYNABUN_PEER_IDENTITY=off) show nothing:
 // there the rules from before apply and nothing is paused.
 //
@@ -27,7 +26,7 @@ export const OWNER_AUTHORITY_NOTICE_COPY = Object.freeze({
 });
 
 /** The states GET /api/health can name (lib/peer-identity.js authorityState). */
-export const OWNER_AUTHORITY_STATES = Object.freeze(['ok', 'degraded', 'unsupported', 'off']);
+export const OWNER_AUTHORITY_STATES = Object.freeze(['pending', 'ok', 'degraded', 'unsupported', 'off']);
 /** The longest reason the banner shows (the server's reasons are short; a longer one is cut). */
 export const REASON_MAX = 200;
 
@@ -58,13 +57,8 @@ export function readOwnerAuthority(health) {
   };
 }
 
-/** The state a 503 PEER_UNAVAILABLE answer stands for (the event's detail, or the answer's body). */
-export function unavailableAuthority(detail) {
-  return { state: 'degraded', reason: cleanReason(detail?.reason) || null, retryable: detail?.retryable === true, since: null };
-}
-
 /**
- * What the banner shows for a state, or null when it shows nothing (ok, unsupported, off, nothing known).
+ * What the banner shows for a state, or null when it shows nothing (pending, ok, unsupported, off, nothing known).
  * `t(key, params)` is the page's translator for `ownerAuthorityNotice.*` (English by default).
  * → { key, label, title, body, reason, hint, actions: [{ id: 'reload'|'dismiss', label }] }. `key` is what a
  * dismissal is remembered by: the same outage stays dismissed, a new reason shows again.

@@ -28,7 +28,7 @@ import { cliInstallText, setCliInstallTranslator } from './cli-install-view.js';
 import { dropdownHTML, wireDropdowns, setDropdownItems, setDropdownValue } from './cc-dropdown.js';
 import { PROXY_TYPES, isLocalProfile, proxySummary, defaultCreateWhere, isPlanLimit, formOfProfile, readLocalProfileForm, proxyOfForm, createAction, whereOptions, passwordNeededAgain } from './settings/settings-local-profiles.js';
 import { startLimitNotes, closedOutsideNotes } from './settings/settings-morelogin-cooldown.js';
-import { AI_BROWSER_EVENT, aiBrowserOf, aiBrowserOfStatus, localConnectModeOf, browserSaveFields, switchRequest, pickRequest, aiBrowserLine, profileOf, aiBrowserDetail } from './settings/settings-ai-browser.js';
+import { AI_BROWSER_EVENT, LOCAL_CONNECT_OPTIONS, LOCAL_DEFAULT_MODE, aiBrowserOf, aiBrowserOfStatus, localConnectModeOf, browserSaveFields, switchRequest, pickRequest, aiBrowserLine, profileOf, aiBrowserDetail } from './settings/settings-ai-browser.js';
 import { IFACE_DEFAULTS, loadIfaceConfig, saveIfaceConfig, applyIfaceConfig, restoreInterfaceConfig, loadSkinStylesheet, removeSkinStylesheet, restoreSkin, setSkinsTabRefresher } from './iface-config.js';
 // The interface config and the skin, for the modules that import them from here.
 export { loadIfaceConfig, saveIfaceConfig, applyIfaceConfig, restoreInterfaceConfig, restoreSkin };
@@ -654,7 +654,7 @@ function buildBrowserTab(ownerAccess = null) {
           id: 'bcg-profiles', section: 'browser.browser_profiles',
           body: `
           <input type="hidden" id="bc-userDataDir" value="">
-          ${kit.field('BRW011', `${dd('BRW011', 'bc-connectMode', 'connect', ['mirror', 'attach', 'extension'])}
+          ${kit.field('BRW011', `${dd('BRW011', 'bc-connectMode', 'connect', LOCAL_CONNECT_OPTIONS)}
             <div class="stg-help" id="bc-connectMode-ai-note" style="display:none">${b('aiBrowser.connectionNote')}</div>`)}
           ${extensionSettingsHTML(kit)}
           ${kit.field('BRW012', dd('BRW012', 'bc-attachSeed', 'seed', ['real', 'fresh']), { attrs: 'id="bc-attachSeed-row" style="display:none"' })}
@@ -6357,6 +6357,9 @@ async function openSettingsModalNow(options = {}) {
         const label = dd.querySelector('.cc-dropdown-value');
         const menu = dd.querySelector('.cc-dropdown-menu');
         if (!menu) return;
+        if (label && hiddenId === 'bc-connectMode' && val === LOCAL_DEFAULT_MODE) {
+          label.textContent = kit.tx('settings.redesign.browser.opt.connect.mirror');
+        }
         menu.querySelectorAll('.cc-dropdown-item').forEach(item => {
           const isMatch = item.dataset.value === val;
           item.classList.toggle('active', isMatch);
@@ -7094,6 +7097,11 @@ async function openSettingsModalNow(options = {}) {
         setVal('bc-screencastEveryNthFrame', cfg.screencast.everyNthFrame ?? 1);
       }
     }
+
+    // Keep the local default in the form until the saved config arrives.
+    const connectModeInput = overlay.querySelector('#bc-connectMode');
+    if (connectModeInput) connectModeInput.value = LOCAL_DEFAULT_MODE;
+    syncBcDropdowns();
 
     // Load config on open, then auto-detect profiles. A refused read (no owner access) is "No access", never defaults.
     fetch('/api/browser/config').then(async (r) => {

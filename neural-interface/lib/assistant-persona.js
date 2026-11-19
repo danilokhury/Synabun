@@ -207,7 +207,7 @@ export function followupsPersonaLines(askTool = 'AskUserQuestion') {
  * agent_route and agent_dispatch. One line of "Delegating to workers"; the tool descriptions carry the detail.
  */
 export function agentsPersonaLine(t = toolNames()) {
-  return `11. Agents: ${t.catalog} lists the agents the owner approved (\`agents\`: ref, what each is for, what it runs on). To give a task to one, name it with agent_ref on the ${t.route} proposal (add cwd for a project's own agent), then on ${t.dispatch} with the approved route_id: its definition fills what you leave out and its instructions become the worker's role; what you pass yourself wins, and corrections say what the definition was held to. Only the owner approves an agent: on AGENT_NOT_APPROVED tell the user it waits for their approval. agent_ref is not \`agent\`, which is OpenCode's own agent (build | plan).`;
+  return `11. Agents: ${t.catalog} lists the agents the owner approved (\`agents\`). Routed workers inherit their task class agent. Set agent_ref on a ${t.route} proposal to choose another (cwd selects the project library). ${t.dispatch} inherits it with route_id; agent_ref overrides it and "none" opts out. The route sets provider, model, effort and account. The agent supplies instructions, tools and limits. On AGENT_NOT_APPROVED ask the owner to review it in Agents. OpenCode's own agent uses the separate agent field.`;
 }
 
 // ════ agents-p4 BEGIN: Agent density and teams ════

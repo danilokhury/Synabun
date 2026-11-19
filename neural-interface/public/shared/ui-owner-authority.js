@@ -5,12 +5,9 @@
 // When the server cannot identify the program calling it (macOS, lib/peer-identity.js: netstat or ps missing,
 // denied, slow past their cap), it pauses the owner's actions (503 PEER_UNAVAILABLE). This banner says so, with the
 // reason and Reload to retry, in the update toast's glass at the top centre of the page (styles.css .owner-authority-notice):
-// non-modal, nothing behind it is blocked. It shows when
-//   • GET /api/health says `ownerAuthority.state: 'degraded'` (asked when the page starts and every time the sync
-//     socket connects: a page that was open through a restart is not reloaded), or
-//   • a request of the page got 503 PEER_UNAVAILABLE (public/shared/page-session.js dispatches
-//     `synabun:peer-unavailable` on the window).
-// While it shows, /api/health is asked again now and then, and the banner goes once the state is ok again (the
+// non-modal, nothing behind it is blocked. Only GET /api/health can report a degraded verifier. The page checks
+// at startup, on sync reconnect and when any request gets 503 PEER_UNAVAILABLE (including socket-specific failures).
+// While verification is pending or the banner shows, the page rechecks health. The banner goes on recovery (the
 // page's next write then gets this boot's page secret by itself). Dismiss hides it until another reason comes. Never
 // on an invite guest's page (the owner's authority is not a guest's concern). What it says is
 // owner-authority-view.js (DOM-free, tested under node).
@@ -19,11 +16,11 @@ import { on } from './state.js';
 import { t } from './i18n.js';
 import { isGuest } from './ui-sync.js';
 import { PEER_UNAVAILABLE_EVENT } from './page-session.js';
-import { ownerAuthorityNoticeView, readOwnerAuthority, unavailableAuthority } from './owner-authority-view.js';
+import { ownerAuthorityNoticeView, readOwnerAuthority } from './owner-authority-view.js';
 
 const HEALTH_URL = '/api/health';
 const NOTICE_ID = 'owner-authority-notice';
-/** How often /api/health is asked again while the banner shows. */
+/** How often to check pending verification or a visible outage. */
 export const RECHECK_MS = 15_000;
 
 const translate = (key, params) => t(`ownerAuthorityNotice.${key}`, params);
@@ -31,6 +28,8 @@ const translate = (key, params) => t(`ownerAuthorityNotice.${key}`, params);
 let _wired = false;
 let _guest = false;
 let _asking = null;
+let _checkAgain = false;
+let _loadingWatch = null;
 let _current = null;   // { key, el }
 let _dismissed = null; // the key this page dismissed
 let _recheck = null;
@@ -52,6 +51,8 @@ function startRecheck() {
 
 function hide() {
   stopRecheck();
+  _loadingWatch?.disconnect();
+  _loadingWatch = null;
   const current = _current;
   _current = null;
   if (!current) return;
@@ -66,9 +67,11 @@ function whenPageShown(run) {
   const watch = new MutationObserver(() => {
     if (!overlay.classList.contains('hidden')) return;
     watch.disconnect();
+    _loadingWatch = null;
     run();
   });
   watch.observe(overlay, { attributes: true, attributeFilter: ['class'] });
+  _loadingWatch = watch;
 }
 
 function draw(view) {
@@ -98,9 +101,8 @@ function draw(view) {
     });
   });
   document.body.appendChild(el);
-  requestAnimationFrame(() => el.classList.add('show'));
   _current = { key: view.key, el };
-  startRecheck();
+  requestAnimationFrame(() => { if (_current?.el === el) el.classList.add('show'); });
 }
 
 /** Reload to retry: the page asks for everything again, the page secret included (a lookup that works hands it out). */
@@ -116,10 +118,18 @@ function dismiss(key) {
 /** Show the banner for this owner authority (or none): never on a guest's page, never one this page dismissed. */
 export function presentOwnerAuthority(authority) {
   const view = ownerAuthorityNoticeView(authority, { t: translate });
-  if (!view || guestPage()) { hide(); if (!view) _dismissed = null; return null; }
+  if (!view || guestPage()) {
+    hide();
+    if (!view) _dismissed = null;
+    if (authority?.state === 'pending' && !guestPage()) startRecheck();
+    return null;
+  }
   // A banner something else took off the page is drawn again.
   if (_current && !_current.el.isConnected) _current = null;
-  if (_dismissed === view.key) return null;
+  if (_dismissed === view.key) { hide(); return null; }
+  _loadingWatch?.disconnect();
+  _loadingWatch = null;
+  startRecheck();
   if (_current?.key === view.key) return view;
   whenPageShown(() => {
     if (guestPage() || _dismissed === view.key || _current?.key === view.key) return;
@@ -129,19 +139,30 @@ export function presentOwnerAuthority(authority) {
 }
 
 /** Ask GET /api/health; an older server (no `ownerAuthority`) or a failed request changes nothing. */
-export function checkOwnerAuthority() {
+export function checkOwnerAuthority({ fresh = false } = {}) {
   if (guestPage()) return Promise.resolve(null);
-  if (_asking) return _asking;
+  if (_asking) {
+    if (fresh) _checkAgain = true;
+    return _asking;
+  }
   _asking = (async () => {
-    try {
-      const res = await fetch(HEALTH_URL, { headers: { Accept: 'application/json' }, cache: 'no-store' });
-      if (!res.ok) return null;
-      const authority = readOwnerAuthority(await res.json());
-      if (authority) presentOwnerAuthority(authority);
-      return authority;
-    } catch {
-      return null;
-    }
+    let authority;
+    let previousState;
+    do {
+      _checkAgain = false;
+      authority = null;
+      try {
+        const res = await fetch(HEALTH_URL, { headers: { Accept: 'application/json' }, cache: 'no-store' });
+        if (res.ok) authority = readOwnerAuthority(await res.json());
+      } catch { /* keep the last confirmed state */ }
+      // A refusal or reconnect during this read merits a fresh sample. Two matching
+      // samples can already be shown, even if refusals arrive faster than health replies.
+      if (authority && !guestPage() && (!_checkAgain || authority.state === previousState)) {
+        presentOwnerAuthority(authority);
+      }
+      previousState = authority?.state;
+    } while (_checkAgain && !guestPage());
+    return authority;
   })().finally(() => { _asking = null; });
   return _asking;
 }
@@ -153,10 +174,12 @@ export function initOwnerAuthorityNotice() {
   on('session:info', (info) => {
     _guest = !!info?.isGuest;
     if (_guest) hide();
-    else checkOwnerAuthority();
+    else checkOwnerAuthority({ fresh: true });
   });
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-    window.addEventListener(PEER_UNAVAILABLE_EVENT, (event) => { presentOwnerAuthority(unavailableAuthority(event?.detail)); });
+    window.addEventListener(PEER_UNAVAILABLE_EVENT, (event) => {
+      if (event?.detail?.url !== HEALTH_URL) checkOwnerAuthority({ fresh: true });
+    });
   }
   checkOwnerAuthority();
 }

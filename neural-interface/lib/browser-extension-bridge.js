@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { createHash, randomBytes } from 'node:crypto';
 import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { compareVersions } from './browser-extension-folder.js';
 import { dirname } from 'node:path';
 import { lookup } from 'node:dns/promises';
 import { WebSocketServer } from 'ws';
@@ -174,7 +175,25 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
   async function start() {
     if (listening) return listening;
     listening = new Promise((resolve, reject) => {
-      server = createServer((_req, res) => { res.writeHead(404); res.end(); });
+      // An upload command id doubles as a short-lived capability. Only the paired extension
+      // receives it. Each file can be read once, in order, while its command is authorized.
+      server = createServer((req, res) => {
+        const match = /^Bearer ([a-f0-9]{32})$/.exec(req.headers.authorization || '');
+        const p = match && pending.get(match[1]);
+        if (!p?.upload || req.method !== 'POST' || req.url !== '/upload/' + p.nextFile ||
+            p.nextFile >= p.args.files.length || req.headers.origin !== `chrome-extension://${EXTENSION_ID}` ||
+            req.headers.host !== `127.0.0.1:${server.address()?.port}` ||
+            p.issued !== revocations || clock() >= p.expires) {
+          res.writeHead(404).end(); return;
+        }
+        try {
+          authorize('upload', p.tab, p.owner, p.args);
+          const bytes = p.upload.read(p.nextFile++);
+          res.writeHead(200, { 'Cache-Control': 'no-store', 'Content-Type': 'application/octet-stream', 'Content-Length': bytes.length }).end(bytes);
+        } catch (error) {
+          res.writeHead(400, { 'Cache-Control': 'no-store' }).end(safeError(error).code);
+        }
+      });
       wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE, perMessageDeflate: false });
       server.on('upgrade', (req, socket, head) => {
         if (req.socket.remoteAddress !== '127.0.0.1' || req.headers.origin !== `chrome-extension://${EXTENSION_ID}` || req.url !== '/bridge'
@@ -274,6 +293,10 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
     });
   }
   function authorize(op, tab, owner, args = {}) {
+    authorizeAccess(op, tab, owner, args);
+    if (op === 'upload' && compareVersions(peer.version, '1.3.0') < 0) fail('UPLOAD_RELOAD_REQUIRED');
+  }
+  function authorizeAccess(op, tab, owner, args) {
     if (!enabled || !peer || peer.ws.readyState !== 1) fail('EXTENSION_NOT_CONNECTED');
     // The peer must hold the credential that is current now, admitted in the current generation: a replaced credential
     // is refused even before it would have expired.
@@ -296,9 +319,9 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
     if (t.url !== 'about:blank' && !state.sites.includes(publicOrigin(t.url))) fail('SITE_NOT_APPROVED');
     if (t.url === 'about:blank' && op !== 'navigate' && !HISTORY.includes(op)) fail('SITE_NOT_APPROVED');
     if (args.url && !state.sites.includes(publicOrigin(args.url))) fail('SITE_NOT_APPROVED');
-    if (op === 'upload' && !state.uploads || op === 'download' && !state.downloads) fail('PERMISSION_REQUIRED');
+    if (op === 'download' && !state.downloads) fail('PERMISSION_REQUIRED');
   }
-  async function request(op, tab, owner, args = {}) {
+  async function request(op, tab, owner, args = {}, upload) {
     // The revocation generation this command was issued in; an owner revocation that begins later cancels it.
     const issued = revocations, stale = () => !CONTROL.includes(op) && issued !== revocations;
     if (pending.size >= 32) fail('TIMEOUT');
@@ -325,7 +348,7 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
           pending.delete(msg.id); reject(Object.assign(new Error('TIMEOUT'), { code: 'TIMEOUT' }));
           if (peer === via && via.ws.readyState === 1) void via.send({ type: 'cancel', id: msg.id }).catch(() => {});
         }, commandWait);
-        pending.set(msg.id, { resolve, reject, timer, op, tab, owner, args, issued, expires: clock() + commandWait });
+        pending.set(msg.id, { resolve, reject, timer, op, tab, owner, args, upload, nextFile: 0, issued, expires: clock() + commandWait });
         via.send(msg).catch(error => { clearTimeout(timer); pending.delete(msg.id); reject(['CANCELLED', 'TIMEOUT'].includes(error?.code) ? coded(error.code)() : notConnected()); });
       });
       if (HISTORY.includes(op) && result.ok) {

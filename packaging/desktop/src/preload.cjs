@@ -81,7 +81,7 @@ function watchInterfaceReady(say) {
     observer.observe(overlay, { attributes: true, attributeFilter: ['class'] });
   };
   const start = () => {
-    if (!interfacePage) {
+    if (!interfacePage || document.body.hasAttribute('data-synabun-offline')) {
       if (document.readyState === 'complete') ready('loaded');
       else window.addEventListener('load', () => ready('loaded'), { once: true });
       return;

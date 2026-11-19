@@ -101,7 +101,7 @@ export function popupView(result, { paired = null, t = key => key } = {}) {
     showShared: ok && live && !full,
     sites: ok && Array.isArray(result.sites) ? result.sites.slice() : [],
     waiting: tabs.filter(tab => tab && !tab.owner).map(tab => ({ handle: tab.handle, title: String(tab.title || '').trim() || t('untitledTab'), address: displayUrl(tab.url) })),
-    options: { allowNewTabs: ok && result.allowNewTabs === true, uploads: ok && result.uploads === true, downloads: ok && result.downloads === true },
+    options: { allowNewTabs: ok && result.allowNewTabs === true, downloads: ok && result.downloads === true },
     port: ok && Number.isInteger(result.port) ? result.port : 3345,
     // Disconnect (pause) while paired and not already paused; Reconnect is the status action when paused.
     canDisconnect: isPaired && state !== 'disconnected',

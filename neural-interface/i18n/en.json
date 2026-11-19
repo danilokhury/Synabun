@@ -9152,6 +9152,8 @@
     }
   },
   "agentsStudio": {
+    "builtin": "Built-in",
+    "builtinHelp": "Customize this agent by saving an owner revision.",
     "nativeExport": {
       "action": "Export to host",
       "title": "Export {name} to a host",
@@ -14545,7 +14547,7 @@
       "unsupportedHelp": "{browser} can’t run the extension. Open the setup in another installed Chromium browser below; your default browser won’t change.",
       "setupAgainTitle": "Setup",
       "setupAgainHelp": "Run the guided setup again for another browser or profile, or when the extension no longer connects. The extension pairs by itself; no code to type.",
-      "uploadHelp": "Up to 1 MB in total per upload command. Full control allows uploads; restricted mode requires Allow uploads in the extension popup.",
+      "uploadHelp": "Up to 50 MB in total per upload command.",
       "manualPairHelp": "Only if automatic pairing isn’t possible: start pairing here, then enter the code and port in the extension popup under Pair with a code.",
       "stopSharing": "Stop sharing",
       "stopSharingLabel": "Stop sharing {title}",

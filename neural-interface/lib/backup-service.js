@@ -5,7 +5,6 @@ import {
   constants as FS_CONSTANTS,
   createReadStream,
   existsSync,
-  lstatSync,
   mkdtempSync,
   mkdirSync,
   openSync,
@@ -28,6 +27,7 @@ import { Worker } from 'node:worker_threads';
 import archiver from 'archiver';
 import { openZipArchive, readZipEntry, verifyBackupChecksums } from './backup-zip-reader.js';
 import { writeZipArchive } from './backup-zip-writer.js';
+import { hashFileSync, walkDataHomeTree } from '../../lib/data-home-files.js';
 import { LOCK_FILE_NAME } from './rulesets/lock.js';
 
 export const BACKUP_MANIFEST_VERSION = 3;
@@ -304,33 +304,26 @@ export function assertBackupDestinationMounted(folderPath, options) {
   if (missing) throw new BackupDestinationUnavailableError({ ...missing, folderPath });
 }
 
-function collectFiles(root, archiveRoot, { filter = () => true } = {}) {
-  const files = [];
-  function walk(current) {
-    if (!existsSync(current)) return;
-    let stat;
-    try { stat = lstatSync(current); }
-    catch (error) {
-      if (error?.code === 'ENOENT') return;
-      throw error;
+// De-duplicate as files are discovered. Later additional entries take precedence,
+// as before, without constructing an argument list or a second subtree listing.
+function collectBackupFiles(dataHome, filters, additionalEntries) {
+  const entries = new Map();
+  const add = (diskPath, archivePath) => entries.set(archivePath.replace(/\\/g, '/'), { diskPath, archivePath });
+  const envPath = resolve(dataHome, '.env');
+  if (existsSync(envPath)) add(envPath, 'env.bak');
+
+  function collect(root, archiveRoot, filter) {
+    for (const { path, stat } of walkDataHomeTree(root)) {
+      if (!stat.isFile()) continue;
+      const rel = relative(root, path).replace(/\\/g, '/');
+      if (!filter || filter(rel)) add(path, rel ? `${archiveRoot}/${rel}` : archiveRoot);
     }
-    if (stat.isSymbolicLink()) return;
-    if (stat.isFile()) {
-      const rel = relative(root, current).replace(/\\/g, '/');
-      if (filter(rel, current)) files.push({ diskPath: current, archivePath: `${archiveRoot}/${rel}` });
-      return;
-    }
-    if (!stat.isDirectory()) return;
-    let entries;
-    try { entries = readdirSync(current).sort(); }
-    catch (error) {
-      if (error?.code === 'ENOENT') return;
-      throw error;
-    }
-    for (const entry of entries) walk(join(current, entry));
   }
-  walk(root);
-  return files;
+  for (const dir of BACKUP_DATA_DIRS) collect(resolve(dataHome, dir), dir, filters[dir]);
+  for (const entry of additionalEntries) {
+    if (entry?.diskPath && entry?.archivePath) collect(entry.diskPath, entry.archivePath);
+  }
+  return Array.from(entries.values());
 }
 
 function backupFileSize(file) {
@@ -366,13 +359,15 @@ export function assertBackupWorkingSpace({
   getAvailableBytes = backupAvailableBytes,
 } = {}) {
   const primaryDatabaseBytes = databasePath && existsSync(databasePath) ? statSync(databasePath).size : 0;
-  const inputBytes = files.reduce((sum, file) => sum + backupFileSize(file), primaryDatabaseBytes);
-  const stagedMutableBytes = files
-    .filter(isMutableBackupInput)
-    .reduce((sum, file) => sum + backupFileSize(file), 0);
-  const sqliteSnapshotBytes = files
-    .filter(isSqliteBackupInput)
-    .reduce((sum, file) => sum + backupFileSize(file), primaryDatabaseBytes);
+  let inputBytes = primaryDatabaseBytes;
+  let stagedMutableBytes = 0;
+  let sqliteSnapshotBytes = primaryDatabaseBytes;
+  for (const file of files) {
+    const size = backupFileSize(file);
+    inputBytes += size;
+    if (isSqliteBackupInput(file)) sqliteSnapshotBytes += size;
+    else if (isMutableBackupInput(file)) stagedMutableBytes += size;
+  }
   const archiveBytes = Math.max(Number(expectedArchiveBytes) || 0, inputBytes);
   const requiredBytes = Math.max(0, Number(freeSpaceReserveBytes) || 0)
     + stagedMutableBytes
@@ -446,39 +441,38 @@ function snapshotMutableBackupFiles(files, folderPath) {
   }
 }
 
-function normalizeAdditionalEntries(entries = []) {
-  const result = [];
-  for (const entry of entries) {
-    if (!entry?.diskPath || !entry?.archivePath || !existsSync(entry.diskPath)) continue;
-    let stat;
-    try { stat = lstatSync(entry.diskPath); }
-    catch (error) {
-      if (error?.code === 'ENOENT') continue;
-      throw error;
-    }
-    if (stat.isSymbolicLink()) continue;
-    if (stat.isDirectory()) result.push(...collectFiles(entry.diskPath, entry.archivePath));
-    else if (stat.isFile()) result.push({ diskPath: entry.diskPath, archivePath: entry.archivePath });
-  }
-  return result;
-}
-
 async function writeArchive({ tempPath, files, manifest, level = 6 }) {
   const { createWriteStream } = await import('node:fs');
   await new Promise((resolveWrite, reject) => {
     const output = createWriteStream(tempPath, { flags: 'wx' });
     const archive = archiver('zip', { zlib: { level } });
-    output.on('close', resolveWrite);
-    output.on('error', reject);
-    archive.on('warning', error => error.code === 'ENOENT' ? null : reject(error));
-    archive.on('error', reject);
-    archive.pipe(output);
-    for (const file of files) {
+    const remaining = files.values();
+    let failure;
+    function fail(error) {
+      if (failure) return;
+      failure = error;
+      archive.abort();
+      output.destroy();
+    }
+    // Archiver queues a stat and a lazy stream for each file handed to it.
+    // Feed one member after the preceding entry has finished.
+    function appendNext() {
+      const next = remaining.next();
+      if (next.done) {
+        archive.finalize().catch(fail);
+        return;
+      }
+      const file = next.value;
       const store = INCOMPRESSIBLE_EXTENSIONS.has(extname(file.archivePath).toLowerCase());
       archive.file(file.diskPath, { name: `${BACKUP_PREFIX}/${file.archivePath}`, store });
     }
+    output.on('close', () => failure ? reject(failure) : resolveWrite());
+    output.on('error', fail);
+    archive.on('warning', error => error.code === 'ENOENT' ? appendNext() : fail(error));
+    archive.on('error', fail);
+    archive.on('entry', appendNext);
+    archive.pipe(output);
     archive.append(JSON.stringify(manifest, null, 2), { name: `${BACKUP_PREFIX}/manifest.json` });
-    archive.finalize().catch(reject);
   });
 }
 
@@ -547,9 +541,6 @@ export async function createVerifiedBackup({
   let sqliteSnapshot = null;
   let stageDir = null;
   try {
-    const files = [];
-    const envPath = resolve(dataHome, '.env');
-    if (existsSync(envPath)) files.push({ diskPath: envPath, archivePath: 'env.bak' });
     // BACKUP_DATA_DIRS is the list other modules read (backupRoots): every folder copied here is on it.
     const dataDirFilters = {
       data: rel => !shouldSkipDataPath(rel),
@@ -558,27 +549,19 @@ export async function createVerifiedBackup({
         && !/^memory\.db(?:-wal|-shm)?$/i.test(rel)
         && !/\.db-(?:wal|shm)$/i.test(rel),
     };
-    for (const dir of BACKUP_DATA_DIRS) files.push(...collectFiles(resolve(dataHome, dir), dir, { filter: dataDirFilters[dir] }));
-    files.push(...normalizeAdditionalEntries(additionalEntries));
-
-    // De-duplicate before estimating work space so explicit additional entries
-    // cannot inflate the preflight or create ambiguous ZIP members.
-    const deduped = [...new Map(files.map(file => [
-      file.archivePath.replace(/\\/g, '/'),
-      file,
-    ])).values()];
+    const deduped = collectBackupFiles(dataHome, dataDirFilters, additionalEntries);
 
     // Keep the upgrade path bounded: state is archived, generated media is not.
     const leanSnapshot = UPGRADE_BACKUP_KINDS.has(kind);
     const selection = leanSnapshot
       ? selectUpgradeSnapshotFiles(deduped, { softLimitBytes: upgradeSoftLimitBytes })
       : { files: deduped, excluded: null };
-    const sourceFiles = selection.files;
+    const files = selection.files;
     const excluded = selection.excluded;
 
     const workingSpace = assertBackupWorkingSpace({
       folderPath,
-      files: sourceFiles,
+      files,
       databasePath,
       expectedArchiveBytes,
       freeSpaceReserveBytes,
@@ -586,7 +569,7 @@ export async function createVerifiedBackup({
     });
     report({
       phase: 'collect',
-      files: sourceFiles.length,
+      files: files.length,
       bytes: workingSpace.archiveBytes,
       skippedFiles: excluded?.files ?? 0,
       skippedBytes: excluded?.bytes ?? 0,
@@ -594,9 +577,12 @@ export async function createVerifiedBackup({
     });
 
     sqliteSnapshot = createConsistentSqliteSnapshot(databasePath, sqliteTemp);
-    files.length = 0;
-    files.push(...sourceFiles);
-    if (sqliteSnapshot) files.push({ diskPath: sqliteSnapshot.path, archivePath: 'database/memory.db' });
+    if (sqliteSnapshot) {
+      const primary = { diskPath: sqliteSnapshot.path, archivePath: 'database/memory.db' };
+      const duplicate = files.findIndex(file => file.archivePath.replace(/\\/g, '/') === primary.archivePath);
+      if (duplicate === -1) files.push(primary);
+      else files[duplicate] = primary;
+    }
 
     // UI blob/state databases also use WAL. Snapshot every additional SQLite
     // file rather than pairing an arbitrary main file with a moving WAL.
@@ -610,10 +596,7 @@ export async function createVerifiedBackup({
       files[index] = { ...file, diskPath: temp };
     }
 
-    // De-duplicate archive paths so explicit additional entries cannot create
-    // ambiguous ZIP members.
-    const unique = new Map(files.map(file => [file.archivePath.replace(/\\/g, '/'), file]));
-    const stableInputs = snapshotMutableBackupFiles([...unique.values()], folderPath);
+    const stableInputs = snapshotMutableBackupFiles(files, folderPath);
     stageDir = stableInputs.stageDir;
     const finalFiles = stableInputs.files.sort((a, b) => a.archivePath.localeCompare(b.archivePath));
     report({ phase: 'checksum', files: finalFiles.length });
@@ -736,25 +719,6 @@ export function isSqliteDatabaseFile(path) {
   }
 }
 
-/** SHA-256 (hex) of a file, read in one pass on this thread (WAL files: small, and read while a lock is held). */
-function hashFileNow(path) {
-  const digest = createHash('sha256');
-  const fd = openSync(path, 'r');
-  try {
-    const buffer = Buffer.allocUnsafe(4 * 1024 * 1024);
-    let position = 0;
-    for (;;) {
-      const read = readSync(fd, buffer, 0, buffer.length, position);
-      if (!read) break;
-      digest.update(buffer.subarray(0, read));
-      position += read;
-    }
-  } finally {
-    closeSync(fd);
-  }
-  return digest.digest('hex');
-}
-
 /**
  * What tells a later reader, in any process, whether the SQLite database at `path` was written since: its file
  * (device, inode, size, modification and change times, and its first 100 bytes, where a rollback-journal database
@@ -768,7 +732,7 @@ export function sqliteFingerprint(path) {
   const walPath = `${path}-wal`;
   try {
     const walSize = statSync(walPath).size;
-    if (walSize > 0) wal = { size: walSize, sha256: hashFileNow(walPath) };
+    if (walSize > 0) wal = { size: walSize, sha256: hashFileSync(walPath) };
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error;
   }
@@ -970,9 +934,6 @@ export function isUpgradeRuntimeFile(dir, relativePath) {
  * and shared-memory files belong to it (never archived on their own).
  */
 function collectUpgradeInputs({ dataHome, additionalEntries = [], softLimitBytes = UPGRADE_SNAPSHOT_SOFT_LIMIT_BYTES }) {
-  const files = [];
-  const envPath = resolve(dataHome, '.env');
-  if (existsSync(envPath)) files.push({ diskPath: envPath, archivePath: 'env.bak' });
   const dataDirFilters = {
     data: rel => !shouldSkipDataPath(rel) && !isUpgradeRuntimeFile('data', rel),
     'mcp-data': rel => !shouldSkipDataPath(rel)
@@ -980,9 +941,7 @@ function collectUpgradeInputs({ dataHome, additionalEntries = [], softLimitBytes
       && !isDatabaseCopyArtifact(rel)
       && !/^memory\.db(?:-wal|-shm|-journal)?$/i.test(rel),
   };
-  for (const dir of BACKUP_DATA_DIRS) files.push(...collectFiles(resolve(dataHome, dir), dir, { filter: dataDirFilters[dir] }));
-  files.push(...normalizeAdditionalEntries(additionalEntries));
-  const deduped = [...new Map(files.map(file => [file.archivePath.replace(/\\/g, '/'), file])).values()];
+  const deduped = collectBackupFiles(dataHome, dataDirFilters, additionalEntries);
   const { files: kept, excluded } = selectUpgradeSnapshotFiles(deduped, { softLimitBytes });
   const marked = kept.map(file => ({ ...file, sqlite: isSqliteDatabaseFile(file.diskPath) }));
   const databases = new Set(marked.filter(file => file.sqlite).map(file => file.archivePath.toLowerCase()));

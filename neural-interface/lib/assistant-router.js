@@ -32,6 +32,7 @@
 // Catalog, config and runtime I/O are injected. The split planner checks git before worktree approval.
 
 import { routeTaskIdentity } from '../public/shared/assistant/route-identity.js';
+import { agentPinOf, agentRefOf, routedAgent } from './agents/resolve.js';
 import { planRouteSplit } from './agents/split.js';
 import { normalizeAgentDensity } from './agents/density.js';
 import { randomBytes } from 'node:crypto';
@@ -215,8 +216,9 @@ export function normalizeRouteRequest(body = {}, { brain = {} } = {}) {
   let coercedProvider = null;
   for (const raw of Array.isArray(body.proposals) ? body.proposals.slice(0, 3) : []) {
     if (!raw || typeof raw !== 'object') continue;
+    const requested = agentRefOf(raw);
     let kind = raw.kind === 'direct' ? 'direct' : 'dispatch';
-    let provider = CATALOG_PROVIDERS.includes(raw.provider) ? raw.provider : null;
+    let provider = CATALOG_PROVIDERS.includes(raw.provider) ? raw.provider : requested === 'none' ? brain.provider : null;
     let model = raw.model ? String(raw.model).trim().slice(0, 200) : null;
     if (kind === 'direct') {
       if (provider && provider !== brain.provider) {
@@ -232,6 +234,7 @@ export function normalizeRouteRequest(body = {}, { brain = {} } = {}) {
     }
     proposals.push({
       kind, provider, model,
+      ...(requested ? { agentRequest: requested } : {}),
       effort: raw.effort ? String(raw.effort).trim().slice(0, 40) : null,
       ...(raw.accountId || raw.account_id ? { accountId: String(raw.accountId || raw.account_id).slice(0, 64) } : {}),
       reason: raw.reason ? clip(raw.reason, 240) : null,
@@ -1070,6 +1073,7 @@ export function escalationFor({ run, catalog = null, routing = {}, depth = 0 }) 
 export function createAssistantRouter({
   catalog,
   configStore = null,
+  agents = null,
   getSession = () => null,
   sinks = {},
   now = Date.now,
@@ -1092,6 +1096,32 @@ export function createAssistantRouter({
   const lastClosed = new Map(); // routeId → { routeId, settled } of recently closed cards
   const call = (name, ...args) => { try { return sinks[name]?.(...args); } catch (error) { log('router:sink-error', `${name}: ${error?.message || error}`); return undefined; } };
 
+  // Resolve each distinct proposed role once. A different model (saved preference, budget or
+  // custom card choice) can still run the proposed role. Direct choices never use a worker.
+  function workerRoles(request, cwd, pin = null) {
+    const roles = new Map();
+    return request.proposals.map(proposal => {
+      const ref = proposal.agentRequest;
+      if (pin) return { agentRef: pin.ref, agentRevision: pin.revision, agentRequest: pin.ref };
+      if (!roles.has(ref)) {
+        const role = agents ? routedAgent(agents, request.taskClass, cwd, ref) : {};
+        roles.set(ref, role.meta || (role.note ? { agentCorrection: role.note } : {}));
+      }
+      return roles.get(ref);
+    });
+  }
+  function workerRole(request, target, optionId) {
+    if (target?.kind !== 'dispatch' || !request.roles) return {};
+    const suggestion = /^s([1-3])$/.exec(optionId || '');
+    const index = suggestion ? Number(suggestion[1]) - 1 : 0;
+    return request.roles[index] || request.roles[0] || {};
+  }
+  function agentFields(record) {
+    if (!record) return {};
+    const { agentRef, agentRevision, agentRequest, agentCorrection } = record;
+    return { ...(agentRef ? { agentRef, agentRevision } : {}), ...(agentRequest ? { agentRequest } : {}),
+      ...(agentCorrection ? { agentCorrection } : {}) };
+  }
   function routing() { try { return configStore?.routing?.() || effectiveRouting({}); } catch { return effectiveRouting({}); } }
   function modeFor(sessionId) {
     const session = getSession(sessionId);
@@ -1219,6 +1249,7 @@ export function createAssistantRouter({
   function routeView(source, { catalog: cat = null, brain = {}, brainInfo = null } = {}) {
     const target = source.target ? describeTarget(source.target, { catalog: cat, brain, brainInfo }) : null;
     return {
+      ...agentFields(source),
       routeId: source.routeId, runIds: [...(source.runIds || [])], taskClass: source.taskClass, taskClassLabel: TASK_CLASS_META[source.taskClass]?.label || source.taskClass,
       plannedSplit: source.plannedSplit || null, sessionId: source.sessionId || null, taskId: source.taskId || null, taskKey: source.taskKey || '',
       summary: source.summary || '', confidence: source.confidence ?? null, reason: source.reason || null,
@@ -1453,10 +1484,11 @@ export function createAssistantRouter({
         : `Call agent_dispatch with route_id="${routeId}" for one worker. Explain: ${plannedSplit.reason}`
       : null;
     return {
+      ...agentFields(record),
       ok: true, status, routeId, mode, source: source || record?.decidedBy || (status === 'expired' ? 'timeout' : status === 'cancelled' ? 'system' : null), reasonCode: record?.reasonCode || (status === 'expired' ? 'expired' : status === 'cancelled' ? 'cancelled' : null), target: described, remembered, continuation,
       taskClass: record?.taskClass || null, sessionId: sessionId || record?.sessionId || null, taskId: record?.taskId || null, taskKey: record?.taskKey || '',
       agentDensity: plannedSplit?.density || normalizeAgentDensity(getSession(sessionId || record?.sessionId)?.agentDensity), expectedWorkers: plannedSplit?.workers || 1, plannedSplit, workflowId: record?.workflowId || null,
-      corrections, runIds, expiresAt: card?.expiresAt ? new Date(card.expiresAt).toISOString() : null,
+      corrections: record?.agentCorrection ? [...corrections, record.agentCorrection] : corrections, runIds, expiresAt: card?.expiresAt ? new Date(card.expiresAt).toISOString() : null,
       ...(shares ? { budget: shares } : {}),
       next: `${waitLead}${lead}${status === 'approved' ? kindLead : ''}${splitNext || nextText(record?.reasonCode === 'moved_on' ? 'moved_on' : status, described, { routeId, label: status === 'declined' ? record?.reasonCode : described?.label })}`,
     };
@@ -1516,6 +1548,7 @@ export function createAssistantRouter({
       const first = request.proposals[0];
       const fallback = origin === 'dispatch' && option.badge !== 'remembered' && option.provider === first?.provider ? first.accountId : null;
       Object.assign(option, accountTarget(option, brain, cat, { check: false, fallback }));
+      Object.assign(option, workerRole(request, option, option.id));
       if (option.accountError) { option.disabled = true; option.disabledReason = option.accountError.message; }
       // A "here" whose account cannot take it (this conversation's is out of usage) runs on a worker
       // on another account: the card names it as a worker and says why, never "Do it here".
@@ -1531,6 +1564,7 @@ export function createAssistantRouter({
     const expiresAt = now() + r.cardTimeoutMinutes * 60_000;
     const pref = r.preferences?.[request.taskClass];
     const card = {
+      ...agentFields(options.find(o => o.id === (defaults.dispatch || defaultOptionId))),
       routeId, requestId, sessionId, origin, status: 'pending', mode, workflowId,
       plannedSplit: request.plannedSplit || null, taskId: request.taskId, taskKey: request.taskKey || '',
       taskClass: request.taskClass, summary: request.summary, confidence: request.confidence, needsVision: request.needsVision,
@@ -1731,6 +1765,7 @@ export function createAssistantRouter({
     if (existing) return existing;
     request.plannedSplit = await planRouteSplit(body, session, request.taskClass);
     request.projectPath = request.plannedSplit?.projectPath || null;
+    request.roles = workerRoles(request, body.cwd || body.project);
     if (request.plannedSplit) {
       request.dispatchOnly = true;
       request.proposals = request.proposals.map(p => ({ ...p, kind: 'dispatch' }));
@@ -1759,6 +1794,7 @@ export function createAssistantRouter({
       const route = {
         taskId: request.taskId, taskKey: request.taskKey || '', plannedSplit: request.plannedSplit || null, workflowId: null,
         routeId, status: 'approved', sessionId, taskClass: request.taskClass, summary: request.summary, confidence: request.confidence,
+        ...workerRole(request, target),
         target, decidedBy, remembered: evaluation.source === 'remembered', corrections: [...accountCorrections(target, evaluation.corrections), ...(waits ? [waits] : [])], mode,
         reason: request.proposals[0]?.reason || null, runIds: [], expiresAt: now() + DECIDED_TTL_MS,
       };
@@ -1841,6 +1877,7 @@ export function createAssistantRouter({
     }
     const { optionId, remember } = parsed;
     const target = checkedTarget(parsed.target, brain, cat, null, null, card.mode === 'always-ask');
+    const pickedRole = workerRole(card.request, target, optionId);
     const corrections = accountCorrections(target, parsed.corrections || []);
     // The session budget must be able to pay for the pick: a provider with no share left divides the
     // unspent budget again first; still none, and the card stays open with the reason.
@@ -1861,7 +1898,7 @@ export function createAssistantRouter({
     // or reported started: the card stays open with the reason. A "here" pick starts none.
     if (!keptHere) {
       for (const runId of card.runIds) {
-        const refusal = call('checkHeld', runId, target);
+        const refusal = call('checkHeld', runId, target, pickedRole);
         if (refusal) throw routeError(refusal.code || 'ROUTE_INVALID', refusal.message || 'The held run cannot start on that model.', Number(refusal.status) || 400);
       }
     }
@@ -1902,6 +1939,7 @@ export function createAssistantRouter({
     const route = {
       taskId: card.taskId, taskKey: card.taskKey || '', plannedSplit: card.plannedSplit || null, workflowId: null,
       routeId, status: 'approved', sessionId: card.sessionId, taskClass: card.taskClass, summary: card.summary, confidence: card.confidence,
+      ...pickedRole,
       target, decidedBy: 'user', remembered, optionId, corrections, mode: card.mode, runIds: heldRuns,
       reason: card.options.find((o) => o.id === optionId)?.reason || null, alternatives: card.alternatives, expiresAt: now() + DECIDED_TTL_MS,
     };
@@ -1910,7 +1948,7 @@ export function createAssistantRouter({
     // A remote session: the held run this card was for is its one dispatch.
     if (heldRuns.length && session.remote === true) route.consumed = true;
     for (const runId of droppedRuns) call('declineHeld', runId, 'route_here');
-    for (const runId of heldRuns) call('startHeld', runId, target, { routeId, decidedBy: 'user', remembered, optionId });
+    for (const runId of heldRuns) call('startHeld', runId, target, { routeId, decidedBy: 'user', remembered, optionId, agentRequest: route.agentRequest });
     const view = routeView(route, { catalog: cat, brain, brainInfo });
     call('routeEvent', card.sessionId, 'decided', view);
     const inTurnWaiter = card.waiters.size > 0;
@@ -2023,6 +2061,8 @@ export function createAssistantRouter({
     expireOtherTasks(sessionId, session.latestTaskId || request.taskId);
     const prior = existingTaskResult(request, sessionId, { cat, brain, brainInfo });
     if (prior && prior.routeId !== routeId) return resolveDispatch({ sessionId, spec: { ...spec, routeId: prior.routeId }, origin, team });
+    request.proposals[0].agentRequest = agentRefOf(spec);
+    request.roles = workerRoles(request, spec.cwd || spec.project, agentPinOf(spec));
     if (!spec.provider) request.proposals[0].provider = brain.provider || 'claude-code';
     const evaluation = await evaluateWithBudget(sessionId, { mode, routing: r, request, brain, brainInfo, catalog: cat });
     if (evaluation.unavailable === 'budget_exhausted') {
@@ -2035,8 +2075,9 @@ export function createAssistantRouter({
       if (raced) return resolveDispatch({ sessionId, spec: { ...spec, routeId: raced.routeId }, origin, team });
       const t = checkedTarget(evaluation.auto, brain, cat);
       noteBudgetTask(sessionId, request, t);
-      const applied = { ...spec, provider: t.provider, model: t.model || null, effort: t.effort || spec.effort || null, ...(t.accountId ? { accountId: t.accountId, codexAccountId: null, claudeAccountId: null } : {}) };
+      const applied = { ...spec, provider: t.provider, model: t.model || null, effort: t.effort ?? null, accountId: t.accountId || null, codexAccountId: null, claudeAccountId: null };
       const route = {
+        ...workerRole(request, { ...t, kind: 'dispatch' }),
         routeId: `route-${randomId()}`, status: 'auto', decidedBy: evaluation.source === 'remembered' ? 'remembered' : evaluation.source === 'budget' ? 'budget' : 'brain', mode,
         taskClass: request.taskClass, confidence: request.confidence, target: t, corrections: accountCorrections(t, evaluation.corrections),
         remembered: evaluation.source === 'remembered',
@@ -2061,6 +2102,7 @@ export function createAssistantRouter({
 
   function routeMeta(route, cat, brain, brainInfo) {
     return {
+      ...agentFields(route),
       routeId: route.routeId, status: route.status === 'approved' ? 'approved' : route.status, decidedBy: route.decidedBy || null, mode: route.mode || null,
       plannedSplit: route.plannedSplit || null, taskId: route.taskId || null, taskKey: route.taskKey || '', sessionId: route.sessionId || null,
       taskClass: route.taskClass || null, taskClassLabel: TASK_CLASS_META[route.taskClass]?.label || null, confidence: route.confidence ?? null,
@@ -2070,6 +2112,7 @@ export function createAssistantRouter({
   }
   function pendingMeta(card) {
     return {
+      ...agentFields(card),
       routeId: card.routeId, taskId: card.taskId || null, taskKey: card.taskKey || '', sessionId: card.sessionId || null, status: 'pending', decidedBy: null, mode: card.mode, taskClass: card.taskClass,
       taskClassLabel: TASK_CLASS_META[card.taskClass]?.label || null, confidence: card.confidence ?? null,
       target: null, corrections: [], remembered: false, decidedAt: null,
@@ -2167,9 +2210,9 @@ export function createAssistantRouter({
   }
   function status(routeId) {
     const card = cards.get(routeId);
-    if (card) return { routeId, status: card.status, sessionId: card.sessionId, taskId: card.taskId || null, taskKey: card.taskKey || '', runIds: [...card.runIds], taskClass: card.taskClass, expiresAt: new Date(card.expiresAt).toISOString(), request: card.packet.request };
+    if (card) return { ...agentFields(card), routeId, status: card.status, sessionId: card.sessionId, taskId: card.taskId || null, taskKey: card.taskKey || '', runIds: [...card.runIds], taskClass: card.taskClass, expiresAt: new Date(card.expiresAt).toISOString(), request: card.packet.request };
     const route = decided.get(routeId);
-    if (route) return { routeId, status: route.status, sessionId: route.sessionId, taskId: route.taskId || null, taskKey: route.taskKey || '', runIds: route.runIds || [], taskClass: route.taskClass, target: route.target, decidedBy: route.decidedBy, plannedSplit: route.plannedSplit || null, workflowId: route.workflowId || null };
+    if (route) return { ...agentFields(route), routeId, status: route.status, sessionId: route.sessionId, taskId: route.taskId || null, taskKey: route.taskKey || '', runIds: route.runIds || [], taskClass: route.taskClass, target: route.target, decidedBy: route.decidedBy, plannedSplit: route.plannedSplit || null, workflowId: route.workflowId || null };
     return null;
   }
 

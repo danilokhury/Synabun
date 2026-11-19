@@ -365,7 +365,7 @@ export function validateTeamPlan(input, { density = null, maxSlices = null } = {
     const rawRef = pick(raw, 'agentRef');
     if (rawRef !== undefined && rawRef !== null && rawRef !== '') {
       if (typeof rawRef !== 'string') add(`${at}.agentRef`, 'invalid_type', 'agentRef must be text.');
-      else if (!parseAgentRef(rawRef)) add(`${at}.agentRef`, 'invalid_format', `"${rawRef.slice(0, 80)}" is not an agent ref ("<id>", "<id>@<revision>", "global:<id>", "project:<id>").`);
+      else if (rawRef.trim() !== 'none' && !parseAgentRef(rawRef)) add(`${at}.agentRef`, 'invalid_format', `"${rawRef.slice(0, 80)}" is not an agent ref ("<id>", "<id>@<revision>", "global:<id>", "project:<id>").`);
     }
     const rawOwned = pick(raw, 'ownedPaths');
     if ((!plan.readOnly || rawOwned != null) && (!Array.isArray(rawOwned) || rawOwned.some((item) => typeof item !== 'string'))) add(`${at}.ownedPaths`, 'invalid_type', 'ownedPaths must be a list of patterns.');

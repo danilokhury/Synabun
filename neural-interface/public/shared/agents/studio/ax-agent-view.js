@@ -498,8 +498,8 @@ function openMenu(ctx, ed, opener, head) {
     ctx.caps.has('export') ? { id: 'export', label: t('agentsStudio.action.export') } : null,
     canExportNative(ctx, ed.agent) ? { id: 'native-export', label: t('agentsStudio.nativeExport.action') } : null,
     draft?.status === 'draft' ? { id: 'discard', label: t('agentsStudio.action.discardDraft'), danger: true } : null,
-    ctx.owner && (draft || s.status === 'approved') ? { id: 'withdraw', label: t('agentsStudio.action.withdrawMenu'), danger: true } : null,
-    ctx.owner ? { id: 'delete', label: t('agentsStudio.action.delete'), danger: true } : null,
+    ctx.owner && ed.agent?.source !== 'builtin' && (draft || s.status === 'approved') ? { id: 'withdraw', label: t('agentsStudio.action.withdrawMenu'), danger: true } : null,
+    ctx.owner && ed.agent?.source !== 'builtin' ? { id: 'delete', label: t('agentsStudio.action.delete'), danger: true } : null,
   ].filter(Boolean);
   const el = document.createElement('div');
   el.className = 'sx-menu ax-menu';

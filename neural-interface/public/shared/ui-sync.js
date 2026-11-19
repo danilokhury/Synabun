@@ -283,6 +283,7 @@ function connect() {
   _ws.onclose = () => {
     console.log('[sync-ws] Disconnected, will reconnect in 5s');
     _ws = null;
+    emit('sync:disconnected');
     if (!_reconnectTimer) {
       _reconnectTimer = setInterval(connect, RECONNECT_INTERVAL);
     }

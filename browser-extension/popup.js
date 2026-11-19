@@ -1,8 +1,7 @@
-// The toolbar popup's DOM glue (popup.html). popup-view.js decides what is shown; this renders it and sends the owner's
-// actions to the service worker, which alone acts on them (docs/browser-extension-bridge.md). The messages are the
-// ones the worker has always taken from this page: status, pair, share, revokeTab, revokeSite, options, mode,
-// disconnect, resume, revoke. Disconnect, Revoke pairing, a mode change and removing a shared site are confirmed
-// first; Take back is immediate (the owner's fast interrupt) and never closes the tab.
+// The toolbar popup's DOM glue (popup.html). popup-view.js decides what is shown. Bridge actions go to the service
+// worker (docs/browser-extension-bridge.md). The popup opens its own links and reloads the extension directly.
+// Disconnect, Revoke pairing, a mode change and removing a shared site are confirmed first. Take back is immediate
+// and keeps the tab open.
 import { publicOrigin, hostPattern } from './protocol.js';
 import { popupLocale, translator } from './popup-strings.js';
 import { popupView } from './popup-view.js';
@@ -37,13 +36,16 @@ const openTab = url => chrome.tabs.create({ url });
 function fixedText() {
   document.documentElement.lang = locale;
   const set = (id, key) => { const node = $(id); if (node) node.textContent = t(key); };
-  set('p-brand-sub', 'brandSub');
+  let version;
+  try { version = chrome.runtime.getManifest().version; } catch {}
+  $('p-brand-sub').textContent = version ? `${t('brandSub')} · v${version}` : t('brandSub');
   const openApp = $('p-open-app'); openApp.setAttribute('aria-label', t('openApp')); openApp.setAttribute('title', t('openApp'));
   set('p-footer-app', 'openApp'); set('disconnect', 'disconnect'); set('revoke', 'revoke');
+  set('p-open-extensions', 'openExtensions'); set('p-reload-extension', 'reloadExtension');
   set('p-mode-label', 'agentAccess'); set('p-mode-full', 'full'); set('p-mode-restricted', 'restricted');
   set('p-empty-title', 'emptyTitle'); set('p-empty-help', 'emptyHelp');
   set('p-shared-title', 'sharedSites'); set('p-shared-empty-title', 'noShared'); set('p-shared-empty-help', 'noSharedHelp'); set('p-waiting-title', 'sharedTabs');
-  set('share', 'shareTab'); set('site', 'shareSite'); set('p-newtabs-label', 'newTabs'); set('p-uploads-label', 'uploads');
+  set('share', 'shareTab'); set('site', 'shareSite'); set('p-newtabs-label', 'newTabs');
   set('p-files-summary', 'advanced'); set('p-downloads-label', 'downloads'); set('p-download-note', 'downloadNote'); set('p-downloads-denied', 'downloadsDenied');
   set('p-upload-title', 'uploadFolder'); set('p-upload-help', 'uploadHelpPopup'); set('p-limits', 'limits');
   set('p-connection-summary', 'details'); set('p-bridge-label', 'bridge');
@@ -158,7 +160,7 @@ function render(next) {
   reconcile($('p-waiting'), view.showShared ? view.waiting : [], tab => tab.handle, makeRow('stop-sharing'), (row, tab) => updateRow(row, tab, { kind: 'stop-sharing', disabled: !view.live }));
   $('p-waiting-title').hidden = !view.waiting.length;
   $('p-shared-empty').hidden = !!(view.sites.length || view.waiting.length);
-  $('newTabs').checked = view.options.allowNewTabs; $('uploads').checked = view.options.uploads; $('downloads').checked = view.options.downloads;
+  $('newTabs').checked = view.options.allowNewTabs; $('downloads').checked = view.options.downloads;
   // files and limits, the typed code
   $('p-files').hidden = !view.showFiles;
   textOnce($('p-bridge'), `127.0.0.1:${view.port}`);
@@ -290,6 +292,16 @@ async function takeBack(button, verb) {
 }
 async function act(action, target) {
   if (action === 'open-app') { await openTab(`${appOrigin()}/`); return; }
+  if (action === 'open-extensions') {
+    try { await openTab('chrome://extensions/'); }
+    catch { toast(t('openExtensionsFailed'), 'bad'); }
+    return;
+  }
+  if (action === 'reload-extension') {
+    try { chrome.runtime.reload(); }
+    catch { toast(t('reloadExtensionFailed'), 'bad'); }
+    return;
+  }
   if (action === 'connect') { await openTab(`${appOrigin()}/extension-setup`); toast(t('connectOpened')); return; }
   if (action === 'retry') { await refresh(); return; }
   if (action === 'resume') { await run(() => ask({ action: 'resume' }), t('reconnectingToast')); return; }
@@ -325,12 +337,12 @@ function wire() {
   const dialog = $('p-confirm');
   // Escape cancels (the dialog's own cancel event); the focus goes back to the control that opened it.
   dialog.addEventListener('cancel', event => { event.preventDefault(); closeConfirm(); });
-  for (const id of ['newTabs', 'uploads', 'downloads']) $(id).addEventListener('change', () => run(async () => {
+  for (const id of ['newTabs', 'downloads']) $(id).addEventListener('change', () => run(async () => {
     $('p-downloads-denied').hidden = true;
     if (id === 'downloads' && $('downloads').checked && !await chrome.permissions.request({ permissions: ['downloads'] })) {
       $('downloads').checked = false; $('p-downloads-denied').hidden = false; $('p-files').open = true;
     }
-    await ask({ action: 'options', options: { allowNewTabs: $('newTabs').checked, uploads: $('uploads').checked, downloads: $('downloads').checked } });
+    await ask({ action: 'options', options: { allowNewTabs: $('newTabs').checked, downloads: $('downloads').checked } });
   }, t('saved')));
   $('port').addEventListener('input', () => { portTouched = true; });
   $('pair').addEventListener('submit', event => {

@@ -19126,6 +19126,8 @@
   /* The rig (shared/synabun-mascot.js) draws in currentColor. Asleep, the bob
      and the z below carry it; in every other state the rig plays its own pose. */
   #loading-mascot .synabun-mascot { color: #ffffff; }
+  #loading-mascot .synabun-mascot:not(.art-ready) .syna-art { visibility: hidden; }
+  #loading-mascot .synabun-mascot:not(.art-ready) :is(.syna-eye, .syna-mouth, .syna-props) { visibility: visible; }
   #loading-mascot:is([data-state="waking"], [data-state="working"], [data-state="ready"], [data-state="failed"], [data-state="stalled"]) { animation: none; }
   #loading-mascot:is([data-state="waking"], [data-state="working"], [data-state="ready"], [data-state="failed"], [data-state="stalled"]) #loading-zzz { display: none; }
   @media (prefers-reduced-motion: reduce) {
@@ -20871,7 +20873,17 @@
   .ax .ax-section-mark { display: inline-flex; }
   .ax .ax-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; align-items: start; }
   .ax .ax-field--wide { grid-column: 1 / -1; }
-  .ax .ax-field .cc-dropdown { width: 100%; }
+  .ax .ax-field .cc-dropdown { width: 100%; max-width: 32rem; }
+  .ax .ax-field .cc-dropdown-trigger { width: 100%; min-width: 0; text-align: start; }
+  .ax .ax-field .cc-dropdown-menu {
+    --cc-menu-max-height: 18rem;
+    box-sizing: border-box; overflow: hidden auto; overscroll-behavior: contain;
+    background: var(--sx-menu); border-color: var(--b-hover); box-shadow: var(--shadow-md);
+  }
+  .ax .ax-field .cc-dropdown-item > span:last-child, .ax .ax-field .cc-dropdown-caption {
+    display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .ax .ax-field .cc-dropdown-item.highlight { background: var(--s-active); color: var(--t-bright); }
   .ax .ax-issues { display: grid; gap: 2px; }
   .ax .ax-issues:empty { display: none; }
   .ax .ax-issues .sx-field-note { display: flex; align-items: flex-start; gap: 6px; }

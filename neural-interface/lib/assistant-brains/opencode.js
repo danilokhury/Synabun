@@ -209,6 +209,22 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
   let synabunExpected = false;
   let stops = 0;
   let waitingAbort = null;
+  let interruptPrompt = null;
+  let exited = false;
+  const serveExitMessage = 'The isolated OpenCode server stopped during this turn. Send the message again to resume.';
+  const serveExitError = () => Object.assign(new Error(serveExitMessage), { code: 'OPENCODE_SERVE_EXITED' });
+  const serveExited = () => exited || entry?.proc?.exitCode != null || entry?.proc?.signalCode != null;
+  function onServeExit() {
+    if (disposed) return;
+    exited = true;
+    clearInterval(keepAliveTimer);
+    waitingAbort?.abort();
+    interruptPrompt?.();
+    if (!turnActive && !pendingControls.size) return;
+    turnActive = false;
+    pendingControls.clear();
+    emit({ type: 'error', message: serveExitMessage });
+  }
   const mcpWait = {
     readyTimeoutMs: deps.mcpReadyTimeoutMs, settleMs: deps.mcpSettleMs,
     listGraceMs: deps.mcpListGraceMs, pollMs: deps.mcpPollMs,
@@ -240,11 +256,14 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
       const tool = packet.request?.tool_name;
       if (decision === 'deny') sink.send({ type: 'stderr', text: `Plan mode: declined ${tool || 'permission'}${remoteReadOnly ? ' (read-only)' : ' (no code changes)'}` });
       Promise.resolve(client.permission.reply({ requestID: body.requestID, reply: body.reply, directory: cwd, ...(decision === 'deny' ? { message: remoteReadOnly ? readOnlyDenyMessage(tool) : planDenyMessage(tool, { host: 'opencode' }) } : {}) }))
-        .catch((error) => sink.send({ type: 'error', message: `OpenCode auto-${decision === 'allow' ? 'accept' : 'decline'} failed: ${error?.message || error}` }));
+        .catch((error) => { if (!serveExited()) emit({ type: 'error', message: `OpenCode auto-${decision === 'allow' ? 'accept' : 'decline'} failed: ${error?.message || error}` }); });
       return;
     }
     if (packet.type === 'control_request') pendingControls.set(packet.request_id, packet);
-    if (packet.type === 'done' || packet.type === 'aborted') turnActive = false;
+    if (packet.type === 'done' || packet.type === 'aborted') {
+      turnActive = false;
+      pendingControls.clear();
+    }
     sink.send(packet);
   };
   sink.send({ type: 'engine', engine: 'opencode', brain: 'opencode' });
@@ -257,7 +276,9 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
     });
     if (unsubscribe) { try { unsubscribe(); } catch {} }
     const source = client?.onEvent ? client : client?.event;
-    unsubscribe = source?.onEvent?.((envelope) => translator.handle(envelope?.eventType || '', envelope?.event || {})) || null;
+    unsubscribe = source?.onEvent?.((envelope) => {
+      if (!disposed && !serveExited()) translator.handle(envelope?.eventType || '', envelope?.event || {});
+    }) || null;
   }
 
   /** The serve's MCP servers as an `mcp_status` event (the runtime reads whether SynaBun, and so agent_route, is reachable). */
@@ -285,6 +306,7 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
       // the assistant and plan agents): the brain's serve never reads it.
       entry = await deps.ensureIsolatedServe(termId, { xdgRoot, keepAlive: true, tools: brain.tools ?? OPENCODE_BRAIN_TOOLS, brainCredential: deps.brainCredential || null, extraEnv: { OPENCODE_CONFIG_DIR: null } });
       if (!entry?.client) throw new Error('OpenCode isolated serve failed to start');
+      entry.proc?.once?.('exit', onServeExit);
       client = entry.client;
       await client.waitUntilConnected?.(20_000);
       if (!sessionId) {
@@ -298,6 +320,7 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
       keepAliveTimer = setInterval(() => { if (entry) entry.lastUsed = Date.now(); }, 60_000);
       keepAliveTimer.unref?.();
       await reportMcpStatus();
+      if (serveExited()) throw new Error('The isolated OpenCode server stopped during startup');
       return true;
     })();
     return startPromise;
@@ -305,11 +328,13 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
 
   return {
     kind: 'opencode',
+    needsRestart: serveExited,
     start,
     async sendUserTurn({ text, images = [], model = null, effort = null, permissionMode: mode = null, planMode: plan = null } = {}) {
       const stop = stops;
       await start();
       if (disposed || stops !== stop) return false;
+      if (serveExited()) throw serveExitError();
       applyModes(mode, plan);
       turnActive = true;
       // The runtime passes the effective model/effort on every turn (the record
@@ -344,15 +369,37 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
           onTimeout: (ms) => sink.send({ type: 'event', event: { type: 'system', subtype: 'status', text: synabunToolsTimeoutText(ms, 'brain') } }),
         });
       } finally { if (waitingAbort === controller) waitingAbort = null; }
-      if (!ready || disposed || stops !== stop) { turnActive = false; return false; }
-      const response = await client.session.promptAsync(request);
-      const status = Number(response?.status);
-      if (Number.isFinite(status) && status >= 400) { turnActive = false; throw new Error(`OpenCode prompt failed (${status})`); }
-      return true;
+      if (disposed || stops !== stop) return false;
+      if (serveExited()) throw serveExitError();
+      if (!ready) { turnActive = false; return false; }
+      // A process exit releases this send even if the client is still waiting for a response.
+      const interrupted = new Promise((resolve) => {
+        interruptPrompt = () => { controller.abort(); resolve(); };
+      });
+      try {
+        const response = await Promise.race([client.session.promptAsync({ ...request, signal: controller.signal }), interrupted]);
+        if (disposed || stops !== stop) return false;
+        if (serveExited()) throw serveExitError();
+        const status = Number(response?.status);
+        if (Number.isFinite(status) && status >= 400) throw new Error(`OpenCode prompt failed (${status})`);
+        return true;
+      } catch (error) {
+        if (disposed || stops !== stop) return false;
+        turnActive = false;
+        pendingControls.clear();
+        throw serveExited() ? serveExitError() : error;
+      } finally { interruptPrompt = null; }
     },
-    async abort() { stops += 1; waitingAbort?.abort(); if (client && sessionId) await client.session.abort({ sessionID: sessionId, directory: cwd }).catch(() => {}); emit({ type: 'aborted' }); },
+    async abort() {
+      stops += 1;
+      waitingAbort?.abort();
+      if (serveExited()) return;
+      try { if (client && sessionId) await client.session.abort({ sessionID: sessionId, directory: cwd }); } catch {}
+      if (!serveExited()) emit({ type: 'aborted' });
+    },
     async setPermissionMode(mode, { planMode: plan = null } = {}) { applyModes(mode, plan); sink.send({ type: 'mode_changed', mode: approvalMode, planMode }); },
     respondControl(requestId, response) {
+      if (serveExited()) return;
       const pending = pendingControls.get(String(requestId));
       if (!pending || !client) { sink.send({ type: 'error', message: `No pending OpenCode request ${requestId}` }); return; }
       pendingControls.delete(String(requestId));
@@ -360,7 +407,7 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
       const call = body.kind === 'question'
         ? (body.reject ? client.question.reject({ requestID: body.requestID, directory: cwd }) : client.question.reply({ requestID: body.requestID, answers: body.answers, directory: cwd }))
         : client.permission.reply({ requestID: body.requestID, reply: body.reply, directory: cwd });
-      Promise.resolve(call).catch((error) => sink.send({ type: 'error', message: `OpenCode reply failed: ${error?.message || error}` }));
+      Promise.resolve(call).catch((error) => { if (!serveExited()) emit({ type: 'error', message: `OpenCode reply failed: ${error?.message || error}` }); });
     },
     // OpenCode compacts the session on the model it runs on.
     async compact() {
@@ -370,7 +417,7 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
     },
     async mcpStatus() { await reportMcpStatus(); },
     async reconcileUsage(meter) {
-      if (!client || !sessionId || !meter) return false;
+      if (!client || !sessionId || !meter || serveExited()) return false;
       let failed = false;
       await meter.reconcile({
         children: async (id) => {
@@ -402,7 +449,9 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
     async dispose() {
       if (disposed) return;
       disposed = true;
+      entry?.proc?.off?.('exit', onServeExit);
       waitingAbort?.abort();
+      interruptPrompt?.();
       if (keepAliveTimer) clearInterval(keepAliveTimer);
       if (unsubscribe) { try { unsubscribe(); } catch {} }
       try { deps.stopIsolatedServe(termId); } catch {}

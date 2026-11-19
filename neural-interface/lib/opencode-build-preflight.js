@@ -11,8 +11,8 @@ import { moreLoginProcessesRunning } from './process-identity.js';
 /** Strictly parse the observed MoreLogin /api/env/detail response; never retain cookies or other profile data. */
 export function portProtectionOf(detail) {
   const value = detail?.advancedSetting?.port_scan_protection;
-  if (!value || ![0, 1].includes(value.switcher) || typeof value.value !== 'string') return null;
-  const words = value.value.trim() ? value.value.split(',').map(s => s.trim()) : [];
+  if (!value || ![0, 1].includes(value.switcher) || (value.value !== null && typeof value.value !== 'string')) return null;
+  const words = value.value?.trim() ? value.value.split(',').map(s => s.trim()) : [];
   if (words.some(s => !/^\d{1,5}$/.test(s) || +s < 1 || +s > 65535)) return null;
   return { enabled: value.switcher === 1, ports: [...new Set(words.map(Number))] };
 }
@@ -26,7 +26,7 @@ export function moreLoginFailureDetail(error) {
   return 'API request failed';
 }
 function profileError(code, message, envId) {
-  return Object.assign(new Error(message), { code, offenders: envId ? [{ envId, reason: code }] : [] });
+  return Object.assign(new Error(message), { code, sharedPreflight: true, offenders: envId ? [{ envId, reason: code }] : [] });
 }
 export async function reconcilePreflightProfiles(profiles, list, { requested = [], allowUnavailable = false,
   browserProcesses = moreLoginProcessesRunning, log = () => {} } = {}) {
@@ -48,9 +48,14 @@ export async function reconcilePreflightProfiles(profiles, list, { requested = [
     throw profileError('MORELOGIN_LIST_UNREADABLE', `MoreLogin profile listing failed: ${moreLoginFailureDetail(error)}. OpenCode build verification has not started.`);
   }
   if (!Array.isArray(live) || live.moreloginError || live.some(p => !p?.id)) throw profileError('MORELOGIN_LIST_UNREADABLE', 'MoreLogin profile listing is malformed or incomplete.');
-  const ids = new Set(live.map(p => String(p.id)));
-  for (const id of requested) if (!ids.has(String(id))) throw profileError('MORELOGIN_PROFILE_MISSING', `Explicitly requested MoreLogin profile ${id} is missing.`, String(id));
-  return profiles.filter(p => { if (ids.has(p.envId)) return true; log(`Skipping stale MoreLogin profile ${p.envId}: absent from the complete live listing.`); return false; });
+  const byId = new Map(live.map(p => [String(p.id), p]));
+  for (const id of requested) if (!byId.has(String(id))) throw profileError('MORELOGIN_PROFILE_MISSING', `Explicitly requested MoreLogin profile ${id} is missing.`, String(id));
+  return profiles.flatMap(profile => {
+    const row = byId.get(profile.envId);
+    if (row) return [!profile.name && row.name ? { ...profile, name: row.name } : profile];
+    log(`Skipping stale MoreLogin profile ${profile.envId}: absent from the complete live listing.`);
+    return [];
+  });
 }
 
 export async function preflightExcludedPorts(profiles, readDetail) {
@@ -60,7 +65,7 @@ export async function preflightExcludedPorts(profiles, readDetail) {
     let policy, detail = 'malformed port protection policy';
     try { policy = portProtectionOf(await readDetail(profile.envId)); } catch (error) { detail = moreLoginFailureDetail(error); }
     if (!policy) throw profileError('MORELOGIN_POLICY_UNREADABLE', `MoreLogin profile ${name}: port protection could not be read from /api/env/detail (${detail}). Check the MoreLogin local API and try again; OpenCode build verification has not started.`, profile.envId);
-    if (!policy.enabled) throw new Error(`MoreLogin profile ${name}: Port scan protection is off. Edit profile → Advanced settings → Port scan protection: Enable, then retry OpenCode build verification.`);
+    if (!policy.enabled) throw profileError('MORELOGIN_POLICY_DISABLED', `MoreLogin profile ${name}: Port scan protection is off. Edit profile → Advanced settings → Port scan protection: Enable, then retry OpenCode build verification.`, profile.envId);
     for (const port of policy.ports) ports.add(port);
   }
   return ports;

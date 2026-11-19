@@ -25,7 +25,7 @@
 // lookup of the calling process failed: lib/peer-identity.js), so it hands out no page secret and refuses the owner's
 // actions until a lookup works again. Nothing here cures that, so nothing is retried: the answer goes back as it came,
 // and the page is told once per answer (the `synabun:peer-unavailable` event on the window, which
-// ui-owner-authority.js turns into its banner). A refresh that met it (GET /api/page-session answered 503) is not asked
+// ui-owner-authority.js uses to recheck verifier health). A refresh that met it (GET /api/page-session answered 503) is not asked
 // again for a few seconds: a burst of refused writes costs the server one lookup, not one each.
 //
 // A refusal nothing here cures (403 WORKER_BROWSER, OWNER_ROUTE, or PAGE_SECRET_REQUIRED the refresh did not cure) is

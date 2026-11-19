@@ -931,6 +931,7 @@ export function createAssistantRuntime({
    */
   function brainNeedsRestart(live) {
     if (!live?.brain) return false;
+    if (live.brain.needsRestart?.()) return true;
     // Its persona was built with (or without) a user-context layer that was switched since.
     if (userContext && live.brainUserContext !== null) {
       let key = null;
@@ -2504,7 +2505,7 @@ export function createAssistantRuntime({
       await disposeBrain(live, 'budget');
       if (cancelled()) return dropTurn(live, request);
     }
-    // A Claude brain built for another remote level restarts (resuming its conversation).
+    // A dead OpenCode serve or stale brain policy needs a fresh brain with the same conversation.
     if (live.brain && !live.running && brainNeedsRestart(live)) {
       await disposeBrain(live, 'policy');
       if (cancelled()) return dropTurn(live, request);
@@ -2751,6 +2752,13 @@ export function createAssistantRuntime({
         try { router?.continuationStarted?.(work.routeId); } catch (error) { log('assistant:route-continuation', error?.message || String(error)); }
       }
     } catch (error) {
+      if (error?.code === 'OPENCODE_SERVE_EXITED') {
+        const message = error.message;
+        // The exit listener normally closed the turn. If the serve died before
+        // the brain entered the turn, close it here with the same single packet.
+        if (live.running) onBrainPacket(live, { type: 'error', message });
+        return { ok: false, code: 'TURN_FAILED', message };
+      }
       live.running = false;
       live.turnRun = previousRun;
       endComputerTurn(live, 'turn_failed');

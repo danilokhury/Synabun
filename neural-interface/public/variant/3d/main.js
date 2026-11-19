@@ -16,6 +16,7 @@ import { registerVariant } from '../../shared/registry.js';
 import { injectSharedHTML } from '../../shared/html-shell.js';
 import { migrateViewPreferences, normalizeViewUrl } from '../../shared/view-variant.js';
 import { initI18n, t } from '../../shared/i18n.js';
+import { fetchHealth } from '../../shared/api.js';
 import { initLoading, showLoadingError } from '../../shared/ui-loading.js';
 import { loadMemoryList } from '../../shared/memory-list.js';
 
@@ -53,13 +54,21 @@ injectSharedHTML();
 // 3. THE LOADING OVERLAY, THEN THE APP
 // ═══════════════════════════════════════════
 
-// The overlay is the first frame. Its retry and Start Server buttons boot the app again once it has loaded; before
-// that (the app's modules could not be fetched: the server went away mid-load) the page loads again.
+// The first frame in index.html owns the bounded retry for a failed module graph.
 let app = null;
-initLoading({ onInit: () => (app ? app.boot() : window.location.reload()) });
+let moduleFailed = false;
+const retryModule = () => window.dispatchEvent(new Event('synabun:startup-module-failed'));
+initLoading({ onInit: () => {
+  if (app) app.boot();
+  else if (moduleFailed) retryModule();
+  // While the import is pending, app.js will run its own first boot.
+} });
 
-import('./app.js').then((module) => { app = module; }, (err) => {
+import('./app.js').then((module) => { app = module; }, async (err) => {
+  moduleFailed = true;
   console.error('Init error:', err);
+  const health = await fetchHealth().catch(() => null);
+  if (health?.ok === true && !health.restarting) { retryModule(); return; }
   showLoadingError(t('loading.serverOffline'), t('loading.serverNotRunning'), false, true);
 });
 

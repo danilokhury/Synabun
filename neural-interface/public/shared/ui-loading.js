@@ -32,6 +32,9 @@ let _mascot = null;
 // held (sockets, terminals, panel sessions) was the old server's, so once the
 // server is back the page loads again instead of carrying on.
 let _restartShown = false;
+let currentBoot = '';
+let appWasVisible = false;
+let reloadPending = false;
 // The tab's title from before the restart, for when it is refused.
 let _restartTitle = null;
 
@@ -128,7 +131,11 @@ export function showLoadingError(title, sub, canStart, serverOffline) {
  */
 export function hideLoading(delay = 400) {
   const $overlay = $('loading-overlay');
-  if ($overlay) setTimeout(() => { markOnce(OVERLAY_HIDDEN_MARK); concealOverlay($overlay); }, delay);
+  if ($overlay) setTimeout(() => {
+    if (_offlineBridge) return;
+    markOnce(OVERLAY_HIDDEN_MARK);
+    concealOverlay($overlay);
+  }, delay);
 }
 
 /** The moment the overlay started to fade for the first time on this page (the time the user waited). */
@@ -165,11 +172,13 @@ function resetLoadingToConnecting() {
   const $sub = $('loading-sub');
   const $action = $('loading-action');
   const $actionStatus = $('loading-action-status');
+  const $retryStatus = $('loading-retry-status');
 
   if ($text) $text.textContent = t('loading.connecting');
   if ($sub) $sub.textContent = t('loading.initializingNeural');
   if ($action) $action.style.display = 'none';
   if ($actionStatus) $actionStatus.textContent = '';
+  if ($retryStatus) $retryStatus.textContent = '';
   clearStartStatus();
   clearRestartLook();
   if (_statusDot) _statusDot.classList.remove('error');
@@ -186,6 +195,7 @@ function resetLoadingToConnecting() {
  */
 export function rememberHealth(health) {
   if (!health) return;
+  if (!currentBoot && health.bootId) currentBoot = health.bootId;
   try {
     if (health.projectDir) {
       localStorage.setItem('synabun-project-dir', health.projectDir);
@@ -282,6 +292,12 @@ function mountMascot() {
   try {
     const still = host.querySelector('svg');
     _mascot = createMascot(host, { width: 160, height: 80, pose: 'sleep', active: false });
+    // The rig already paints a vector face for every pose. Show it until the
+    // current raster artwork loads, and again if the next pose cannot load.
+    const svg = _mascot.el;
+    const art = svg?.querySelector('.syna-art');
+    art?.addEventListener('load', () => svg.classList.add('art-ready'));
+    art?.addEventListener('error', () => svg.classList.remove('art-ready'));
     if (still && still !== _mascot.el) still.style.display = 'none';
   } catch {
     _mascot = null;
@@ -406,7 +422,7 @@ function watchForServer() {
 async function probeServer() {
   const health = await fetchHealth();
   return {
-    up: !!health && health.ok !== false,
+    up: health?.ok === true,
     boot: typeof health?.bootId === 'string' ? health.bootId : '',
     stopping: health?.restarting === true,
   };
@@ -425,21 +441,33 @@ function openBridge() {
       if (_offlineBridge !== bridge) return;
       renderStart(snap);
     },
-    onState(state) {
-      if (_offlineBridge !== bridge) return;
-      if (state !== 'online') return;
-      // Back from a restart: the page loads again, after the frame that says so.
-      if (_restartShown) {
-        setTimeout(() => window.location.reload(), START_LIMITS.reloadDelayMs);
-        return;
-      }
-      resetLoadingToConnecting();
-      emit('loading:retried');
-      if (_initCallback) _initCallback();
+    onState(state, { boot }) {
+      if (_offlineBridge === bridge && state === 'online') recoverConnection(boot);
     },
   });
   _offlineBridge = bridge;
   return bridge;
+}
+
+/** Complete a healthy retry, whether the person pressed Retry or the bridge saw it first. */
+function recoverConnection(boot) {
+  if (reloadPending) return;
+  // Older servers have no boot ID. A running page then needs a fresh session
+  // after an outage, while an unfinished first boot can retry initialization.
+  const needsReload = currentBoot && boot ? currentBoot !== boot : appWasVisible;
+  if (_restartShown || needsReload) {
+    reloadPending = true;
+    setTimeout(() => window.location.reload(), START_LIMITS.reloadDelayMs);
+    return;
+  }
+  resetLoadingToConnecting();
+  if (appWasVisible) {
+    appWasVisible = false;
+    concealOverlay($('loading-overlay'));
+    return;
+  }
+  emit('loading:retried');
+  if (_initCallback) _initCallback();
 }
 
 // ═══════════════════════════════════════════
@@ -583,24 +611,23 @@ function handleCopyCommand() {
  * Pings /api/health and re-triggers init on success.
  */
 async function handleRetryConnection() {
+  const bridge = _offlineBridge;
   const $status = $('loading-retry-status');
   if ($status) $status.textContent = t('loading.checking');
 
   try {
     const health = await fetchHealth();
+    if (_offlineBridge !== bridge) return;
     // fetchHealth uses AbortSignal.timeout(3000) internally
-    if (health && health.ok !== false) {
+    if (health?.ok === true && !health.restarting && !_restartShown) {
       if ($status) $status.textContent = t('loading.connectedLoading');
-      // After a restart the page loads again (see openBridge).
-      if (_restartShown) { window.location.reload(); return; }
-      resetLoadingToConnecting();
-      emit('loading:retried');
-      if (_initCallback) _initCallback();
+      recoverConnection(health.bootId);
     } else {
       if ($status) $status.textContent = t('loading.notReadyYet');
       setTimeout(() => { if ($status) $status.textContent = ''; }, 3000);
     }
   } catch {
+    if (_offlineBridge !== bridge) return;
     if ($status) $status.textContent = t('loading.stillOffline');
     setTimeout(() => { if ($status) $status.textContent = ''; }, 3000);
   }
@@ -640,6 +667,32 @@ export function initLoading({ onInit } = {}) {
   // ── Retry connection ──
   const retryBtn = $('loading-retry-btn');
   if (retryBtn) retryBtn.addEventListener('click', handleRetryConnection);
+
+  let probing = false;
+  async function checkConnection() {
+    if (probing || _offlineBridge) return;
+    probing = true;
+    try {
+      let seen = await probeServer().catch(() => null);
+      // A close or a timed-out request after sleep can precede a healthy
+      // answer. Confirm the miss immediately, without waiting for another interval.
+      if (!seen && currentBoot && !_offlineBridge) seen = await probeServer().catch(() => null);
+      if (_offlineBridge) return;
+      if (seen?.up && !seen.stopping && !(currentBoot && seen.boot && currentBoot !== seen.boot)) {
+        currentBoot ||= seen.boot;
+        return;
+      }
+      // Preserve a specific startup database error until the app actually ran.
+      const overlay = $('loading-overlay');
+      if (!overlay || (seen && !seen.up && overlay.classList.contains('error') && !overlay.classList.contains('hidden'))) return;
+      appWasVisible = overlay.classList.contains('hidden');
+      revealOverlay(overlay);
+      showLoadingError(t('loading.serverOffline'), t('loading.serverNotRunning'), false, true);
+      if (appWasVisible) overlay.classList.add('over-app');
+    } finally { probing = false; }
+  }
+  setInterval(checkConnection, 3000);
+  on('sync:disconnected', checkConnection);
 
   // ── The server says it is restarting (ui-sync.js): every window shows it ──
   on('server:restarting', (msg) => beginRestart({ announced: true, boot: typeof msg?.bootId === 'string' ? msg.bootId : '' }));

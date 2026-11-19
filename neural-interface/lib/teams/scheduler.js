@@ -512,7 +512,7 @@ export function createTeamScheduler({
     }
     if (routed.route?.workflowId && routed.route.workflowId !== `team:${checked.plan.teamId}`) return refuse('TEAM_ROUTE_SPLIT_MISMATCH', 'This route already belongs to another team.', { status: 409 });
     const defaults = dispatchDefaults(input);
-    if (!routed.route && !defaults.provider && checked.plan.slices.some((slice) => !slice.agentRef)) {
+    if (!routed.route && !defaults.provider && checked.plan.slices.some((slice) => !slice.agentRef || slice.agentRef === 'none')) {
       return refuse('TEAM_PROVIDER_REQUIRED', 'Name the provider the team\'s workers run on (or give every slice an agent_ref).', { status: 400 });
     }
     if (records.has(checked.plan.teamId)) return refuse('TEAM_EXISTS', `A team named "${checked.plan.teamId}" exists already: a team id is used once.`, { status: 409 });
@@ -557,7 +557,7 @@ export function createTeamScheduler({
     // model, effort and account are for the slices that name none. (An approved route binds every slice all the same:
     // the router writes its target over the spec after the agent was applied.)
     const { provider: _provider, model: _model, effort: _effort, accountId: _accountId, ...shared } = record.dispatch || {};
-    const defaults = slice.agentRef ? shared : (record.dispatch || {});
+    const defaults = slice.agentRef && slice.agentRef !== 'none' ? shared : (record.dispatch || {});
     const spec = {
       ...defaults,
       task: lead ? `${lead}\n\nYOUR SLICE'S TASK (as first given):\n${slice.task}` : slice.task,

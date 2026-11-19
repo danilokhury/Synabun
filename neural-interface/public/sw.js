@@ -1,6 +1,6 @@
 // Bump when offline.html changes shape: the new worker drops the old cache and
 // stores the page again (v13: a restart read from the supervisor's report).
-const CACHE_NAME = 'synabun-offline-v14';
+const CACHE_NAME = 'synabun-offline-v15';
 const OFFLINE_URL = '/offline.html';
 
 self.addEventListener('install', (event) => {
@@ -22,11 +22,12 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.mode !== 'navigate') return;
   event.respondWith(
-    fetch(event.request).then((response) => {
+    fetch(event.request, { signal: AbortSignal.timeout(12000) }).then(async (response) => {
+      if (response.status >= 500) return await caches.match(OFFLINE_URL) || response;
       // Server is up — silently refresh cached offline.html so it's always current
       caches.open(CACHE_NAME).then((cache) =>
         cache.add(new Request(OFFLINE_URL, { cache: 'reload' }))
-      );
+      ).catch(() => {});
       return response;
     }).catch(() => caches.match(OFFLINE_URL))
   );

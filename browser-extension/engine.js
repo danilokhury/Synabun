@@ -1,17 +1,17 @@
-import { anyOrigin, command, CONTROL, controlSurface, fail, HISTORY, inventory, hostPattern, localDeadline, MAX_TABS, nonce, publicOrigin, safeError } from './protocol.js';
+import { anyOrigin, command, CONTROL, controlSurface, fail, HISTORY, inventory, hostPattern, localDeadline, MAX_FILE, MAX_TABS, nonce, publicOrigin, safeError } from './protocol.js';
 
 /** Pure controller over an injected chrome API; no socket or storage credential access. */
 // `now` is a monotonic clock (milliseconds) for command deadlines; `wallClock` the system clock the content script shares.
 // `fullControlDefault` is the mode before the owner ever chose one (full control: agents may use any http(s) site and
 // any tab of this browser with no sharing step). `activateMs` is how long a full-control screenshot lets a tab it
 // brought to the front settle before capturing it.
-export function createEngine(chrome, { save = async () => {}, changed = () => {}, settleMs = 10000, quietMs = 500, pollMs = 50,
+export function createEngine(chrome, { readUpload, save = async () => {}, changed = () => {}, settleMs = 10000, quietMs = 500, pollMs = 50,
   now = () => performance.now(), wallClock = () => Date.now(), fullControlDefault = true, activateMs = 150, commitMs = 20000, visibleMs = 2000 } = {}) {
   // `epoch` moves only on the owner's revocations and pairing changes, and cancels every tab's work. A tab's own
   // navigation, update or close moves that tab's counter in `moves` (by Chrome tab id) and nothing else: one agent's
   // ordinary navigation never cancels another agent's work on another tab. `focus` moves when the active tab changes;
   // only a screenshot, which captures whatever tab is active, is held to it.
-  let tabs = new Map(), sites = [], allowNewTabs = false, uploads = false, downloads = false, epoch = 0, focus = 0;
+  let tabs = new Map(), sites = [], allowNewTabs = false, downloads = false, epoch = 0, focus = 0;
   // The mode and its version. Only the owner changes it: the popup (setMode) or the server's `mode` control message,
   // whose version must be newer. Switching to restricted is a revocation; switching to full control widens only.
   // In full control `tabs` also holds a record for every other tab of the browser (`listed`), so agents can see and
@@ -49,9 +49,9 @@ export function createEngine(chrome, { save = async () => {}, changed = () => {}
   const current = () => {
     const all = [...tabs.values()].filter(t => { if (t.owner || !fullControl) return true; try { anyOrigin(t.url); return true; } catch { return false; } }), listed = [...all.filter(t => t.owner), ...all.filter(t => !t.owner)].slice(0, MAX_TABS);
     return inventory({ tabs: listed.map(t => ({ handle: t.handle, url: t.url, owner: t.owner, created: t.created === true, title: clip(t.title) })),
-      sites: [...sites], versions: sites.map(s => versions.get(s) || 0), allowNewTabs, uploads, downloads, fullControl, modeVersion });
+      sites: [...sites], versions: sites.map(s => versions.get(s) || 0), allowNewTabs, uploads: true, downloads, fullControl, modeVersion });
   };
-  const persist = async () => { await save({ tabs: [...tabs.values()], sites, versions: [...versions], allowNewTabs, uploads, downloads, fullControl, modeVersion }); changed(current()); };
+  const persist = async () => { await save({ tabs: [...tabs.values()], sites, versions: [...versions], allowNewTabs, uploads: true, downloads, fullControl, modeVersion }); changed(current()); };
   async function live(t) {
     try { const tab = await chrome.tabs.get(t.id); t.url = shownUrl(tab); t.title = clip(tab.title); return tab; }
     catch { move(t.id); tabs.delete(t.handle); moves.delete(t.id); await persist(); fail('TAB_CLOSED'); }
@@ -109,7 +109,7 @@ export function createEngine(chrome, { save = async () => {}, changed = () => {}
     if (fullControl) open(t.url, blocked);
     else if (t.url !== 'about:blank') await permitted(t.url); else if (op !== 'navigate' && !HISTORY.includes(op)) fail('SITE_NOT_APPROVED');
     if (args.url) await destination(args.url, blocked);
-    if (op === 'upload' && !uploads && !fullControl || op === 'download' && !downloads) fail('PERMISSION_REQUIRED');
+    if (op === 'download' && !downloads) fail('PERMISSION_REQUIRED');
     return t;
   }
   // The owner's mode change, from the popup or the server. An older version never applies. Switching to restricted
@@ -390,7 +390,7 @@ export function createEngine(chrome, { save = async () => {}, changed = () => {}
         await recheck(); result = blank;
       } else fail('NO_MATCH');
     } else {
-      await act(() => chrome.scripting.executeScript({ target: { tabId: t.id, frameIds: [0] }, files: ['content.js'], world: 'ISOLATED' }));
+      const injection = await act(() => chrome.scripting.executeScript({ target: { tabId: t.id, frameIds: [0] }, files: ['content.js'], world: 'ISOLATED' }));
       await recheck();
       t.nav ||= nonce();
       // The page action carries the deadline as a system-clock time (`until`), which the content script shares: it
@@ -398,9 +398,40 @@ export function createEngine(chrome, { save = async () => {}, changed = () => {}
       // Full control sends no site list: the page checks only that a link or form does not lead to SynaBun's own
       // addresses (`blocked`). Restricted mode sends the approved sites, less SynaBun's public aliases.
       const beforeActionUrl = t.url;
-      result = await act(() => chrome.tabs.sendMessage(t.id, { kind: 'synabun-fixed-command', op, args,
+      let delivery = { frameId: 0 }, pageArgs = args;
+      if (op === 'upload') {
+        const documentId = injection?.[0]?.documentId;
+        if (!documentId) fail('TAB_NOT_APPROVED');
+        delivery = { documentId };
+        const sizes = [];
+        let remaining = MAX_FILE;
+        for (let index = 0; index < args.files.length; index++) {
+          await recheck();
+          const blob = await readUpload(input.id, index, Math.max(1, expires - now()));
+          if (blob.size > remaining) fail('UPLOAD_TOO_LARGE');
+          remaining -= blob.size;
+          sizes.push(blob.size);
+          // Chrome serializes tab messages as JSON. Keep even a 50 MB file below its IPC cap.
+          const chunkSize = 1024 * 1024;
+          for (let pos = 0; pos < blob.size; pos += chunkSize) {
+            const reader = new FileReader();
+            const data = await new Promise((resolve, reject) => {
+              reader.onload = () => resolve(reader.result.split(',')[1]);
+              reader.onerror = () => reject(reader.error);
+              reader.readAsDataURL(blob.slice(pos, pos + chunkSize));
+            });
+            await recheck();
+            const ack = await act(() => chrome.tabs.sendMessage(t.id, { kind: 'synabun-upload-part',
+              id: input.id, index, data, until: wallClock() + Math.max(0, expires - now()) }, delivery));
+            if (!ack?.ok) fail(ack?.code || 'OPERATION_FAILED');
+          }
+        }
+        await recheck();
+        pageArgs = { ...args, uploadId: input.id, sizes };
+      }
+      result = await act(() => chrome.tabs.sendMessage(t.id, { kind: 'synabun-fixed-command', op, args: pageArgs,
         sites: fullControl ? null : sites.filter(site => !blockedHosts.includes(new URL(site).hostname)), blocked, downloads, nav: t.nav,
-        until: wallClock() + Math.max(0, expires - now()) }, { frameId: 0 }));
+        until: wallClock() + Math.max(0, expires - now()) }, delivery));
       if (op === 'click' && result?.ok) {
         Object.assign(result, await metadata());
         if (result.url !== beforeActionUrl || moved(t.id) !== tabBegan) t.nav = nonce();
@@ -421,7 +452,7 @@ export function createEngine(chrome, { save = async () => {}, changed = () => {}
     async restore(saved = {}) {
       sites = (saved.sites || []).filter(s => { try { return publicOrigin(s) === s; } catch { return false; } });
       versions = new Map((Array.isArray(saved.versions) ? saved.versions : []).filter(e => Array.isArray(e) && typeof e[0] === 'string' && Number.isSafeInteger(e[1]) && e[1] >= 0));
-      allowNewTabs = saved.allowNewTabs === true; uploads = saved.uploads === true; downloads = saved.downloads === true;
+      allowNewTabs = saved.allowNewTabs === true; downloads = saved.downloads === true;
       fullControl = typeof saved.fullControl === 'boolean' ? saved.fullControl : fullControlDefault === true;
       modeVersion = Number.isSafeInteger(saved.modeVersion) && saved.modeVersion >= 0 ? saved.modeVersion : 0;
       tabs = new Map((saved.tabs || []).filter(t => fullControl || !t.listed || t.created).map(t => [t.handle, t]));
@@ -450,8 +481,8 @@ export function createEngine(chrome, { save = async () => {}, changed = () => {}
     async revokeSite(site) { approval++; sites = sites.filter(s => s !== site); epoch++; pruneVersions(); await persist(); },
     async options(value) {
       // Switching a permission off is a revocation; switching one on is not.
-      if (allowNewTabs && value.allowNewTabs !== true || uploads && value.uploads !== true || downloads && value.downloads !== true) { approval++; epoch++; }
-      allowNewTabs = value.allowNewTabs === true; uploads = value.uploads === true; downloads = value.downloads === true; await persist();
+      if (allowNewTabs && value.allowNewTabs !== true || downloads && value.downloads !== true) { approval++; epoch++; }
+      allowNewTabs = value.allowNewTabs === true; downloads = value.downloads === true; await persist();
     },
     // Tab events from the browser concern that tab only.
     async closed(id) { move(id); for (const t of tabs.values()) if (t.id === id) tabs.delete(t.handle); moves.delete(id); await persist(); },
@@ -464,7 +495,7 @@ export function createEngine(chrome, { save = async () => {}, changed = () => {}
       await persist();
     },
     // A new pairing or an unpairing ends every approval and every agent's hold. The mode is the owner's setting and stays.
-    async clear() { approval++; tabs.clear(); sites = []; allowNewTabs = uploads = downloads = false; epoch++; await enumerate(); await persist(); },
+    async clear() { approval++; tabs.clear(); sites = []; allowNewTabs = downloads = false; epoch++; await enumerate(); await persist(); },
     activated() { focus++; },
     // Whether an agent holds the browser tab with this Chrome id (SynaBun's setup page is never paired from one).
     heldByAgent: id => [...tabs.values()].some(t => t.id === id && t.owner),

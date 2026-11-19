@@ -444,7 +444,7 @@
   }
 </style>
 </head>
-<body>
+<body data-synabun-offline>
 
 <!-- Ambient particles -->
 <div class="particles" id="particles"></div>
@@ -571,8 +571,9 @@
 
   async function serverAnswers() {
     try {
-      const res = await fetch('/', { method: 'HEAD', cache: 'no-store' });
-      return res.ok;
+      const res = await fetch('/api/health', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
+      const health = res.ok && await res.json();
+      return health?.ok === true && !health.restarting;
     } catch {
       return false;
     }

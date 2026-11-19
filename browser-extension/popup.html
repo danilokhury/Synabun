@@ -56,7 +56,6 @@
     <div class="p-list" id="p-waiting"></div>
     <div class="p-actions"><button type="button" class="p-btn p-btn-primary" id="share" data-action="share"></button><button type="button" class="p-btn" id="site" data-action="site"></button></div>
     <label class="p-check"><input type="checkbox" id="newTabs"><span id="p-newtabs-label"></span></label>
-    <label class="p-check"><input type="checkbox" id="uploads"><span id="p-uploads-label"></span></label>
   </section>
 
   <details class="p-details" id="p-files" hidden>
@@ -91,6 +90,10 @@
       <button type="button" class="p-btn p-btn-ghost" id="disconnect" data-action="confirm-disconnect" hidden></button>
       <button type="button" class="p-btn p-btn-ghost p-btn-danger" id="revoke" data-action="confirm-revoke" hidden></button>
     </span>
+    <div class="p-footer-end p-footer-tools">
+      <button type="button" class="p-btn p-btn-ghost" id="p-open-extensions" data-action="open-extensions"></button>
+      <button type="button" class="p-btn p-btn-ghost" id="p-reload-extension" data-action="reload-extension"></button>
+    </div>
   </footer>
 
   <p class="p-sr-only" id="p-live" role="status" aria-live="polite"></p>

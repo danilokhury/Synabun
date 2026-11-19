@@ -14,7 +14,7 @@ The extension connects to SynaBun on this computer at `127.0.0.1`. Setup require
 
 **Full control** is the default. An agent can open tabs, use your existing tabs and work on signed-in sites or local development servers. Use **Take back** in the popup to regain control of a tab.
 
-Choose **Only sites and tabs I share** in **Settings → Browser → Agent access** or in the popup to limit access. Share the site and tab from the popup, then enable new tabs or downloads if the task needs them. For uploads, place the intended files in the upload folder shown in Settings.
+Choose **Only sites and tabs I share** in **Settings → Browser → Agent access** or in the popup to limit access. Share the site and tab from the popup, then enable new tabs or downloads if the task needs them. For uploads, place the intended files in the upload folder shown in Settings and pass their absolute paths to `browser_upload`. The Chrome extension reads them through the local bridge because its service worker has no direct filesystem access. It uses the existing isolated content script to set the input and fire its input and change events. This needs no debugger permission.
 
 **Disconnect** pauses access across restarts. **Revoke pairing** ends the pairing. After an update, reload SynaBun Browser Bridge from the browser's extensions page when prompted.
 
@@ -79,6 +79,6 @@ Page interactions operate on the top document. Some controls require manual inpu
 | browser_session | Supported | Lists, opens or claims tabs according to the current access mode. |
 | browser_snapshot | Partial | Lists semantic elements in the top document. |
 | browser_type | Partial | Works with standard controls in the top document. |
-| browser_upload | Partial | Uses up to four files from the upload folder, up to 1 MB total. |
+| browser_upload | Partial | Uses up to four files from the upload folder, up to 50 MB total in either access mode. The extension reads the selected files through its paired loopback bridge and attaches them to the file input. |
 | browser_wait | Partial | Works with standard controls in the top document. |
 | browser_x_compose_state | Unsupported | Unavailable in extension mode. |

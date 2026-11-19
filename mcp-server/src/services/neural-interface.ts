@@ -2131,6 +2131,7 @@ export async function assistantCatalog(opts: { provider?: string; search?: strin
 const ASSISTANT_ROUTE_TIMEOUT = 115_000;
 
 export async function assistantRoute(body: {
+  agent_ref?: string;
   assistantSessionId: string;
   task_key?: string;
   task_class: string;

@@ -915,4 +915,5 @@ export function injectSharedHTML() {
   // out once without it.
   document.documentElement.classList.add(FRAMED_CLASS);
   document.body.insertAdjacentHTML('afterbegin', getSharedHTML());
+  document.getElementById('startup-status')?.remove();
 }

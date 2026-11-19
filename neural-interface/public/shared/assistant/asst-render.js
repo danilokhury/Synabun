@@ -254,6 +254,7 @@ export function updateRunCard(card, run, opts = {}) {
     const usage = runTokens?.total > 0 || run.usageObserved ? formatRunTokens(runTokens, run.usageFidelity || run.tokens?.fidelity, t) : null;
     if (usage) bits.push(`<span class="asst-usage-run-tokens" aria-label="${esc(usage.label)}">${esc(usage.text)}</span>`);
     if (run.currentIteration > 1) bits.push(`<span>${esc(t('assistant.run.turn', 'turn {n}', { n: run.currentIteration }))}</span>`);
+    if (run.agentRef) bits.push(`<span>${esc(run.agentRef)}</span>`);
     if (run.route && typeof run.route === 'object') {
       const r = run.route;
       const routeBits = [r.taskClassLabel || r.taskClass || t('assistant.routes.task', 'task')];

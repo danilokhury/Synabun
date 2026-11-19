@@ -9098,6 +9098,8 @@
     }
   },
   "agentsStudio": {
+    "builtin": "Integrado",
+    "builtinHelp": "Personalize este agente salvando uma revisão própria.",
     "nativeExport": {
       "action": "Exportar para host",
       "title": "Exportar {name} para um host",
@@ -14545,7 +14547,7 @@
       "unsupportedHelp": "{browser} não executa a extensão. Abra a configuração em outro navegador Chromium instalado abaixo; seu navegador padrão não será alterado.",
       "setupAgainTitle": "Configuração",
       "setupAgainHelp": "Execute a configuração guiada de novo para outro navegador ou perfil, ou quando a extensão não conectar mais. A extensão pareia sozinha, sem código para digitar.",
-      "uploadHelp": "Até 1 MB no total por comando de upload. O controle total permite uploads; o modo restrito exige ativar Permitir uploads no popup da extensão.",
+      "uploadHelp": "Até 50 MB no total por comando de upload.",
       "manualPairHelp": "Só se o pareamento automático não for possível: inicie o pareamento aqui e digite o código e a porta no popup da extensão, em Parear com um código.",
       "stopSharing": "Parar de compartilhar",
       "stopSharingLabel": "Parar de compartilhar {title}",

@@ -243,8 +243,10 @@ const nativeServeBoundary = createNativeServeBoundary({
     const cfg = loadBrowserConfig();
     const profiles = new Map(normalizeAgentProfiles(cfg).map(p => [p.envId, p]));
     const defaultId = moreLoginDefaultEnvId(cfg);
-    if (defaultId) profiles.set(String(defaultId), { envId: String(defaultId) });
-    for (const envId of nativePreflightProfiles) profiles.set(envId, { envId });
+    if (defaultId && !profiles.has(String(defaultId))) profiles.set(String(defaultId), { envId: String(defaultId) });
+    for (const envId of nativePreflightProfiles) {
+      if (!profiles.has(envId)) profiles.set(envId, { envId });
+    }
     const remote = [...profiles.values()].filter(p => !moreLogin.isLocalProfileId(p.envId));
     const liveProfiles = remote.length ? await reconcilePreflightProfiles(remote,
       () => moreLogin.listCompleteProfiles({ savedCfg: cfg, firstPageTimeout: 5000 }),
@@ -8387,6 +8389,7 @@ let _ocpVersion = null;
 let _ocpPassword = null;
 let _ocpProblem = null;
 let _ocpHistoryClearInProgress = false;
+let _ocpSessionCacheWarmup = null;
 
 // ── OpenCode V2 (clean-slate sidepanel) — client set & bridge ──
 const _ocpV2WsClients = new Set();   // all connected /ws/opencode-v2 clients
@@ -10495,6 +10498,9 @@ app.delete('/api/opencode/history', async (req, res) => {
     try { result.databaseBytesAfter = getOpenCodeHistoryStats({ dbPath, dataRoot: dirname(dbPath) }).databaseBytes; } catch { result.databaseBytesAfter = before.databaseBytes; }
 
     try {
+      // A startup scan may still hold session rows it read before deletion.
+      // Finish that pass before clearing the index so none can be put back.
+      if (_ocpSessionCacheWarmup) await _ocpSessionCacheWarmup.catch(() => {});
       result.resumeCache = clearSessionCacheProvider('opencode');
     } catch (error) {
       result.warnings.push(`OpenCode Resume cache could not be cleared: ${error.message}`);
@@ -22596,6 +22602,7 @@ let _codexSessionCatalogRefresh = null;
 function getCodexSessionCatalogRefresh() {
   if (!_codexSessionCatalogRefresh) {
     _codexSessionCatalogRefresh = memoCache(() => rebuildCodexCache({
+      background: true,
       accounts: loadCodexAccounts().accounts,
       projects: loadHookProjects(),
     }), { ttlMs: 15000 });
@@ -24640,11 +24647,12 @@ registerSkillEvalRoutes(app, {
 // and the routes of Agents Studio under /api/agents-studio/v1 (lib/agents-studio-api.js: approving, deleting and test
 // runs are the owner's page only, as the Skills Service's installs are). The older /api/agents routes above (isolated
 // agent processes) are another thing and stay as they are.
-import { createAgentRegistry } from './lib/agents/registry.js';
+import { createAgentRegistry, loadBuiltinAgents } from './lib/agents/registry.js';
 import { createAgentResolver, setAgentResolver } from './lib/agents/resolve.js';
 import { registerStudioAttention } from './lib/studio-attention.js';
 import { registerAgentsStudioRoutes } from './lib/agents-studio-api.js';
 const agentDefinitions = createAgentRegistry({
+  builtins: loadBuiltinAgents(),
   dir: resolve(DATA_HOME, 'data', 'agents'),
   // Every page of the owner hears of a change; invite guests do not (broadcastSync keeps `assistant:` to the owner).
   emit: (event) => { try { broadcastSync({ type: 'assistant:agents-changed', event }); } catch { /* no page is listening */ } },
@@ -26866,7 +26874,7 @@ app.get('/api/health', (req, res) => {
       // page showing the restart tells this one from the one that replaces it.
       bootId: SERVER_BOOT_ID,
       ...(_restartRequestedAt && !_stopOverridesRestart ? { restarting: true } : {}),
-      // Whether the owner's authority can be checked (lib/peer-identity.js): ok / degraded (macOS, the lookup fails:
+      // Whether the owner's authority can be checked (lib/peer-identity.js): pending at boot / ok / degraded (macOS, the lookup fails:
       // the owner's actions answer 503 until it works) / unsupported (no lookup on this platform) / off
       // (SYNABUN_PEER_IDENTITY=off). The page's banner reads it (public/shared/ui-owner-authority.js).
       ownerAuthority: _peerIdentity.authorityState(),
@@ -29842,6 +29850,7 @@ function noteMoreLoginContextClose(session, sessionId, context = session?.contex
     // DeepSeek-Harness-style routing: the brain proposes, the router enforces the
     // session's route mode. Sinks reach the runtime/dispatcher lazily.
     const assistantRouter = createAssistantRouter({
+      agents: agentDefinitionResolver,
       accountUsage,
       budget: assistantBudget,
       catalog: assistantCatalog,
@@ -29861,7 +29870,7 @@ function noteMoreLoginContextClose(session, sessionId, context = session?.contex
         computerApproved: (sessionId, payload) => _assistantRuntime?.routerComputerApproved?.(sessionId, payload),
         startHeld: (runId, target, meta) => _assistantDispatcher?.resolveRoute?.(runId, { target, ...meta }),
         // Asked before a card's pick is approved: a held run that would refuse it keeps the card open.
-        checkHeld: (runId, target) => _assistantDispatcher?.heldRouteRefusal?.(runId, target) || null,
+        checkHeld: (runId, target, role) => _assistantDispatcher?.heldRouteRefusal?.(runId, target, role) || null,
         declineHeld: (runId, reason) => _assistantDispatcher?.declineRoute?.(runId, { reason }),
       },
       log: (tag, message) => assistantLog(tag, message),
@@ -33418,6 +33427,7 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
     }
 
     if (!browserSessionId) {
+      if (createError?.sharedPreflight) return createError;
       // The run's own profile (its pin, else the MoreLogin default) failed to start or connect in this run: from now on
       // it may not move to another profile (POST /api/morelogin/use answers 409 PROFILE_FAILED_NO_SWITCH) until that
       // profile connects again for it (below), the owner moves it, or it ends (lib/morelogin-profile-failures.js).
@@ -34941,6 +34951,10 @@ async function protectNativeServeContext(ctx, { deadline = Infinity, signal = nu
 // the serves it names (narrowed: never a token or a whole record).
 function browserStartFailure(err) {
   const out = { error: err?.message || String(err) };
+  if (err?.sharedPreflight) {
+    return { error: `Shared OpenCode build verification blocked browser acquisition. ${out.error}`,
+      sharedPreflight: true, code: err.code, offenders: err.offenders.map(({ envId, reason }) => ({ envId, reason })) };
+  }
   if (err?.code === 'NATIVE_SERVE_UNVERIFIED') { out.code = err.code; out.offenders = narrowOffenders(err.offenders); }
   if (err?.code === 'MORELOGIN_NOT_CHROMIUM' || err?.code === 'MORELOGIN_NOT_DEVTOOLS') out.code = err.code;
   // MoreLogin refused the start (a plan limit, …): the user has to act, a retry or another run hits the same answer.
@@ -39643,31 +39657,29 @@ const httpServer = app.listen(PORT, async () => {
   }, 2500);
 
   // Warm the session_cache + session_fts tables so the hybrid search has data
-  // on first keystroke. Each pass is synchronous and holds the main thread, so
-  // they run one per tick (requests are answered in between), and each only
-  // re-reads sessions that changed since the last start.
-  setTimeout(() => {
+  // on first keystroke. The large history scans yield between sessions, and
+  // a Codex catalog request shares the same refresh with this startup pass.
+  setTimeout(async () => {
     const passes = [
-      () => {
+      async () => {
         try {
-          const claude = rebuildClaudeCache();
+          const claude = await rebuildClaudeCache({ background: true });
           if (claude.updated > 0) console.log(`  Session cache (claude): indexed ${claude.updated}/${claude.sessions}`);
         } catch (err) { console.warn('  Session cache (claude) error:', err.message); }
       },
-      () => {
+      async () => {
         try {
-          const codex = rebuildCodexCache({
-            accounts: loadCodexAccounts().accounts,
-            projects: loadHookProjects(),
-          });
+          const codex = await refreshCodexSessionCatalog();
           if (codex.updated > 0) console.log(`  Session cache (codex): indexed ${codex.updated}/${codex.sessions}`);
         } catch (err) { console.warn('  Session cache (codex) error:', err.message); }
       },
-      () => {
+      async () => {
         try {
-          const oc = rebuildOpencodeCache({ getOpencodeDb });
+          _ocpSessionCacheWarmup = rebuildOpencodeCache({ getOpencodeDb, background: true });
+          const oc = await _ocpSessionCacheWarmup;
           if (oc.updated > 0) console.log(`  Session cache (opencode): indexed ${oc.updated}/${oc.sessions}`);
         } catch (err) { console.warn('  Session cache (opencode) error:', err.message); }
+        finally { _ocpSessionCacheWarmup = null; }
       },
       () => {
         const agy = refreshAntigravityCatalog({ force: true });
@@ -39676,13 +39688,10 @@ const httpServer = app.listen(PORT, async () => {
         setInterval(() => refreshAntigravityCatalog({ force: true }), 5 * 60 * 1000).unref?.();
       },
     ];
-    const next = () => {
-      const pass = passes.shift();
-      if (!pass) return;
-      pass();
-      setImmediate(next);
-    };
-    next();
+    for (const pass of passes) {
+      await new Promise(resolve => setImmediate(resolve));
+      await pass();
+    }
   }, 2000);
 
   // Auto-sync OpenClaw bridge if enabled

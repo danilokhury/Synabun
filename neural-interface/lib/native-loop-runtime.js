@@ -273,10 +273,11 @@ export class NativeLoopRuntime {
   _loadLedger() {
     const rows = readJson(this.ledgerPath, []);
     if (!Array.isArray(rows)) return;
+    let options;
     for (const row of rows) {
       if (!row?.runId) continue;
       let stored;
-      try { stored = readStoredToolListRecord(row, this.toolListOptions()); }
+      try { stored = readStoredToolListRecord(row, options ??= this.toolListOptions()); }
       catch (error) {
         // A historical run may name a custom preset the owner has since deleted. Refuse that
         // run, preserve the original selection for diagnosis, and keep the rest of the server up.
@@ -405,12 +406,13 @@ export class NativeLoopRuntime {
 
   _emit(type, record, extra = {}) {
     record.version = (Number(record.version) || 0) + 1;
-    record.updatedAt = iso(this.now());
+    const leaseChange = type === 'sidepanel:run-claimed' || extra.reason === 'claim-released';
+    if (!leaseChange) record.updatedAt = iso(this.now());
     // Force-flush on terminal transitions (a crash between throttled flushes
     // would otherwise leave the run listed as running after a restart), and on
     // a suspension (the next start resumes the run from this ledger).
     const terminal = ['completed', 'failed', 'stopped', 'interrupted', 'suspended'].includes(record.status);
-    this._persistLedger({ force: terminal });
+    this._persistLedger({ force: terminal && !leaseChange });
     const descriptor = cleanDescriptor(record);
     const message = { type, run: descriptor, ...extra };
     try { this.onEvent(message); } catch {}
@@ -1042,10 +1044,7 @@ export class NativeLoopRuntime {
     record.claimedBy = claimant;
     record.claimedAt = iso(this.now());
     if (changedOwner) this._emit('sidepanel:run-claimed', record);
-    else {
-      record.updatedAt = iso(this.now());
-      this._persistLedger();
-    }
+    else this._persistLedger();
     return { ok: true, run: cleanDescriptor(record) };
   }
 

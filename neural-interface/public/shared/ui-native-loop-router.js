@@ -29,6 +29,8 @@ const _providerEventBuffers = new Map();
 const _localReleases = new LocalReleaseTracker();
 let _initialized = false;
 let _claimHeartbeat = null;
+let _renewing = false;
+let _retryClaimsAt = 0;
 let _suspended = false;
 let _suspendedClaims = new Map();
 let _reconcilePromise = null;
@@ -118,6 +120,7 @@ function trimLatestRuns() {
 }
 
 async function claim(run) {
+  if (Date.now() < _retryClaimsAt) return false;
   const claimToken = _claimToken;
   const claimEpoch = _claimEpoch;
   try {
@@ -126,7 +129,10 @@ async function claim(run) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ windowId: _windowId, claimToken }),
     });
-    if (!response.ok) return false;
+    if (!response.ok) {
+      if (response.status === 503) _retryClaimsAt = Date.now() + 2000;
+      return false;
+    }
     if (_suspended || claimEpoch !== _claimEpoch || claimToken !== _claimToken) {
       fetch(`/api/sidepanel-runs/${encodeURIComponent(run.runId)}/release`, {
         method: 'POST',
@@ -138,7 +144,7 @@ async function claim(run) {
     }
     const data = await response.json();
     const claimedRun = data?.run || run;
-    _ownedClaims.set(run.runId, { provider: run.provider, status: claimedRun.status });
+    _ownedClaims.set(run.runId, { provider: run.provider, status: claimedRun.status, renewedAt: Date.now() });
     recordLatestRun(claimedRun);
     return claimedRun;
   } catch {
@@ -272,6 +278,7 @@ async function routeLatest(runId) {
     return false;
   }
   if (result?.ok) {
+    if (owned) owned.attachedVersion = run.version;
     _attached.set(run.runId, {
       provider: run.provider,
       iteration: run.currentIteration,
@@ -359,18 +366,26 @@ async function reconcileRuns() {
     if (!response.ok) return;
     const data = await response.json();
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    // Older servers moved updatedAt on a claim or release. A renewed lease
+    // does not make a finished conversation recent again.
+    const activityAt = (run) => run.completedAt || run.updatedAt || run.startedAt || '';
     const newestFirst = (data.runs || [])
       .filter(hasIdentity)
-      .sort((a, b) => String(b.updatedAt || b.startedAt || '').localeCompare(String(a.updatedAt || a.startedAt || '')));
+      .sort((a, b) => activityAt(b).localeCompare(activityAt(a)));
     const activeRuns = newestFirst.filter((run) => LIVE_STATUSES.has(run.status));
     const terminalRuns = newestFirst.filter((run) => {
       if (!TERMINAL_STATUSES.has(run.status)) return false;
-      if (new Date(run.updatedAt || run.startedAt || 0).getTime() < cutoff) return false;
+      if (!(Date.parse(activityAt(run)) >= cutoff)) return false;
       const claimAge = run.claimedAt ? Date.now() - new Date(run.claimedAt).getTime() : Infinity;
       return !run.claimedBy || run.claimedBy === _windowId || claimAge > CLAIM_TTL_MS;
     }).slice(0, TERMINAL_RESTORE_LIMIT);
-    for (const run of activeRuns) await routeNativeLoopRun(run, { focus: false, retry: true });
-    for (const run of terminalRuns) await routeNativeLoopRun(run, { focus: false, retry: true });
+    const restore = async (run) => {
+      const owned = _ownedClaims.get(run.runId);
+      if (run.claimedBy === _windowId && owned && Number.isFinite(run.version) && owned.attachedVersion === run.version) return;
+      await routeNativeLoopRun(run, { focus: false, retry: true });
+    };
+    for (const run of activeRuns) await restore(run);
+    for (const run of terminalRuns) await restore(run);
   } catch {}
 }
 
@@ -388,7 +403,7 @@ export function initNativeLoopRouter() {
   on('sync:sidepanel:run-created', route);
   on('sync:sidepanel:run-updated', (message) => {
     const run = descriptorFrom(message);
-    if (message?.reason === 'claim-released' && run?.runId && _localReleases.consume(run.runId)) {
+    if (message?.reason === 'claim-released' && run?.runId && (_localReleases.consume(run.runId) || TERMINAL_STATUSES.has(run.status))) {
       recordLatestRun(run);
       return;
     }
@@ -500,19 +515,33 @@ export function initNativeLoopRouter() {
 
 function startClaimHeartbeat() {
   if (_claimHeartbeat) return;
-  _claimHeartbeat = setInterval(() => {
-    if (_suspended) return;
-    for (const [runId, owned] of _ownedClaims) {
-      fetch(`/api/sidepanel-runs/${encodeURIComponent(runId)}/claim`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ windowId: _windowId, claimToken: _claimToken }),
-      }).then((response) => {
-        if (!response.ok) {
-          loseClaim(runId, owned.provider);
+  _claimHeartbeat = setInterval(async () => {
+    if (_suspended || _renewing) return;
+    _renewing = true;
+    const epoch = _claimEpoch;
+    try {
+      for (const [runId, owned] of [..._ownedClaims]) {
+        if (_suspended || epoch !== _claimEpoch) return;
+        if (_ownedClaims.get(runId) !== owned) continue;
+        let response;
+        if (Date.now() >= _retryClaimsAt) {
+          try {
+            response = await fetch(`/api/sidepanel-runs/${encodeURIComponent(runId)}/claim`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ windowId: _windowId, claimToken: _claimToken }),
+              signal: AbortSignal.timeout(8000),
+            });
+          } catch { /* retry at the next heartbeat while the lease is valid */ }
+          if (_ownedClaims.get(runId) !== owned || epoch !== _claimEpoch) continue;
+          if (!response || response.status === 503) _retryClaimsAt = Date.now() + 2000;
         }
-      }).catch(() => {});
-    }
-    scheduleReconcile();
+        if (response?.ok) owned.renewedAt = Date.now();
+        else if ((response && response.status !== 503) || Date.now() - owned.renewedAt >= CLAIM_TTL_MS) {
+          await loseClaim(runId, owned.provider);
+        }
+      }
+      if (_claimEpoch === epoch && Date.now() >= _retryClaimsAt) scheduleReconcile();
+    } finally { _renewing = false; }
   }, 30_000);
 }

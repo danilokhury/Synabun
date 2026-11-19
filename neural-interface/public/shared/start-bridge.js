@@ -266,7 +266,7 @@ export function fetchStartBeacon(target, { fetchImpl, timeoutMs = START_LIMITS.b
  *   launch()   → hand START_LINK to the OS
  *   beacon()   → Promise<object|null>  the launch's raw report (optional)
  *   port       → the server's port (what a beacon must be about)
- *   onState(state, detail)   on every change of state
+ *   onState(state, detail)   on every change of state; online includes the answering server's boot id
  *   onUpdate(snapshot)       whenever what there is to show changed: the
  *                            state, what the launch reported, or the second
  *
@@ -456,7 +456,7 @@ export function createStartBridge({
     if (!up && !stopped && state !== 'refused') await listen();
     probing = false;
     if (stopped) return;
-    if (up) { set('online'); update(); return; }
+    if (up) { set('online', { boot: seen.boot }); update(); return; }
     if (state === 'refused') { update(); return; }
     if (state === 'launching' || state === 'waiting') {
       const waited = now() - askedAt;
