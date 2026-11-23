@@ -22,6 +22,7 @@
      on the first view. Its sheet used to hold the first paint of the whole page until another site answered;
      it loads beside the page now (print until loaded, then all), long before that dialog can be opened. -->
 <link href="https://db.onlinewebfonts.com/c/3284c3a32cf946466fb963369b3c5b2d?family=Disket+Mono" rel="stylesheet" media="print" onload="this.media='all'">
+<link rel="preload" href="/synabun.png?v=2" as="image">
 <link rel="stylesheet" href="/shared/styles.css">
 <!-- three.js is vendored (scripts/build-vendor.mjs); only the map renderer imports it.
      The import map must come before any module load, the preload included. -->
@@ -52,6 +53,7 @@
 <link rel="modulepreload" href="/shared/state.js">
 <link rel="modulepreload" href="/shared/loading-teardown.js">
 <link rel="modulepreload" href="/shared/start-bridge.js">
+<link rel="modulepreload" href="/shared/server-presence.js">
 <link rel="modulepreload" href="/shared/synabun-mascot.js">
 <link rel="modulepreload" href="/shared/desktop-bridge.js">
 <link rel="modulepreload" href="/shared/synabun-ticker.js">
@@ -96,55 +98,262 @@
 </script>
 </head>
 <body>
-<div id="startup-status" role="status" style="position:fixed;inset:0;z-index:99999;display:grid;place-content:center;text-align:center;background:#050505;color:var(--t-primary,#ccc);font-family:Inter,system-ui,sans-serif">
-  <strong>SynaBun</strong><span>Connecting…</span>
-  <a href="" hidden style="color:inherit">Retry connection</a>
+<!-- Loading Overlay -->
+<div id="loading-overlay">
+  <div id="loading-mascot" data-state="asleep">
+    <svg viewBox="0 0 280 140" width="160" height="80" style="overflow:visible" aria-hidden="true">
+      <g class="syna-eye">
+        <g class="syna-lid" transform="translate(0,60) scale(1,0.08) translate(0,-60)">
+          <rect x="80" y="24" width="38" height="72" rx="19" fill="#ffffff"/>
+        </g>
+      </g>
+      <g class="syna-eye">
+        <g class="syna-lid" transform="translate(0,60) scale(1,0.08) translate(0,-60)">
+          <rect x="162" y="24" width="38" height="72" rx="19" fill="#ffffff"/>
+        </g>
+      </g>
+      <path d="M125,112 Q140,118 155,112" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="2.5" stroke-linecap="round"/>
+    </svg>
+    <span id="loading-zzz">z</span>
+  </div>
+  <img src="synabun.png?v=2" alt="SynaBun" class="loading-logo">
+  <div id="loading-text" role="status">Connecting</div>
+  <div id="loading-sub">Initializing neural pathways...</div>
+  <div id="loading-action">
+    <button id="loading-action-btn" type="button">
+      <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      <span id="loading-action-label">Start Server</span>
+    </button>
+    <div id="loading-action-status" role="status" aria-live="polite" aria-atomic="true"></div>
+    <div id="loading-action-elapsed" role="timer" aria-live="off"></div>
+    <div id="loading-action-hint"></div>
+    <ul id="loading-action-trail"></ul>
+    <div id="loading-action-log"></div>
+  </div>
+  <div id="loading-server-cmd">
+    <div id="loading-server-cmd-hint">Run this command to start the server:</div>
+    <div id="loading-server-cmd-box">
+      <code id="loading-cmd-text">npm start</code>
+      <button id="loading-cmd-copy" title="Copy to clipboard">
+        <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      </button>
+    </div>
+    <br>
+    <button id="loading-retry-btn" type="button">
+      <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      <span id="loading-retry-label">Retry Connection</span>
+    </button>
+    <div id="loading-retry-status"></div>
+    <img src="synabun.png?v=2" alt="SynaBun" style="margin-top:6px;height:32px;width:auto;filter:grayscale(0.5);opacity:0.18;">
+  </div>
 </div>
-<script>
-  // The module graph may never arrive. Keep the initial page usable before its overlay takes over.
+
+<script id="loading-diagnostics">
+  // This first frame and its retry can both run before any module downloads.
+  // Journal those events immediately. The reporter drains them under their original page IDs.
+  try {
+    const key = 'synabun-loading-diagnostics-early-v1';
+    let early = [];
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(key));
+      if (Array.isArray(saved)) early = saved.slice(-200);
+    } catch {}
+    const pageId = Array.from(crypto.getRandomValues(new Uint8Array(6)), n => n.toString(16).padStart(2, '0')).join('');
+    const bootTag = id => typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)
+      ? id.slice(0, 8).toLowerCase() : '';
+    let currentBoot = '';
+    let append = entry => {
+      early.push(entry);
+      if (early.length > 200) early.shift();
+      try { sessionStorage.setItem(key, JSON.stringify(early)); } catch {}
+    };
+    globalThis.synabunLoadingDiagnostics = {
+      setBoot(id) { currentBoot = bootTag(id); },
+      record(event, data = {}) {
+        if ('seenBoot' in data) data = { ...data, seenBoot: bootTag(data.seenBoot) };
+        append({ iso: new Date().toISOString(), pageId, currentBoot, visibility: document.visibilityState, event, data });
+      },
+    };
+    globalThis.synabunLoadingDiagnostics.record('startup-shown');
+    const send = globalThis.fetch.bind(globalThis);
+    import('/shared/client-diagnostics.js').then(({ createLoadingDiagnostics }) => {
+      append = createLoadingDiagnostics(globalThis, { send, early });
+      early = [];
+      try { sessionStorage.removeItem(key); } catch {}
+    }).catch(() => {});
+  } catch { /* A storage or platform failure must not interrupt startup. */ }
+</script>
+<script id="startup-recovery">
+  // Keep the branded overlay usable even when the module graph never arrives.
   (() => {
-    const status = document.getElementById('startup-status');
+    const element = id => document.getElementById(id);
+    const overlay = element('loading-overlay');
+    const fallback = {
+      connecting: ["Connecting", "Conectando"],
+      initializingNeural: ["Initializing neural pathways...", "Inicializando conexões neurais..."],
+      retryConnection: ["Retry Connection", "Tentar conectar novamente"],
+      serverOffline: ["Server Offline", "Servidor offline"],
+      serverNotRunning: ["The Neural Interface server is not running", "O servidor do Neural Interface não está em execução"],
+      connectionFailed: ["Connection Failed", "Falha na conexão"],
+      somethingWrong: ["Something went wrong. Try again.", "Algo deu errado. Tente novamente."],
+      connectedLoading: ["Connected! Loading...", "Conectado! Carregando..."],
+    };
+    // The server-backed locale becomes available at handoff. Use locally available preferences until then.
+    let saved;
+    try { saved = localStorage.getItem('synabun-locale'); } catch {}
+    const tags = [new URLSearchParams(location.search).get('lang'), saved, navigator.language, ...(navigator.languages || [])];
+    const portuguese = /^pt/i.test(tags.find(tag => /^(en|pt)(-|$)/i.test(tag)));
+    const earlyLabel = key => fallback[key][portuguese ? 1 : 0];
+    let label = earlyLabel;
+    let adopted = false;
+    function render(title, sub, retry) {
+      element('loading-text').textContent = label(title);
+      element('loading-sub').textContent = label(sub);
+      element('loading-retry-label').textContent = label('retryConnection');
+      overlay.classList.toggle('startup-retry', retry);
+      overlay.classList.toggle('error', title === 'serverOffline' || title === 'connectionFailed');
+    }
+    render('connecting', 'initializingNeural', false);
+    // This document is always fetched from the network; the modules may come from a cache. A shell from before the
+    // handoff inserts an overlay of its own ahead of this one and drives that one (getElementById finds the first):
+    // this one then has to go, or it stays over the loaded app. Whatever version of the modules ran, the app
+    // owns the overlay once its shell mounted, and nothing here runs after boot-complete.
+    const record = (event, data) => globalThis.synabunLoadingDiagnostics?.record(event, data);
+    let settled = false;
+    let checkTimer = null;
+    let checking = null;
+    let watcher = null;
+    function yieldToShell() {
+      if (!overlay.isConnected || element('loading-overlay') === overlay) return false;
+      overlay.remove();
+      return true;
+    }
+    function stopChecking() {
+      clearTimeout(checkTimer);
+      checkTimer = null;
+      const aborted = !!checking;
+      checking?.abort();
+      checking = null;
+      watcher?.disconnect();
+      watcher = null;
+      return aborted;
+    }
+    function takeOver(mode) {
+      if (adopted) return;
+      adopted = true;
+      stopChecking();
+      record('startup-adopt', { mode });
+    }
+    if (typeof MutationObserver === 'function') {
+      watcher = new MutationObserver(() => { if (yieldToShell()) takeOver('duplicate'); });
+      watcher.observe(document.body, { childList: true });
+    }
+    window.synabunAdoptLoading = translate => {
+      takeOver(yieldToShell() ? 'duplicate' : 'adopted');
+      label = key => {
+        const name = 'loading.' + key;
+        const value = translate(name);
+        return value === name && fallback[key] ? earlyLabel(key) : value;
+      };
+      render('connecting', 'initializingNeural', false);
+      element('loading-action-label').textContent = label('startServer');
+      element('loading-server-cmd-hint').textContent = label('runCommand');
+      element('loading-cmd-copy').title = label('copyToClipboard');
+    };
+    element('loading-retry-btn').addEventListener('click', event => {
+      if (!overlay.classList.contains('startup-retry') || overlay.classList.contains('server-offline')) return;
+      event.stopImmediatePropagation();
+      location.reload();
+    }, true);
     let sawOffline = false;
     let entryFailed = false;
+    let reloadScheduled = false;
+    let lastStatus = '';
+    function reportStatus(reason) {
+      if (lastStatus !== reason) globalThis.synabunLoadingDiagnostics?.record('startup-status', { reason });
+      lastStatus = reason;
+    }
     // A module graph that failed to load stays failed in this document, even if
     // the server has already recovered by the time the first probe runs.
     addEventListener('error', event => {
-      if (event.target?.getAttribute?.('src') === '/variant/3d/main.js') entryFailed = true;
+      if (event.target?.getAttribute?.('src') === '/variant/3d/main.js') {
+        entryFailed = true;
+        globalThis.synabunLoadingDiagnostics?.record('import-failed', { module: 'entry' });
+      }
     }, true);
-    // Both module graphs share one automatic retry for this navigation.
+    // Both graphs share one retry across the failed reload chain. A completed boot
+    // releases it immediately. After five minutes a fresh load can also retry.
+    addEventListener('synabun:boot-complete', () => {
+      try {
+        if (history.state?.startupRetried) {
+          const { startupRetried, ...state } = history.state;
+          history.replaceState(state, '');
+        }
+      } catch {}
+      globalThis.synabunLoadingDiagnostics?.record('boot-complete');
+      if (settled) return;
+      settled = true;
+      // The fallback is over for this document: no probe, no status, no retry screen after the app has loaded.
+      const aborted = stopChecking();
+      const removed = yieldToShell();
+      // An overlay nothing adopted (no shell took it, no shell replaced it) is hidden here; the module's
+      // hideLoading hides the adopted one.
+      const hidden = !adopted && !removed && overlay.isConnected;
+      if (hidden) {
+        overlay.classList.add('hidden');
+        setTimeout(() => { if (overlay.classList.contains('hidden')) overlay.classList.add('gone'); }, 600);
+      }
+      record('boot-cleanup', { adopted, removed, hidden, aborted });
+    });
     function retryHealthyStartup() {
-      if (!history.state?.startupRetried) {
-        try {
-          history.replaceState({ ...history.state, startupRetried: true }, '');
+      if (reloadScheduled) return;
+      try {
+        const last = history.state?.startupRetried;
+        const now = Date.now();
+        if (!Number.isFinite(last) || now < last || now - last >= 300000) {
+          history.replaceState({ ...history.state, startupRetried: now }, '');
+          if (entryFailed) globalThis.synabunLoadingDiagnostics?.record('import-retry', { module: 'entry' });
+          globalThis.synabunLoadingDiagnostics?.record('reload-scheduled', { reason: 'startup' });
+          reloadScheduled = true;
           location.reload();
           return;
-        } catch { /* Manual retry is still available. */ }
-      }
+        }
+      } catch { /* Manual retry is still available if the guard cannot be saved. */ }
       entryFailed = true;
-      status.querySelector('span').textContent = 'Interface failed to load';
-      status.querySelector('a').hidden = false;
-      if (!status.isConnected) document.body.append(status);
+      reportStatus('manual-retry');
+      render('connectionFailed', 'somethingWrong', true);
     }
-    addEventListener('synabun:startup-module-failed', retryHealthyStartup, { once: true });
+    addEventListener('synabun:startup-module-failed', retryHealthyStartup);
     async function checkStartup() {
-      if (!status.isConnected) return;
-      status.querySelector('a').hidden = false;
+      checkTimer = null;
+      if (adopted || settled) return;
+      if (yieldToShell()) return takeOver('duplicate');
+      overlay.classList.add('startup-retry');
       let healthy = false;
+      let bootId;
+      const request = checking = new AbortController();
       try {
-        const response = await fetch('/api/health', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
+        // Without AbortSignal.any a boot-complete cannot cut the request short; the check below still drops its answer.
+        const timeout = AbortSignal.timeout(3000);
+        const signal = AbortSignal.any ? AbortSignal.any([request.signal, timeout]) : timeout;
+        const response = await fetch('/api/health', { cache: 'no-store', signal });
         const health = response.ok && await response.json();
         healthy = health?.ok === true && !health.restarting;
+        bootId = health?.bootId;
       } catch {}
-      if (!status.isConnected) return;
+      if (checking === request) checking = null;
+      if (adopted || settled) return;
+      if (bootId) globalThis.synabunLoadingDiagnostics?.setBoot(bootId);
       if (healthy && (entryFailed || sawOffline)) {
         retryHealthyStartup();
         return;
       }
       if (!healthy) sawOffline = true;
-      status.querySelector('span').textContent = healthy ? 'Loading interface…' : 'Server offline';
-      setTimeout(checkStartup, 3000);
+      reportStatus(healthy ? 'loading' : 'offline');
+      render(healthy ? 'connecting' : 'serverOffline', healthy ? 'connectedLoading' : 'serverNotRunning', true);
+      checkTimer = setTimeout(checkStartup, 3000);
     }
-    setTimeout(checkStartup, 12000);
+    checkTimer = setTimeout(checkStartup, 12000);
   })();
 </script>
 

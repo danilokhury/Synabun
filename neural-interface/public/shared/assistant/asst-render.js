@@ -44,8 +44,8 @@
 // open is the character on screen, its face a live rig (liveAsk,
 // activateRigs); every other card's face is a painted still.
 
-import { assistantEventKey, fmtCost, fmtElapsed, isRemovableRun, isTerminalRunStatus, modelShortName, providerShortLabel, routeTargetLabel, runTone, summarizeMailbox } from './asst-state.js';
-import { createRouteLine } from './asst-route.js';
+import { assistantEventKey, displayProvider, fmtCost, fmtElapsed, isRemovableRun, isTerminalRunStatus, modelShortName, providerShortLabel, routeTargetLabel, runTone, summarizeMailbox } from './asst-state.js';
+import { createRouteLine, routeClassLabel } from './asst-route.js';
 import { closeMenu, isMenuOpen } from './asst-menu.js';
 import { computerToolName, describeComputerAction, frameUrls, markerPercent, openFrameLightbox, parseComputerResult, swapImage } from './asst-computer.js';
 import * as mascotLib from '../synabun-mascot.js';
@@ -55,11 +55,12 @@ import { injectRackStyles } from './asst-rack-styles.js';
 import { injectSceneStyles } from './asst-scene-styles.js';
 import { activityScene, compactActivity, isLivePhase, runChip, sceneOfClass, sceneSvg, stagePhase } from './asst-scenes.js';
 import { STAGE_TIMING, createWorkerStage } from './asst-run-stage.js';
-import { createMotionGate } from './asst-motion-gate.js';
+import { SETTLE_FRAMES, createMotionGate } from './asst-motion-gate.js';
 import { createStyleCache } from './asst-style-cache.js';
 import { formatRunTokens } from './asst-usage.js';
 import { sanitizeHtmlString, sanitizeInto } from './asst-sanitize.js';
 import { decorateCodeBlocks } from '../ui-code-copy.js';
+import { decorateOutput } from '../ui-output.js';
 import { renderStreamingMarkdown } from '../streaming-markdown.js';
 import { automationView } from './asst-automation.js';
 import { guessFollowups, splitFollowups } from './asst-followups.js';
@@ -70,7 +71,8 @@ import { createLimitDock } from './asst-limit-dock.js';
 import { createLimitWait } from './asst-limit-wait.js';
 import { synabunToolKey, synabunToolLabel } from '../synabun-tools.js';
 import { normalizeToolHeartbeat } from '../tool-heartbeat.js';
-import { closedSidepanelOf, createShownGate } from '../sidepanel-shown.js';
+import { createStickyScrollController } from '../ui-scroll-follow.js';
+import { createShownGate } from '../sidepanel-shown.js';
 
 // ── Markdown (lazy marked, the vendored build the sidepanels use too) ───────────────
 let _marked = null;
@@ -221,8 +223,9 @@ export function updateRunCard(card, run, opts = {}) {
   const provider = run.provider || 'claude-code';
   const icon = card.querySelector('.asst-run-icon');
   if (icon) {
-    icon.innerHTML = typeof opts.providerIcon === 'function' ? (opts.providerIcon(provider) || '') : '';
-    const color = typeof opts.providerColor === 'function' ? opts.providerColor(provider) : '';
+    const brand = displayProvider(run) || provider;
+    icon.innerHTML = typeof opts.providerIcon === 'function' ? (opts.providerIcon(brand) || '') : '';
+    const color = typeof opts.providerColor === 'function' ? opts.providerColor(brand) : '';
     if (color) card.style.setProperty('--asst-provider-color', color);
   }
   const title = card.querySelector('.asst-run-title');
@@ -257,7 +260,7 @@ export function updateRunCard(card, run, opts = {}) {
     if (run.agentRef) bits.push(`<span>${esc(run.agentRef)}</span>`);
     if (run.route && typeof run.route === 'object') {
       const r = run.route;
-      const routeBits = [r.taskClassLabel || r.taskClass || t('assistant.routes.task', 'task')];
+      const routeBits = [(r.taskClass ? routeClassLabel(r.taskClass, r.taskClassLabel || r.taskClass, t) : r.taskClassLabel) || t('assistant.routes.task', 'task')];
       if (r.status === 'pending') routeBits.push(t('assistant.routes.state.pending', 'waiting for your choice'));
       else if (r.decidedBy === 'budget' || r.source === 'budget') routeBits.push(t('assistant.routes.budgetDecision', 'budget re-route'));
       else if (r.decidedBy === 'user') routeBits.push(t('assistant.routes.youChose', 'you chose'));
@@ -511,7 +514,11 @@ const SUGGESTION_KINDS = { computer: 'computer', web: 'web', fix: 'edit', skill:
  *          ({ status, resetsAt } | null), brainProvider() → the brain's provider id, onLimitRetry(text)
  *          (Retry now on the Assistant's own limit card: send `text`), onSwitchProvider(anchorEl, { excludeProvider, retryText })
  *          (Continue with another provider on the Assistant's own limit card: the host opens its own
- *          provider picker anchored on anchorEl and decides what a pick does) }
+ *          provider picker anchored on anchorEl and decides what a pick does),
+ *          onMotionMark(holderEl, off) (a holder's off-screen mark changed, asst-motion-gate.js: a host that
+ *          skips far rows keeps the holder's row plain until the mark is styled),
+ *          onRackFolded(rackRow) (a rack's stage has folded and its row was measured: `is-folding` just left
+ *          the row, which a host that skips far rows kept plain while it carried it) }
  */
 export function createRenderer(transcriptEl, hooks = {}) {
   loadMarked();
@@ -530,8 +537,22 @@ export function createRenderer(transcriptEl, hooks = {}) {
   // The open card's slot under every row (asst-ask-tail.js): a card that waits on the user is drawn
   // there, above the "Working…" row, until it is answered; rows appended meanwhile go above it.
   const askTail = createAskTail($msgs, { anchor: () => (working?.parentNode === $msgs ? working : null) });
-  let followTail = true;
-  let scrollFrame = 0;
+  // The transcript follows its bottom through the shared sidepanel controller (ui-scroll-follow.js), as
+  // the Claude, Codex, OpenCode and Maritaca panels do: one follow state, detached only by a real upward
+  // movement or wheel/keyboard/touch intent (never by the controller's own scroll events), reattached at
+  // the bottom, and a MutationObserver/ResizeObserver watch that follows late layout (an image arriving, a
+  // font swap, a highlight pass) and a message area whose height changes. Its writes are instant: the
+  // transcript's smooth scroll-behavior is for the reader's own scrolling, not for the follow. A closed
+  // side panel's transcript is not laid out: the controller keeps the scroll until the panel is shown.
+  const scrollFollow = createStickyScrollController($msgs);
+  let followHeld = false; // the empty state is up: nothing follows (holdFollow)
+  // A cleared transcript's old offset outlives its rows until the next layout: an empty state drawn now would
+  // open part-way down, off its character. Back to the top, when the panel is shown if it is closed (no layout
+  // there); rows that arrived meanwhile are the follow's.
+  const topGate = createShownGate($msgs, () => {
+    if (!followHeld && $msgs.firstElementChild) return;
+    try { $msgs.scrollTo({ top: 0, behavior: 'instant' }); } catch { $msgs.scrollTop = 0; }
+  });
   let emptyEl = null;
   let hero = null; // the empty state's character: { rig, el, box, parked, leaving, held, dock, egg, target }
   const mcpWarned = new Set();
@@ -589,7 +610,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
   try { fontSet?.addEventListener?.('loadingdone', onFontsLoaded); } catch { /* no FontFaceSet events */ }
   const stopFontWatch = () => { try { fontSet?.removeEventListener?.('loadingdone', onFontsLoaded); } catch { /* gone */ } };
   // The transcript's loops run only while their holder is on screen (run cards, racks, route lines).
-  const motion = createMotionGate();
+  const motion = createMotionGate({ onMark: hooks.onMotionMark });
   const stageResizes = typeof ResizeObserver === 'function' ? new ResizeObserver((entries) => {
     for (const entry of entries) {
       const seen = stageWidths.get(entry.target);
@@ -619,13 +640,6 @@ export function createRenderer(transcriptEl, hooks = {}) {
   const seen = new Set();
   const SEEN_MAX = 5000;
   let snapshot = null;
-
-  $msgs.addEventListener('scroll', () => {
-    // Inside a closed side panel nobody scrolls: the follow stays what it was, and no height is read
-    // (reading it lays the hidden panel out; sidepanel-shown.js).
-    if (closedSidepanelOf($msgs)) return;
-    followTail = isNearBottom();
-  }, { passive: true });
 
   const t = (key, fallback, params) => {
     const v = typeof hooks.t === 'function' ? hooks.t(key, params) : undefined;
@@ -665,22 +679,23 @@ export function createRenderer(transcriptEl, hooks = {}) {
     return $msgs.scrollHeight - $msgs.scrollTop - $msgs.clientHeight < 48;
   }
 
-  // The scroll to the newest row, on the next frame. A transcript inside a closed side panel has no layout:
-  // scrolling it there read its height, which made the engine lay the whole hidden panel out, at every load
-  // and for every row a session added meanwhile. The scroll is kept and made when the panel is shown.
-  const endGate = createShownGate($msgs, () => {
-    if (scrollFrame) return;
-    scrollFrame = requestAnimationFrame(() => {
-      scrollFrame = 0;
-      if (closedSidepanelOf($msgs)) { endGate.request(); return; } // closed again before the frame
-      $msgs.scrollTop = $msgs.scrollHeight;
-    });
-  });
-
+  // The scroll to the newest row: the shared controller's follow write, on its generation-checked frame.
+  // A transcript inside a closed side panel has no layout: scrolling it there read its height, which made
+  // the engine lay the whole hidden panel out, at every load and for every row a session added meanwhile.
+  // The controller keeps the scroll and makes it when the panel is shown (ui-scroll-follow.js).
   function scrollEnd(force = false) {
-    if (!force && !followTail) return;
-    if (scrollFrame) return;
-    endGate.request();
+    scrollFollow.scrollToBottom({ force });
+  }
+
+  // The empty state is not a transcript to follow: its bottom is the starters, and following it when a long
+  // draft grows the composer pushed the character out of view (parkHero then has no hero to hand off). The
+  // controller is off while it is the only thing here, and the first real row starts the follow, whatever
+  // the reader did to the empty state's scroll meanwhile.
+  function holdFollow(held) {
+    if (followHeld === held) return;
+    followHeld = held;
+    if (!held) scrollFollow.setFollowing(true);
+    scrollFollow.setActive(!held);
   }
 
   function root() { return { container: $msgs, stream: null, key: null, msgId: null, lastAt: 0 }; }
@@ -710,6 +725,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     closeEmptyMenu();
     emptyEl.remove();
     emptyEl = null;
+    holdFollow(false);
   }
 
   /** A menu opened from the empty state's project picker does not outlive it. */
@@ -975,6 +991,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
     mdInto(body, text);
     // Every code block gets the shared Copy button (../ui-code-copy.js), also each piece a stream draws.
     decorateCodeBlocks(body);
+    // The reading layer all six panels share (../ui-output.js): a table's frame, task items, a diff's lines.
+    decorateOutput(body);
     body.querySelectorAll('pre code').forEach((code) => {
       const lang = (code.className || '').replace('language-', '').trim();
       if (lang) code.parentElement.dataset.lang = lang;
@@ -1642,7 +1660,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
       receipt: { btn: q('.asst-rack-receipt'), face: q('.asst-rack-receipt-face'), text: q('.asst-rack-receipt-text'), failed: q('.asst-rack-receipt-failed'), clock: q('.asst-rack-receipt-clock'), faceBuilt: false, pose: '', svg: null },
       ledger: q('.asst-rack-ledger'), statusEl: q('.asst-rack-status'), alertEl: q('.asst-rack-alert'), timelineEl: null, timelineSig: '',
       rig: null, target: null, held: false, holdUntil: 0, holdTimer: 0, pose: null, awake: null, awakeKey: null,
-      bubble: { step: null, since: 0, key: '', open: false }, stageTimer: 0, clearTimer: 0,
+      bubble: { step: null, since: 0, key: '', open: false }, stageTimer: 0, clearTimer: 0, foldFrame: 0,
       sr: { last: 0, timer: 0, pending: '' },
     };
     row._rack = rack;
@@ -1868,6 +1886,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     if (staged) {
       clearTimeout(rack.clearTimer);
       rack.clearTimer = 0;
+      foldMeasured(rack, true); // a fold that was still being measured is over: the stage is back
       rack.row.classList.add('is-staged');
       watchStageWidth(rack, true);
       if (!rack.rig) {
@@ -1882,6 +1901,11 @@ export function createRenderer(transcriptEl, hooks = {}) {
     // Fold the stage into the receipt; a rack above the viewport folds at once and the scroll position absorbs it.
     // Keyboard focus inside the stage (the bubble, its Copy) moves to the receipt, which takes the stage's place.
     const row = rack.row;
+    // From here until the fold has been measured (foldMeasured) the row is laid out for real, wherever it is.
+    // A settled rack is skipped off screen (asst-rack-styles.js; as a transcript row, transcript-rows.js), and
+    // a skipped box keeps the height it was skipped at: a rack that settled off screen, or left the screen
+    // while it folded, stayed as tall as its stage (or half folded) until the reader came back to it.
+    row.classList.add('is-folding');
     const focused = rack.stage.el.contains(document.activeElement);
     let above = false;
     if (!calm() && row.isConnected) {
@@ -1894,7 +1918,14 @@ export function createRenderer(transcriptEl, hooks = {}) {
       row.classList.remove('is-staged');
       void row.offsetHeight; // apply without the transition
       row.classList.remove('is-instant');
-      if (h) $msgs.scrollTop = Math.max(0, $msgs.scrollTop - h);
+      if (h) {
+        if (scrollFollow.isFollowing()) {
+          scrollFollow.scrollToBottom({ immediate: true });
+        } else {
+          const top = Math.max(0, $msgs.scrollTop - h);
+          try { $msgs.scrollTo({ top, behavior: 'instant' }); } catch { $msgs.scrollTop = top; }
+        }
+      }
     } else {
       row.classList.remove('is-staged');
     }
@@ -1937,6 +1968,34 @@ export function createRenderer(transcriptEl, hooks = {}) {
     s.err.hidden = true;
     s.bubble.querySelector('.asst-bubble-copy')?.remove();
     rack.bubble = { step: null, since: 0, key: '', open: false };
+    // A settled rack scrolled offscreen (content-visibility: auto) can freeze its
+    // fold transitions in WebKit; clear any still-running fold transitions once folded.
+    try {
+      for (const a of rack.row.getAnimations?.() || []) a.cancel();
+      for (const a of s.el.getAnimations?.() || []) a.cancel();
+    } catch { /* ignore */ }
+    foldMeasured(rack);
+  }
+
+  /**
+   * The fold is over. Its row stays laid out (`is-folding`) for SETTLE_FRAMES more frames: the first may be the
+   * one the fold ended in, so by the last the folded height has been laid out and reported to whoever measures
+   * rows (the size a skipped box is given). Then the mark goes and the host is told (`onRackFolded`), so a row
+   * it kept plain meanwhile may be skipped again. `now`: the stage is back, the mark goes at once. Nothing is
+   * read here, and a page that draws no frame keeps the row laid out until it draws again.
+   */
+  function foldMeasured(rack, now = false) {
+    if (rack.foldFrame) { cancelAnimationFrame(rack.foldFrame); rack.foldFrame = 0; }
+    const { row } = rack;
+    if (!row.classList.contains('is-folding')) return;
+    let left = now || typeof requestAnimationFrame !== 'function' ? 0 : SETTLE_FRAMES;
+    const frame = () => {
+      rack.foldFrame = 0;
+      if (left-- > 0) { rack.foldFrame = requestAnimationFrame(frame); return; }
+      row.classList.remove('is-folding');
+      if (typeof hooks.onRackFolded === 'function') { try { hooks.onRackFolded(row); } catch { /* the fold stands */ } }
+    };
+    frame();
   }
 
   /**
@@ -3003,6 +3062,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
     clearTimeout(rack.clearTimer);
     clearTimeout(rack.sr.timer);
     clearTimeout(rack.holdTimer);
+    if (rack.foldFrame) cancelAnimationFrame(rack.foldFrame);
+    rack.foldFrame = 0;
     rack.stageTimer = 0;
     rack.clearTimer = 0;
     rack.sr.timer = 0;
@@ -3381,6 +3442,9 @@ export function createRenderer(transcriptEl, hooks = {}) {
   function revealRun(runId) {
     const card = runCards.get(runId);
     if (!card?.isConnected) return false;
+    // Leaving the bottom on purpose: detach first, so the follow does not read this jump's own mutations
+    // as new content and write the bottom back over the smooth scroll before its first scroll event.
+    scrollFollow.setFollowing(false);
     const top = card.getBoundingClientRect().top - $msgs.getBoundingClientRect().top + $msgs.scrollTop - 16;
     try { $msgs.scrollTo({ top: Math.max(0, top), behavior: calm() ? 'auto' : 'smooth' }); } catch { $msgs.scrollTop = Math.max(0, top); }
     card.classList.remove('is-revealed');
@@ -3625,6 +3689,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
       if (ended) row.atEnd = true;
       prune();
       if (racks.size) syncRacks();
+      holdFollow(false); // a real row, even when the empty state stays above it
       scrollEnd();
     }
     return row.el;
@@ -3633,6 +3698,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
   // ── Empty state ──
   function showEmpty() {
     if (emptyEl || $msgs.querySelector(':scope > :not(.asst-working)')) return;
+    holdFollow(true);
     emptyEl = el('div', 'asst-empty');
     // One column, one hierarchy: the character and the heading, the greeting when there is one,
     // the starters, then the context line (Project · Budget). No lead: the starters say what it can do.
@@ -4166,7 +4232,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
   }
 
   function clear() {
-    if (scrollFrame) { cancelAnimationFrame(scrollFrame); scrollFrame = 0; }
+    scrollFollow.setFollowing(true);
     clearTimeout(recutTimer);
     recutTimer = 0;
     toRecut.clear();
@@ -4208,13 +4274,14 @@ export function createRenderer(transcriptEl, hooks = {}) {
     closeEmptyMenu();
     $msgs.innerHTML = '';
     emptyEl = null;
-    followTail = true;
+    holdFollow(false);
+    topGate.request();
   }
 
   return {
     el: $msgs,
     clear,
-    destroy: () => { clear(); endGate.cancel(); stageResizes?.disconnect(); limitDock.destroy(); stopFontWatch(); },
+    destroy: () => { clear(); scrollFollow.destroy(); topGate.cancel(); stageResizes?.disconnect(); limitDock.destroy(); stopFontWatch(); },
     appendUser,
     appendAssistantMarkdown,
     appendStatus,

@@ -43,6 +43,10 @@ import { initI18n, isReady as i18nReady, SUPPORTED_LOCALES, LOCALE_NAMES, SYSTEM
 import { wireSettingsShell, wireSettingsSearch, collectSearchRows, revealSettingsTarget, followSettingsTarget, onSettingsTakeover, applyStoredSections, storeSectionState } from './settings/settings-shell.js';
 import { buildSettingsSearchIndex } from './settings/settings-search.js';
 import { prefetchSettingsData, readSettingsData, refreshSettingsData } from './settings/settings-data.js';
+import { BACKUP_BROWSER_URL, createBackupDownloadController, createBackupEndWatcher, describeBackupDownload } from './settings/settings-backup-download.js';
+import { createBackupContentsController, describeBackupContents, describeRestoreContents } from './settings/settings-backup-contents.js';
+import { applyEncryptedRestore, clearRestoreOutcome, describeEncryptedRestore, describeRestoreCreated, discardEncryptedRestore, previewErrorMessage, restoreErrorMessage, restorePartialCodes, saveRestoreOutcome } from './settings/settings-backup-encryption.js';
+import { askRestorePassword, backupEncryptionHTML, backupHistoryHTML, openRestoreOutcomeDialog, RESTORE_DIALOG_CLASS, wireBackupEncryption } from './settings/settings-backup-encryption-pane.js';
 import { registerLaunchPrefetch } from './launch-prefetch.js';
 // ═══════════════════════════════════════════
 // UI-SETTINGS — Settings modal with shared tabs + variant tab injection
@@ -511,13 +515,40 @@ function buildServerTab(settings, connections = []) {
           id: 'stg-sec-backups', section: 'memory_backups.backups',
           status: kit.pill('', { id: 'auto-backup-pill', state: 'off' }),
           body: `
+          ${kit.subhead(kit.te('settings.redesign.server.backupContentsTitle'), { id: 'sys-backup-contents-title' })}
+          <div class="stg-help" id="sys-backup-contents-help">${kit.te('settings.redesign.server.backupContentsHelp')}</div>
+          <div id="sys-backup-contents-rows" role="group" aria-labelledby="sys-backup-contents-title"></div>
+          <div class="stg-field" id="sys-backup-contents-summary" style="display:none">
+            <div class="stg-help" id="sys-backup-contents-total" role="status" aria-live="polite"></div>
+            <div class="stg-help" id="sys-backup-contents-warning" role="alert" style="display:none;color:var(--stg-warn)"></div>
+            <div class="stg-help" id="sys-backup-contents-never"></div>
+            <div class="stg-action-row">
+              <button type="button" class="cc-copy-btn stg-text-btn" id="sys-backup-contents-refresh">${kit.te('settings.redesign.server.backupContentsRefresh')}</button>
+            </div>
+          </div>
+          <div class="stg-help" id="sys-backup-contents-note" role="status" aria-live="polite" style="display:none;color:var(--accent-dim)"></div>
+
+          ${backupEncryptionHTML(kit)}
+
           ${kit.subhead(kit.te('settings.redesign.server.fullBackup'))}
+          <div class="stg-field stg-inline-field">
+            <label for="sys-backup-folder">${kit.te('settings.redesign.server.backupFolderLabel')}</label>
+            <div class="stg-input-row">
+              <input type="text" id="sys-backup-folder" placeholder="${kit.te('settings.redesign.server.folderPlaceholder')}" readonly autocomplete="off" spellcheck="false" aria-describedby="sys-backup-folder-help">
+              <button type="button" class="stg-action-btn compact" id="sys-backup-browse" disabled>${kit.te('settings.redesign.server.backupFolderChoose')}</button>
+            </div>
+            <div class="stg-help" id="sys-backup-folder-help">${kit.te('settings.redesign.server.backupFolderHelp')}</div>
+            <div class="stg-help" id="sys-backup-folder-note" role="status" aria-live="polite" style="display:none;color:var(--accent-dim)"></div>
+          </div>
           <div class="stg-field" ${kit.inv('GEN007')}>
             <div class="stg-action-row">
               <button type="button" class="stg-action-btn" id="sys-backup-btn" aria-describedby="sys-backup-btn-help">
                 ${buttonIcon('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>')}
                 ${kit.L('GEN007')}
               </button>
+              <button type="button" class="stg-action-btn compact" id="sys-backup-cancel" style="display:none">${kit.te('settings.redesign.server.backupCancel')}</button>
+              <button type="button" class="stg-action-btn compact" id="sys-backup-reveal" style="display:none">${kit.te('settings.redesign.server.backupReveal')}</button>
+              <button type="button" class="cc-copy-btn stg-text-btn" id="sys-backup-browser" title="${kit.te('settings.redesign.server.backupBrowserDownloadHelp')}" style="display:none">${kit.te('settings.redesign.server.backupBrowserDownload')}</button>
             </div>
             ${kit.help('GEN007', { forId: 'sys-backup-btn' })}
           </div>
@@ -527,7 +558,7 @@ function buildServerTab(settings, connections = []) {
                 ${buttonIcon('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>')}
                 ${kit.L('GEN008')}
               </button>
-              <input type="file" id="sys-restore-file" ${kit.inv('GEN009')} accept=".zip" style="display:none" aria-label="${kit.L('GEN009')}" title="${kit.H('GEN009')}">
+              <input type="file" id="sys-restore-file" ${kit.inv('GEN009')} accept=".zip,.enc" style="display:none" aria-label="${kit.L('GEN009')}" title="${kit.H('GEN009')}">
             </div>
             ${kit.help('GEN008', { forId: 'sys-restore-btn' })}
           </div>
@@ -535,6 +566,8 @@ function buildServerTab(settings, connections = []) {
             <div class="wiz-status-dot spin" id="sys-backup-dot"></div>
             <span id="sys-backup-text"></span>
           </div>
+
+          ${backupHistoryHTML(kit)}
 
           ${kit.subhead(kit.te('settings.redesign.server.autoBackup'))}
           ${kit.toggleField('GEN010', kit.switchInput('auto-backup-toggle'), { forId: 'auto-backup-toggle' })}
@@ -4249,54 +4282,132 @@ async function openSettingsModalNow(options = {}) {
     });
   }
 
+  // Password protection and the list of recent backups (settings/settings-backup-encryption*.js). The list is read
+  // again when a backup made from this page ends (below) and when the password protection changes (in the pane).
+  const backupEncryption = wireBackupEncryption(overlay, kit);
+  const backupEnded = createBackupEndWatcher();
+
   // ── System Backup & Restore handlers ──
 
   const backupBtn = overlay.querySelector('#sys-backup-btn');
   const restoreBtn = overlay.querySelector('#sys-restore-btn');
   const restoreFileInput = overlay.querySelector('#sys-restore-file');
 
+  // Download full backup: the server builds the archive in the chosen folder and this row follows it
+  // (settings/settings-backup-download.js decides, lib/backup-download.js does). Nothing of it passes through the page.
   if (backupBtn) {
-    backupBtn.addEventListener('click', async () => {
-      const statusEl = overlay.querySelector('#sys-backup-status');
-      const statusDot = overlay.querySelector('#sys-backup-dot');
-      const statusText = overlay.querySelector('#sys-backup-text');
+    const folderInput = overlay.querySelector('#sys-backup-folder');
+    const folderNote = overlay.querySelector('#sys-backup-folder-note');
+    const browseBtn = overlay.querySelector('#sys-backup-browse');
+    const revealBtn = overlay.querySelector('#sys-backup-reveal');
+    const cancelBtn = overlay.querySelector('#sys-backup-cancel');
+    const browserBtn = overlay.querySelector('#sys-backup-browser');
+    const statusEl = overlay.querySelector('#sys-backup-status');
+    const statusDot = overlay.querySelector('#sys-backup-dot');
+    const statusText = overlay.querySelector('#sys-backup-text');
+    const origHTML = backupBtn.innerHTML;
+    // A page opened on another computer than the server cannot reach the folder: it keeps the browser's download.
+    const pageHost = String(typeof location !== 'undefined' && location ? location.hostname || '' : '').replace(/^\[|\]$/g, '');
+    const remotePage = !!pageHost && !['localhost', '127.0.0.1', '::1'].includes(pageHost);
 
-      backupBtn.disabled = true;
-      const origHTML = backupBtn.innerHTML;
-      backupBtn.textContent = kit.tx('settings.redesign.server.creatingBackup');
-      statusEl.style.display = 'flex';
-      statusDot.className = 'wiz-status-dot spin';
-      statusText.textContent = kit.tx('settings.redesign.server.collectingFilesAndCreatingDatabaseBackup');
-
-      try {
-        const res = await fetch('/api/system/backup');
-        if (!res.ok) {
-          let errMsg = kit.tx('settings.redesign.server.backupFailed2');
-          try { const body = await res.json(); errMsg = body.error || errMsg; } catch {}
-          throw new Error(errMsg);
-        }
-        const blob = await res.blob();
-        const disposition = res.headers.get('content-disposition') || '';
-        const filenameMatch = disposition.match(/filename="?([^"]+)"?/);
-        const filename = filenameMatch ? filenameMatch[1] : 'synabun-backup.zip';
-
-        // Trigger download
-        const url = URL.createObjectURL(blob);
+    const backupDownload = createBackupDownloadController({
+      fetch: (...args) => fetch(...args),
+      alive: () => overlay.isConnected !== false,
+      // The browser's own download manager writes the response to disk as it arrives; no Blob in the page.
+      browserDownload: () => {
         const a = document.createElement('a');
-        a.href = url; a.download = filename;
+        a.href = BACKUP_BROWSER_URL; a.download = '';
         document.body.appendChild(a); a.click(); a.remove();
-        URL.revokeObjectURL(url);
-
-        statusDot.className = 'wiz-status-dot green';
-        statusText.textContent = kit.tx('settings.redesign.server.backupSavedMb', { filename: filename, size: (blob.size / 1024 / 1024).toFixed(1) });
-      } catch (err) {
-        statusDot.className = 'wiz-status-dot red';
-        statusText.textContent = kit.tx('settings.redesign.server.backupFailed', { message: err.message });
-      } finally {
-        backupBtn.disabled = false;
-        backupBtn.innerHTML = origHTML;
-      }
+      },
+      render: (model) => {
+        const row = describeBackupDownload(model, { tx: kit.tx });
+        if (folderInput) folderInput.value = row.folder;
+        if (folderNote) { folderNote.textContent = row.folderNote || ''; folderNote.style.display = row.folderNote ? '' : 'none'; }
+        if (browseBtn) browseBtn.disabled = !row.canChoose || row.waiting;
+        if (cancelBtn) cancelBtn.style.display = row.canCancel ? '' : 'none';
+        if (revealBtn) revealBtn.style.display = row.canReveal ? '' : 'none';
+        if (browserBtn) browserBtn.style.display = remotePage && !row.viaBrowser ? '' : 'none';
+        backupBtn.disabled = row.waiting;
+        if (row.running) backupBtn.textContent = kit.tx('settings.redesign.server.creatingBackup');
+        else backupBtn.innerHTML = origHTML;
+        if (row.status) {
+          statusEl.style.display = 'flex';
+          statusDot.className = row.status.dot ? `wiz-status-dot ${row.status.dot}` : 'wiz-status-dot';
+          statusText.textContent = row.status.text;
+        }
+        // The backup that just ended is in the folder now: Recent backups shows it without Settings being reopened.
+        if (backupEnded(model)) backupEncryption.refreshHistory();
+      },
     });
+
+    backupBtn.addEventListener('click', () => backupDownload.start());
+    if (browseBtn) browseBtn.addEventListener('click', () => backupDownload.choose(kit.tx('settings.redesign.server.backupFolderPrompt')));
+    if (revealBtn) revealBtn.addEventListener('click', () => backupDownload.reveal());
+    if (cancelBtn) cancelBtn.addEventListener('click', () => backupDownload.cancel());
+    if (browserBtn) browserBtn.addEventListener('click', () => backupDownload.downloadInBrowser());
+    backupDownload.load();
+  }
+
+  // What to back up: one switch per group with its size (settings/settings-backup-contents.js decides,
+  // lib/backup-contents.js keeps the choice and measures on a worker thread). The rows are drawn from the server's
+  // answer; a server from before these routes gets no rows and one line that says a restart is missing.
+  const contentsRows = overlay.querySelector('#sys-backup-contents-rows');
+  if (contentsRows) {
+    const summary = overlay.querySelector('#sys-backup-contents-summary');
+    const totalEl = overlay.querySelector('#sys-backup-contents-total');
+    const warningEl = overlay.querySelector('#sys-backup-contents-warning');
+    const neverEl = overlay.querySelector('#sys-backup-contents-never');
+    const noteEl = overlay.querySelector('#sys-backup-contents-note');
+    const refreshBtn = overlay.querySelector('#sys-backup-contents-refresh');
+    const helpEl = overlay.querySelector('#sys-backup-contents-help');
+    const kindState = { irreplaceable: 'ok', regenerable: 'off', temporary: 'off' };
+    let drawn = '';
+
+    const backupContents = createBackupContentsController({
+      fetch: (...args) => fetch(...args),
+      alive: () => overlay.isConnected !== false,
+      render: (model) => {
+        const list = describeBackupContents(model, { tx: kit.tx });
+        if (helpEl) helpEl.style.display = list.available ? '' : 'none';
+        // The rows are built once per set of groups; after that only what changed is written, so a switch that has
+        // the keyboard keeps it while the sizes arrive.
+        const shape = list.rows.map(row => row.id).join(',');
+        if (shape !== drawn) {
+          drawn = shape;
+          contentsRows.innerHTML = list.rows.map((row) => {
+            const id = `sys-backup-group-${row.id}`;
+            return `
+              <div class="stg-toggle-field" data-backup-group="${kit.esc(row.id)}">
+                <div class="stg-toggle-text">
+                  <label class="stg-toggle-label" for="${id}" id="${id}-label">${kit.esc(row.label)} ${kit.pill(kit.esc(row.kindLabel), { state: kindState[row.kind] || 'off' })}</label>
+                  <div class="stg-help" id="${id}-help">${kit.esc(row.help)}</div>
+                  <div class="stg-help" data-backup-size aria-live="polite"></div>
+                </div>
+                <div class="stg-toggle-control">${kit.switchInput(id, { checked: row.enabled, attrs: `data-backup-group="${kit.esc(row.id)}"` })}</div>
+              </div>`;
+          }).join('');
+        }
+        for (const row of list.rows) {
+          const field = contentsRows.querySelector(`.stg-toggle-field[data-backup-group="${row.id}"]`);
+          const input = field?.querySelector('input[type="checkbox"]');
+          if (input) { input.checked = row.enabled; input.disabled = row.busy; }
+          const size = field?.querySelector('[data-backup-size]');
+          if (size) size.textContent = row.size || (list.measuring ? kit.tx('settings.redesign.server.backupContentsMeasuring') : '');
+        }
+        if (summary) summary.style.display = list.available ? '' : 'none';
+        if (totalEl) totalEl.textContent = list.total ? [list.total, list.everything].filter(Boolean).join(' ') : (list.measuring ? kit.tx('settings.redesign.server.backupContentsMeasuring') : '');
+        if (warningEl) { warningEl.textContent = list.warning || ''; warningEl.style.display = list.warning ? '' : 'none'; }
+        if (neverEl) neverEl.textContent = list.never || '';
+        if (refreshBtn) refreshBtn.disabled = list.measuring;
+        if (noteEl) { noteEl.textContent = list.note || ''; noteEl.style.display = list.note ? '' : 'none'; }
+      },
+    });
+    contentsRows.addEventListener('change', (e) => {
+      const input = e.target.closest?.('input[data-backup-group]');
+      if (input) backupContents.toggle(input.dataset.backupGroup, input.checked);
+    });
+    if (refreshBtn) refreshBtn.addEventListener('click', () => backupContents.refresh());
+    backupContents.load();
   }
 
   if (restoreBtn && restoreFileInput) {
@@ -4325,32 +4436,55 @@ async function openSettingsModalNow(options = {}) {
           body: file,
         });
         if (!previewRes.ok) {
-          let errMsg = kit.tx('settings.redesign.server.invalidBackup2');
-          try { const body = await previewRes.json(); errMsg = body.error || errMsg; } catch {}
-          throw new Error(errMsg);
+          let body = null;
+          try { body = await previewRes.json(); } catch {}
+          // Told by the refusal's code in this page's language, never by the server's sentence (English, and it can hold a path).
+          throw Object.assign(new Error(previewErrorMessage(body, { tx: kit.tx, fallback: kit.tx('settings.redesign.server.invalidBackup2') })), { translated: true });
         }
-        const { manifest: m } = await previewRes.json();
-
+        let preview = await previewRes.json();
         statusEl.style.display = 'none';
 
-        const fileCount = (m.files || []).length;
+        // An encrypted backup says nothing of what it holds until its password opened it. The file stays staged on
+        // the server, so a mistyped password costs no second upload.
+        let stagedUploadId = null;
+        if (preview.encrypted && preview.locked) {
+          preview = await askRestorePassword(preview, { kit });
+          if (!preview) return;
+          stagedUploadId = preview.uploadId;
+        }
+        const { manifest: m, contents } = preview;
+        const closeConfirm = () => {
+          if (stagedUploadId) discardEncryptedRestore((...args) => fetch(...args), stagedUploadId);
+          confirmOverlay.remove();
+        };
+
+        // A server from before the groups sends the whole manifest (its file list) and says nothing of groups.
+        const fileCount = Number.isFinite(m.fileCount) ? m.fileCount : (m.files || []).length;
         const hasDb = !!m.database;
+        // What this backup holds, by group, and what a restore of it therefore leaves as it is now.
+        const holds = describeRestoreContents(contents, { tx: kit.tx });
+        const holdsLines = holds ? [holds.stateOnly, holds.contains, holds.missing].filter(Boolean) : [];
+        // An encrypted backup: the date its header carries, which the password's keys vouched for. An older backup of
+        // the owner's opens just as well, so the date is what says which one this is.
+        const madeLine = describeEncryptedRestore(preview, { tx: kit.tx });
+        // When it was made and, only when the backup says so, on which computer.
+        const createdLine = describeRestoreCreated(m, { tx: kit.tx });
 
         const confirmOverlay = document.createElement('div');
         confirmOverlay.className = 'tag-delete-overlay';
         confirmOverlay.style.zIndex = '300100';
         confirmOverlay.innerHTML = `
-          <div class="tag-delete-modal settings-modal" style="max-width:500px;text-align:left">
-            <h3 style="margin-bottom:4px">${kit.te('settings.redesign.server.restoreBackup')}</h3>
-            <p style="font-size:11px;color:var(--t-muted);margin-bottom:12px">
-              ${kit.th('settings.redesign.server.createdOn', { value: new Date(m.created).toLocaleString() })} ${escapeHtml(m.hostname || kit.tx('settings.redesign.server.unknown'))}
-            </p>
+          <div class="tag-delete-modal settings-modal ${RESTORE_DIALOG_CLASS}" role="dialog" aria-modal="true" aria-labelledby="sys-restore-confirm-title" style="max-width:500px;text-align:left">
+            <h3 id="sys-restore-confirm-title" style="margin-bottom:4px">${kit.te('settings.redesign.server.restoreBackup')}</h3>
+            ${createdLine ? `<p id="sys-restore-created" style="font-size:11px;color:var(--t-muted);margin-bottom:12px">${escapeHtml(createdLine)}</p>` : ''}
             <div style="font-size:12px;margin-bottom:8px">
               <strong>${fileCount}</strong> ${kit.te('settings.redesign.server.configFiles')}
               ${hasDb ? `<br><strong>${kit.te('settings.redesign.server.database')}</strong> ${kit.te('settings.redesign.server.memoryDbIncluded')}` : ''}
             </div>
+            ${madeLine ? `<div id="sys-restore-encrypted-made" style="font-size:12px;margin-bottom:8px">${escapeHtml(madeLine)}</div>` : ''}
+            ${holdsLines.length ? `<div id="sys-restore-contents" style="font-size:12px;margin-bottom:8px">${holdsLines.map(line => `<div>${escapeHtml(line)}</div>`).join('')}</div>` : ''}
             <p style="font-size:11px;color:var(--accent-dim);margin-bottom:12px">
-              ${kit.te('settings.redesign.server.thisWillOverwriteYourCurrentEnv')}
+              ${holds ? kit.te('settings.redesign.server.restoreOverwritesContained') : kit.te('settings.redesign.server.thisWillOverwriteYourCurrentEnv')}
             </p>
             <div class="tag-delete-modal-actions">
               <button class="action-btn action-btn--ghost" id="sys-restore-cancel">${kit.te('settings.redesign.server.cancel')}</button>
@@ -4366,9 +4500,9 @@ async function openSettingsModalNow(options = {}) {
           </div>`;
         document.body.appendChild(confirmOverlay);
 
-        confirmOverlay.querySelector('#sys-restore-cancel').addEventListener('click', () => confirmOverlay.remove());
+        confirmOverlay.querySelector('#sys-restore-cancel').addEventListener('click', closeConfirm);
         confirmOverlay.addEventListener('click', (ev) => {
-          if (ev.target === confirmOverlay) confirmOverlay.remove();
+          if (ev.target === confirmOverlay && !confirmOverlay.querySelector('#sys-restore-confirm').disabled) closeConfirm();
         });
 
         confirmOverlay.querySelector('#sys-restore-confirm').addEventListener('click', async () => {
@@ -4384,17 +4518,39 @@ async function openSettingsModalNow(options = {}) {
           progressText.textContent = kit.tx('settings.redesign.server.applyingBackup');
 
           try {
-            const restoreRes = await fetch('/api/system/restore?mode=full', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/zip' },
-              body: file,
-            });
-            if (!restoreRes.ok) {
-              let errMsg = kit.tx('settings.redesign.server.restoreFailed');
-              try { const body = await restoreRes.json(); errMsg = body.error || errMsg; } catch {}
-              throw new Error(errMsg);
+            let result;
+            if (stagedUploadId) {
+              // The staged file is used once: whatever the answer, the server has let go of it.
+              const uploadId = stagedUploadId;
+              stagedUploadId = null;
+              const answer = await applyEncryptedRestore((...args) => fetch(...args), uploadId, 'full');
+              if (!answer.ok) throw Object.assign(new Error(restoreErrorMessage(answer.body, { tx: kit.tx })), { translated: true });
+              result = answer.body;
+            } else {
+              const restoreRes = await fetch('/api/system/restore?mode=full', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/zip' },
+                body: file,
+              });
+              if (!restoreRes.ok) {
+                // By the refusal's code, in this page's language: the server's sentence can hold a path. An old server sends none: the generic sentence.
+                let body = null;
+                try { body = await restoreRes.json(); } catch {}
+                throw Object.assign(new Error(restoreErrorMessage(body, { tx: kit.tx })), { translated: true });
+              }
+              // A 200 that cannot be read may still have written: it counts as a restore with problems, below.
+              try { result = await restoreRes.json(); } catch { result = null; }
             }
-            const result = await restoreRes.json();
+            // A 200 can carry problems (results.errors): never "Done". Kept in this tab, because a restart reloads the page.
+            const partialCodes = restorePartialCodes(result);
+            if (partialCodes) {
+              const outcome = { codes: partialCodes, restart: result?.restart === true };
+              saveRestoreOutcome(outcome);
+              confirmOverlay.remove();
+              openRestoreOutcomeDialog(outcome, { tx: kit.tx, restarting: outcome.restart, offerReload: !outcome.restart });
+              return;
+            }
+            clearRestoreOutcome();
             const restoredFileCount = result.results?.files?.length || 0;
 
             progressDot.className = 'wiz-status-dot green';
@@ -4415,14 +4571,17 @@ async function openSettingsModalNow(options = {}) {
             });
           } catch (err) {
             progressDot.className = 'wiz-status-dot red';
-            progressText.textContent = err.message;
+            progressText.textContent = err.translated ? err.message : restoreErrorMessage(null, { tx: kit.tx });
             confirmBtn.textContent = kit.tx('settings.redesign.server.restore');
-            confirmBtn.disabled = false;
+            // An encrypted upload was used by that attempt: another one starts from choosing the file.
+            confirmBtn.disabled = !!preview.encrypted;
           }
         });
       } catch (err) {
+        statusEl.style.display = 'flex';
         statusDot.className = 'wiz-status-dot red';
-        statusText.textContent = kit.tx('settings.redesign.server.invalidBackup', { message: err.message });
+        // A server from before the finished encryption: the file is not at fault, a restart is missing.
+        statusText.textContent = err.needsRestart || err.translated ? err.message : kit.tx('settings.redesign.server.invalidBackup2');
       }
     });
   }

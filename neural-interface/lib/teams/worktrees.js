@@ -29,7 +29,7 @@
 // system can clone. Changing dependencies (lockfiles, and with them the manifests) is the lockfile-owner slice's.
 
 import { execFile } from 'node:child_process';
-import { appendFileSync, constants as FS, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, statfsSync } from 'node:fs';
+import { appendFileSync, constants as FS, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmdirSync, statfsSync } from 'node:fs';
 import { copyFile, cp, rm } from 'node:fs/promises';
 import { dirname, isAbsolute, join, posix, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -303,7 +303,7 @@ export function createTeamWorktrees({ state, git, locks, setup: defaultSetup = n
   async function unmake(plan, made) {
     for (const piece of made) {
       await git(['worktree', 'remove', '--force', piece.path], { cwd: plan.projectPath });
-      if (present(piece.path)) rmSync(piece.path, { recursive: true, force: true });
+      if (present(piece.path)) await rm(piece.path, { recursive: true, force: true });
       if (piece.madeBranch && await commitOf(git, plan.projectPath, `refs/heads/${piece.branch}`) === plan.baseCommit) await git(['branch', '-D', piece.branch], { cwd: plan.projectPath });
     }
     await git(['worktree', 'prune'], { cwd: plan.projectPath });
@@ -356,7 +356,7 @@ export function createTeamWorktrees({ state, git, locks, setup: defaultSetup = n
     if (command === false) return refuse('INVALID_TEST_COMMAND', 'testCommand is a command line (text) or a list of arguments.');
 
     return locks.run(repoKey(plan.projectPath), async () => {
-      if (state.record(plan.teamId)) return refuse('TEAM_EXISTS', `A team named "${plan.teamId}" is already recorded. Pick another team id, or remove that team first.`, { existing: [{ kind: 'journal', teamId: plan.teamId }] });
+      if (await state.record(plan.teamId)) return refuse('TEAM_EXISTS', `A team named "${plan.teamId}" is already recorded. Pick another team id, or remove that team first.`, { existing: [{ kind: 'journal', teamId: plan.teamId }] });
       const existing = await collisions(plan);
       if (existing.length) {
         const what = existing.map((each) => each.path || each.branch).join(', ');
@@ -364,38 +364,38 @@ export function createTeamWorktrees({ state, git, locks, setup: defaultSetup = n
       }
       const excluded = await ensureWorktreesExcluded(git, plan.projectPath);
       const pieces = planPieces(plan);
-      state.writeTeam(plan.teamId, 'creating', {
+      await state.writeTeam(plan.teamId, 'creating', {
         plan: pieces.team, baseBranch: repo.branch, headAtCreate: repo.head, testCommand: command, createdBy: typeof createdBy === 'string' ? createdBy : null,
         integration: { head: plan.baseCommit, lastGood: plan.baseCommit, tests: null },
       });
       for (const piece of pieces.slices) {
-        state.writeSlice(plan.teamId, piece.id, 'planned', { task: piece.task });
-        state.writeSlice(plan.teamId, piece.id, 'pending', { ownedPaths: piece.ownedPaths, ...placeOf(plan, piece.id), startCommit: plan.baseCommit });
+        await state.writeSlice(plan.teamId, piece.id, 'planned', { task: piece.task });
+        await state.writeSlice(plan.teamId, piece.id, 'pending', { ownedPaths: piece.ownedPaths, ...placeOf(plan, piece.id), startCommit: plan.baseCommit });
       }
       const built = await materialize(plan);
       if (!built.ok) {
         await unmake(plan, built.made);
-        state.writeTeam(plan.teamId, 'failed', { error: built.failed, failedAt: now() });
+        await state.writeTeam(plan.teamId, 'failed', { error: built.failed, failedAt: now() });
         return refuse('WORKTREE_FAILED', `The worktree of "${built.failed.sliceId}" could not be made: ${built.failed.error}. Nothing of the team is left.`, { failed: built.failed });
       }
       const prepared = await runSetup(plan, plan.readOnly ? null : setup === undefined ? defaultSetup : setup);
-      state.writeTeam(plan.teamId, 'planned', { worktrees: built.made.map(({ sliceId, path, branch }) => ({ sliceId, path, branch })) });
-      return { ok: true, team: state.record(plan.teamId), setup: prepared, excluded };
+      await state.writeTeam(plan.teamId, 'planned', { worktrees: built.made.map(({ sliceId, path, branch }) => ({ sliceId, path, branch })) });
+      return { ok: true, team: await state.record(plan.teamId), setup: prepared, excluded };
     });
   }
 
   /** A team's record (lib/teams/state.js), or null. */
-  const get = (teamId) => (isTeamSlug(teamId) ? state.record(teamId) : null);
+  const get = async (teamId) => (isTeamSlug(teamId) ? await state.record(teamId) : null);
 
   /**
    * The teams the journal knows, oldest first.
    * @param {{ projectPath?: string, states?: string[], includeRemoved?: boolean }} [query]
    */
-  function list({ projectPath = null, states = null, includeRemoved = true } = {}) {
+  async function list({ projectPath = null, states = null, includeRemoved = true } = {}) {
     const wanted = projectPath ? realOf(projectPath) : null;
     const out = [];
-    for (const entry of state.teams(states ? { states } : {})) {
-      const record = state.record(entry.teamId);
+    for (const entry of await state.teams(states ? { states } : {})) {
+      const record = await state.record(entry.teamId);
       if (!record) continue;
       if (wanted && realOf(record.projectPath) !== wanted) continue;
       if (!includeRemoved && record.removed) continue;
@@ -436,7 +436,7 @@ export function createTeamWorktrees({ state, git, locks, setup: defaultSetup = n
    * integration branch, uncommitted files, last commit), the integration branch, and the user's branch.
    */
   async function inspect(teamId) {
-    const record = get(teamId);
+    const record = await get(teamId);
     if (!record) return refuse('TEAM_NOT_FOUND', `No team named "${teamId}" is recorded.`);
     const registered = isDirectory(record.projectPath) ? await listWorktrees(git, record.projectPath) : [];
     const integration = record.plan.readOnly ? {} : await pieceInfo(record, INTEGRATION_SLICE_ID, registered);
@@ -477,7 +477,7 @@ export function createTeamWorktrees({ state, git, locks, setup: defaultSetup = n
    * @returns {Promise<{ ok: true, sliceId: string, worktree: string, branch: string, startCommit: string, rework: boolean } | { ok: false, code: string }>}
    */
   async function startSlice(teamId, sliceId, { runId = null } = {}) {
-    const record = get(teamId);
+    const record = await get(teamId);
     if (!record) return refuse('TEAM_NOT_FOUND', `No team named "${teamId}" is recorded.`);
     const slice = planSlice(record, sliceId);
     if (!slice) return refuse('SLICE_NOT_FOUND', `Team "${teamId}" has no slice "${sliceId}".`);
@@ -504,15 +504,15 @@ export function createTeamWorktrees({ state, git, locks, setup: defaultSetup = n
         }
         startCommit = await commitOf(git, path, 'HEAD') || head;
       }
-      state.writeSlice(teamId, sliceId, 'running', { startCommit, startedAt: now(), ...(rework ? { rework: true } : {}) }, runId);
-      if (record.state === 'planned' || record.state === 'ready') state.writeTeam(teamId, 'running', {});
+      await state.writeSlice(teamId, sliceId, 'running', { startCommit, startedAt: now(), ...(rework ? { rework: true } : {}) }, runId);
+      if (record.state === 'planned' || record.state === 'ready') await state.writeTeam(teamId, 'running', {});
       return { ok: true, sliceId, worktree: path, branch, startCommit, rework };
     });
   }
 
   /** A read-only worker has ended. Preserve any changed checkout or commit, including ignored files. */
   async function finishReadOnlySlice(teamId, sliceId, { failed = false } = {}) {
-    const record = get(teamId);
+    const record = await get(teamId);
     if (!record?.plan.readOnly) return refuse('TEAM_NOT_READ_ONLY', 'This operation is for read-only workers.');
     if (!planSlice(record, sliceId)) return refuse('SLICE_NOT_FOUND', `Unknown slice ${sliceId}.`);
     return locks.run(repoKey(record.projectPath), async () => {
@@ -536,12 +536,12 @@ export function createTeamWorktrees({ state, git, locks, setup: defaultSetup = n
         }
       }
       const cleanup = { removed: !kept, kept, path: info.path, branch: info.branch };
-      state.writeSlice(teamId, sliceId, failed ? 'failed' : 'completed', { cleanup, endedAt: now() });
-      const fresh = get(teamId);
+      await state.writeSlice(teamId, sliceId, failed ? 'failed' : 'completed', { cleanup, endedAt: now() });
+      const fresh = await get(teamId);
       const ended = fresh.plan.slices.every(s => fresh.slices[s.id]?.cleanup);
       if (ended) {
         const clean = fresh.plan.slices.every(s => fresh.slices[s.id]?.cleanup.removed);
-        state.writeTeam(teamId, 'completed', { removed: clean });
+        await state.writeTeam(teamId, 'completed', { removed: clean });
         if (clean) { try { rmdirSync(join(worktreesRoot(record.projectPath), teamId)); } catch {} }
       }
       return { ok: true, ...cleanup };
@@ -555,7 +555,7 @@ export function createTeamWorktrees({ state, git, locks, setup: defaultSetup = n
    * @returns {Promise<{ ok: true, complete: boolean, removed: object[], kept: object[] } | { ok: false, code: string }>}
    */
   async function remove(teamId, { discard = false, force = false, guarded = false, checkOnly = false } = {}) {
-    const record = get(teamId);
+    const record = await get(teamId);
     if (!record) return refuse('TEAM_NOT_FOUND', `No team named "${teamId}" is recorded.`);
     if (guarded && record.plan.readOnly) return refuse('TEAM_NOT_LANDED', 'Read-only teams cannot land.', { checks: [{ name: 'landed', ok: false, detail: 'Read-only team' }] });
     if (record.plan.readOnly) {
@@ -659,7 +659,7 @@ export function createTeamWorktrees({ state, git, locks, setup: defaultSetup = n
         const pruned = await git(['worktree', 'prune'], { cwd: record.projectPath });
         if (!pruned.ok) throw new Error(`Cleanup prune failed: ${gitSaid(pruned)}`);
         try { rmdirSync(join(worktreesRoot(record.projectPath), teamId)); } catch (error) { if (error.code !== 'ENOENT' && error.code !== 'ENOTEMPTY') throw error; }
-        state.writeTeam(teamId, 'merged', { removed: true, removal: { at: now(), force: false, removed, kept: [] } });
+        await state.writeTeam(teamId, 'merged', { removed: true, removal: { at: now(), force: false, removed, kept: [] } });
         return { ok: true, complete: true, removed, checks };
       }
       const registered = await listWorktrees(git, record.projectPath);
@@ -698,7 +698,7 @@ export function createTeamWorktrees({ state, git, locks, setup: defaultSetup = n
           const gone = await git(['worktree', 'remove', '--force', info.path], { cwd: record.projectPath });
           if (!gone.ok && present(info.path)) {
             if (info.registered) { kept.push({ sliceId, path: info.path, branch: info.branch, head: info.head, reason: 'worktree_not_removed', error: gitSaid(gone) }); continue; }
-            rmSync(info.path, { recursive: true, force: true });
+            await rm(info.path, { recursive: true, force: true });
           }
         }
         await git(['worktree', 'prune'], { cwd: record.projectPath });
@@ -712,11 +712,11 @@ export function createTeamWorktrees({ state, git, locks, setup: defaultSetup = n
       let folderRemoved = false;
       try { rmdirSync(folder); folderRemoved = true; } catch { folderRemoved = !present(folder); }
       const complete = kept.length === 0;
-      state.writeTeam(teamId, landed ? 'merged' : 'cancelled', {
+      await state.writeTeam(teamId, landed ? 'merged' : 'cancelled', {
         removed: complete, removal: { at: now(), discard: !landed, force: !!force, removed, kept },
       });
       for (const slice of record.plan.slices) {
-        if (!landed && removed.some((each) => each.sliceId === slice.id) && sliceState(record, slice.id) !== 'integrated') state.writeSlice(teamId, slice.id, 'cancelled', { discarded: true });
+        if (!landed && removed.some((each) => each.sliceId === slice.id) && sliceState(record, slice.id) !== 'integrated') await state.writeSlice(teamId, slice.id, 'cancelled', { discarded: true });
       }
       return { ok: true, complete, landed, removed, kept, folderRemoved };
     });
@@ -738,7 +738,7 @@ export function createTeamWorktrees({ state, git, locks, setup: defaultSetup = n
       let names = [];
       try { names = readdirSync(root); } catch { names = []; }
       for (const name of names) {
-        if (!isTeamSlug(name) || !state.record(name)) continue;
+        if (!isTeamSlug(name) || !await state.record(name)) continue;
         try { rmdirSync(join(root, name)); folders.push(join(root, name)); } catch { /* not empty: a team's worktrees are in it */ }
       }
       return { ok: result.ok, pruned: stale, folders, ...(result.ok ? {} : { error: gitSaid(result) }) };

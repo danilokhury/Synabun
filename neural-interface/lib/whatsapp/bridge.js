@@ -1129,7 +1129,8 @@ export function createWhatsAppBridge({
     if (d?.list && d?.stop && id) {
       let runs = [];
       try { runs = d.list({ assistantSessionId: id, activeOnly: true }) || []; } catch { runs = []; }
-      for (const run of runs) { try { await d.stop(run.runId, 'user'); stoppedRuns += 1; } catch {} }
+      const stopProvenance = { actor: reason === 'phone' ? 'whatsapp_user' : 'whatsapp_service', action: 'stop' };
+      for (const run of runs) { try { await d.stop(run.runId, reason === 'phone' ? 'user' : 'whatsapp_service', stopProvenance); stoppedRuns += 1; } catch {} }
     }
     for (const card of [...state.cards.values()]) {
       if (card.sessionId !== id) continue;

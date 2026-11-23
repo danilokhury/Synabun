@@ -1,14 +1,16 @@
 // SQLite's PRAGMA integrity_check on each database copy of an upgrade snapshot, off the snapshot's main thread
 // (backup-service.js checkSqliteIntegrity): the archive is written and read back meanwhile. workerData: { paths };
-// posts [{ path, ok, lines, ms }] once, in the same order. A file that cannot be opened is not ok.
+// posts progress before each file, then [{ path, ok, lines, ms }] once, in the same order. A file that cannot be opened is not ok.
 import { parentPort, workerData } from 'node:worker_threads';
 import { DatabaseSync } from 'node:sqlite';
+import { statSync } from 'node:fs';
 
 const results = [];
 for (const path of workerData?.paths || []) {
   const started = Date.now();
   let db = null;
   try {
+    parentPort.postMessage({ progress: true, inputBytes: statSync(path).size });
     db = new DatabaseSync(path, { readOnly: true });
     // The check `synabun restore-backup` runs (scripts/restore-data-home-from-backup.mjs); 20 findings are plenty to say why.
     const lines = db.prepare('PRAGMA integrity_check(20)').all().map(row => String(Object.values(row)[0]));

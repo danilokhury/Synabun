@@ -73,6 +73,7 @@ import {
 } from './asst-state.js';
 import { idleQueue } from '../idle-queue.js';
 import { watchTranscriptRows } from '../transcript-rows.js';
+import { createMarkSettle } from './asst-motion-gate.js';
 import {
   closeAssistantSession, dispatchAssistantRun, escalateAssistantRun, focusAssistantRun, getAssistantRun,
   fetchManageCatalog, getAssistantRunResult, getAssistantSession, getAssistantSessionUsage, getRouting, killAllAssistantRuns, removeAssistantRun, clearFinishedAssistantRuns,
@@ -513,12 +514,24 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   // Rows far from the screen are skipped by the engine, at their exact size (transcript-rows.js). Left
   // alone whatever their place: a row that is being written, a rack that still works, the open cards at the
   // bottom, the "Working…" row, the empty state and the limit dock (it sticks to the transcript's edge).
+  // Nor a row a holder's off-screen mark just changed under (a run card, a rack, a route line:
+  // asst-motion-gate.js). Chromium styles nothing inside a row it skips, so a mark written after its row was
+  // made far paused no loop under it: the row stays plain until the mark has been styled, then goes far.
+  // Nor a rack whose stage is folding (`is-folding`, asst-render.js): a row skipped then would keep the height
+  // it had as it was skipped, the stage's or a half-folded one. The renderer says when the fold was measured.
+  const markSettle = createMarkSettle({ reconsider: (row) => rowWatcher.reconsider(row) });
+  const transcriptRowOf = (el) => {
+    let node = el;
+    while (node && node.parentNode !== transcriptEl) node = node.parentNode;
+    return node || null;
+  };
   const rowWatcher = watchTranscriptRows(transcriptEl, {
     skip: (row) => {
+      if (markSettle.holds(row)) return true;
       const c = row.classList;
       return c.contains('streaming') || c.contains('asst-ask-tail') || c.contains('asst-limit-dock')
         || c.contains('asst-working') || c.contains('asst-empty')
-        || (c.contains('asst-rack') && row.dataset.state !== 'settled');
+        || (c.contains('asst-rack') && (row.dataset.state !== 'settled' || c.contains('is-folding')));
     },
   });
   const renderer = createRenderer(transcriptEl, {
@@ -531,6 +544,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     onReadRun: (runId) => readRun(runId),
     onEscalateRun: (runId, target) => escalateRun(runId, target),
     onMemoryClick: (id) => { if (id) emit('memory:open', { id }); },
+    onMotionMark: (el) => { markSettle.hold(transcriptRowOf(el)); },
+    onRackFolded: (row) => { rowWatcher.reconsider(row); },
     // The greeting this conversation opens with (lib/greeting/ decides whether there is one): its id
     // goes back with the first prompt, so the brain is told once what was said.
     greeting: (slot) => (guestBlocked() ? null : mountGreeting(slot, {
@@ -932,7 +947,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
         if (packet.code === 'SESSION_NOT_FOUND') { sessionGone(); return; }
         // A rejected route answer keeps its card open with the message.
         const routeCard = packet.request_id ? routeCardByRequest(packet.request_id) : null;
-        if (routeCard) { routeCard.fail(packet.message); return; }
+        if (routeCard) { routeCard.fail(packet.message, packet.code); return; }
         if (packet.code === 'ROUTE_INVALID') { renderer.appendError(packet.message || tt('assistant.routes.invalid', 'That route is not available. Pick another option.')); return; }
         // A prompt of this panel that did not run (the approved plan goes first, the brain is mid-turn…):
         // its text goes back into the composer, and the reattach_result after it says what runs now.
@@ -2474,6 +2489,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       computerPanel.destroy();
       dock.destroy();
       composer.destroy();
+      markSettle.dispose();
       rowWatcher.disconnect();
       renderer.destroy();
       barEmpty.disconnect();

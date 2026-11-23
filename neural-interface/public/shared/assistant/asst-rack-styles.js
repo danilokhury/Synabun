@@ -76,6 +76,10 @@ export const RACK_CSS = `
     content-visibility: auto;
     contain-intrinsic-size: auto 30px;
   }
+  /* A rack whose stage is folding is laid out for real, on screen or off it, until the fold has been measured
+     (asst-render.js, setStaged): a skipped box keeps the height it was skipped at, which is not the folded one.
+     Contained as an unskipped "auto" box is, so what is drawn does not change. */
+  .asst-rack.is-folding { content-visibility: visible; contain: layout style paint; }
   /* content-visibility clips paint to the box: a folded rack takes in the receipt's 8px overhang. */
   .asst-rack[data-state="settled"]:not(.is-staged) { margin-inline: -8px; padding-inline: 8px; }
 

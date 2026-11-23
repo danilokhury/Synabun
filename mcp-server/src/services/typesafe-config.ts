@@ -16,6 +16,7 @@
  */
 
 import { getDb } from './sqlite.js';
+import { withMemoryWrite, writeNowOrSoon } from './sqlite-write.js';
 import { autoHealGate, readTargetBench, DEFAULT_BROWSER_ASSIST, BROWSER_TARGET_DEFAULTS, type BrowserAssistConfig } from './browser-assist-gate.js';
 export type { BrowserAssistConfig, BrowserTargetBench } from './browser-assist-gate.js';
 // desktop-assist-gate.ts is a leaf as well (node builtins, the browser gate and the pure risk modules): no cycle back into this file.
@@ -548,10 +549,7 @@ export function logSessionFromRef(ref: unknown): string | null {
   return cleanSessionId(compaction ? compaction[1] : ref);
 }
 
-/** Append one row and return its id. Never throws: the log is diagnostics, not the judgment. */
-export function writeTypeSafeLog(row: TypeSafeLogRow): number | null {
-  try {
-    const d = getDb();
+function insertTypeSafeLog(d: ReturnType<typeof getDb>, row: TypeSafeLogRow): number {
     const result = d.prepare(`INSERT INTO typesafe_log(created_at,surface,origin,entity_id,model,question_count,state_preview,answers,latency_ms,input_tokens,output_tokens,cached,error,session_id,project,surfaces)
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       row.created_at ?? new Date().toISOString(), row.surface, row.origin, row.entity_id, row.model, row.question_count,
@@ -562,7 +560,27 @@ export function writeTypeSafeLog(row: TypeSafeLogRow): number | null {
     );
     if (++insertsSincePrune >= PRUNE_EVERY) { insertsSincePrune = 0; pruneTypeSafeLog(); }
     return Number(result.lastInsertRowid);
+}
+
+/**
+ * Append one row and return its id. Never throws: the log is diagnostics, not the judgment. Null when the row could
+ * not be written now: another connection held the writer, and the row is written in the background instead of this
+ * call sleeping in SQLite's busy handler on the event loop (writeNowOrSoon).
+ */
+export function writeTypeSafeLog(row: TypeSafeLogRow): number | null {
+  try {
+    const d = getDb();
+    return writeNowOrSoon(d, () => insertTypeSafeLog(d, row)) ?? null;
   } catch { return null; /* diagnostics must never fail the caller */ }
+}
+
+/** writeTypeSafeLog() for async callers (judge()): waits for the writer without blocking the event loop, then gives the id. */
+export async function writeTypeSafeLogAsync(row: TypeSafeLogRow): Promise<number | null> {
+  try {
+    const d = getDb();
+    if (d.isTransaction) return insertTypeSafeLog(d, row);
+    return await withMemoryWrite(d, () => insertTypeSafeLog(d, row));
+  } catch { return null; }
 }
 
 /** Record what the caller did with a judgment. Bounded; never throws. */
@@ -571,14 +589,15 @@ export function annotateTypeSafeLog(id: number | null | undefined, outcome: unkn
   try {
     let text = JSON.stringify(outcome);
     if (text.length > OUTCOME_MAX_CHARS) text = JSON.stringify({ truncated: true, chars: text.length });
-    getDb().prepare('UPDATE typesafe_log SET outcome=? WHERE id=?').run(text, id);
+    const d = getDb();
+    writeNowOrSoon(d, () => d.prepare('UPDATE typesafe_log SET outcome=? WHERE id=?').run(text, id));
   } catch { /* diagnostics */ }
 }
 
 /** Point rows logged under a provisional entity id at the one that was finally stored. */
 export function relinkTypeSafeLog(fromEntity: string, toEntity: string): void {
   if (!fromEntity || !toEntity || fromEntity === toEntity) return;
-  try { getDb().prepare('UPDATE typesafe_log SET entity_id=? WHERE entity_id=?').run(toEntity, fromEntity); } catch { /* diagnostics */ }
+  try { const d = getDb(); writeNowOrSoon(d, () => d.prepare('UPDATE typesafe_log SET entity_id=? WHERE entity_id=?').run(toEntity, fromEntity)); } catch { /* diagnostics */ }
 }
 
 /** Keep only the newest `keep` rows. Returns the number deleted. */

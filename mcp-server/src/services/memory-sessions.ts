@@ -76,33 +76,66 @@ export function normalizeMemoryEvents(host: MemoryEvent['host'], records: any[],
 
 /** Durable intake: immediately keyword searchable, semantic work queued.
  * Stable source keys make replay and partial imports idempotent. */
-export function ingestMemoryEvents(events: MemoryEvent[]) {
+/**
+ * How the session-cache worker paces its intake (lib/memory-session-capture.js, lib/session-cache-builder.js).
+ * Every other writer of the store waits for the one SQLite write lock, and the Neural Interface's synchronous writes
+ * wait for it on the event loop, polling every 1-25 ms at first and then every 50-100 ms (SQLite's busy handler).
+ * A capture that held the lock for 25 whole events (20-100+ ms each, more with long tool output) and let go of it for
+ * 8 ms kept such a writer, and the whole server, waiting for seconds. A transaction now ends after
+ * CAPTURE_TRANSACTION_MS (whole events: one long event can still exceed it), and the lock stays free for
+ * CAPTURE_PAUSE_MS, longer than the busy handler's polling interval for the first 128 ms of a wait.
+ */
+export const CAPTURE_TRANSACTION_MS = 20;
+export const CAPTURE_PAUSE_MS = 25;
+
+/**
+ * `maxTransactionMs`: commit once a transaction has run this long and return; `consumed` says how many of `events`
+ * were handled (the caller passes the rest again after a pause). Without it every event is handled.
+ */
+export function ingestMemoryEvents(events: MemoryEvent[], { maxTransactionMs }: { maxTransactionMs?: number } = {}) {
   const d = getDb();
+  if (!events.length) return { indexed: 0, consumed: 0 };
+  const priorSource = d.prepare('SELECT content_hash,chunk_id FROM memory_session_sources WHERE host=? AND session_id=? AND source_id=?');
+  const putChunk = d.prepare(`INSERT INTO session_chunks(id,vector,content,summary,session_id,project,cwd,start_timestamp,end_timestamp,tools_used,files_modified,indexed_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET vector=excluded.vector,content=excluded.content,summary=excluded.summary,
+    project=excluded.project,cwd=excluded.cwd,start_timestamp=excluded.start_timestamp,end_timestamp=excluded.end_timestamp,
+    tools_used=excluded.tools_used,files_modified=excluded.files_modified,indexed_at=excluded.indexed_at`);
+  const putSource = d.prepare(`INSERT INTO memory_session_sources VALUES(?,?,?,?,?) ON CONFLICT(host,session_id,source_id)
+    DO UPDATE SET content_hash=excluded.content_hash`);
+  const queue = d.prepare(`INSERT INTO memory_jobs(id,kind,entity_id,updated_at) VALUES(?,'session',?,?)
+    ON CONFLICT(kind,entity_id) DO UPDATE SET status='pending',attempts=0,error=NULL,updated_at=excluded.updated_at`);
+  const emptyVector = new Uint8Array(384 * 4);
   let indexed = 0;
-  for (let offset=0; offset<events.length; offset+=50) {
+  for (let offset = 0; offset < events.length; offset += 50) {
+    // Prepare statements and hash/encode the batch before taking SQLite's single writer lock.
+    const batch = events.slice(offset, offset + 50).map(event => ({
+      event,
+      hash: createHash('sha256').update(JSON.stringify(event)).digest('hex'),
+      id: stableId(`${event.host}:${event.session_id}:${event.source_id}`),
+      tools: JSON.stringify(event.tools || []),
+      files: JSON.stringify(event.files || []),
+    }));
     d.exec('BEGIN IMMEDIATE');
+    const began = performance.now();
+    let handled = batch.length;
     try {
-      for (const event of events.slice(offset,offset+50)) {
-        const hash = createHash('sha256').update(JSON.stringify(event)).digest('hex');
-        const prior = d.prepare('SELECT content_hash,chunk_id FROM memory_session_sources WHERE host=? AND session_id=? AND source_id=?')
-          .get(event.host,event.session_id,event.source_id);
-        if (prior?.content_hash === hash) continue;
-        const id = prior?.chunk_id ? String(prior.chunk_id) : stableId(`${event.host}:${event.session_id}:${event.source_id}`);
-        const now = new Date().toISOString();
-        d.prepare(`INSERT INTO session_chunks(id,vector,content,summary,session_id,project,cwd,start_timestamp,end_timestamp,tools_used,files_modified,indexed_at)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET vector=excluded.vector,content=excluded.content,summary=excluded.summary,
-          project=excluded.project,cwd=excluded.cwd,start_timestamp=excluded.start_timestamp,end_timestamp=excluded.end_timestamp,
-          tools_used=excluded.tools_used,files_modified=excluded.files_modified,indexed_at=excluded.indexed_at`)
-          .run(id,new Uint8Array(384*4),event.text,`${event.role}: ${event.text.slice(0,500)}`,`${event.host}:${event.session_id}`,event.project,event.cwd || null,
-            event.timestamp,event.timestamp,JSON.stringify(event.tools || []),JSON.stringify(event.files || []),now);
-        d.prepare(`INSERT INTO memory_session_sources VALUES(?,?,?,?,?) ON CONFLICT(host,session_id,source_id)
-          DO UPDATE SET content_hash=excluded.content_hash`).run(event.host,event.session_id,event.source_id,hash,id);
-        d.prepare(`INSERT INTO memory_jobs(id,kind,entity_id,updated_at) VALUES(?,'session',?,?)
-          ON CONFLICT(kind,entity_id) DO UPDATE SET status='pending',attempts=0,error=NULL,updated_at=excluded.updated_at`).run(`session:${id}`,id,now);
-        indexed++;
+      for (const [index, item] of batch.entries()) {
+        const { event, hash } = item;
+        const prior = priorSource.get(event.host, event.session_id, event.source_id);
+        if (prior?.content_hash !== hash) {
+          const id = prior?.chunk_id ? String(prior.chunk_id) : item.id;
+          const now = new Date().toISOString();
+          putChunk.run(id, emptyVector, event.text, `${event.role}: ${event.text.slice(0,500)}`, `${event.host}:${event.session_id}`,
+            event.project, event.cwd || null, event.timestamp, event.timestamp, item.tools, item.files, now);
+          putSource.run(event.host, event.session_id, event.source_id, hash, id);
+          queue.run(`session:${id}`, id, now);
+          indexed++;
+        }
+        if (maxTransactionMs !== undefined && index < batch.length - 1 && performance.now() - began >= maxTransactionMs) { handled = index + 1; break; }
       }
       d.exec('COMMIT');
     } catch (error) {d.exec('ROLLBACK');throw error;}
+    if (handled < batch.length || (maxTransactionMs !== undefined && offset + 50 < events.length)) return { indexed, consumed: offset + handled };
   }
-  return { indexed };
+  return { indexed, consumed: events.length };
 }

@@ -30,7 +30,6 @@ import { brainLabel, readStoredBrain, restoredSessionName } from './asst-state.j
 import { closeMenu, isMenuOpen, openMenu } from './asst-menu.js';
 import { injectAssistantSidepanelStyles } from './asst-sidepanel-styles.js';
 import { createMascot, mascotCameoSvg } from '../synabun-mascot.js';
-import { createTutorialPreview } from '../ui-tutorial-preview.js';
 
 const PANEL_OWNER = 'assistant-sidepanel';
 const HOST_ID = 'sidepanel';
@@ -652,8 +651,11 @@ export function assistantPanelPeekable() {
  * Assistant is blocked. restore() puts back the panel's visibility, the docked
  * peers and the last-active panels, unless the tour ended on its hand-off to a
  * live tab ('done'): then the panel stays and the tab's composer takes the focus.
+ * The preview loads here, before anything of the panel changes: only a tour needs it.
  */
-export function beginAssistantTour({ onPreviewSend = () => {} } = {}) {
+export async function beginAssistantTour({ onPreviewSend = () => {} } = {}) {
+  if (assistantBlocked()) return null;
+  const { createTutorialPreview } = await import('../ui-tutorial-preview.js');
   if (assistantBlocked()) return null;
   ensurePanel();
   const wasVisible = _visible;

@@ -30,6 +30,7 @@ import { initOwnerAccessNotice } from './ui-owner-access.js';
 import { initSidepanelTrayPlaceholders } from './ui-sidepanel-tray.js';
 import { initDesktopTitleBar } from './desktop-titlebar.js';
 import { initToprightOverflow } from './ui-topright-overflow.js';
+import { autoCloseNativeLoopTab } from './ui-native-loop-router.js';
 import { initTrayAutoClose } from './tray-auto-close.js';
 import { initTrayColumns } from './ui-tray-columns.js';
 
@@ -398,7 +399,7 @@ export function initNavbar() {
   const tray = $('term-minimized-tray');
   if (controls && tray?.parentElement === controls) {
     initTrayColumns(tray, storage);
-    initTrayAutoClose(tray, $('topright-auto-close-btn'), storage, t);
+    initTrayAutoClose(tray, $('topright-auto-close-btn'), storage, t, autoCloseNativeLoopTab);
     const nameTips = (records) => {
       if (records && !records.some(({ target }) => {
         const element = target.nodeType === 1 ? target : target.parentElement;

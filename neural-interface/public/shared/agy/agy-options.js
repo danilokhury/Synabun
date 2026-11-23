@@ -9,6 +9,8 @@
 // Nothing here keeps a list of its own: the pickers show what the session
 // says, in its words, and write back the value it gave.
 
+import { effortLabelFor } from '../effort-i18n.js';
+
 /** The first select option of a category ('model', 'thought_level', 'mode'), or null. */
 export function optionByCategory(configOptions, category) {
   return (Array.isArray(configOptions) ? configOptions : []).find((option) => option && option.category === category && (option.type === 'select' || option.type === undefined)) || null;
@@ -30,6 +32,15 @@ export function dropdownEntries(option) {
     if (entry && Array.isArray(entry.options)) return { group: String(entry.name || entry.group || ''), options: entry.options.filter((v) => v && v.value !== undefined).map(one) };
     return entry && entry.value !== undefined ? one(entry) : null;
   }).filter(Boolean);
+}
+
+/**
+ * The thinking picker's entries with the standard level names in the user's language (display only: `value` is
+ * what is sent back). A name Antigravity wrote itself, or an unknown level, stays as it came.
+ */
+export function localizeThinkingEntries(entries, t) {
+  const one = (entry) => (entry && typeof entry.value === 'string' ? { ...entry, label: effortLabelFor(entry.value, entry.label, t) } : entry);
+  return (Array.isArray(entries) ? entries : []).map((entry) => (entry && Array.isArray(entry.options) ? { ...entry, options: entry.options.map(one) } : one(entry)));
 }
 
 /** The label of an option's current value ('Gemini 3.8 Flash'), or the raw value. */

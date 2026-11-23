@@ -357,6 +357,11 @@ async function boot() {
         showLoadingError(title, sub, !!health.canAutoStart);
         return;
       }
+      // The memory database is being upgraded: wait for it. Loaded only then.
+      if (health.store) {
+        const { holdForMemoryStore } = await import('../../shared/memory-store-wait.js');
+        await holdForMemoryStore(health, { fetchHealth: () => fetch('/api/health', { cache: 'no-store' }).then((r) => r.json()), t, showLoadingError });
+      }
     } catch {}
 
     // Fetch all memories

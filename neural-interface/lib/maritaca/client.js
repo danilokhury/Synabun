@@ -280,7 +280,7 @@ export function createMaritacaClient({ fetchImpl = globalThis.fetch, baseUrl = M
 
   /**
    * Is the key accepted? GET /models first (free, read-only); an API that has no /models (404 / 405) is asked for
-   * one token of the free model instead. Resolves { ok: true, via } or throws a maritacaError (KEY_REJECTED…).
+   * one token of the cheapest active model (`S5-nano`) instead. Resolves { ok: true, via } or throws a maritacaError (KEY_REJECTED…).
    */
   async function verifyKey({ key, signal = null } = {}) {
     try {
@@ -291,7 +291,7 @@ export function createMaritacaClient({ fetchImpl = globalThis.fetch, baseUrl = M
     } catch (error) {
       if (error.code !== 'MODEL_UNKNOWN' && error.status !== 405) throw error;
     }
-    const { response, done } = await request('/chat/completions', { key, method: 'POST', signal, body: { model: 'S5-free', messages: [{ role: 'user', content: 'oi' }], max_tokens: 1, stream: false } });
+    const { response, done } = await request('/chat/completions', { key, method: 'POST', signal, body: { model: 'S5-nano', messages: [{ role: 'user', content: 'oi' }], max_tokens: 1, stream: false } });
     try { await response.body?.cancel(); } catch { /* ignore */ }
     done();
     return { ok: true, via: 'completion' };

@@ -747,6 +747,7 @@ export class ClaudeSession {
         SynaBun: {
           type: 'http',
           url: deps.mcpUrl,
+          ...(sessionOpts.synabunDiscoveryCache === false ? { discoveryCache: false } : {}),
           headers: {
             'X-Synabun-Terminal': this.synabunOwnerKey,
             'X-Synabun-Project': memoryProject(workDir),

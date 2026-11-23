@@ -40,7 +40,8 @@ export function maritacaApiKeyReference({ source, keyPath } = {}) {
 /**
  * OpenCode's `models` map of the table: name, limits and whether the model takes tools (prices are in BRL and would be
  * read as USD). OpenCode 2's Config.Model says tools under `capabilities.tools` (default true when absent), so a row
- * with `toolcall: false` (S5-free) is written `capabilities: { tools: false }` and OpenCode never sends it tools.
+ * with `toolcall: false` is written `capabilities: { tools: false }` and OpenCode never sends it tools (no current model
+ * has one since S5-free, the last, was retired on 2026-11-18).
  */
 export function maritacaOpencodeModels(models = MARITACA_MODELS) {
   const out = {};
@@ -104,7 +105,8 @@ export function maritacaOpencodeState({ config, keyStatus, keyPath, models = MAR
   const currentIds = Object.keys(entry?.models && typeof entry.models === 'object' ? entry.models : {}).sort();
   const expectedModels = maritacaOpencodeModels(models);
   const expectedIds = Object.keys(expectedModels).sort();
-  // A block written before the tools flag (or edited by hand) is out of sync: OpenCode would send S5-free tools.
+  // A block written before the tools flag (or edited by hand) is out of sync: OpenCode would send tools to a model
+  // that takes none (S5-free did until its retirement on 2026-11-18; a re-sync also drops its entry).
   const currentTools = toolFlags(entry?.models);
   const expectedTools = toolFlags(expectedModels);
   const toolsInSync = expectedIds.every((id) => currentTools[id] === expectedTools[id]);

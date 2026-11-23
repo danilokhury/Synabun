@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { beginActivity } from './loop-stall.js';
 import { retrieveMemory, compactRecall, excerpt, estimateTokens } from '../../mcp-server/dist/services/memory-retrieval.js';
 import { getDb, updatePayload, softDeleteMemory } from '../../mcp-server/dist/services/sqlite.js';
 import { maintenanceStatus, pauseMaintenance, memoryHistory, memoryRevision, undoRevision, setRelation } from '../../mcp-server/dist/services/memory-maintenance.js';
@@ -329,7 +330,14 @@ async function planConflict(text, body, ctx, retrieve) {
 // user-context engine) keeps those categories out of the rendered block: they
 // are searched and ranked with the rest, then returned apart as `diverted`
 // (never rendered, never committed here). The HTTP route never passes options.
-export async function hookRecall(body = {}, retrieve = retrieveMemory, { origin = null, defer = false, divert = null } = {}) {
+export async function hookRecall(body = {}, retrieve = retrieveMemory, options = {}) {
+  // In flight until it answers: a stall during a recall names it however many timers mark in between.
+  const endActivity = beginActivity(options?.origin === 'assistant' ? 'memory:assistant-recall' : 'memory:hook-recall');
+  try { return await recallForHook(body, retrieve, options); }
+  finally { endActivity(); }
+}
+
+async function recallForHook(body, retrieve, { origin = null, defer = false, divert = null } = {}) {
   const opts=input(body);
   const divertSet=Array.isArray(divert) && divert.length ? new Set(divert.map(String)) : null;
   const isDiverted=r=>!!divertSet && divertSet.has(String(r.category));

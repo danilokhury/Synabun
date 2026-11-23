@@ -953,7 +953,7 @@ async function stopLoop(terminalSessionId, sessionId) {
     await fetch('/api/loop/stop', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ terminalSessionId }),
+      body: JSON.stringify({ terminalSessionId, action: 'stop' }),
     });
     await refreshSessions();
   } catch {}
@@ -972,7 +972,7 @@ async function clearAllLoops() {
     await fetch('/api/loop/stop', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ action: 'stop' }),
     });
     await refreshSessions();
   } catch {}

@@ -334,7 +334,7 @@ export function createSkillCreations({
         await completeRun(d, runId);
         throw new CreationError(422, `The draft has problems that stop it: ${read.problems.slice(0, 3).join(' ')}`, 'draft_invalid', { problems: read.problems.slice(0, 20).map((message) => ({ path: null, message })) });
       }
-      try { d.sendTurn(runId, buildRepairPrompt({ errors: read.problems }), { origin: 'assistant' }); } catch (err) {
+      try { await d.sendTurn(runId, buildRepairPrompt({ errors: read.problems }), { origin: 'assistant' }); } catch (err) {
         throw new CreationError(409, `The draft has problems and the worker could not be asked to fix them: ${err?.message || err}`, 'draft_invalid', { problems: read.problems.slice(0, 20).map((message) => ({ path: null, message })) });
       }
       update(job, { state: 'drafting' }, ['repair', `Asked the worker to fix ${read.problems.length} problem${read.problems.length === 1 ? '' : 's'}.`]);

@@ -81,7 +81,7 @@ export const CP_STYLES = `
 .cp-agent-feed .msg { margin: 4px 0; }
 .cp-agent-feed .msg-avatar { display: none; }
 .cp-agent-feed .msg-content { margin-left: 0; }
-.cp-agent-feed .msg-body { font-size: 11px; }
+.cp-agent-feed .msg-body { --sbo-size: 12px; --sbo-code-size: 11px; --sbo-table-size: 11px; }
 .cp-agent-feed .tool-card { transform: scale(0.98); transform-origin: left top; }
 .cp-agent-result { font: 10.5px/1.5 Inter, sans-serif; color: rgba(255,255,255,0.55); background: rgba(150,120,200,0.07); border-radius: 6px; padding: 6px 8px; margin: 6px 0 2px; }
 

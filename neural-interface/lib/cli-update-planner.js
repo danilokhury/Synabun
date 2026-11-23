@@ -16,6 +16,8 @@
 // PATH, so the update silently does nothing and the badge never clears.
 // ═══════════════════════════════════════════
 
+import { semverNewer } from './synabun-version.js';
+
 /**
  * npm package name per tool key. OpenCode has none: npm's opencode-ai is
  * OpenCode 1, which SynaBun does not drive, and OpenCode 2 is installed by its
@@ -56,6 +58,67 @@ export const BREW_KINDS = {
   'antigravity': 'cask',
   'opencode': 'formula',
 };
+
+/**
+ * Where OpenCode 2 publishes its newest version, per install channel (checked
+ * 2026-11-21 against OpenCode 2.3.2). It has no npm package SynaBun could ask
+ * the registry about under the old name (opencode-ai is OpenCode 1), so without
+ * these the update check had nothing to compare an install with.
+ *   vendor       what OpenCode's own installer reads to find the release it
+ *                downloads (https://opencode.ai/v2/install): JSON with a
+ *                `version`. The yardstick of every install Homebrew does not own.
+ *   brewFormula  the formula of OpenCode's Homebrew tap as it is published.
+ *                `brew outdated` only knows the local clone of a tap, which
+ *                nothing refreshes until the user runs brew themselves (the
+ *                probe runs with HOMEBREW_NO_AUTO_UPDATE), so a tap install
+ *                never showed an update. The formula is exactly what
+ *                `brew upgrade` installs once the tap is refreshed, so it can
+ *                never run ahead of Homebrew the way npm does for a cask.
+ *   brewToken    the formula that file is (the tap's `opencode` is OpenCode 1).
+ */
+export const OPENCODE_UPDATE_SOURCES = Object.freeze({
+  vendor: 'https://opencode.ai/update/api/latest/cli/npm',
+  brewFormula: 'https://raw.githubusercontent.com/anomalyco/homebrew-tap/HEAD/opencode-v2.rb',
+  brewToken: 'opencode-v2',
+});
+
+const PLAIN_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const plainVersion = (value) => {
+  const text = typeof value === 'string' ? value.trim().replace(/^v(?=\d)/i, '') : '';
+  return PLAIN_VERSION_RE.test(text) ? text : null;
+};
+
+/** The `version` of OpenCode's update API answer (`{"version":"2.3.2",…}`), or null. */
+export function parseVendorLatest(body) {
+  let data = body;
+  if (typeof body === 'string') {
+    try { data = JSON.parse(body); } catch { return null; }
+  }
+  if (!data || typeof data !== 'object' || data.active === false) return null;
+  return plainVersion(data.version);
+}
+
+/** The `version "…"` line of a Homebrew formula file, or null. */
+export function parseFormulaVersion(text) {
+  const match = String(text ?? '').match(/^[ \t]*version[ \t]+["']([^"'\s]+)["'][ \t]*$/m);
+  return match ? plainVersion(match[1]) : null;
+}
+
+/**
+ * Where a tool's newest version is read from when it has no npm package:
+ * `{ url, channel, read(text) }`, or null (an npm tool, a tool with no such
+ * source, a Homebrew install of a formula SynaBun does not know the tap of:
+ * `brew outdated` alone speaks for that one).
+ */
+export function upstreamVersionSource(toolKey, installSource, brewToken = null) {
+  if (toolKey !== 'opencode') return null;
+  if (isBrewSource(installSource)) {
+    const bare = String(brewToken || '').split('/').pop();
+    if (installSource !== 'brew-formula' || bare !== OPENCODE_UPDATE_SOURCES.brewToken) return null;
+    return { url: OPENCODE_UPDATE_SOURCES.brewFormula, channel: 'brew-formula', read: parseFormulaVersion };
+  }
+  return { url: OPENCODE_UPDATE_SOURCES.vendor, channel: 'vendor', read: parseVendorLatest };
+}
 
 /** Tools that can update themselves when they own their own install. */
 const SELF_UPDATERS = {
@@ -226,9 +289,16 @@ export function quoteCommandPath(file, platform = process.platform) {
  * very installation the panels use, also when a terminal's PATH does not name
  * its folder (a Windows server started before the CLI was installed, a folder
  * found among the known install locations).
+ *
+ * `refreshBrew` (brewNeedsRefresh): the newer version is in the tap as it is
+ * published, and this machine's Homebrew has not heard of it yet. `brew
+ * upgrade` refreshes by itself only once in a while (HOMEBREW_AUTO_UPDATE_SECS,
+ * a day by default) and would answer "already installed", leaving the badge
+ * lit: the command refreshes first.
  */
-export function buildUpdateCommand(toolKey, installSource, { brewToken = null, binPath = null, platform = null } = {}) {
-  const command = planUpdateCommand(toolKey, installSource, { brewToken, platform });
+export function buildUpdateCommand(toolKey, installSource, { brewToken = null, binPath = null, platform = null, refreshBrew = false } = {}) {
+  const planned = planUpdateCommand(toolKey, installSource, { brewToken, platform });
+  const command = planned && refreshBrew && isBrewSource(installSource) ? `brew update && ${planned}` : planned;
   const name = TOOL_COMMANDS[toolKey];
   if (!command || !binPath || !name) return command;
   if (command !== name && !command.startsWith(`${name} `)) return command;
@@ -331,22 +401,51 @@ export function parseBrewOutdated(raw) {
  *
  * When the brew probe itself failed we fail CLOSED (latest = installed)
  * rather than falling back to npm, for the same reason.
+ *
+ * `npmLatest` is the upstream version of an install Homebrew does not own: the
+ * npm registry's for Claude Code and Codex, OpenCode's own update API for
+ * OpenCode 2 (upstreamVersionSource). `brewUpstream` is the version of the
+ * tool's formula as its tap publishes it (OpenCode's tap only): what Homebrew
+ * installs once the tap is refreshed, so it counts when it is newer than the
+ * install and `brew outdated` has not heard of it yet.
  */
 export function resolveLatest({
   installSource,
   brewToken = null,
   brewOutdated = null,
   npmLatest = null,
+  brewUpstream = null,
   installed = null,
 } = {}) {
   if (!isBrewSource(installSource)) return npmLatest;
   if (!installed) return null;
   if (!brewOutdated) return installed;
+  const hit = brewOutdatedVersion(brewOutdated, brewToken);
+  if (hit) return hit;
+  return brewUpstream && semverNewer(installed, brewUpstream) ? brewUpstream : installed;
+}
+
+function brewOutdatedVersion(brewOutdated, brewToken) {
   const token = brewToken || null;
-  const hit = (token && brewOutdated.get(token))
-    || (token && brewOutdated.get(String(token).split('/').pop()))
-    || null;
-  return hit || installed;
+  if (!token || !brewOutdated) return null;
+  return brewOutdated.get(token) || brewOutdated.get(String(token).split('/').pop()) || null;
+}
+
+/**
+ * Whether the update of a Homebrew install has to refresh Homebrew first
+ * (buildUpdateCommand `refreshBrew`): the tap publishes a newer version than
+ * the one installed, and `brew outdated` does not list the tool.
+ */
+export function brewNeedsRefresh({
+  installSource,
+  brewToken = null,
+  brewOutdated = null,
+  brewUpstream = null,
+  installed = null,
+} = {}) {
+  if (!isBrewSource(installSource) || !installed || !brewOutdated || !brewUpstream) return false;
+  if (brewOutdatedVersion(brewOutdated, brewToken)) return false;
+  return semverNewer(installed, brewUpstream);
 }
 
 /**

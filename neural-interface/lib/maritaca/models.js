@@ -2,10 +2,12 @@
 // SynaBun — Maritaca AI: the Sabiá model table (pure)
 // ═══════════════════════════════════════════
 //
-// What Maritaca's documentation says about each model, read 2026-11-06 and again 2026-11-08:
-//   https://docs.maritaca.ai/pt/modelos    (ids, aliases, context, max output, capabilities)
+// What Maritaca's documentation says about each model, verified 2026-11-20:
+//   https://docs.maritaca.ai/pt/modelos    (ids, aliases, context, max output, capabilities, discontinued)
 //   https://docs.maritaca.ai/pt/precos     (BRL per million tokens: input, output, cached input)
 //   https://docs.maritaca.ai/pt/raciocinio (reasoning_effort: none · minimal = low · medium · high = xhigh = max; default xhigh)
+// 2026-11-20: S5-free was discontinued on 2026-11-18 (replaced by S5) and moved to MARITACA_RETIRED. All 9 active
+// models retain their BRL list prices.
 // 2026-11-08: the S5 family's output went to 64K, S5 Nano (open weights, 256K context) joined the list, and the
 // reasoning levels are offered as Off / Low / Medium / High (`high` is the API's `xhigh`, its default). The S5 rows'
 // reasoning is encrypted (never streamed as text); only S5 Nano's arrives as text (`reasoningVisible`).
@@ -25,7 +27,7 @@
 // what the API said and `known: false`; a model here the API no longer lists is kept, marked
 // `listed: false`, so a saved default still resolves.
 
-export const MARITACA_PRICING_VERIFIED = '2026-11-08';
+export const MARITACA_PRICING_VERIFIED = '2026-11-20';
 export const MARITACA_PRICING_SOURCE = 'https://docs.maritaca.ai/pt/precos';
 export const MARITACA_MODELS_SOURCE = 'https://docs.maritaca.ai/pt/modelos';
 export const MARITACA_DEFAULT_MODEL = 'sabiazinho-4';
@@ -43,7 +45,6 @@ export function normalizeMaritacaEffort(value) {
 }
 
 const price = (input, output, cacheRead) => Object.freeze({ input, output, cacheRead, unit: 'brl_per_mtok', basis: 'list' });
-const FREE = Object.freeze({ input: 0, output: 0, cacheRead: 0, unit: 'brl_per_mtok', basis: 'free' });
 const ONE_M = 1_000_000;
 const K128 = 128_000;
 const K256 = 256_000;
@@ -62,14 +63,6 @@ export const MARITACA_MODELS = Object.freeze([
     tier: 'large', contextWindow: ONE_M, maxOutput: K64, reasoning: true, fixedSampling: true, efforts: MARITACA_REASONING_EFFORTS, defaultEffort: 'high',
     toolcall: true, vision: false, price: price(0.65, 3.25, 0.065), region: 'br-sp',
     description: 'S5 with inference 100% in Brazil (data residency), 30% over S5.',
-  },
-  {
-    id: 'S5-free', label: 'S5 (free)', family: 's5', aliases: ['s5-free'],
-    tier: 'large', contextWindow: ONE_M, maxOutput: K64, reasoning: true, fixedSampling: true, efforts: MARITACA_REASONING_EFFORTS, defaultEffort: 'high',
-    toolcall: false, vision: false, batch: false, flex: false, price: FREE, region: 'global', free: true,
-    // docs → Rate Limits: the free model has fixed limits whatever the plan (no batch / flex rates either).
-    rateLimit: Object.freeze({ requestsPerMinute: 60, tokensPerMinuteIn: 256_000, tokensPerMinuteOut: 256_000 }),
-    description: 'S5 free for a limited time (launch offer): text only, no tool calling, no batch or flex; fixed 60 requests and 256k tokens per minute in and out.',
   },
   {
     id: 'S5-nano', label: 'Sabiá 5 Nano (S5 Nano)', family: 's5', aliases: ['s5-nano'],
@@ -118,11 +111,13 @@ export const MARITACA_MODELS = Object.freeze([
 ]);
 
 /**
- * Models Maritaca retired (docs → Modelos descontinuados, 2026-11-06: sabia-3 and sabiazinho-3 are gone from the
- * catalog). They are not in the table; a saved default or a stored conversation that still names one resolves to
- * the nearest current model (sabia-3 → sabia-4, sabiazinho-3 → sabiazinho-4, Sabiá 2 → sabiazinho-4) and never fails.
+ * Models Maritaca retired (docs → Modelos descontinuados: S5-free ended 2026-11-18, sabia-3 and sabiazinho-3
+ * are gone from the catalog). They are not in the table; a saved default or a stored conversation that still
+ * names one resolves to the nearest current model (S5-free → S5, sabia-3 → sabia-4, sabiazinho-3 → sabiazinho-4,
+ * Sabiá 2 → sabiazinho-4) and never fails.
  */
 export const MARITACA_RETIRED = Object.freeze({
+  's5-free': 'S5',
   'sabia-2-medium': 'sabiazinho-4',
   'sabia-2-small': 'sabiazinho-4',
   'sabia-3': 'sabia-4',
@@ -145,7 +140,7 @@ export function findMaritacaModel(id) {
   const direct = byKey.get(key);
   if (direct) return direct;
   const replacement = MARITACA_RETIRED[key];
-  return replacement ? byKey.get(replacement) || null : null;
+  return replacement ? byKey.get(replacement.toLowerCase()) || null : null;
 }
 
 /** The canonical id of a model spelling (its table id), or the spelling itself trimmed when unknown. */
@@ -173,7 +168,7 @@ export function maritacaModelRows() {
     contextWindow: m.contextWindow, maxOutput: m.maxOutput, reasoning: m.reasoning, fixedSampling: m.fixedSampling === true,
     efforts: [...m.efforts], defaultEffort: m.defaultEffort, toolcall: m.toolcall, vision: m.vision,
     price: { ...m.price }, region: m.region, free: m.free === true, description: m.description,
-    // Whether the reasoning arrives as text: S5 Nano and Sabiá 4 Thinking yes; S5, S5 BR-SP and S5 Free keep it encrypted.
+    // Whether the reasoning arrives as text: S5 Nano and Sabiá 4 Thinking yes; S5 and S5 BR-SP keep it encrypted.
     reasoningVisible: m.reasoningVisible === true || (m.reasoning === true && m.family !== 's5'),
     batch: m.batch !== false, flex: m.flex !== false, rateLimit: m.rateLimit ? { ...m.rateLimit } : null,
     isDefault: m.id === MARITACA_DEFAULT_MODEL, known: true, listed: true,

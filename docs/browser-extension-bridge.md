@@ -18,6 +18,18 @@ Choose **Only sites and tabs I share** in **Settings → Browser → Agent acces
 
 **Disconnect** pauses access across restarts. **Revoke pairing** ends the pairing. After an update, reload SynaBun Browser Bridge from the browser's extensions page when prompted.
 
+## Let agents run page scripts
+
+`browser_evaluate` runs JavaScript in a tab the agent controls. `browser_wait` can also wait until a page has loaded or its network has gone quiet. Both need SynaBun Browser Bridge 1.4.0 or later and a one-time setup in the browser:
+
+1. Open the browser's extensions page (`chrome://extensions`, or `edge://extensions` in Edge) and choose **Reload** on SynaBun Browser Bridge. Version 1.4.0 adds two permissions: `userScripts`, to run a script in a page, and `webRequest`, to see when a tab's requests start and end. The extension never blocks or changes a request and reads no request content.
+2. Choose **Details** on the extension and turn on **Allow User Scripts**. In Chrome or Edge before version 138, turn on **Developer mode** at the top of the extensions page instead.
+3. Choose **Reload** once more.
+
+Page scripts stay off until you turn on **Allow User Scripts**. Every other tool works without it, and you can turn it off again at any time. A script runs only in a tab the agent controls, on a page the access mode allows, and never on SynaBun's own pages or the browser's pages. It can read what the page's own JavaScript can read, including form values and the site's storage, so leave the switch off if agents should not have that.
+
+Automations that publish on X or pace their social posts are held to the same publish gate and spacing here as in SynaBun's other browsers.
+
 ## Troubleshooting
 
 | Message | What to do |
@@ -28,12 +40,20 @@ Choose **Only sites and tabs I share** in **Settings → Browser → Agent acces
 | `NAVIGATION_NOT_COMMITTED` | Check which page the tab shows before retrying. |
 | `NO_HISTORY_ENTRY` | The tab has reached the end of its history in that direction. Navigate to the desired page directly. |
 | `RESTRICTED_PAGE` or `SYNABUN_PAGE_BLOCKED` | Choose an ordinary website tab. Browser settings, extension pages and SynaBun's control interface are protected. |
+| `USER_SCRIPTS_DISABLED` | Turn on **Allow User Scripts** in the extension's details, then reload the extension. See [Let agents run page scripts](#let-agents-run-page-scripts). |
+| `USER_SCRIPTS_UNSUPPORTED` | Update Chrome or Edge to version 135 or later. |
+| `EXTENSION_RELOAD_REQUIRED` | The browser still runs an older copy of the extension. Reload SynaBun Browser Bridge from the browser's extensions page. |
+| `NETWORK_IDLE_UNAVAILABLE` | Reload the extension so its `webRequest` permission takes effect. Until then, wait for an element or for the `load` state. |
+| `PAGE_ERROR` | The script itself failed on the page. Pass one JavaScript expression and wrap statements in a function: `(() => { …; return value; })()`. |
+| `BLANK_PAGE` | Navigate the tab to a website before running a script. |
 
 On sites such as Nexus, complete any site challenge yourself. Cloudflare acceptance depends on the site.
 
 ## Tool support
 
-Page interactions operate on the top document. Some controls require manual input. If a tool returns `UNSUPPORTED_IN_EXTENSION_MODE`, consult its row below.
+Page interactions operate on the top document. Upload selectors also search open shadow roots and same-origin frames. Some controls require manual input. If a tool returns `UNSUPPORTED_IN_EXTENSION_MODE`, consult its row below.
+
+The site extractors and composer-state tools were built for SynaBun's own browser and stay listed as unsupported. Some of them read the page with a script, so they may answer in extension mode once **Allow User Scripts** is on. They have not been validated there.
 
 | Tool | Status | Scope |
 | --- | --- | --- |
@@ -42,7 +62,7 @@ Page interactions operate on the top document. Some controls require manual inpu
 | browser_click | Partial | Works with standard controls in the top document. |
 | browser_console | Unsupported | Unavailable in extension mode. |
 | browser_content | Partial | Works with standard controls in the top document. |
-| browser_evaluate | Unsupported | Unavailable in extension mode. |
+| browser_evaluate | Partial | Runs one JavaScript expression in the controlled tab once **Allow User Scripts** is on. A script can run for up to 30 seconds and return up to 1,000,000 characters of JSON. |
 | browser_extract_fb_groups | Unsupported | Unavailable in extension mode. |
 | browser_extract_fb_posts | Unsupported | Unavailable in extension mode. |
 | browser_extract_ig_feed | Unsupported | Unavailable in extension mode. |
@@ -79,6 +99,6 @@ Page interactions operate on the top document. Some controls require manual inpu
 | browser_session | Supported | Lists, opens or claims tabs according to the current access mode. |
 | browser_snapshot | Partial | Lists semantic elements in the top document. |
 | browser_type | Partial | Works with standard controls in the top document. |
-| browser_upload | Partial | Uses up to four files from the upload folder, up to 50 MB total in either access mode. The extension reads the selected files through its paired loopback bridge and attaches them to the file input. |
-| browser_wait | Partial | Works with standard controls in the top document. |
+| browser_upload | Partial | Attaches up to four staged files, up to 50 MiB total. The input’s `accept` filter applies to every file. The result lists each selected file’s name, MIME type and byte size. Check the page for upload progress. |
+| browser_wait | Partial | Waits for an element in the top document, a fixed time, or the `load` and `networkidle` page states. `domcontentloaded` is unavailable. |
 | browser_x_compose_state | Unsupported | Unavailable in extension mode. |

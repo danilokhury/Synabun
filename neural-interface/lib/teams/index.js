@@ -54,11 +54,11 @@ export function createTeams({ store, git = createGitRunner(), runTests = createT
   async function create(plan, options = {}) {
     const made = await worktrees.create(plan, options);
     if (!made.ok) return made;
-    const claimed = claims.start(made.team.teamId);
+    const claimed = await claims.start(made.team.teamId);
     if (!claimed.ok) {
       // A valid plan's claims never clash; should the store say otherwise, the team does not start.
       await worktrees.remove(made.team.teamId, { discard: true, force: true });
-      claims.end(made.team.teamId);
+      await claims.end(made.team.teamId);
       return claimed;
     }
     return { ...made, claims: claimed.claims };
@@ -68,7 +68,7 @@ export function createTeams({ store, git = createGitRunner(), runTests = createT
   async function startSlice(teamId, sliceId, options = {}) {
     const started = await worktrees.startSlice(teamId, sliceId, options);
     if (!started.ok) return started;
-    const claimed = claims.assign(teamId, sliceId, options.runId || null);
+    const claimed = await claims.assign(teamId, sliceId, options.runId || null);
     if (!claimed.ok) return claimed;
     return { ...started, context: claims.context(teamId, sliceId) };
   }
@@ -76,14 +76,14 @@ export function createTeams({ store, git = createGitRunner(), runTests = createT
   /** Remove a team's worktrees and branches (after a landing, or `discard: true`); its claims go with it. */
   async function remove(teamId, options = {}) {
     const out = await worktrees.remove(teamId, options);
-    if (out.ok) claims.end(teamId);
+    if (out.ok) await claims.end(teamId);
     return out;
   }
 
   return {
     create,
     get: worktrees.get,
-    plan: (teamId) => worktrees.get(teamId)?.plan || null,
+    plan: async (teamId) => (await worktrees.get(teamId))?.plan || null,
     list: worktrees.list,
     inspect: worktrees.inspect,
     startSlice,
@@ -91,8 +91,8 @@ export function createTeams({ store, git = createGitRunner(), runTests = createT
     finishReadOnlySlice: async (teamId, sliceId, options) => {
       const out = await worktrees.finishReadOnlySlice(teamId, sliceId, options);
       if (out.ok) {
-        claims.release(teamId, sliceId);
-        if (worktrees.get(teamId)?.state === 'completed') claims.end(teamId);
+        await claims.release(teamId, sliceId);
+        if ((await worktrees.get(teamId))?.state === 'completed') await claims.end(teamId);
       }
       return out;
     },

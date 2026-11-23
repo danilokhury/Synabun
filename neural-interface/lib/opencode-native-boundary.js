@@ -47,6 +47,11 @@ export const NATIVE_SERVE_MIN_VERSION = '2.1.0';
 export const NATIVE_WATCH_MS = 15_000;
 // How long a watch pass waits for a foreign serve that failed only by not answering to be confirmed gone (ensureWatch).
 export const NATIVE_EXIT_GRACE_MS = 3_000;
+// How long a foreign serve that passed keeps its verdict while its executable cannot be asked its version (a check
+// that could not run on a busy machine, not a finding about the serve), counted from the last version that was read.
+export const NATIVE_VERSION_GRACE_MS = 60_000;
+// How long a watch pass waits for a look that is still under way before it treats "not finished" as a failure.
+export const NATIVE_CHECK_PATIENCE_MS = 20_000;
 
 /** "2.3.0", "v2.3.0", "opencode v2.3.0" → "2.3.0"; null for anything else (a prerelease, four parts, extra words). */
 export function nativeServeVersionOf(version) {
@@ -292,14 +297,27 @@ const sameIdentity = (a, b) => (!a && !b) || (!!a && !!b && a.realpath === b.rea
 // No shell, no server launch and bounded output/time. A foreign listener's version is not public over HTTP when
 // its authentication works; ask the executable the OS identified instead. Interpreters cannot identify the script
 // they run this way, so those foreign serves fail closed rather than treating `node --version` as OpenCode.
-export function readOpencodeBinaryVersion(identity, { run = execFile } = {}) {
+// How long `--version` of an OpenCode executable may take: a first, quick try, then one patient one. The quick limit
+// alone failed healthy checks: on 2026-11-21 a server whose loop was held for 2.8 s (and whose disk was busy with a
+// backup) could not read a version in 2 s, and the serve it belonged to cost a live browser context.
+export const NATIVE_VERSION_TIMEOUTS_MS = Object.freeze([2_000, 10_000]);
+
+export function readOpencodeBinaryVersion(identity, { run = execFile, timeouts = NATIVE_VERSION_TIMEOUTS_MS } = {}) {
   if (!identity?.native || !isOpencodePath(identity.realpath)) return Promise.resolve(null);
-  return new Promise((resolve) => {
+  const once = (timeout) => new Promise((resolve) => {
     try {
-      run(identity.realpath, ['--version'], { timeout: 2000, maxBuffer: 16_384, windowsHide: true },
+      run(identity.realpath, ['--version'], { timeout, maxBuffer: 16_384, windowsHide: true },
         (error, stdout) => resolve(error ? null : nativeServeVersionOf(stdout)?.text || null));
     } catch { resolve(null); }
   });
+  // An answer that is not a version is tried again too: a timer that fired late cuts the output off.
+  return (async () => {
+    for (const timeout of timeouts) {
+      const version = await once(timeout);
+      if (version) return version;
+    }
+    return null;
+  })();
 }
 const INTERPRETER = /^(?:node|nodejs|bun|deno)(?:\.exe)?$/i;
 const exited = (proc) => !proc || proc.exitCode != null || proc.signalCode != null;
@@ -314,7 +332,8 @@ export function createNativeServeBoundary({ probe = probeOpencodeServe, identify
   scan = scanOpencodeServes, readGeneration = readServeGeneration, portListeners = listPortListenersAsync, pidAlive = pidExists,
   signalPid = (pid, signal) => process.kill(pid, signal), revoke = revokeNativeContext, platform = process.platform,
   now = Date.now, retryMs = 5_000, termMs = 3_000, killMs = 3_000, gonePollMs = 100, refreshMs = 8_000, foreignTtlMs = 5 * 60_000,
-  watchMs = NATIVE_WATCH_MS, exitGraceMs = NATIVE_EXIT_GRACE_MS, exitPollMs = 250, preflight = null, log = () => {} } = {}) {
+  watchMs = NATIVE_WATCH_MS, exitGraceMs = NATIVE_EXIT_GRACE_MS, exitPollMs = 250, versionGraceMs = NATIVE_VERSION_GRACE_MS,
+  checkPatienceMs = NATIVE_CHECK_PATIENCE_MS, preflight = null, log = () => {} } = {}) {
   const processes = new Map();
   // Process-local admission evidence: persisted diagnostic verdicts and ordinary runtime passes cannot grant it.
   const builds = new Map(), buildChecks = new Map();
@@ -499,7 +518,18 @@ export function createNativeServeBoundary({ probe = probeOpencodeServe, identify
     // and a version change must invalidate the verdict even when those two fields stayed the same.
     const cacheKey = identity && policy.ok ? `${key}|${serve.executable}|${binaryKey(identity, policy.version)}` : null;
     const v = rec?.verdict;
-    if (cacheKey && rec?.cacheKey === cacheKey && v && now() - v.at < foreignTtlMs && !(v.transient && now() - v.at >= retryMs)) return v;
+    // The executable gave no version at all (readVersion already tried twice): a check that could not run, which says
+    // nothing about the serve. One that passed as this very process (the key) started from this very file keeps its
+    // verdict for `versionGraceMs` since its version was last read; after that it fails as any unreadable version.
+    if (identity && version == null && v?.ok && sameIdentity(identity, rec.identity) && now() - (rec.versionAt || 0) < versionGraceMs) {
+      if (!rec.versionLate) log(`OpenCode serve pid ${serve.pid} (${serve.executable || '?'}), not started by SynaBun: its executable did not answer --version in time; the verdict it passed with is kept for up to ${Math.round(versionGraceMs / 1000)} s while it is asked again`);
+      rec.versionLate = true;
+      return v;
+    }
+    if (cacheKey && rec?.cacheKey === cacheKey && v && now() - v.at < foreignTtlMs && !(v.transient && now() - v.at >= retryMs)) {
+      if (v.ok) { rec.versionAt = now(); rec.versionLate = false; }
+      return v;
+    }
     if (!rec) { rec = { serve, verdict: null, probing: null }; foreign.verdicts.set(key, rec); }
     rec.serve = serve;
     rec.cacheKey = cacheKey;
@@ -537,6 +567,10 @@ export function createNativeServeBoundary({ probe = probeOpencodeServe, identify
       verdict.version = policy.version;
       verdict.checks.push(...extra);
       rec.verdict = verdict;
+      // What a later pass may lean on when the executable cannot be asked (versionGraceMs): the file and the moment.
+      rec.identity = verdict.ok ? identity : null;
+      rec.versionAt = verdict.ok ? now() : 0;
+      rec.versionLate = false;
       if (!verdict.ok) log(`OpenCode serve pid ${serve.pid} port ${verdict.port ?? '?'} (${serve.executable || serve.command || '?'}), not started by SynaBun, failed the runtime check "${verdict.failed}": ${verdict.detail}`);
       return verdict;
     })().finally(() => { rec.probing = null; });
@@ -647,15 +681,42 @@ export function createNativeServeBoundary({ probe = probeOpencodeServe, identify
     }
   }
 
+  // A watch pass that is only late: its look is still under way (lsof, --version or a probe on a busy machine), or the
+  // list of listening processes could not be read once. Neither is a finding. The pass waits for the look, bounded by
+  // `checkPatienceMs` in all, and reads the list once more; what is still unfinished or unreadable then is revoked as
+  // before (fail closed). A finished look that found something is never waited on.
+  const onlyChecking = (list) => list.length > 0 && list.every((o) => o.reason === 'foreign-checking');
+  async function settledForeignOffenders() {
+    const end = now() + Math.max(0, checkPatienceMs);
+    let rescanned = false;
+    for (;;) {
+      if (foreign.result && !foreign.result.ok && !foreign.scanning) {
+        if (rescanned || now() >= end) return { scanFailed: true, bad: [] };
+        rescanned = true;
+        await within(refreshForeign(), Math.max(1, end - now()));
+        continue;
+      }
+      const bad = foreignOffenders(new Set());
+      if (!onlyChecking(bad) || now() >= end) return { scanFailed: !foreign.result?.ok && !foreign.scanning, bad };
+      const pending = [foreign.scanning, ...[...foreign.verdicts.values()].map((rec) => rec.probing)].filter(Boolean);
+      await within(pending.length ? Promise.allSettled(pending) : defaultSleep(exitPollMs), Math.max(1, Math.min(end - now(), pending.length ? end - now() : exitPollMs)));
+    }
+  }
+
+  let watching = false;
   function ensureWatch() {
     if (watchTimer || !(watchMs > 0)) return;
     watchTimer = setInterval(() => {
       if (!attachedContexts().length) { clearInterval(watchTimer); watchTimer = null; return; }
+      // One pass at a time: a patient pass must not be overtaken by the next tick's impatient one.
+      if (watching) return;
+      watching = true;
       refresh().then(async () => {
-        if (!foreign.result?.ok) { revokeAll('the OpenCode listening processes could not be verified'); return; }
-        const bad = await withoutExitingForeign(foreignOffenders(new Set()));
+        const settled = await settledForeignOffenders();
+        if (settled.scanFailed) { revokeAll('the OpenCode listening processes could not be verified'); return; }
+        const bad = await withoutExitingForeign(settled.bad);
         if (bad.length) revokeAll(`an OpenCode serve SynaBun did not start could not be verified (pid ${bad[0].pid || '?'}, port ${bad[0].port || '?'}, check "${bad[0].check || bad[0].reason}")`);
-      }).catch(() => {});
+      }).catch(() => {}).finally(() => { watching = false; });
     }, watchMs);
     watchTimer.unref?.();
   }

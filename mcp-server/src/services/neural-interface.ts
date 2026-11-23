@@ -25,6 +25,17 @@ const BASE_URL = process.env.NEURAL_INTERFACE_URL
   || `http://localhost:${process.env.NEURAL_PORT || '3344'}`;
 const DEFAULT_TIMEOUT = 10_000;
 const LONG_TIMEOUT = 30_000;
+// A page script. In the owner's everyday browser (the extension backend) one may run 30 s, and the Neural Interface
+// waits 35 s for the extension's answer (browser-extension/protocol.js: EVALUATE_TIMEOUT plus LONG_MARGIN); a shorter
+// wait here would give up on a script that is still running and answers. The Playwright backends answer within their
+// own 10 s deadline, so for them this only bounds how long a lost answer is waited for.
+export const EVALUATE_TIMEOUT = 40_000;
+// A wait that names its own timeout is waited for that long (a load-state wait takes up to a minute, and the Neural
+// Interface answers at most 5 s after it), never less than the usual wait.
+export function waitTimeout(timeout?: number): number {
+  const asked = Number(timeout);
+  return Math.max(LONG_TIMEOUT, (Number.isFinite(asked) && asked > 0 ? Math.min(60_000, asked) : 0) + 8_000);
+}
 // A browser start (create, acquire, a run's recovery) is answered by the server within its request budget
 // (neural-interface/lib/browser-execution.js BROWSER_REQUEST_MAX_MS, 120 s): the session, or BROWSER_STARTING while a
 // cold MoreLogin start is still running (it can wait two minutes for the app), with the start kept for this caller's
@@ -1640,7 +1651,7 @@ export interface SocialWritePace {
 /** `recover: false`: a missing session or tab is reported, never retried on a replacement tab (see request()). */
 export async function evaluate(sessionId: string, script: string, tabId?: string, opts?: { pace?: SocialWritePace; recover?: boolean }): Promise<NiResponse> {
   const pace = opts?.pace ? { platform: opts.pace.platform, maxWaitMs: Math.max(0, Math.floor(opts.pace.maxWaitMs || 0)) } : null;
-  return request('POST', `/api/browser/sessions/${sessionId}/evaluate`, { script, ...(tabId && { tabId }), ...(pace && { pace }) }, LONG_TIMEOUT + (pace?.maxWaitMs || 0), { recover: opts?.recover });
+  return request('POST', `/api/browser/sessions/${sessionId}/evaluate`, { script, ...(tabId && { tabId }), ...(pace && { pace }) }, EVALUATE_TIMEOUT + (pace?.maxWaitMs || 0), { recover: opts?.recover });
 }
 
 export interface BrowserExtractOptions {
@@ -1720,7 +1731,7 @@ export async function waitFor(
   opts: { selector?: string; state?: string; loadState?: string; timeout?: number },
   tabId?: string
 ): Promise<NiResponse> {
-  return request('POST', `/api/browser/sessions/${sessionId}/wait`, { ...opts, ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) }, LONG_TIMEOUT);
+  return request('POST', `/api/browser/sessions/${sessionId}/wait`, { ...opts, ...(isBrowserCompactMode() && { compact: true }), ...(tabId && { tabId }) }, waitTimeout(opts.timeout));
 }
 
 // ── Whiteboard ──
@@ -2138,6 +2149,7 @@ export async function assistantRoute(body: {
   summary: string;
   confidence: number;
   planned_split?: { workers: number; slices: string[]; reason?: string };
+  needs_host?: boolean;
   needs_vision?: boolean;
   proposals: Array<{ kind: 'direct' | 'dispatch'; provider?: string; model?: string; effort?: string; reason?: string; agent_ref?: string }>;
   independent?: boolean;
@@ -2246,6 +2258,14 @@ export async function assistantTeamStatus(teamId: string): Promise<NiResponse> {
 /** A join runs the team's test command on the integration branch: the answer may take as long as the tests. */
 export async function assistantTeamIntegrate(teamId: string, body: { sliceId?: string } = {}): Promise<NiResponse> {
   return request('POST', assistantTeamPath(teamId, '/integrate'), body, ASSISTANT_TEAM_TIMEOUT);
+}
+
+export async function assistantTeamAssign(teamId: string, sliceId: string, paths: string[]): Promise<NiResponse> {
+  return request('POST', assistantTeamPath(teamId, '/assign'), { sliceId, paths }, ASSISTANT_TEAM_TIMEOUT, { preserveJson: true });
+}
+
+export async function assistantTeamSetTestCommand(teamId: string, testCommand: string): Promise<NiResponse> {
+  return request('POST', assistantTeamPath(teamId, '/set_test_command'), { testCommand }, ASSISTANT_TEAM_TIMEOUT, { preserveJson: true });
 }
 
 export async function assistantTeamLand(teamId: string, body: { targetBranch?: string; mode?: string } = {}): Promise<NiResponse> {

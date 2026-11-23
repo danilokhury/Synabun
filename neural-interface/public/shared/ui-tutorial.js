@@ -21,7 +21,6 @@ import { CLI_PROFILES, ensureModelsForProfile, modelSelectorValue, formatModelOp
 import { beginAssistantTour } from './assistant/asst-sidepanel.js';
 import { dropdownHTML, setDropdownDisabled, setDropdownItems, setDropdownValue, wireDropdowns } from './cc-dropdown.js';
 import { showGuestToast } from './ui-sync.js';
-import { BEATS, beatsFor, resumeBeat } from './tour/tour-beats.js';
 import { markTourSeen, tourReturning } from './tour/tour-state.js';
 
 let initialized = false;
@@ -93,7 +92,7 @@ async function startTour({ host = null, from = 'help' } = {}) {
   try {
     await loadStyles();
     let sent = null; // what the user sent from a session-free preview's composer
-    const presentation = host ? null : beginAssistantTour({ onPreviewSend: (text) => { sent = text; tour?.engine.close('sent'); } });
+    const presentation = host ? null : await beginAssistantTour({ onPreviewSend: (text) => { sent = text; tour?.engine.close('sent'); } });
     const stage = host || presentation?.host;
     if (!stage?.root || !stage.renderer) {
       presentation?.restore({ reason: 'skip' });
@@ -102,8 +101,10 @@ async function startTour({ host = null, from = 'help' } = {}) {
     }
     const returning = from === 'help' && tourReturning(storage);
     const saved = storage.getItem(KEYS.TUTORIAL_STEP);
-    const resumeAt = saved != null && !storage.getItem(KEYS.TUTORIAL_COMPLETED) ? resumeBeat(saved) : -1;
-    const { createTour } = await import('./tour/tour-engine.js');
+    const resumable = saved != null && !storage.getItem(KEYS.TUTORIAL_COMPLETED);
+    // The storyboard loads with the engine, when a tour opens: the page is shown without them.
+    const [{ createTour }, { beatsFor, resumeBeat }] = await Promise.all([import('./tour/tour-engine.js'), import('./tour/tour-beats.js')]);
+    const resumeAt = resumable ? resumeBeat(saved) : -1;
     storage.setItem(KEYS.TUTORIAL_STARTED, 'true');
     const env = { computer: stage.computer !== false };
     const engine = createTour({
@@ -146,8 +147,6 @@ async function startTour({ host = null, from = 'help' } = {}) {
     opening = false;
   }
 }
-
-export { BEATS as TOUR_BEATS };
 
 /** The tour on screen (its engine: play, next, prev, close, index…), or null. For tests and devtools. */
 export function currentTour() {

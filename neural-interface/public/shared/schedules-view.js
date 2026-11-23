@@ -1,3 +1,4 @@
+import { isPersonalStop } from './worker-end.js';
 import { toolListView } from './tool-list-view.js';
 // SynaBun Neural Interface — what the Schedules window shows, without the page.
 // Which schedules a view lists and in which order, how a schedule's state reads, and the cron
@@ -230,7 +231,7 @@ export function lastRunState(schedule) {
   const head = (colon >= 0 ? text.slice(0, colon) : text).trim();
   const reason = colon >= 0 ? text.slice(colon + 1).trim() : '';
   if (head === 'error') return { kind: 'failed', label: scheduleWord('runFailed'), reason: reason || scheduleWord('runFailedReason') };
-  if (head === 'stopped') return { kind: 'stopped', label: scheduleWord('runStopped'), reason: reason === 'user' ? scheduleWord('runStoppedByYou') : reason };
+  if (head === 'stopped') return { kind: 'stopped', label: scheduleWord('runStopped'), reason: reason === 'user' ? (isPersonalStop(schedule.lastStopProvenance) ? scheduleWord('runStoppedByYou') : '') : reason };
   if (head === 'interrupted') return { kind: 'interrupted', label: scheduleWord('runInterrupted'), reason };
   return { kind: 'other', label: head.charAt(0).toUpperCase() + head.slice(1), reason };
 }

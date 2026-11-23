@@ -27,7 +27,7 @@ import { toolCatalogView } from '../../mcp-server/dist/services/tool-catalog.js'
 // never offered. `sources` says how each provider's list was obtained.
 
 import { sortEfforts, variantNames } from './effort-levels.js';
-import { listPrice } from './assistant-pricing.js';
+import { applyOpencodeCostOverride, listPrice } from './assistant-pricing.js';
 
 export const CATALOG_PROVIDERS = ['claude-code', 'codex', 'opencode', 'antigravity'];
 /**
@@ -249,7 +249,7 @@ export function parseOpenCodeProviders(data, { filter = null } = {}) {
       if (caps.input && typeof caps.input === 'object' && typeof caps.input.image === 'boolean') vision = caps.input.image;
       else if (Array.isArray(model.modalities?.input)) vision = model.modalities.input.includes('image');
       else if (typeof model.attachment === 'boolean' || typeof caps.attachment === 'boolean') { vision = !!(model.attachment ?? caps.attachment); visionSource = 'guess'; }
-      const price = priceFrom(model.cost);
+      const price = priceFrom(applyOpencodeCostOverride(pid, mid, model.cost));
       const row = {
         provider: 'opencode', id, upstream: pid, label: model.name || mid, family: model.family || null,
         vision, visionSource,

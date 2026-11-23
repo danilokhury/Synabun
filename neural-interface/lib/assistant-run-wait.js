@@ -41,7 +41,7 @@ export function createRunWaits({ entries, view, isTerminal, coordination, now = 
   /** A run changed: every wait looks again. */
   function notify() {
     for (const waiter of [...waiters]) {
-      try { if (waiter.check()) { waiters.delete(waiter); waiter.resolve(); } } catch { /* a wait that cannot look keeps waiting for its timeout */ }
+      waiter.wake();
     }
   }
 
@@ -111,15 +111,14 @@ export function createRunWaits({ entries, view, isTerminal, coordination, now = 
         from = Number(afterSeq);
         if (!Number.isInteger(from) || from < 0) throw fail('INVALID_CURSOR', 'after_seq is a whole number from 0: the cursor of an earlier agent_wait answer.', { status: 400 });
       } else {
-        from = lastSeq();
+        from = await lastSeq();
         // The brain itself asks: what it has not been told yet counts, though it happened before this call.
-        if (unseenFor) from = Math.min(from, unseenStart(String(unseenFor), ids, from));
+        if (unseenFor) from = Math.min(from, await unseenStart(String(unseenFor), ids, from));
       }
     }
-    const eventsNow = () => {
+    const eventsNow = async () => {
       if (!typed) return [];
-      try { return coordination.runEvents({ runIds: ids, afterSeq: from, kinds: wanted, limit: RUN_WAIT_LIMITS.maxEvents }); }
-      catch { return []; }
+      return coordination.runEvents({ runIds: ids, afterSeq: from, kinds: wanted, limit: RUN_WAIT_LIMITS.maxEvents });
     };
     const satisfied = (events) => ids.filter((id) => {
       const entry = entries.get(id);
@@ -130,21 +129,41 @@ export function createRunWaits({ entries, view, isTerminal, coordination, now = 
       if (!cursorGiven && (entry.state === 'awaiting_permission' || entry.state === 'awaiting_route')) return true;
       return events.some((event) => event.runId === id);
     });
-    const check = () => {
+    const check = async () => {
       ids = members();
-      const done = satisfied(eventsNow());
+      const done = satisfied(await eventsNow());
       return mode === 'any' ? done.length > 0 : done.length === ids.length;
     };
-    if (!check()) {
-      await new Promise((resolveWait) => {
-        const waiter = { check, resolve: () => { clearTimeout(timer); resolveWait(); } };
-        const timer = setTimeout(() => { waiters.delete(waiter); resolveWait(); }, budget);
-        timer.unref?.();
-        waiters.add(waiter);
-      });
-    }
+    // Subscribe before the first read. Coalesce notifications while a read is
+    // outstanding so an event between that read and its reply still wakes us.
+    await new Promise((resolveWait, rejectWait) => {
+      let checking = false, again = false;
+      function finish(error) {
+        if (!waiters.delete(waiter)) return;
+        clearTimeout(timer);
+        if (error) rejectWait(error); else resolveWait();
+      }
+      const waiter = { async wake() {
+        if (checking) { again = true; return; }
+        checking = true;
+        try {
+          do {
+            again = false;
+            if (await check()) { finish(); break; }
+          } while (again && waiters.has(waiter));
+        } catch (error) { finish(error); }
+        checking = false;
+      } };
+      const timer = setTimeout(finish, budget);
+      timer.unref?.();
+      waiters.add(waiter);
+      waiter.wake();
+    });
     ids = members();
-    const events = eventsNow();
+    // Sample the watermark before fetching the rows. A later commit must
+    // appear in this answer or remain above the returned cursor.
+    const watermark = await lastSeq();
+    const events = await eventsNow();
     const done = satisfied(events);
     const pendingIds = ids.filter((id) => !done.includes(id));
     const timedOut = !(mode === 'any' ? done.length > 0 : done.length === ids.length);
@@ -158,25 +177,23 @@ export function createRunWaits({ entries, view, isTerminal, coordination, now = 
     if (typed) {
       out.events = events;
       // Pass it back as after_seq to go on from here. A full page stops at its last event: more may follow.
-      out.cursor = events.length >= RUN_WAIT_LIMITS.maxEvents ? events[events.length - 1].seq : Math.max(from, lastSeq());
+      out.cursor = events.length >= RUN_WAIT_LIMITS.maxEvents ? events[events.length - 1].seq : Math.max(from, watermark, events.at(-1)?.seq || 0);
     } else {
-      out.cursor = lastSeq();
+      out.cursor = watermark;
     }
     if (overflow) out.notWaitedFor = overflow;
     return out;
   }
 
-  function lastSeq() {
-    try { return Number(coordination.lastSeq()) || 0; } catch { return 0; }
+  async function lastSeq() {
+    return Number(await coordination.lastSeq()) || 0;
   }
   /** Just before the oldest event of these runs the session's brain was not told yet (`fallback` when there is none). */
-  function unseenStart(sessionId, ids, fallback) {
-    try {
-      const wantedRuns = new Set(ids);
-      const { items } = coordination.mailbox.pending(sessionId, { limit: 1000, peek: true });
-      const seqs = items.filter((item) => item.run?.runId && wantedRuns.has(String(item.run.runId))).map((item) => Number(item.seq)).filter((seq) => Number.isFinite(seq));
-      return seqs.length ? Math.min(...seqs) - 1 : fallback;
-    } catch { return fallback; }
+  async function unseenStart(sessionId, ids, fallback) {
+    const wantedRuns = new Set(ids);
+    const { items } = await coordination.mailbox.pending(sessionId, { limit: 1000, peek: true });
+    const seqs = items.filter((item) => item.run?.runId && wantedRuns.has(String(item.run.runId))).map((item) => Number(item.seq)).filter((seq) => Number.isFinite(seq));
+    return seqs.length ? Math.min(...seqs) - 1 : fallback;
   }
 
   return { wait, notify, satisfies, pending: () => waiters.size };

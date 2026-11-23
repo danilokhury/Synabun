@@ -65,7 +65,7 @@ export function fetchManageCatalog({ force = false } = {}) {
 
 // ── Routing (model routes) ───────────────────
 
-/** → { ok, version, routing:{ defaultMode, askBelow, waitSeconds, cardTimeoutMinutes, preferences, ladders, catalogFilter }, taskClasses, modes } */
+/** → { ok, version, routing:{ defaultMode, askBelow, waitSeconds, preferences, ladders, catalogFilter }, taskClasses, modes } */
 export function getRouting() {
   return jsonFetch('/api/assistant/routing');
 }
@@ -230,7 +230,7 @@ export function sendAssistantRun(runId, text, { origin = 'user' } = {}) {
 }
 
 export function stopAssistantRun(runId, reason) {
-  return jsonFetch(`/api/assistant/runs/${enc(runId)}/stop`, jsonBody(reason ? { reason } : {}));
+  return jsonFetch(`/api/assistant/runs/${enc(runId)}/stop`, jsonBody({ reason, action: 'stop' }));
 }
 
 /** Remove one finished run from the agents tray (409 RUN_ACTIVE while it still runs). */
@@ -249,7 +249,7 @@ export function focusAssistantRun(runId) {
 }
 
 export function killAllAssistantRuns(assistantSessionId) {
-  return jsonFetch('/api/assistant/kill-all', jsonBody({ assistantSessionId }));
+  return jsonFetch('/api/assistant/kill-all', jsonBody({ assistantSessionId, action: 'stop' }));
 }
 
 // ── Claude accounts ──────────────────────────

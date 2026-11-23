@@ -416,7 +416,8 @@ export function usageParts(usage, costBrl, T) {
     if (output) parts.push(T('usage_out', { value: fmt(output) }));
     if (cached) parts.push(T('usage_cached', { value: fmt(cached) }));
   }
-  // A cost of exactly 0 is a free model's answer (S5-free) and is shown as R$ 0,00; null is "no price known".
+  // A cost of exactly 0 is a free model's answer (none is listed since S5-free was retired on 2026-11-18) and is
+  // shown as R$ 0,00; null is "no price known".
   if (costBrl !== null && costBrl !== undefined && Number.isFinite(Number(costBrl)) && (Number(costBrl) > 0 || usage)) parts.push(T('costBrl', { value: formatBrl(costBrl) }));
   return parts;
 }

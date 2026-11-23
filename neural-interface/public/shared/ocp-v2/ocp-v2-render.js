@@ -9,6 +9,8 @@
 // shared allowlist sanitizer before it reaches innerHTML.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { getProviderMeta, isMaritacaModel } from '../provider-icons.js';
+
 import { getDefaultStore } from './ocp-v2-state.js';
 import { hasWorkerQuestions, api, supports, isDescendantSession, isKnownDescendantSession, onEvent } from './ocp-v2-ws.js';
 import {
@@ -25,7 +27,9 @@ import { messageMetaText } from './ocp-v2-tools-logic.js';
 import { createStickyScrollController } from '../ui-scroll-follow.js';
 import { watchTranscriptRows } from '../transcript-rows.js';
 import { sanitizeHtmlString } from '../assistant/asst-sanitize.js';
+import { sanitizeStoredHtml } from '../assistant/asst-sanitize.js';
 import { withCodeCopyButtons } from '../code-copy.js';
+import { withOutputFrames } from '../output-format.js';
 import { openProviderSettings } from './ocp-v2-settings-link.js';
 import {
   visibleParts, partSignature, messageErrorView, retryBannerView, retryPartText,
@@ -102,7 +106,14 @@ export function mountRenderer(containerEl, store = getDefaultStore(), opts = {})
     });
   };
 
+  let _lastSessionId = store.getState().sessionId;
   const unsubscribe = store.subscribe((event, state) => {
+    // Switching to another session in the same container restores bottom-follow intent
+    // and cancels any queued scroll frame from the session being left.
+    if (event?.type === 'session:set' && event.sessionId !== _lastSessionId) {
+      _lastSessionId = event.sessionId;
+      scrollController?.setFollowing(true);
+    }
     // The server listed this session's open permission requests: a reason
     // typed for one that is no longer among them has no card to come back to.
     if (event?.type === 'permission:set' && event.listed) settlePermissionReasons(state);
@@ -201,9 +212,20 @@ function _reconcile(container, desired) {
   }
 }
 
-function _buildEmpty() {
+function _buildEmpty(maritaca) {
   const empty = document.createElement('div');
   empty.className = 'ocpv2-empty ocpv2-empty-brand';
+  if (maritaca) {
+    // The mark is inline SVG, which the Markdown list flattens: the stored-markup list keeps its shapes.
+    const logo = sanitizeStoredHtml(getProviderMeta('maritaca').icon).firstElementChild;
+    logo.classList.add('ocpv2-empty-logo');
+    logo.setAttribute('aria-hidden', 'true');
+    const name = document.createElement('div');
+    name.className = 'ocpv2-empty-name';
+    name.textContent = 'Maritaca';
+    empty.append(logo, name);
+    return empty;
+  }
   empty.innerHTML =
     '<svg class="ocpv2-empty-logo" viewBox="0 0 240 300" fill="currentColor" aria-hidden="true">'
     + '<path fill-rule="evenodd" d="M0 0h240v300H0V0zm30 30v240h180V30H30z"/>'
@@ -235,7 +257,8 @@ function render(_container, store, opts = {}) {
   const endCard = typeof opts.endCard === 'function' ? opts.endCard(s) : null;
   const hasInteractiveCards = permissions.length > 0 || questions.length > 0 || !!s.showPostPlanActions || !!endCard;
   if (s.messageOrder.length === 0 && !hasInteractiveCards && !s.errors.length && !retry && !revertBanner) {
-    _reconcile(_container, [{ key: '__empty__', sig: 'empty', build: _buildEmpty }]);
+    const maritaca = isMaritacaModel(s.model || s.sessionInfo?.model);
+    _reconcile(_container, [{ key: '__empty__', sig: maritaca ? 'maritaca' : 'empty', build: () => _buildEmpty(maritaca) }]);
     // The panel may put SynaBun's greeting in it (ocp-v2-greeting.js).
     try { opts.onEmpty?.(_container.querySelector(':scope > .ocpv2-empty'), s); } catch { /* the empty state stands on its own */ }
     return;
@@ -1779,7 +1802,8 @@ function renderMarkdown(src) {
     html = escapeHtml(text).replace(/\n/g, '<br>');
   }
   // Every code block gets the shared Copy button, written in after the sanitiser (../code-copy.js).
-  const shown = withCodeCopyButtons(html);
+  // And the reading layer all six panels share: a table's frame, task items, a block's language, a diff's lines.
+  const shown = withOutputFrames(withCodeCopyButtons(html));
   if (_markdownCache.size >= _markdownCacheLimit) {
     // Evict oldest insertion (Map preserves insertion order)
     const firstKey = _markdownCache.keys().next().value;

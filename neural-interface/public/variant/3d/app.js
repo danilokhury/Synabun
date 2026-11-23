@@ -489,6 +489,15 @@ export async function boot() {
         showLoadingError(title, sub, !!health.canAutoStart);
         return;
       }
+      // The memory database is being upgraded: what the page fetched before this answer is a 503, and is read again.
+      // Loaded only then: the normal start carries no extra module.
+      if (health.store) {
+        const { holdForMemoryStore } = await import('../../shared/memory-store-wait.js');
+        if (await holdForMemoryStore(health, { fetchHealth: () => fetch('/api/health', { cache: 'no-store' }).then((r) => r.json()), t, showLoadingError })) {
+          takePrefetch('memories');
+          takePrefetch('map');
+        }
+      }
     } catch {
       // /api/health failed — continue to try the data
     }
@@ -556,6 +565,7 @@ export async function boot() {
     try { emit('trash:refresh'); } catch {}
     hideLoading(400);
     _bootComplete = true;
+    window.dispatchEvent(new Event('synabun:boot-complete'));
     // Painted: what the windows, menus and Settings wait for is read now, in idle time (launch-prefetch.js).
     startLaunchPrefetch({ isGuest });
   } catch (err) {

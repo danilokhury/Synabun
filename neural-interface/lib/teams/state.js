@@ -55,20 +55,20 @@ const PAGE = 500;
 export function createTeamState({ store, log = () => {} } = {}) {
   if (!store || typeof store.journal?.write !== 'function') throw new TeamError('STORE_REQUIRED', 'The teams modules need a coordination store (lib/coordination/store.js).');
 
-  function entriesOf(teamId) {
+  async function entriesOf(teamId) {
     const out = [];
     let afterId = 0;
     for (;;) {
-      const page = store.journal.read({ teamId, afterId, limit: PAGE });
+      const page = await store.journal.read({ teamId, afterId, limit: PAGE });
       out.push(...page);
       if (page.length < PAGE) return out;
       afterId = page[page.length - 1].id;
     }
   }
 
-  function announce(entry) {
+  async function announce(entry) {
     try {
-      store.append({
+      await store.append({
         id: `team:${entry.teamId}:journal:${entry.id}`,
         teamId: entry.teamId,
         runId: entry.runId || null,
@@ -86,8 +86,8 @@ export function createTeamState({ store, log = () => {} } = {}) {
    *   projectPath: string, baseCommit: string, baseBranch: string|null, testCommand: any, integration: object,
    *   removed: boolean, slices: Record<string, object>, [key: string]: any }}
    */
-  function record(teamId) {
-    const entries = entriesOf(teamId);
+  async function record(teamId) {
+    const entries = await entriesOf(teamId);
     if (!entries.length) return null;
     const team = {};
     const slices = {};
@@ -136,23 +136,23 @@ export function createTeamState({ store, log = () => {} } = {}) {
   }
 
   /** Record that a team is in a state now, with what this step changes. */
-  function writeTeam(teamId, state, data = {}) {
-    const entry = store.journal.write({ teamId, state, data });
-    announce(entry);
+  async function writeTeam(teamId, state, data = {}) {
+    const entry = await store.journal.write({ teamId, state, data });
+    await announce(entry);
     return entry;
   }
 
   /** Record that a slice is in a state now, with what this step changes. */
-  function writeSlice(teamId, sliceId, state, data = {}, runId = null) {
+  async function writeSlice(teamId, sliceId, state, data = {}, runId = null, claimGlobs = null) {
     if (sliceId === INTEGRATION_SLICE_ID) throw new TeamError('RESERVED_SLICE', '"integration" is the team\'s integration worktree, not a slice.');
-    const entry = store.journal.write({ teamId, sliceId, state, runId, data });
-    announce(entry);
+    const entry = await store.journal.write({ teamId, sliceId, state, runId, data, ...(claimGlobs?.length ? { claimGlobs } : {}) });
+    await announce(entry);
     return entry;
   }
 
   /** Every team the journal knows (its own newest entry), oldest team first; `states` narrows it. */
-  function teams({ states = null } = {}) {
-    return store.journal.teams(states ? { states } : {});
+  async function teams({ states = null } = {}) {
+    return await store.journal.teams(states ? { states } : {});
   }
 
   return { record, writeTeam, writeSlice, teams, entriesOf };

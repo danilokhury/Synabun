@@ -3331,6 +3331,12 @@ export function injectStyles() {
         transition: none !important;
       }
     }
+
+    /* ── Reading pass (2026-11-21) ──
+       An answer's prose, tables and code are ../ui-output.js (it overrides the .cxp-msg-body rules above for an
+       answer and a plan; they still style a card's body). Here: what the user wrote reads at the answer's size. */
+    .cxp-msg-user .cxp-msg-body, .cxp-msg-user-text { font-size: var(--cxp-fs-lg); }
+    .cxp-msg-assistant[data-phase="final_answer"] .cxp-msg-phase { color: var(--cxp-text-2); }
 `;
   document.head.appendChild(style);
 }

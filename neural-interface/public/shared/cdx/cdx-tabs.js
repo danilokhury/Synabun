@@ -4,6 +4,7 @@ import { cxpText, cxpSessionLabel } from './cdx-copy.js';
 import { codexWantsRolloutPreview, rolloutPreviewApplies } from './cdx-preview.js';
 import { mountCodexSettings } from './cdx-settings.js';
 import { t } from '../i18n.js';
+import { codexEffortDesc, codexEffortLabel, translatedEffortWord } from '../effort-i18n.js';
 import { getCliState, isCliInstalling } from '../cli-status.js';
 import { cliInstallText } from '../cli-install-view.js';
 // ═══════════════════════════════════════════
@@ -1972,16 +1973,32 @@ function formatContextTrackerState(meta) {
   return 'pending';
 }
 
+// List-price equivalents ($/MTok) matching neural-interface/lib/assistant-pricing.js (verified 2026-11-20).
 const CODEX_MODEL_PRICING = {
+  'gpt-6.2-astra': { input: 8.00, cachedInput: 0.40, cacheWrite: 10.00, output: 40.00 },
+  'gpt-6.2-sol': { input: 2.00, cachedInput: 0.10, cacheWrite: 2.50, output: 10.00 },
+  'gpt-6-astra': { input: 10.00, cachedInput: 1.00, cacheWrite: 12.50, output: 50.00 },
+  'gpt-6.1-sol': { input: 2.00, cachedInput: 0.10, cacheWrite: 2.50, output: 10.00 },
+  'gpt-6.1-terra': { input: 1.00, cachedInput: 0.05, cacheWrite: 1.25, output: 5.00 },
+  'gpt-6-sol': { input: 2.00, cachedInput: 0.20, cacheWrite: 2.50, output: 10.00 },
+  'gpt-6-luna': { input: 0.10, cachedInput: 0.01, cacheWrite: 0.125, output: 0.50 },
+  'gpt-5.6-sol': { input: 4.00, cachedInput: 0.40, cacheWrite: 5.00, output: 20.00 },
+  'gpt-5.6-terra': { input: 2.00, cachedInput: 0.20, cacheWrite: 2.50, output: 12.00 },
+  'gpt-5.6-luna': { input: 0.20, cachedInput: 0.02, cacheWrite: 0.25, output: 1.20 },
+  'gpt-5.5': { input: 5.00, cachedInput: 0.50, output: 30.00 },
+  'gpt-5.4': { input: 2.50, cachedInput: 0.25, output: 15.00 },
+  'gpt-5.4-mini': { input: 0.75, cachedInput: 0.075, output: 4.50 },
+  'gpt-5.3-codex': { input: 1.75, cachedInput: 0.175, output: 14.00 },
   'gpt-5.2-codex': { input: 1.75, cachedInput: 0.175, output: 14.00 },
   'gpt-5.1-codex-max': { input: 1.25, cachedInput: 0.125, output: 10.00 },
   'gpt-5.1-codex': { input: 1.25, cachedInput: 0.125, output: 10.00 },
   'gpt-5.1-codex-mini': { input: 0.25, cachedInput: 0.025, output: 2.00 },
   'gpt-5-codex': { input: 1.25, cachedInput: 0.125, output: 10.00 },
+  'chat-latest': { input: 5.00, cachedInput: 0.50, output: 30.00 },
 };
 
 function getModelPricing(model) {
-  const key = String(model || '').trim().toLowerCase();
+  const key = String(model || '').trim().toLowerCase().replace(/\[[^\]]*\]$/, '').replace(/^.*\//, '').replace(/-\d{8}$/, '');
   return CODEX_MODEL_PRICING[key] || null;
 }
 
@@ -2751,6 +2768,7 @@ function createTrayPill(tab) {
   const pill = document.createElement('div');
   pill.className = 'term-minimized-pill cxp-session-pill';
   pill.dataset.tabId = tab.id;
+  pill.getAutomationRunId = () => tab.automationRunId;
   pill.innerHTML = `
     <span class="term-minimized-pill-icon">${OPENAI_ICON}</span>
     <span class="term-minimized-pill-label">${esc(tab.sessionLabel || 'New session')}</span>
@@ -3055,7 +3073,7 @@ export function closeTab(idx, { detachAutomation = false } = {}) {
     endWorkerRunOnClose(runId, () => fetch('/api/loop/stop', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ runId }),
+      body: JSON.stringify({ runId, action: 'tab_close' }),
     }).catch(() => {}));
   }
   if (tab.automationRunId) forgetWorkerEnd(tab.automationRunId);
@@ -5976,10 +5994,10 @@ export function renderEffortMenu() {
     item.dataset.value = option.id;
     const label = document.createElement('span');
     label.className = 'cxp-effort-menu-label';
-    label.textContent = option.label;
+    label.textContent = codexEffortLabel(option.id, option.label, cxpText);
     const description = document.createElement('span');
     description.className = 'cxp-effort-menu-desc';
-    description.textContent = option.description || (option.id === 'off' ? 'Use the model default' : option.id);
+    description.textContent = codexEffortDesc(option.id, option.description, cxpText) || (translatedEffortWord(option.id, t) ?? option.id);
     item.append(label, description);
     item.addEventListener('click', (event) => {
       event.stopPropagation();
@@ -6105,7 +6123,7 @@ export function syncToolbarState() {
     const options = effortOptionsForTab(tab);
     const selected = options.find((option) => option.id === effort) || options[0];
     effortBtn.dataset.effort = effort;
-    effortBtn.title = `Reasoning effort: ${selected?.label || effort}`;
+    effortBtn.title = `${cxpText('effort', 'Reasoning effort')}: ${(selected && codexEffortLabel(selected.id, selected.label, cxpText)) || effort}`;
     effortBtn.classList.toggle('active', effort !== 'off');
     const label = effortBtn.querySelector('.cxp-btn-label');
     if (label) label.textContent = effort === 'off' ? cxpText('effortLabel', 'Effort') : cxpText(`effort_${effort}`, selected?.label || effort);
@@ -6290,8 +6308,9 @@ export function updateCostEstimate(tokenUsage) {
   if (!tab) return;
   const total = tokenUsage.total;
   const pricing = getModelPricing(tab.model || _threadContextMeta?.model) || {
-    input: 2.50,
-    cachedInput: 2.50,
+    input: 2.00,
+    cachedInput: 0.10,
+    cacheWrite: 2.50,
     output: 10.00,
   };
   const uncachedInputTokens = Number(total.inputTokens) || 0;
@@ -6299,7 +6318,8 @@ export function updateCostEstimate(tokenUsage) {
   const cacheCreationInputTokens = Number(total.cacheCreationInputTokens) || 0;
   const outputTokens = (total.outputTokens || 0) + (total.reasoningOutputTokens || 0);
   tab.estimatedCost = (
-    ((uncachedInputTokens + cacheCreationInputTokens) / 1_000_000) * pricing.input
+    (uncachedInputTokens / 1_000_000) * pricing.input
+    + (cacheCreationInputTokens / 1_000_000) * (pricing.cacheWrite ?? pricing.input)
     + (cachedInputTokens / 1_000_000) * pricing.cachedInput
     + (outputTokens / 1_000_000) * pricing.output
   );
@@ -6338,7 +6358,7 @@ export function interruptTab(tab = activeTab()) {
     fetch('/api/loop/stop', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ runId: tab.automationRunId }),
+      body: JSON.stringify({ runId: tab.automationRunId, action: 'stop' }),
     }).catch(() => {});
     return withTab(tab, () => {
       setRunning(false);

@@ -143,7 +143,10 @@ export function automationEvent(payload) {
   const event = message?.event ?? message;
   if (!event || typeof event !== 'object') return null;
   if (event.type === 'synabun.user_prompt' || eventType === 'synabun.user_prompt') return { kind: 'user', text: String(event.text || ''), iteration: message.iteration ?? null };
-  if (event.type === 'synabun.confinement') return { kind: 'notice', text: `${event.action === 'warned' ? 'Guard warning' : 'Refused'}: ${event.reason || event.rule || ''}`.trim(), severity: event.action === 'warned' ? 'warning' : 'error' };
+  if (event.type === 'synabun.confinement') {
+    const [label, severity] = event.action === 'warned' ? ['Guard warning', 'warning'] : event.action === 'noted' ? ['Guard note', 'info'] : ['Refused', 'error'];
+    return { kind: 'notice', text: `${label}: ${event.reason || event.rule || ''}`.trim(), severity };
+  }
   if (event.type === 'synabun.provider_exit') return { kind: 'notice', text: `Antigravity stopped${event.error ? `: ${event.error}` : ''}`, severity: 'error' };
   if (event.type === 'synabun.error') return { kind: 'notice', text: String(event.message || event.error || 'Error'), severity: 'error' };
   if (typeof event.sessionUpdate === 'string') return { kind: 'update', update: event };

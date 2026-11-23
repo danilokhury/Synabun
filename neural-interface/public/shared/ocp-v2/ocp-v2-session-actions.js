@@ -268,7 +268,8 @@ export async function createSessionForNavigation(store, api, { title, cwd, nav }
   const at = isBindingToken(nav) ? nav : captureBinding(store);
   const res = await api.sessionCreate(title ? { title } : {}, cwd);
   const session = res?.data;
-  if (!session?.id) throw new Error('session create returned no id');
+  // A refusal says why (a folder that does not exist: "Location not found: …", which the panel recovers from).
+  if (!session?.id) throw new Error(replyFailed(res) ? replyError(res, 'session create returned no id') : 'session create returned no id');
   return { session, activate: at.isCurrent() };
 }
 

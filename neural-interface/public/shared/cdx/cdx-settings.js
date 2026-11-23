@@ -1,5 +1,7 @@
 import { t, getLocale } from '../i18n.js';
 import { accountSummary } from '../account-view.js';
+import { codexEffortLabel } from '../effort-i18n.js';
+import { cxpText } from './cdx-copy.js';
 import { configChanges, configRestriction, configValue, SESSION_CONFIG_FIELDS, sessionSettings, modelServiceTiers, capabilityAvailability } from './cdx-commands.js';
 import { mountCodexAccountSecurity } from './cdx-features.js';
 
@@ -23,7 +25,7 @@ export function codexSettingsDefinitions(schema, models, cfg) {
     if (key === 'service_tier' && cfg.model_provider && cfg.model_provider !== 'openai') return [];
     let options = (field.values || []).map(value => ({ value, label: tr(`values.${value}`) === `codexSettings.values.${value}` ? value : tr(`values.${value}`) }));
     if (key === 'model' || key === 'review_model') options = modelOptions;
-    if (key === 'model_reasoning_effort') options = (model?.supportedReasoningEfforts || []).map(e => ({ value: e.reasoningEffort, label: e.reasoningEffort }));
+    if (key === 'model_reasoning_effort') options = (model?.supportedReasoningEfforts || []).map(e => ({ value: e.reasoningEffort, label: codexEffortLabel(e.reasoningEffort, e.reasoningEffort, cxpText) }));
     if (key === 'service_tier') options = modelServiceTiers(model);
     if (key === 'personality' && !model?.supportsPersonality) return [];
     // The provider list is configured locally. Built-in OpenAI plus named providers.

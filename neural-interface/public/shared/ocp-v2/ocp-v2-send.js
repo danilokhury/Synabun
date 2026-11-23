@@ -6,6 +6,8 @@
 // instance for back-compat with shared bindings.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { getProviderMeta, isMaritacaModel } from '../provider-icons.js';
+
 import { api, supports, capabilities, onEvent, sessionWaitsOnUser, onAsksChanged } from './ocp-v2-ws.js';
 import { getDefaultStore, agentForMode } from './ocp-v2-state.js';
 import { mountModelPicker } from './ocp-v2-modelpicker.js';
@@ -302,7 +304,18 @@ export function mountCompose(rootEl, store = getDefaultStore(), opts = {}) {
     _modelPicker = mountModelPicker(footerRight, store);
   }
 
+  const brandLink = toolbar.querySelector('.ocpv2-brand-link');
+  const openCodeMark = brandLink.innerHTML;
+  function syncBrand(model) {
+    const maritaca = isMaritacaModel(model);
+    brandLink.innerHTML = maritaca ? getProviderMeta('maritaca').icon : openCodeMark;
+    brandLink.href = maritaca ? 'https://www.maritaca.ai' : 'https://opencode.ai';
+    brandLink.dataset.tooltip = maritaca ? 'Maritaca' : 'OpenCode';
+    brandLink.setAttribute('aria-label', brandLink.dataset.tooltip);
+  }
+  syncBrand(store.getState().model || store.getState().sessionInfo?.model);
   const unsubscribe = store.subscribe((event, state) => {
+    if (event?.type === 'config:model' || event?.type === 'session:info') syncBrand(state.model || state.sessionInfo?.model);
     // First of all: the panel was bound to another session. What belonged to
     // the binding it left goes before anything below looks at the new one.
     if (_rebind.changed()) onRebound(state);

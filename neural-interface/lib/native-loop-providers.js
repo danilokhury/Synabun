@@ -24,7 +24,7 @@ import { CODEX_BROWSER_POLICY_UNTRUSTED_NOTE, codexBrowserPolicyHook } from './a
 import { codexWindowsSandbox, codexWindowsSandboxConfig } from './agent-sandbox-elevation.js';
 import { DRAFT_DISALLOWED_TOOLS, DRAFT_TOOLS, codexDraftOptions, draftOpenCodeDecision, draftPreToolUseHook, draftToolDecision, openCodeDraftConfig, resolveDraftConfinement } from './skills/draft-confinement.js';
 import { EVAL_CONFINEMENT, codexEvalOptions, evalClaudeOptions, evalGitSafetyEnv, evalOpenCodeDecision, evalPreToolUseHook, evalToolDecision, openCodeEvalConfig, openCodeEvalEnv, placeOpenCodeEvalSkill, resolveEvalConfinement } from './skills/eval-confinement.js';
-import { WORKER_GUARD_DEFAULT, acpPermissionDecision, codexSandboxFor, confinementEvent, openCodeCodeModeDecision, openCodeCodeModeNote, openCodePermissionDecision, openCodePermissionsFor, resolveWorkerConfinement, workerShellDecision, workerToolDecision } from './worker-confinement.js';
+import { WORKER_GUARD_DEFAULT, acpPermissionDecision, codexCommandEvent, codexSandboxFor, confinementEvent, openCodeCodeModeDecision, openCodeCodeModeNote, openCodePermissionDecision, openCodePermissionsFor, resolveWorkerConfinement, workerToolDecision } from './worker-confinement.js';
 import { createAcpConnection } from './antigravity/acp-connection.js';
 import { acpTurnUsage } from './antigravity/usage.js';
 import { assertSafeAntigravityProject, antigravityHomeReadPolicy, antigravityHomeSettings, policyHookCommand, prepareAntigravityHome, toAntigravityMcpEntry, userAntigravityMcpServers, userAntigravitySettings, userGeminiDir } from './antigravity/home.js';
@@ -541,23 +541,13 @@ export async function createCodexNativeLoopAdapter(options = {}) {
   if (drafted) { try { onNote?.('skill-draft confinement: Codex sandbox workspace-write around the drafting folder, no network, no web search, every MCP server disabled; the shell stays, inside the sandbox'); } catch {} }
   if (evaluated) { try { onNote?.(`skill-eval confinement (${evaluated.held.role}): Codex sandbox ${evaluated.thread.sandboxMode} around the evaluation folder, no network, no web search, every MCP server disabled; the shell stays, inside the sandbox`); } catch {} }
   /**
-   * A command Codex ran (item.completed command_execution): under warn, what Enforce would have refused is noted;
-   * under enforce, a sandbox denial in its output is explained in SynaBun's words (Codex's sandbox refuses by itself
-   * and says nothing to SynaBun).
+   * A command Codex already ran (item.completed command_execution), reported as what happened: it ran and the
+   * heuristic objected, or Codex's sandbox refused an operation of it (lib/worker-confinement.js codexCommandEvent).
    */
   const noteCommand = (item, meta) => {
     if (!guard || item?.type !== 'command_execution') return;
-    const command = typeof item.command === 'string' ? item.command : Array.isArray(item.command) ? item.command.join(' ') : '';
-    if (!command) return;
-    const decision = workerShellDecision(command, guard);
-    const output = String(item.aggregated_output || item.output || '');
-    const denied = Number(item.exit_code) !== 0 && /operation not permitted|permission denied|read-only file system|sandbox|EPERM|EACCES|EROFS/i.test(output);
-    if (!decision && !denied) return;
-    const event = decision
-      ? confinementEvent(decision, { tool: 'shell', confinement: guard, provider: 'codex' })
-      : { type: 'synabun.confinement', action: 'refused', capability: guard.capability, tool: 'shell', rule: 'sandbox', reason: `Codex's sandbox refused "${command.slice(0, 160)}": this run (capability ${guard.capability}) writes inside ${guard.writable.join(', ')} only${guard.capability === 'read-only' ? ' (read-only: nothing at all, the temp folder included)' : ''}.`, provider: 'codex' };
-    if (decision && guard.enforced && !denied) event.action = 'noted'; // the sandbox decides; the heuristic's view is a note
-    onEvent({ provider: 'codex', runId, iteration: meta?.iteration, event });
+    const event = codexCommandEvent(item, guard);
+    if (event) onEvent({ provider: 'codex', runId, iteration: meta?.iteration, event });
   };
   // The sidepanel keys a turn's items by this sequence, including across a restart.
   // Scheduled SDK turns restart their item IDs; app-server workers keep their thread IDs.
@@ -1177,7 +1167,14 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
     async runTurn(prompt, meta = {}) {
       if (!held) {
         try { await waitForClaudeMcpScope(q, externalScopeNames); }
-        catch { input.close(); q.close?.(); await endProcess(); throw Object.assign(new Error('Claude MCP scope could not be enforced before the first turn'), { code: 'MCP_SCOPE_UNENFORCED' }); }
+        catch {
+          input.close(); q.close?.(); await endProcess();
+          // A CLI that ended by itself said why: a resumed session with nothing saved is that, not an MCP problem.
+          const ended = await Promise.race([pump.then(() => null, (error) => error), new Promise((done) => { const timer = setTimeout(done, 1000, null); timer.unref?.(); })]);
+          const noConversation = /No conversation found with session ID[^\n]*/i.exec(`${ended?.message || ''}\n${stderrTail}`);
+          if (noConversation) throw new Error(`Claude Code returned an error result: ${noConversation[0].trim()}`);
+          throw Object.assign(new Error('Claude MCP scope could not be enforced before the first turn'), { code: 'MCP_SCOPE_UNENFORCED' });
+        }
       }
       if (!alive) return Promise.reject(new Error('Claude native loop is closed'));
       if (activeTurn) return Promise.reject(new Error('Claude native loop already has an active turn'));

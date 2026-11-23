@@ -1164,7 +1164,14 @@ function wire() {
   transcript?.addEventListener('keydown', (event) => {
     if (event.target.matches?.('.mtc-plan-feedback') && event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); runPlanAction('feedback'); }
   });
-  $('.mtc-jump')?.addEventListener('click', () => { const rt = runtimeOf(activeTab()); if (rt) rt.scrolledUp = false; if (transcript) transcript.scrollTop = transcript.scrollHeight; renderTranscript(); });
+  $('.mtc-jump')?.addEventListener('click', () => {
+    const rt = runtimeOf(activeTab());
+    if (rt) rt.scrolledUp = false;
+    _scroll?.scrollToBottom({ force: true, immediate: true });
+    const jump = $('.mtc-jump');
+    if (jump) jump.hidden = true;
+    updateScrollEdges();
+  });
   const form = $('.mtc-composer');
   const input = $('.mtc-input');
   form?.addEventListener('submit', (event) => { event.preventDefault(); if (activeTab()?.running) stop(); else send(); });

@@ -23,8 +23,8 @@
  * loading overlay (#loading-overlay: html-shell.js puts it in after the page's
  * translations load, ui-loading.js hides it once the map is drawn) is hidden or
  * shows an error; on any other page (onboarding), when it has loaded. This file
- * says so once per page (synabun:window 'interface-ready'); the app waits a few
- * seconds at most.
+ * says so once per page (synabun:window 'interface-ready'). The main process
+ * owns the navigation and initialization deadlines.
  */
 
 const { contextBridge, ipcRenderer } = require('electron');

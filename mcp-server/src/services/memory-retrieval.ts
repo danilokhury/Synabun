@@ -6,6 +6,8 @@ import { judgeHistoricalQuery, judgeRelevance, orderByJudgedScore, RELEVANCE_CAN
 import { generateEmbedding, EMBEDDING_VERSION } from './local-embeddings.js';
 import { projectAliases } from '../config.js';
 import { judgedStale } from './edit-stale.js';
+import { readRows } from './retrieval-reader.js';
+import { withMemoryWrite } from './sqlite-write.js';
 
 export interface RecallOptions {
   query: string; project?: string; currentProject?: string; category?: string; tags?: string[];
@@ -36,14 +38,18 @@ const recentTimes: number[]=[];
 const filterCache=new Map<string,Set<string>>();
 let filterConnection: ReturnType<typeof getDb> | null=null;
 let filterEpoch=-1;
-function memoryIds(sql:string,params:(string|number)[]) {
+// The memories a filter allows, kept per filter until a filtered column changes (the 'memory_filters' journal).
+// Built on the retrieval reader's thread: reading every memory row took 15-35 ms of the caller's event loop.
+async function memoryIds(sql:string,params:(string|number)[]) {
   const d=getDb();
   const epoch=Number(d.prepare("SELECT COALESCE(MAX(seq),0) AS n FROM memory_changes WHERE entity='memory_filters'").get()?.n || 0);
   if(d!==filterConnection || epoch!==filterEpoch){filterCache.clear();filterConnection=d;filterEpoch=epoch;}
   const key=JSON.stringify([sql,params]);
   let ids=filterCache.get(key);
   if(!ids) {
-    ids=new Set(d.prepare(`SELECT m.id FROM memories m WHERE ${sql}`).all(...params).map(r=>String(r.id)));
+    ids=new Set((await readRows(`SELECT m.id FROM memories m WHERE ${sql}`,params)).map(r=>String(r.id)));
+    // A newer filter epoch or another connection arrived while this was read: answer, keep nothing.
+    if(getDb()!==filterConnection || epoch!==filterEpoch)return ids;
     filterCache.set(key,ids);
     let total=0;for(const value of filterCache.values())total+=value.size;
     while(filterCache.size>32 || (total>100000 && filterCache.size>1)) {
@@ -51,6 +57,93 @@ function memoryIds(sql:string,params:(string|number)[]) {
     }
   }
   return ids;
+}
+// The session chunks a session filter allows, kept per filter and brought up
+// to date from the change journal. Building it meant reading every chunk row
+// (149k: ~150-300 ms of main thread) on each recall that searched sessions.
+// The filter reads only the chunk row and the memory row with the same id, and
+// both tables journal every insert, update and delete (memory-schema.ts), so
+// each journalled id is checked again on its own. Built and replayed in pages
+// that yield, so recall never holds the event loop for the whole table.
+interface SessionIdSet { ids: Set<string>; seq: number; busy: Promise<void> }
+const sessionIdCache = new Map<string, SessionIdSet>();
+let sessionIdConnection: ReturnType<typeof getDb> | null = null;
+const SESSION_ID_CACHE_ENTRIES = 4;
+// Rowids of session_chunks read per statement (on the reader) while a filter's ids are built.
+const SESSION_ID_WINDOW = 5000;
+const yieldIfDue = async (slice: { at: number }) => {
+  if (performance.now() - slice.at < 8) return;
+  await new Promise<void>(done => setImmediate(done));
+  slice.at = performance.now();
+};
+export async function sessionChunkIds(sql: string, params: (string | number)[]): Promise<Set<string>> {
+  const d = getDb();
+  if (d !== sessionIdConnection) { sessionIdCache.clear(); sessionIdConnection = d; }
+  const key = JSON.stringify([sql, params]);
+  let entry = sessionIdCache.get(key);
+  if (entry) { sessionIdCache.delete(key); sessionIdCache.set(key, entry); }
+  else {
+    entry = { ids: new Set(), seq: -1, busy: Promise.resolve() };
+    sessionIdCache.set(key, entry);
+    while (sessionIdCache.size > SESSION_ID_CACHE_ENTRIES) sessionIdCache.delete(sessionIdCache.keys().next().value!);
+  }
+  const current = entry;
+  // One update at a time per filter; a caller that arrives meanwhile waits for it and then catches up.
+  const update = current.busy.then(async () => {
+    if (getDb() !== d) return;
+    const readHead = () => Number((d.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM memory_changes').get() as { seq: number }).seq);
+    let head = readHead();
+    const slice = { at: performance.now() };
+    if (current.seq < 0) {
+      // Rows changed behind the pages already read are journalled after `head` and replayed just below.
+      // (A build that failed part way starts again from nothing.)
+      current.ids.clear();
+      // Read on the retrieval reader's thread, in fixed rowid windows (not "the next N matches": a selective filter, a
+      // small project, would otherwise read the whole table in one statement). A cold 2 GB store took ~100 ms of this
+      // thread per 1,000 rows. Each window starts at the next row that exists (rowids can have gaps).
+      // Anonymous placeholders only: node:sqlite before Node 24 cannot bind numbered ones (?1) positionally, and the
+      // desktop app runs Node 22.
+      const window = `SELECT m.id,(SELECT MIN(rowid) FROM session_chunks WHERE rowid>?) AS next FROM session_chunks m
+        WHERE m.rowid>? AND m.rowid<=? AND ${sql}`;
+      const first = await readRows('SELECT MIN(rowid) AS r FROM session_chunks', []);
+      for (let from = first[0]?.r == null ? null : Number(first[0].r) - 1; from !== null;) {
+        const to = from + SESSION_ID_WINDOW;
+        const rows = await readRows(window, [to, from, to, ...params]);
+        if (getDb() !== d) return;
+        for (const row of rows) current.ids.add(String(row.id));
+        // No match in a window: ask for the next row that exists directly.
+        const next = rows.length ? rows[0].next : (await readRows('SELECT MIN(rowid) AS r FROM session_chunks WHERE rowid>?', [from + SESSION_ID_WINDOW]))[0]?.r;
+        from = next == null ? null : Number(next) - 1;
+        await yieldIfDue(slice);
+        if (getDb() !== d) return;
+      }
+      current.seq = head;
+      head = readHead();
+    }
+    if (current.seq < head) {
+      // The journalled ids are checked again a page at a time on the reader (one statement per page, never one per id).
+      for (let after = current.seq, rows = await readRows(CHANGES, [after, head]); rows.length; rows = await readRows(CHANGES, [after, head])) {
+        if (getDb() !== d) return;
+        const ids = [...new Set(rows.map(r => String(r.id)))];
+        const allowed = new Set((await readRows(`SELECT m.id FROM session_chunks m WHERE m.id IN (${ids.map(() => '?').join(',')}) AND ${sql}`, [...ids, ...params])).map(r => String(r.id)));
+        if (getDb() !== d) return;
+        for (const id of ids) { if (allowed.has(id)) current.ids.add(id); else current.ids.delete(id); }
+        after = Number(rows[rows.length - 1].seq);
+        await yieldIfDue(slice);
+      }
+      current.seq = head;
+    }
+  });
+  current.busy = update.catch(() => {});
+  await update;
+  if (getDb() !== d) return new Set((await readRows(`SELECT m.id FROM session_chunks m WHERE ${sql}`, params)).map(r => String(r.id)));
+  return current.ids;
+}
+const CHANGES = `SELECT seq,id FROM memory_changes WHERE seq>? AND seq<=? AND entity IN ('session_chunks','memories') ORDER BY seq LIMIT 1000`;
+/** Startup warm-up of the vector caches every recall reads (session chunks are loaded on first use, as before). */
+export async function warmRetrievalCaches(): Promise<void> {
+  await memoryVectors.ready();
+  await passages.ready();
 }
 export function retrievalMetrics() {
   const sorted=[...recentTimes].sort((a,b)=>a-b);
@@ -146,28 +239,38 @@ export async function retrieveMemory(o: RecallOptions, embed = generateEmbedding
     else { hit.reasons.push(reason); found.set(key, hit); }
     ranks.set(key, (ranks.get(key) || 0) + 1 / (60 + rank));
   }
-  function search(session: boolean, lexical: boolean) {
+  // The full-text search: one FTS5 statement that cannot yield, so it runs on the retrieval reader's thread
+  // (retrieval-reader.ts). Started early, applied where the synchronous search used to run, so the order hits are
+  // added in (and with it every reason list and rank) is unchanged.
+  type KeywordRows = Record<string, any>[] | null | { failed: true };
+  function keywordRows(session: boolean): Promise<KeywordRows> {
+    if (!terms.length) return Promise.resolve(null);
     const table = session ? 'session_chunks' : 'memories';
     const filter = session ? sessionFilter : memoryFilter;
-    if (lexical) {
-      if (!terms.length) return;
-      const fts = session ? 'chunk_search' : 'memory_search';
-      try {
-        const rows = d.prepare(`SELECT m.* FROM ${fts} f JOIN ${table} m ON m.id=f.id
-          WHERE ${fts} MATCH ? AND ${filter.sql} ORDER BY bm25(${fts}) LIMIT ?`)
-          .all(terms.map(t => `"${t.replace(/"/g,'""')}"`).join(' OR '), ...filter.params, k);
-        rows.forEach((row, i) => {
-          const h = hydrate(row, session);
-          const body = `${h.content} ${h.payload.related_files || h.payload.files_modified || ''}`.toLowerCase();
-          const covered = terms.filter(t => body.includes(t)).length / terms.length;
-          h.score = covered;
-          if (covered >= min) add(h, i + 1, 'keyword');
-        });
-      } catch (error) { degraded.push(`Keyword index unavailable (${session ? 'sessions' : 'memories'}).`); }
-    } else if (vector) {
-      const ids = session ? new Set((d.prepare(`SELECT m.id FROM ${table} m WHERE ${filter.sql}`).all(...filter.params)).map(r => String(r.id)))
-        : memoryIds(filter.sql,filter.params);
-      const hits = (session ? chunkVectors : memoryVectors).topK(vector, k, hybrid ? min : min * 0.5, ids);
+    const fts = session ? 'chunk_search' : 'memory_search';
+    return readRows(`SELECT m.* FROM ${fts} f JOIN ${table} m ON m.id=f.id
+          WHERE ${fts} MATCH ? AND ${filter.sql} ORDER BY bm25(${fts}) LIMIT ?`,
+      [terms.map(t => `"${t.replace(/"/g,'""')}"`).join(' OR '), ...filter.params, k])
+      .catch(() => ({ failed: true as const }));
+  }
+  function applyKeyword(session: boolean, rows: KeywordRows) {
+    if (!rows) return;
+    try {
+      if (!Array.isArray(rows)) throw new Error('keyword search failed');
+      rows.forEach((row, i) => {
+        const h = hydrate(row, session);
+        const body = `${h.content} ${h.payload.related_files || h.payload.files_modified || ''}`.toLowerCase();
+        const covered = terms.filter(t => body.includes(t)).length / terms.length;
+        h.score = covered;
+        if (covered >= min) add(h, i + 1, 'keyword');
+      });
+    } catch (error) { degraded.push(`Keyword index unavailable (${session ? 'sessions' : 'memories'}).`); }
+  }
+  function search(session: boolean, ids: Set<string> | undefined, sessionHits?: Array<{ id: string; score: number }>) {
+    const table = session ? 'session_chunks' : 'memories';
+    const filter = session ? sessionFilter : memoryFilter;
+    if (vector) {
+      const hits = session && sessionHits ? sessionHits : (session ? chunkVectors : memoryVectors).topK(vector, k, hybrid ? min : min * 0.5, ids);
       const hydrateRow = d.prepare(`SELECT m.* FROM ${table} m WHERE m.id=? AND ${filter.sql}`);
       hits.forEach((hit, i) => {
         const row = hydrateRow.get(hit.id,...filter.params);
@@ -175,21 +278,40 @@ export async function retrieveMemory(o: RecallOptions, embed = generateEmbedding
       });
     }
   }
-  if(hybrid)search(false,true);
+  const pendingMemoryKeyword = hybrid ? keywordRows(false) : null;
+  // The memory id list is needed only with a vector; asked now so it reads while the query is embedded.
+  const pendingMemoryIds = memoryIds(memoryFilter.sql, memoryFilter.params);
+  pendingMemoryIds.catch(() => {});
+  if (pendingMemoryKeyword) applyKeyword(false, await pendingMemoryKeyword);
   mark('keyword');
   vector=await pendingEmbedding;
   mark('embedding_wait');
+  // Everything the vector searches below read is brought up to date here, in
+  // slices that yield. Each synchronous topK() below follows a ready() of its own
+  // cache with no await in between, so it finds (almost) no journal left to replay.
+  const sessionsPossible = o.include_sessions !== false;
+  let sessionIds: Set<string> | null = null;
+  let allowedMemories: Set<string> | undefined;
+  if (vector) {
+    [allowedMemories] = await Promise.all([pendingMemoryIds, memoryVectors.ready(), hybrid ? passages.ready() : null, sessionsPossible ? chunkVectors.ready() : null]);
+    if (sessionsPossible) sessionIds = await sessionChunkIds(sessionFilter.sql, sessionFilter.params);
+    // Anything journalled while the session ids were brought up to date is replayed in slices here, never by the
+    // synchronous topK() below (more than 2,048 changes would make it reload the whole matrix).
+    await memoryVectors.ready();
+    mark('vector_ready');
+  }
   if(!vector)degraded.push('Local embeddings unavailable; keyword retrieval used.');
-  search(false, false);
+  search(false, allowedMemories);
   mark('document_vectors');
-  if (!hybrid && (!vector || found.size < limit)) search(false, true);
+  if (!hybrid && (!vector || found.size < limit)) applyKeyword(false, await keywordRows(false));
   if (hybrid && vector && found.size) {
     const parents=[...found.values()].filter(r=>r.type==='memory').map(r=>r.id).slice(0,100);
-    const ids = new Set(d.prepare(`SELECT p.id FROM memory_passages p INDEXED BY memory_passages_parent CROSS JOIN memories m ON m.id=p.memory_id
+    const ids = new Set((await readRows(`SELECT p.id FROM memory_passages p INDEXED BY memory_passages_parent CROSS JOIN memories m ON m.id=p.memory_id
       JOIN memory_metadata md ON md.memory_id=m.id WHERE p.memory_id IN (${parents.map(()=>'?').join(',')}) AND ${memoryFilter.sql} AND p.model=? AND p.content_hash=md.content_hash
-      AND NOT EXISTS(SELECT 1 FROM memory_jobs j WHERE j.entity_id=m.id AND j.kind='index' AND j.status!='complete')`)
-      .all(...parents,...memoryFilter.params, EMBEDDING_VERSION).map(r => String(r.id)));
+      AND NOT EXISTS(SELECT 1 FROM memory_jobs j WHERE j.entity_id=m.id AND j.kind='index' AND j.status!='complete')`,
+      [...parents,...memoryFilter.params, EMBEDDING_VERSION])).map(r => String(r.id)));
     mark('passage_filter');
+    await passages.ready();
     const parentRow = d.prepare('SELECT m.* FROM memory_passages p JOIN memories m ON m.id=p.memory_id WHERE p.id=? AND m.trashed_at IS NULL');
     for (const [i, hit] of passages.topK(vector, k, min, ids).entries()) {
       const row = parentRow.get(hit.id);
@@ -197,10 +319,20 @@ export async function retrieveMemory(o: RecallOptions, embed = generateEmbedding
     }
   }
   mark('passage_vectors');
-  if (o.include_sessions !== false && (wantedSessions || found.size < 3)) { search(true,false); search(true,true); }
+  if (sessionsPossible && (wantedSessions || found.size < 3)) {
+    // Scoring every session chunk (149k: ~60 ms) runs in slices that yield, while the reader searches their text.
+    const pendingSessionKeyword = keywordRows(true);
+    const sessionHits = vector && sessionIds ? await chunkVectors.topKAsync(vector, k, hybrid ? min : min * 0.5, sessionIds) : undefined;
+    const sessionAllowed = vector && !sessionHits
+      ? new Set((await readRows(`SELECT m.id FROM session_chunks m WHERE ${sessionFilter.sql}`, sessionFilter.params)).map(r => String(r.id))) : undefined;
+    search(true, sessionAllowed, sessionHits);
+    applyKeyword(true, await pendingSessionKeyword);
+  }
+  mark('sessions');
   // Preserve actual document cosine even for a keyword-only candidate. Fusion
   // rank is not a probability and must never substitute for semantic evidence.
   if (vector) {
+    await memoryVectors.ready();
     const ids = new Set([...found.values()].filter(h=>h.type==='memory').map(h=>h.id));
     for (const h of memoryVectors.topK(vector, ids.size, -Infinity, ids)) {
       const candidate = found.get(`memory:${h.id}`);
@@ -253,6 +385,7 @@ export async function retrieveMemory(o: RecallOptions, embed = generateEmbedding
   const results: RecallHit[] = [];
   const seen = new Set<string>();
   const byHash = new Map<string,string>();
+  const verifyLater: string[] = [];
   for (const h of sorted) {
     if (o.min_semantic_score !== undefined && Math.max(h.semantic_score ?? -Infinity, h.passage_score ?? -Infinity) < o.min_semantic_score) continue;
     if(!hybrid && results.filter(r=>r.type===h.type).length >= (h.type==='memory' ? limit : Math.max(3,Math.floor(limit/2))))continue;
@@ -279,13 +412,20 @@ export async function retrieveMemory(o: RecallOptions, embed = generateEmbedding
       // An edit-time judgment found this revision no longer matches its file.
       if(verification?.stale_verdicts && judgedStale(verification.stale_verdicts,h.revision))h.flags.push('judged stale');
       if(verification?.verified_revision!==h.revision || Date.now()-Date.parse(String(verification?.checked_at || ''))>300000 || !verification?.checked_at) {
-        d.prepare(`INSERT INTO memory_jobs(id,kind,entity_id,updated_at) VALUES(?,'verify',?,?)
-          ON CONFLICT(kind,entity_id) DO UPDATE SET status=CASE WHEN status='running' THEN status ELSE 'pending' END,attempts=0,updated_at=excluded.updated_at`)
-          .run(`verify:${h.id}`,h.id,new Date().toISOString());
+        verifyLater.push(h.id);
       }
     }
     results.push(h);
     if (hybrid && results.length >= collect) break;
+  }
+  // Queued after the loop, through the async writer: a plain run() here slept in SQLite's busy handler on the
+  // caller's event loop whenever the session-cache worker held the write lock. Best effort: a later recall queues again.
+  if (verifyLater.length) {
+    await withMemoryWrite(d, () => {
+      const queue = d.prepare(`INSERT INTO memory_jobs(id,kind,entity_id,updated_at) VALUES(?,'verify',?,?)
+          ON CONFLICT(kind,entity_id) DO UPDATE SET status=CASE WHEN status='running' THEN status ELSE 'pending' END,attempts=0,updated_at=excluded.updated_at`);
+      for (const id of verifyLater) queue.run(`verify:${id}`, id, new Date().toISOString());
+    }).catch(() => {});
   }
   if (collect > limit && results.length > 1) {
     // Rank after fusion, not instead of it. A missing or partial judgment
@@ -347,3 +487,4 @@ export function compactRecall(result: RecallResult, query: string, budget = 1500
   if (lines.length === 1 && !result.results.length) lines.push('No relevant evidence found.');
   return estimateTokens(lines.join('\n\n')) <= budget ? lines.join('\n\n') : '';
 }
+export { closeRetrievalReader, retrievalReaderStats } from './retrieval-reader.js';

@@ -16,8 +16,10 @@ import {
 // nothing more can be fetched, and that is exactly when the overlay wants it.
 import { createMascot } from './synabun-mascot.js';
 import { isDesktopApp } from './desktop-bridge.js';
+import { createServerPresence, probeFailureKind } from './server-presence.js';
 
 const $ = (id) => document.getElementById(id);
+const diagnose = (event, data) => window.synabunLoadingDiagnostics?.record(event, data);
 
 // ── Internal refs (resolved once on init) ──
 let _statusDot = null;
@@ -84,6 +86,12 @@ export function showLoadingError(title, sub, canStart, serverOffline) {
   const $overlay = $('loading-overlay');
   if (!$overlay) return;
 
+  if (window.synabunLoadingDiagnostics) {
+    // A title from any other caller stays out of diagnostics, as do all subtitles.
+    const known = ['loading.serverOffline', 'loading.connectionFailed', 'loading.health.databaseUnreachable.title',
+      'loading.health.remoteUnreachable.title', 'loading.health.authError.title', 'loading.health.connectionError.title'];
+    diagnose('overlay-error', { title: known.find(key => t(key) === title) || 'other', serverOffline: !!serverOffline });
+  }
   $overlay.classList.add('error');
   if (serverOffline) $overlay.classList.add('server-offline');
   else $overlay.classList.remove('server-offline');
@@ -132,10 +140,25 @@ export function showLoadingError(title, sub, canStart, serverOffline) {
 export function hideLoading(delay = 400) {
   const $overlay = $('loading-overlay');
   if ($overlay) setTimeout(() => {
-    if (_offlineBridge) return;
+    if (_offlineBridge) {
+      diagnose('hide-skipped', { state: _offlineBridge.state });
+      return;
+    }
+    diagnose('overlay-conceal', { reason: 'hide' });
     markOnce(OVERLAY_HIDDEN_MARK);
+    dropOtherOverlays($overlay);
     concealOverlay($overlay);
   }, delay);
+}
+
+/**
+ * The page has one loading overlay, the one this module drives (the first in the document). A first frame and a
+ * shell of different versions (one of them from a cache) can leave a second one over the app: it goes.
+ */
+function dropOtherOverlays($overlay) {
+  const others = [...document.querySelectorAll('[id="loading-overlay"]')].filter(el => el !== $overlay);
+  for (const el of others) el.remove();
+  if (others.length) diagnose('overlay-dedupe', { removed: Math.min(others.length, 20) });
 }
 
 /** The moment the overlay started to fade for the first time on this page (the time the user waited). */
@@ -154,7 +177,10 @@ function markOnce(name) {
  */
 export function showLoading() {
   const $overlay = $('loading-overlay');
-  if ($overlay) revealOverlay($overlay);
+  if ($overlay) {
+    diagnose('overlay-reveal', { reason: 'show' });
+    revealOverlay($overlay);
+  }
 }
 
 /**
@@ -195,7 +221,10 @@ function resetLoadingToConnecting() {
  */
 export function rememberHealth(health) {
   if (!health) return;
-  if (!currentBoot && health.bootId) currentBoot = health.bootId;
+  if (!currentBoot && health.bootId) {
+    currentBoot = health.bootId;
+    window.synabunLoadingDiagnostics?.setBoot(currentBoot);
+  }
   try {
     if (health.projectDir) {
       localStorage.setItem('synabun-project-dir', health.projectDir);
@@ -258,7 +287,10 @@ function updateCmdText(projectDir) {
 // ═══════════════════════════════════════════
 
 function stopWatchingForServer() {
-  if (_offlineBridge) _offlineBridge.stop();
+  if (_offlineBridge) {
+    diagnose('bridge-stopped', { state: _offlineBridge.state });
+    _offlineBridge.stop();
+  }
   _offlineBridge = null;
   poseMascot('asleep');
 }
@@ -419,50 +451,76 @@ function watchForServer() {
  * Is the server answering, which server is it (`bootId`), and does it say it
  * is on its way out for a restart. One that predates those two says neither.
  */
-async function probeServer() {
-  const health = await fetchHealth();
-  return {
+async function probeServer(observe) {
+  let health;
+  try { health = await fetchHealth(); }
+  catch (error) { observe?.('unreachable', ''); throw error; }
+  const seen = {
     up: health?.ok === true,
     boot: typeof health?.bootId === 'string' ? health.bootId : '',
     stopping: health?.restarting === true,
   };
+  observe?.(!seen.up ? 'unhealthy' : seen.stopping ? 'stopping' : 'healthy', seen.boot);
+  return seen;
 }
 
 /** The bridge behind the overlay, for either reason it is up: the server is offline, or it is being restarted. */
 function openBridge() {
   mountMascot();
   const beaconAt = startBeaconTarget(window.location);
+  let lastProbe;
+  function observeProbe(result, boot) {
+    if (_offlineBridge !== bridge || (lastProbe?.result === result && lastProbe.boot === boot)) return;
+    lastProbe = { result, boot };
+    diagnose('bridge-probe', { result, seenBoot: boot });
+  }
+  let previousRestart = '';
+  function observeRestart({ restart }) {
+    if (!restart) return;
+    const flags = { asked: restart.asked, accepted: restart.acceptedAt !== null, down: restart.downAt !== null, refused: !!restart.refused };
+    const key = JSON.stringify(flags);
+    if (key !== previousRestart) diagnose('restart-snapshot', flags);
+    previousRestart = key;
+  }
   const bridge = createStartBridge({
-    probe: probeServer,
+    probe: () => probeServer(observeProbe),
     launch: () => openStartLink({ document, location: window.location, userAgent: navigator.userAgent }),
     beacon: beaconAt ? () => fetchStartBeacon(beaconAt) : null,
     port: beaconAt ? beaconAt.port : 0,
     onUpdate(snap) {
       if (_offlineBridge !== bridge) return;
+      observeRestart(snap);
       renderStart(snap);
     },
     onState(state, { boot }) {
-      if (_offlineBridge === bridge && state === 'online') recoverConnection(boot);
+      if (_offlineBridge !== bridge) return;
+      diagnose('bridge-state', { state });
+      observeRestart(bridge.snapshot());
+      if (state === 'online') recoverConnection(boot);
     },
   });
   _offlineBridge = bridge;
+  diagnose('bridge-created', { reason: _restartShown ? 'restart' : 'offline', state: bridge.state });
   return bridge;
 }
 
 /** Complete a healthy retry, whether the person pressed Retry or the bridge saw it first. */
 function recoverConnection(boot) {
-  if (reloadPending) return;
   // Older servers have no boot ID. A running page then needs a fresh session
   // after an outage, while an unfinished first boot can retry initialization.
   const needsReload = currentBoot && boot ? currentBoot !== boot : appWasVisible;
+  diagnose('recover', { seenBoot: boot, needsReload, appWasVisible, restartShown: _restartShown, reloadPending });
+  if (reloadPending) return;
   if (_restartShown || needsReload) {
     reloadPending = true;
+    diagnose('reload-scheduled', { reason: _restartShown ? 'restart' : currentBoot && boot ? 'boot-changed' : 'unknown-boot' });
     setTimeout(() => window.location.reload(), START_LIMITS.reloadDelayMs);
     return;
   }
   resetLoadingToConnecting();
   if (appWasVisible) {
     appWasVisible = false;
+    diagnose('overlay-conceal', { reason: 'recovered' });
     concealOverlay($('loading-overlay'));
     return;
   }
@@ -503,6 +561,7 @@ async function postRestart() {
  * every window that it is restarting (`announced`, over the sync socket).
  */
 function beginRestart({ request = null, announced = false, boot = '' } = {}) {
+  diagnose('restart-request', { asked: !!request, announced, restartShown: _restartShown, hasBridge: !!_offlineBridge });
   // Already on screen (this window asked, and here is the server saying so too).
   if (_restartShown && _offlineBridge) {
     _offlineBridge.restart({ announced, boot });
@@ -519,6 +578,7 @@ function beginRestart({ request = null, announced = false, boot = '' } = {}) {
   _offlineTitle = t('loading.serverOffline');
   // `over-app`: no fade-in and above whatever is open. The screen is there in the frame of the click.
   $overlay.classList.add('over-app', 'error', 'server-offline');
+  diagnose('overlay-reveal', { reason: 'restart' });
   revealOverlay($overlay);
   // Nothing behind the screen keeps the keyboard (a terminal, an editor).
   try { document.activeElement?.blur?.(); } catch {}
@@ -543,7 +603,10 @@ function dismissRestart() {
   if (_restartTitle !== null) document.title = _restartTitle;
   _restartTitle = null;
   const $overlay = $('loading-overlay');
-  if ($overlay) concealOverlay($overlay);
+  if ($overlay) {
+    diagnose('overlay-conceal', { reason: 'dismissed' });
+    concealOverlay($overlay);
+  }
 }
 
 // ═══════════════════════════════════════════
@@ -651,6 +714,8 @@ async function handleRetryConnection() {
 export function initLoading({ onInit } = {}) {
   _initCallback = onInit || null;
   _statusDot = $('status-dot');
+  diagnose('overlay-reveal', { reason: 'init' });
+  if ($('loading-overlay')) dropOtherOverlays($('loading-overlay'));
 
   // ── Populate command with cached path ──
   const cached = localStorage.getItem('synabun-project-dir');
@@ -668,24 +733,64 @@ export function initLoading({ onInit } = {}) {
   const retryBtn = $('loading-retry-btn');
   if (retryBtn) retryBtn.addEventListener('click', handleRetryConnection);
 
+  // Not answering in time is not being gone (server-presence.js): a refused
+  // connection is offline after one confirmation, an unanswered one only once
+  // it has lasted, and never in a hidden tab.
+  const presence = createServerPresence();
   let probing = false;
+  let heldSaid = '';
   async function checkConnection() {
     if (probing || _offlineBridge) return;
     probing = true;
     try {
-      let seen = await probeServer().catch(() => null);
-      // A close or a timed-out request after sleep can precede a healthy
-      // answer. Confirm the miss immediately, without waiting for another interval.
-      if (!seen && currentBoot && !_offlineBridge) seen = await probeServer().catch(() => null);
-      if (_offlineBridge) return;
-      if (seen?.up && !seen.stopping && !(currentBoot && seen.boot && currentBoot !== seen.boot)) {
-        currentBoot ||= seen.boot;
+      const hidden = () => document.visibilityState === 'hidden';
+      let kind = '';
+      const ask = () => probeServer().catch((error) => { kind = probeFailureKind(error); return null; });
+      let seen = await ask();
+      let verdict = '';
+      let confirm = false;
+      if (!seen) {
+        diagnose('probe-miss', { reason: 'unreachable', confirmation: false });
+        verdict = presence.missed(kind, { hidden: hidden() });
+        // A close or a refused request after sleep can precede a healthy
+        // answer. Confirm the miss immediately, without waiting for another interval.
+        if (verdict === 'confirm' && !_offlineBridge) {
+          confirm = true;
+          seen = await ask();
+          if (!seen) {
+            diagnose('probe-miss', { reason: 'unreachable', confirmation: true });
+            verdict = presence.missed(kind, { hidden: hidden(), confirmed: kind !== 'timeout' });
+          }
+        }
+      }
+      if (_offlineBridge) { presence.reset(); return; }
+      if (!seen && verdict !== 'offline') {
+        // Slow, or a hidden tab that cannot tell: nothing is shown. Said once per row and again when its reason changes.
+        const row = presence.snapshot();
+        if (row && heldSaid !== `${row.held}`) { heldSaid = `${row.held}`; diagnose('probe-held', { reason: row.held === 'hidden' ? 'hidden' : 'slow', misses: Math.min(20, row.misses) }); }
         return;
       }
+      if (seen) {
+        const row = presence.answered();
+        if (row.recovered && heldSaid) diagnose('probe-answered', { misses: Math.min(20, row.misses), seconds: Math.min(3600, Math.round(row.ms / 1000)) });
+        heldSaid = '';
+      } else {
+        presence.reset();
+        heldSaid = '';
+      }
+      if (seen?.up && !seen.stopping && !(currentBoot && seen.boot && currentBoot !== seen.boot)) {
+        if (!currentBoot) {
+          currentBoot = seen.boot;
+          window.synabunLoadingDiagnostics?.setBoot(currentBoot);
+        }
+        return;
+      }
+      if (seen) diagnose('probe-miss', { reason: !seen.up ? 'unhealthy' : seen.stopping ? 'stopping' : 'boot-changed', confirmation: confirm });
       // Preserve a specific startup database error until the app actually ran.
       const overlay = $('loading-overlay');
       if (!overlay || (seen && !seen.up && overlay.classList.contains('error') && !overlay.classList.contains('hidden'))) return;
       appWasVisible = overlay.classList.contains('hidden');
+      diagnose('overlay-reveal', { reason: 'probe' });
       revealOverlay(overlay);
       showLoadingError(t('loading.serverOffline'), t('loading.serverNotRunning'), false, true);
       if (appWasVisible) overlay.classList.add('over-app');
@@ -693,6 +798,8 @@ export function initLoading({ onInit } = {}) {
   }
   setInterval(checkConnection, 3000);
   on('sync:disconnected', checkConnection);
+  // A tab that was hidden could not tell slow from gone; it looks the moment it is shown.
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkConnection(); });
 
   // ── The server says it is restarting (ui-sync.js): every window shows it ──
   on('server:restarting', (msg) => beginRestart({ announced: true, boot: typeof msg?.bootId === 'string' ? msg.bootId : '' }));

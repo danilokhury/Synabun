@@ -178,7 +178,7 @@ function fieldHTML(field) {
     <div class="sched-form-stack">
       <div class="sched-form-control">
         ${popup}
-        ${refresh('sched-icon-btn')}
+        ${refresh('sx-icon-btn sched-icon-btn')}
       </div>
       <p class="sched-help${warn ? ' sched-help--warn' : ''}" id="${esc(id)}-help"${status}>${help}</p>
     </div>

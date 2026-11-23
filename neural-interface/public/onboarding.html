@@ -1127,10 +1127,10 @@
                 <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
               </svg>
             </div>
-            <div class="restore-dropzone-text">Drop your backup .zip here</div>
+            <div class="restore-dropzone-text">Drop your backup .zip or .zip.enc here</div>
             <div class="restore-dropzone-hint">or click to browse</div>
           </div>
-          <input type="file" id="onboardRestoreFile" accept=".zip" style="display:none">
+          <input type="file" id="onboardRestoreFile" accept=".zip,.enc" style="display:none">
           <div id="onboardRestoreStatus" style="display:none;margin-top:12px;font-size:12px;align-items:center;gap:8px">
             <div class="wiz-status-dot spin" id="onboardRestoreDot"></div>
             <span id="onboardRestoreText"></span>
@@ -1437,6 +1437,7 @@
 </script>
 
 <script type="module">
+import { applyEncryptedRestore, clearRestoreOutcome, describeEncryptedRestore, describeRestoreOutcome, discardEncryptedRestore, previewErrorMessage, readRestoreOutcome, restoreCanUnlock, restoreCatalogueUrl, restoreErrorMessage, restoreNeedsNewFile, restorePartialCodes, saveRestoreOutcome, unlockEncryptedRestore } from '/shared/settings/settings-backup-encryption.js';
 import { waitForServerBack } from './shared/server-back.js';
 
 // The rules step is the installer of Settings → AI connections: the same client calls and the same reading
@@ -1858,15 +1859,19 @@ function renderHappyBun() {}
 // STEP 0: Welcome Choices (Fresh Install / Restore)
 // ═══════════════════════════════════════════
 
+// A restore that finished with problems, shown again after a reload of this page (init, below).
+let resumeRestoreOutcome = null;
+
 (function initWelcomeChoices() {
   const $choices      = document.getElementById('welcomeChoices');
   const $restorePanel = document.getElementById('welcomeRestorePanel');
-  const $dropzone     = document.getElementById('restoreDropzone');
-  const $fileInput    = document.getElementById('onboardRestoreFile');
-  const $statusEl     = document.getElementById('onboardRestoreStatus');
-  const $statusDot    = document.getElementById('onboardRestoreDot');
-  const $statusText   = document.getElementById('onboardRestoreText');
-  const $backLink     = document.getElementById('restoreBackLink');
+  // These stand inside the panel, which resetRestorePanel builds again: it reads them again too.
+  let $dropzone     = document.getElementById('restoreDropzone');
+  const $fileInput  = document.getElementById('onboardRestoreFile');
+  let $statusEl     = document.getElementById('onboardRestoreStatus');
+  let $statusDot    = document.getElementById('onboardRestoreDot');
+  let $statusText   = document.getElementById('onboardRestoreText');
+  let $backLink     = document.getElementById('restoreBackLink');
 
   // Fresh Install → proceed to step 1
   document.getElementById('choiceFreshInstall').addEventListener('click', () => {
@@ -1905,7 +1910,7 @@ function renderHappyBun() {}
     e.preventDefault();
     $dropzone.classList.remove('dragover');
     const file = e.dataTransfer.files[0];
-    if (file && file.name.endsWith('.zip')) handleRestoreFile(file);
+    if (file && /\.zip(?:\.enc)?$/i.test(file.name)) handleRestoreFile(file);
   });
 
   // File input change
@@ -1933,26 +1938,119 @@ function renderHappyBun() {}
         body: file,
       });
       if (!previewRes.ok) {
-        let errMsg = 'Invalid backup file';
-        try { const body = await previewRes.json(); errMsg = body.error || errMsg; } catch {}
-        throw new Error(errMsg);
+        let body = null;
+        try { body = await previewRes.json(); } catch {}
+        // By the refusal's code, from the Settings strings; the server's sentence (it can name a path) is never shown.
+        await loadRestoreStrings();
+        throw Object.assign(new Error(previewErrorMessage(body, { tx: restoreTx, fallback: restoreCopy('invalidBackup2', 'Invalid backup file') })), { translated: true });
       }
-      const { manifest: m } = await previewRes.json();
+      const preview = await previewRes.json();
+      $statusEl.style.display = 'none';
+
+      // An encrypted backup: its password first. Nothing of what it holds is shown before that.
+      if (preview.encrypted && preview.locked) {
+        await loadRestoreStrings();
+        // A server from before the finished encryption: no password is sent to it.
+        if (!restoreCanUnlock(preview)) {
+          discardEncryptedRestore((...args) => fetch(...args), preview.uploadId);
+          throw Object.assign(new Error(restoreCopy('restoreEncNeedsRestart', 'This backup is encrypted. Restart SynaBun, then restore it. The password was not asked for and nothing was changed.')), { translated: true });
+        }
+        showRestoreUnlock(preview, file);
+        return;
+      }
 
       // Show confirmation
-      $statusEl.style.display = 'none';
-      showRestoreConfirm(m, file);
+      showRestoreConfirm(preview.manifest, file);
 
     } catch (err) {
+      await loadRestoreStrings();
+      $statusEl.style.display = 'flex';
       $statusDot.className = 'wiz-status-dot red';
-      $statusText.textContent = err.message;
+      $statusText.textContent = err.translated ? err.message : restoreCopy('invalidBackup2', 'Invalid backup file');
       $backLink.style.display = '';
+      // A message can take several lines: the wizard's viewport follows it.
+      resizeViewport(0);
     }
   }
 
-  function showRestoreConfirm(m, file) {
-    const fileCount = (m.files || []).length;
+  // The strings are the Settings ones (settings.redesign.server.*); the English stands in if they could not be read.
+  const restoreCopy = (key, fallback) => {
+    const value = restoreTx ? restoreTx(`settings.redesign.server.${key}`) : fallback;
+    return value === `settings.redesign.server.${key}` ? fallback : value;
+  };
+
+  function showRestoreUnlock(locked, file) {
+    const pageFetch = (...args) => fetch(...args);
+    $restorePanel.innerHTML = `
+      <form id="onboardUnlockForm" autocomplete="off" novalidate style="padding:20px 0;text-align:left;">
+        <h3 style="font-size:16px;font-weight:600;color:var(--t-bright);margin-bottom:4px;">${esc(restoreCopy('restoreEncTitle', 'This backup is encrypted'))}</h3>
+        <p style="font-size:11px;color:var(--t-muted);margin-bottom:14px;">${esc(restoreCopy('restoreEncHelp', 'Enter the password it was made with. Its contents are shown once it opens.'))}</p>
+        <div class="field">
+          <label for="onboardRestorePassword">${esc(restoreCopy('restoreEncPassword', 'Backup password'))}</label>
+          <input type="password" id="onboardRestorePassword" autocomplete="current-password" spellcheck="false" autocapitalize="off" maxlength="1024">
+        </div>
+        <div id="onboardUnlockError" role="alert" style="display:none;font-size:12px;color:var(--accent-dim);margin:8px 0;"></div>
+        <div style="display:flex;gap:10px;justify-content:center;margin-top:12px;">
+          <button type="button" class="nav-btn" id="onboardUnlockCancel">${esc(restoreCopy('backupEncCancel', 'Cancel'))}</button>
+          <button type="submit" class="nav-btn primary" id="onboardUnlockSubmit">${esc(restoreCopy('restoreEncUnlock', 'Unlock'))}</button>
+        </div>
+      </form>
+    `;
+    resizeViewport(0);
+    const input = document.getElementById('onboardRestorePassword');
+    const errorEl = document.getElementById('onboardUnlockError');
+    const submit = document.getElementById('onboardUnlockSubmit');
+    const cancel = document.getElementById('onboardUnlockCancel');
+    input.focus();
+    cancel.addEventListener('click', () => {
+      input.value = '';
+      discardEncryptedRestore(pageFetch, locked.uploadId);
+      resetRestorePanel();
+    });
+    document.getElementById('onboardUnlockForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (submit.disabled) return;
+      if (!input.value) {
+        errorEl.textContent = restoreCopy('backupEncErrRequired', 'Enter the password.');
+        errorEl.style.display = '';
+        return;
+      }
+      submit.disabled = true;
+      cancel.disabled = true;
+      submit.textContent = restoreCopy('restoreEncUnlocking', 'Checking…');
+      errorEl.style.display = 'none';
+      let answer;
+      try { answer = await unlockEncryptedRestore(pageFetch, locked.uploadId, input.value); }
+      catch { answer = { ok: false, body: null, failed: true }; }
+      input.value = '';
+      if (answer.ok && answer.body?.ok) {
+        showRestoreConfirm(answer.body.manifest, file, locked.uploadId, answer.body);
+        return;
+      }
+      cancel.disabled = false;
+      submit.textContent = restoreCopy('restoreEncUnlock', 'Unlock');
+      errorEl.textContent = answer.failed ? restoreCopy('backupEncErrFailed', 'That did not work. Nothing was changed.') : restoreErrorMessage(answer.body, { tx: restoreTx });
+      errorEl.style.display = '';
+      // The upload is gone, damaged or not one this SynaBun reads: another password cannot help.
+      submit.disabled = restoreNeedsNewFile(answer.body?.code);
+      input.disabled = submit.disabled;
+      if (!submit.disabled) input.focus();
+    });
+  }
+
+  function showRestoreConfirm(m, file, stagedUploadId = null, unlocked = null) {
+    // The server sends the count; one from before sends the whole file list.
+    const fileCount = Number.isFinite(m.fileCount) ? m.fileCount : (m.files || []).length;
     const hasDb = !!(m.database);
+    // An encrypted backup: the date its header carries, which the password's keys vouched for.
+    const madeFallback = { restoreEncMade: 'Encrypted backup made {date}. An older backup of yours opens with its password too, so check that this is the one you want.', restoreEncMadeUnknown: 'Encrypted backup. It does not say when it was made, so check that this is the one you want.' };
+    const madeLine = unlocked ? describeEncryptedRestore(unlocked, {
+      tx: (key, params = {}) => {
+        const name = key.split('.').pop();
+        const text = restoreTx ? restoreTx(key, params) : key;
+        return text === key ? madeFallback[name].replace('{date}', params.date ?? '') : text;
+      },
+    }) : '';
 
     $restorePanel.innerHTML = `
       <div style="padding:20px 0;">
@@ -1960,6 +2058,7 @@ function renderHappyBun() {}
         <p style="font-size:11px;color:var(--t-muted);margin-bottom:14px;">
           Created: ${new Date(m.created).toLocaleString()} on ${esc(m.hostname || 'unknown')}
         </p>
+        ${madeLine ? `<div id="onboardRestoreEncryptedMade" style="font-size:12px;color:var(--t-primary);margin-bottom:10px;">${esc(madeLine)}</div>` : ''}
         <div style="font-size:12px;color:var(--t-primary);margin-bottom:6px;">
           <strong>${fileCount}</strong> config files
         </div>
@@ -1982,6 +2081,7 @@ function renderHappyBun() {}
     resizeViewport(0);
 
     document.getElementById('onboardRestoreCancel').addEventListener('click', () => {
+      if (stagedUploadId) discardEncryptedRestore((...args) => fetch(...args), stagedUploadId);
       // Reset to dropzone view
       resetRestorePanel();
     });
@@ -1999,18 +2099,50 @@ function renderHappyBun() {}
       progressEl.style.display = 'flex';
       progressDot.className = 'wiz-status-dot spin';
 
+      // The words of a partial result are read now: a restore can restart the server right after it answers.
+      const stringsReady = loadRestoreStrings().catch(() => null);
       try {
         progressText.textContent = 'Restoring backup...';
-        const restoreRes = await fetch('/api/system/restore', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/zip' },
-          body: file,
-        });
-        if (!restoreRes.ok) {
-          let errMsg = 'Restore failed';
-          try { const body = await restoreRes.json(); errMsg = body.error || errMsg; } catch {}
-          throw new Error(errMsg);
+        let restoreBody = null;
+        if (stagedUploadId) {
+          // The staged file is used once: after a failure the file is chosen again.
+          const uploadId = stagedUploadId;
+          stagedUploadId = null;
+          const answer = await applyEncryptedRestore((...args) => fetch(...args), uploadId, 'full');
+          if (!answer.ok) {
+            const failure = new Error(restoreErrorMessage(answer.body, { tx: restoreTx }));
+            failure.translated = true;
+            failure.stagedUsed = true;
+            throw failure;
+          }
+          restoreBody = answer.body;
+        } else {
+          const restoreRes = await fetch('/api/system/restore', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/zip' },
+            body: file,
+          });
+          if (!restoreRes.ok) {
+            // By the refusal's code: the server's sentence can hold a path. An old server sends none: the generic sentence.
+            let body = null;
+            try { body = await restoreRes.json(); } catch {}
+            await loadRestoreStrings();
+            throw Object.assign(new Error(restoreErrorMessage(body, { tx: restoreTx })), { translated: true });
+          }
+          // A 200 that cannot be read may still have written: it counts as a restore with problems, below.
+          try { restoreBody = await restoreRes.json(); } catch {}
         }
+
+        // A 200 can carry problems (results.errors): setup is not marked complete and the wizard stays here.
+        const partialCodes = restorePartialCodes(restoreBody);
+        if (partialCodes) {
+          const outcome = { codes: partialCodes, restart: restoreBody?.restart === true };
+          saveRestoreOutcome(outcome);
+          await Promise.race([stringsReady, new Promise((done) => setTimeout(done, 2000))]);
+          showRestoreOutcome(outcome, { restarting: outcome.restart, bootId: typeof restoreBody?.bootId === 'string' ? restoreBody.bootId : '' });
+          return;
+        }
+        clearRestoreOutcome();
 
         progressDot.className = 'wiz-status-dot green';
         progressText.textContent = 'Restore complete! Launching...';
@@ -2021,14 +2153,79 @@ function renderHappyBun() {}
         setTimeout(() => { window.location.href = '/'; }, 1500);
 
       } catch (err) {
+        await loadRestoreStrings();
         progressDot.className = 'wiz-status-dot red';
-        progressText.textContent = err.message;
+        progressText.textContent = err.translated ? err.message : restoreErrorMessage(null, { tx: restoreTx });
         confirmBtn.textContent = 'Restore';
-        confirmBtn.disabled = false;
+        confirmBtn.disabled = !!err.stagedUsed;
         cancelBtn.style.display = '';
+        resizeViewport(0);
       }
     });
   }
+
+  // The restore finished with problems: its messages, and the owner chooses what happens next. Nothing moves on alone.
+  function showRestoreOutcome(outcome, { restarting = false, bootId = '' } = {}) {
+    const words = describeRestoreOutcome(outcome, { tx: restoreTx, restarting });
+    // The wizard's own Begin would walk past the message into a fresh setup: its two choices are the way forward.
+    $nextBtn.style.display = 'none';
+    $choices.style.display = 'none';
+    $restorePanel.style.display = 'block';
+    $restorePanel.classList.add('visible');
+    const tryButton = `<button type="button" class="nav-btn${words.retryFirst ? ' primary' : ''}" id="onboardOutcomeRetry">${esc(words.tryAnother)}</button>`;
+    const goButton = `<button type="button" class="nav-btn${words.retryFirst ? '' : ' primary'}" id="onboardOutcomeContinue">${esc(words.continueAnyway)}</button>`;
+    $restorePanel.innerHTML = `
+      <div id="onboardRestoreOutcome" role="alert" style="padding:20px 0;text-align:left;">
+        <h3 style="font-size:16px;font-weight:600;color:var(--t-bright);margin-bottom:10px;">${esc(words.title)}</h3>
+        <ul style="margin:0 0 14px;padding-left:18px;font-size:12px;line-height:1.45;color:var(--t-primary);">
+          ${words.messages.map((message) => `<li style="margin-bottom:6px;">${esc(message)}</li>`).join('')}
+        </ul>
+        ${words.note ? `<p id="onboardOutcomeNote" style="font-size:11px;color:var(--t-muted);margin-bottom:14px;">${esc(words.note)}</p>` : ''}
+        <div id="onboardOutcomeError" role="alert" style="display:none;font-size:12px;color:var(--accent-dim);margin-bottom:10px;"></div>
+        <div style="display:flex;gap:10px;justify-content:center;">${words.retryFirst ? `${goButton}${tryButton}` : `${tryButton}${goButton}`}</div>
+      </div>
+    `;
+    resizeViewport(0);
+    const retry = document.getElementById('onboardOutcomeRetry');
+    const go = document.getElementById('onboardOutcomeContinue');
+    const errorEl = document.getElementById('onboardOutcomeError');
+    retry.addEventListener('click', () => {
+      clearRestoreOutcome();
+      resetRestorePanel();
+      updateNav();
+      $choices.style.display = 'none';
+      $restorePanel.style.display = 'block';
+      $restorePanel.classList.add('visible');
+      resizeViewport(0);
+    });
+    // Once per page: a server that did not come back in time is not waited for again on the next press.
+    let awaitRestart = outcome.restart;
+    go.addEventListener('click', async () => {
+      retry.disabled = true;
+      go.disabled = true;
+      go.textContent = words.continuing;
+      errorEl.style.display = 'none';
+      try {
+        if (awaitRestart) {
+          awaitRestart = false;
+          if (!(await waitForServerBack(bootId))) throw new Error('not back');
+        }
+        const res = await fetch('/api/setup/complete', { method: 'POST' });
+        if (!res.ok) throw new Error('not completed');
+      } catch {
+        retry.disabled = false;
+        go.disabled = false;
+        go.textContent = words.continueAnyway;
+        errorEl.textContent = words.continueFailed;
+        errorEl.style.display = '';
+        resizeViewport(0);
+        return;
+      }
+      clearRestoreOutcome();
+      window.location.href = '/';
+    });
+  }
+  resumeRestoreOutcome = showRestoreOutcome;
 
   function resetRestorePanel() {
     $restorePanel.classList.remove('visible');
@@ -2041,10 +2238,10 @@ function renderHappyBun() {}
             <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
           </svg>
         </div>
-        <div class="restore-dropzone-text">Drop your backup .zip here</div>
+        <div class="restore-dropzone-text">Drop your backup .zip or .zip.enc here</div>
         <div class="restore-dropzone-hint">or click to browse</div>
       </div>
-      <input type="file" id="onboardRestoreFile" accept=".zip" style="display:none">
+      <input type="file" id="onboardRestoreFile" accept=".zip,.enc" style="display:none">
       <div id="onboardRestoreStatus" style="display:none;margin-top:12px;font-size:12px;align-items:center;gap:8px">
         <div class="wiz-status-dot spin" id="onboardRestoreDot"></div>
         <span id="onboardRestoreText"></span>
@@ -2053,6 +2250,11 @@ function renderHappyBun() {}
         <span class="restore-back-link" id="restoreBackLink">&larr; Back to options</span>
       </div>
     `;
+    $dropzone = document.getElementById('restoreDropzone');
+    $statusEl = document.getElementById('onboardRestoreStatus');
+    $statusDot = document.getElementById('onboardRestoreDot');
+    $statusText = document.getElementById('onboardRestoreText');
+    $backLink = $restorePanel.querySelector('.restore-back-link');
     // Show the choices again
     $choices.style.display = '';
     resizeViewport(0);
@@ -2064,7 +2266,7 @@ function renderHappyBun() {}
   function rewireDropzone() {
     const dz = document.getElementById('restoreDropzone');
     const fi = document.getElementById('onboardRestoreFile');
-    const bl = document.getElementById('restoreBackLink');
+    const bl = $restorePanel.querySelector('.restore-back-link');
 
     dz.addEventListener('click', () => fi.click());
     dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('dragover'); });
@@ -2073,7 +2275,7 @@ function renderHappyBun() {}
       e.preventDefault();
       dz.classList.remove('dragover');
       const file = e.dataTransfer.files[0];
-      if (file && file.name.endsWith('.zip')) handleRestoreFile(file);
+      if (file && /\.zip(?:\.enc)?$/i.test(file.name)) handleRestoreFile(file);
     });
     fi.addEventListener('change', (e) => {
       const file = e.target.files[0];
@@ -2781,6 +2983,22 @@ async function loadRulesStrings() {
   return rulesTx;
 }
 
+// The restore's words, in the language the app would use (the rest of the wizard is English). English if that file
+// could not be read; null only when no strings could be read at all, and the messages then have an English fallback.
+let restoreTx = null;
+async function loadRestoreStrings() {
+  if (restoreTx) return restoreTx;
+  let saved = null;
+  try { saved = localStorage.getItem('synabun-locale'); } catch { /* storage is not available */ }
+  const url = restoreCatalogueUrl({ search: location.search, saved, languages: [navigator.language, ...(navigator.languages || [])] });
+  try {
+    const res = await fetch(url);
+    if (res.ok) restoreTx = catalogueTranslator(await res.json());
+  } catch { /* English, below */ }
+  if (!restoreTx) restoreTx = await loadRulesStrings();
+  return restoreTx;
+}
+
 // The rendered text for a host, from the rules route or the older read-only endpoint.
 async function loadRulesText(host) {
   if (!rulesTextCache[host]) rulesTextCache[host] = await fetchRulesTextWithFallback(host);
@@ -3060,10 +3278,13 @@ document.getElementById('launchBtn').addEventListener('click', async () => {
 // ═══════════════════════════════════════════
 
 async function init() {
+  // A restore that finished with problems and was not answered yet. A restored .env can say setup is complete: the
+  // wizard stays until the owner has read it.
+  const waitingRestore = readRestoreOutcome();
   try {
     const res = await fetch('/api/setup/onboarding');
     const data = await res.json();
-    if (data.setupComplete) {
+    if (data.setupComplete && !waitingRestore) {
       window.location.href = '/';
       return;
     }
@@ -3087,6 +3308,10 @@ async function init() {
   startMascot();
   // Resize after mascot SVG is injected so scrollHeight includes it
   requestAnimationFrame(() => resizeViewport(0));
+  if (waitingRestore) {
+    await Promise.race([loadRestoreStrings().catch(() => null), new Promise((done) => setTimeout(done, 2000))]);
+    resumeRestoreOutcome(waitingRestore);
+  }
 }
 
 init();

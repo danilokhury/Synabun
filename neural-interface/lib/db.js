@@ -4,10 +4,12 @@
  * Shares the same memory.db file as the MCP server (WAL mode for concurrent access).
  */
 
+import { withMemoryWrite } from '../../mcp-server/dist/services/sqlite-write.js';
 import { DatabaseSync } from 'node:sqlite';
 import { resolve, dirname } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { getDb as sharedDb, closeDatabase, memoryVectors, chunkVectors, searchMemories as sharedSearch, searchSessionChunks as sharedSessionSearch, updatePayload as sharedUpdate, deleteMemory as sharedDelete } from '../../mcp-server/dist/services/sqlite.js';
+import { readRows } from '../../mcp-server/dist/services/retrieval-reader.js';
 import { generateEmbedding, generateEmbeddingBatch, warmupEmbeddings, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from '../../mcp-server/dist/services/local-embeddings.js';
 export { memoryVectors, chunkVectors, warmupEmbeddings, EMBEDDING_MODEL };
 export const EMBEDDING_DIMS = EMBEDDING_DIMENSIONS;
@@ -93,6 +95,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
   body,
   tokenize = 'porter unicode61 remove_diacritics 2'
 );
+CREATE TABLE IF NOT EXISTS session_fts_lookup (
+  session_id TEXT NOT NULL, provider TEXT NOT NULL, docid INTEGER NOT NULL,
+  PRIMARY KEY (session_id, provider)
+);
 `;
 
 export function closeDb() {
@@ -111,6 +117,17 @@ export function closeDb() {
 
 // --- X/Twitter engagement ledger (cross-schedule dedup) ---
 
+// The ledger's statements filter on `tags`, which no index covers, and in a memory's row the tags come after its
+// vector and its content: every candidate row is read whole. On the owner's store (35k memories, 2.6 GB) one of them
+// held the server's only thread for 2,059 ms (2026-11-21, logged under `timer:memory-maintenance`, the label that
+// had marked last). They run on the retrieval reader's thread instead (mcp-server retrieval-reader.ts: a read-only
+// connection of its own, which sees every committed write as the statement starts), so every reader below is async.
+// The statement and its answer are unchanged; when the reader cannot serve it, it runs on this connection as before.
+async function ledgerRows(sql, params = []) {
+  getDb(); // the store's refusal while it is closed or migrating, before anything is asked of the reader
+  return readRows(sql, params);
+}
+
 /**
  * Read the shared engagement ledger written by the X automations and return a
  * deduped recent set of engaged handles + tweet status IDs, plus the permanent
@@ -126,9 +143,9 @@ export function closeDb() {
  * failure must not block a scheduled launch).
  *
  * @param {{account?:string|null, days?:number, limit?:number}} opts
- * @returns {{handles:string[], statusIds:string[], blocked:string[], error?:string}}
+ * @returns {Promise<{handles:string[], statusIds:string[], blocked:string[], error?:string}>}
  */
-export function getRecentXEngagements({ account = null, days = 7, limit = 200 } = {}) {
+export async function getRecentXEngagements({ account = null, days = 7, limit = 200 } = {}) {
   const acct = account ? String(account).trim().replace(/^@/, '').toLowerCase() : null;
   const acctLike = acct ? `%"acct:${acct}"%` : null;
   const collect = (rows, handleSet, statusSet) => {
@@ -149,7 +166,6 @@ export function getRecentXEngagements({ account = null, days = 7, limit = 200 } 
     }
   };
   try {
-    const db = getDb();
     const since = new Date(Date.now() - days * 86400000).toISOString();
     const handles = new Set();
     const statusIds = new Set();
@@ -165,7 +181,7 @@ export function getRecentXEngagements({ account = null, days = 7, limit = 200 } 
     if (acctLike) { engSql += ` AND tags LIKE ?`; engParams.push(acctLike); }
     engSql += ` ORDER BY created_at DESC LIMIT ?`;
     engParams.push(limit);
-    collect(db.prepare(engSql).all(...engParams), handles, statusIds);
+    collect(await ledgerRows(engSql, engParams), handles, statusIds);
 
     // Permanent blocklist (accounts that blocked us) — no time window.
     let blkSql = `SELECT tags FROM memories
@@ -175,7 +191,7 @@ export function getRecentXEngagements({ account = null, days = 7, limit = 200 } 
     if (acctLike) { blkSql += ` AND tags LIKE ?`; blkParams.push(acctLike); }
     blkSql += ` ORDER BY created_at DESC LIMIT ?`;
     blkParams.push(limit);
-    collect(db.prepare(blkSql).all(...blkParams), blocked, null);
+    collect(await ledgerRows(blkSql, blkParams), blocked, null);
 
     return { handles: [...handles], statusIds: [...statusIds], blocked: [...blocked] };
   } catch (err) {
@@ -201,14 +217,13 @@ export const X_ACTION_TYPES = ['reply', 'like', 'quote', 'follow', 'repost'];
  * every counter reads 0 so a broken ledger fails open rather than freezing all lanes.
  *
  * @param {{account?:string|null, sinceIso?:string, limit?:number}} opts
- * @returns {{reply:number, like:number, quote:number, follow:number, repost:number, total:number, error?:string}}
+ * @returns {Promise<{reply:number, like:number, quote:number, follow:number, repost:number, total:number, error?:string}>}
  */
-export function getXActionBudget({ account = null, sinceIso, limit = 500 } = {}) {
+export async function getXActionBudget({ account = null, sinceIso, limit = 500 } = {}) {
   const counts = Object.fromEntries(X_ACTION_TYPES.map(t => [t, 0]));
   const empty = { ...counts, total: 0 };
   const acct = account ? String(account).trim().replace(/^@/, '').toLowerCase() : null;
   try {
-    const db = getDb();
     const since = sinceIso || new Date(Date.now() - 86400000).toISOString();
     let sql = `SELECT tags FROM memories
          WHERE trashed_at IS NULL
@@ -221,7 +236,7 @@ export function getXActionBudget({ account = null, sinceIso, limit = 500 } = {})
     params.push(limit);
 
     let total = 0;
-    for (const row of db.prepare(sql).all(...params)) {
+    for (const row of await ledgerRows(sql, params)) {
       let tags;
       try { tags = JSON.parse(row.tags || '[]'); } catch { continue; }
       if (!Array.isArray(tags)) continue;
@@ -264,20 +279,19 @@ export const X_DEFAULT_TIER = 1;
  * the budget, never widen it.
  *
  * @param {{account?:string|null}} opts
- * @returns {{tier:number, caps:{reply:number,like:number,quote:number,follow:number,repost:number}, source:'memory'|'default', error?:string}}
+ * @returns {Promise<{tier:number, caps:{reply:number,like:number,quote:number,follow:number,repost:number}, source:'memory'|'default', error?:string}>}
  */
-export function getXEngagementTier({ account = null } = {}) {
+export async function getXEngagementTier({ account = null } = {}) {
   const fallback = { tier: X_DEFAULT_TIER, caps: X_ENGAGEMENT_TIERS[X_DEFAULT_TIER], source: 'default' };
   const acct = account ? String(account).trim().replace(/^@/, '').toLowerCase() : null;
   try {
-    const db = getDb();
     let sql = `SELECT content FROM memories
          WHERE trashed_at IS NULL
            AND tags LIKE '%-x-engagement-caps"%'`;
     const params = [];
     if (acct) { sql += ` AND (tags LIKE ? OR tags NOT LIKE '%"acct:%')`; params.push(`%"acct:${acct}"%`); }
     sql += ` ORDER BY created_at DESC LIMIT 1`;
-    const row = db.prepare(sql).all(...params)[0];
+    const row = (await ledgerRows(sql, params))[0];
     if (!row?.content) return fallback;
     const m = /\btier\s*[:=]\s*(\d+)/i.exec(row.content);
     const tier = m ? Number(m[1]) : NaN;
@@ -321,14 +335,13 @@ export const FB_DEFAULT_TIER = 1;
  * every counter reads 0 so a broken ledger fails open rather than freezing all lanes.
  *
  * @param {{account?:string|null, sinceIso?:string, limit?:number}} opts
- * @returns {{page_post:number, group_post:number, comment:number, invite:number, join:number, total:number, error?:string}}
+ * @returns {Promise<{page_post:number, group_post:number, comment:number, invite:number, join:number, total:number, error?:string}>}
  */
-export function getFbActionBudget({ account = null, sinceIso, limit = 500 } = {}) {
+export async function getFbActionBudget({ account = null, sinceIso, limit = 500 } = {}) {
   const counts = Object.fromEntries(FB_ACTION_TYPES.map(t => [t, 0]));
   const empty = { ...counts, total: 0 };
   const acct = account ? String(account).trim().replace(/^@/, '').toLowerCase() : null;
   try {
-    const db = getDb();
     const since = sinceIso || new Date(Date.now() - 86400000).toISOString();
     let sql = `SELECT tags FROM memories
          WHERE trashed_at IS NULL
@@ -341,7 +354,7 @@ export function getFbActionBudget({ account = null, sinceIso, limit = 500 } = {}
     params.push(limit);
 
     let total = 0;
-    for (const row of db.prepare(sql).all(...params)) {
+    for (const row of await ledgerRows(sql, params)) {
       let tags;
       try { tags = JSON.parse(row.tags || '[]'); } catch { continue; }
       if (!Array.isArray(tags)) continue;
@@ -367,8 +380,9 @@ export function getFbActionBudget({ account = null, sinceIso, limit = 500 } = {}
 
     // group_post: the fb_groups posting ledger. Guarded — the table is owned by the
     // MCP server's schema, so a brand-new database may not have it yet (reads 0).
+    // An index range of a small table: read on this connection, as before.
     try {
-      const row = db.prepare(
+      const row = getDb().prepare(
         `SELECT COUNT(*) AS n FROM fb_post_log
           WHERE posted_at >= ?
             AND status IN ('visible-post', 'pending-approval', 'posted', 'pending')`,
@@ -390,18 +404,17 @@ export function getFbActionBudget({ account = null, sinceIso, limit = 500 } = {}
  * unparseable, or names a tier that does not exist — an unreadable ledger must narrow
  * the budget, never widen it.
  *
- * @returns {{tier:number, caps:{page_post:number, group_post:number, comment:number, invite:number, join:number}, source:'memory'|'default', error?:string}}
+ * @returns {Promise<{tier:number, caps:{page_post:number, group_post:number, comment:number, invite:number, join:number}, source:'memory'|'default', error?:string}>}
  */
-export function getFbEngagementTier() {
+export async function getFbEngagementTier() {
   const fallback = { tier: FB_DEFAULT_TIER, caps: FB_ENGAGEMENT_TIERS[FB_DEFAULT_TIER], source: 'default' };
   try {
-    const db = getDb();
-    const row = db.prepare(
+    const row = (await ledgerRows(
       `SELECT content FROM memories
         WHERE trashed_at IS NULL
           AND tags LIKE '%critpix-fb-engagement-caps%'
         ORDER BY created_at DESC LIMIT 1`,
-    ).all()[0];
+    ))[0];
     if (!row?.content) return fallback;
     const m = /\btier\s*[:=]\s*(\d+)/i.exec(row.content);
     const tier = m ? Number(m[1]) : NaN;
@@ -427,6 +440,13 @@ export function setKvConfig(key, value) {
   const d = getDb();
   d.exec(KV_DDL);
   d.prepare('INSERT OR REPLACE INTO kv_config (key, value) VALUES (?, ?)').run(key, String(value));
+}
+
+export function saveEmbeddingMetadata() {
+  return withMemoryWrite(getDb(), () => {
+    setKvConfig('embedding_model', EMBEDDING_MODEL);
+    setKvConfig('embedding_dims', String(EMBEDDING_DIMS));
+  });
 }
 
 // --- Vector helpers ---
@@ -807,16 +827,33 @@ export function upsertSessionCache(entry) {
   );
 }
 
-export function upsertSessionFts(entry) {
+export function upsertSessionFts(entry, cacheEntry = null) {
   const d = getDb();
-  d.prepare('DELETE FROM session_fts WHERE session_id = ? AND provider = ?')
-    .run(entry.session_id, entry.provider);
-  d.prepare(`INSERT INTO session_fts
-    (session_id, provider, project, first_prompt, body)
-    VALUES (?, ?, ?, ?, ?)`).run(
-    entry.session_id, entry.provider, entry.project || null,
-    entry.first_prompt || '', entry.body || '',
-  );
+  const key = [entry.session_id, entry.provider];
+  const known = d.prepare('SELECT docid FROM session_fts_lookup WHERE session_id=? AND provider=?');
+  const previous = known.get(...key);
+  // Older stores have no docid. Find any legacy duplicates before acquiring
+  // the writer lock: equality on these UNINDEXED FTS columns scans all text.
+  const valid = previous && d.prepare('SELECT 1 FROM session_fts WHERE rowid=? AND session_id=? AND provider=?')
+    .get(previous.docid, ...key);
+  const candidates = valid ? [previous] : d.prepare('SELECT rowid AS docid FROM session_fts WHERE session_id=? AND provider=?').all(...key);
+  d.exec('SAVEPOINT session_fts_write');
+  try {
+    // Acquire the write lock before checking for a concurrent upsert of this
+    // key. A cleared/reused FTS rowid must never delete another conversation.
+    d.prepare('INSERT OR IGNORE INTO session_fts_lookup VALUES(?,?,0)').run(...key);
+    const current = known.get(...key);
+    const remove = d.prepare('DELETE FROM session_fts WHERE rowid=? AND session_id=? AND provider=?');
+    for (const docid of new Set([current.docid, ...candidates.map(row => row.docid)])) remove.run(docid, ...key);
+    const added = d.prepare('INSERT INTO session_fts(session_id,provider,project,first_prompt,body) VALUES(?,?,?,?,?)')
+      .run(...key, entry.project || null, entry.first_prompt || '', entry.body || '');
+    d.prepare('UPDATE session_fts_lookup SET docid=? WHERE session_id=? AND provider=?').run(added.lastInsertRowid, ...key);
+    if (cacheEntry) upsertSessionCache(cacheEntry);
+    d.exec('RELEASE session_fts_write');
+  } catch (error) {
+    d.exec('ROLLBACK TO session_fts_write; RELEASE session_fts_write');
+    throw error;
+  }
 }
 
 export function getSessionCacheEntry(sessionId, provider) {
@@ -864,6 +901,7 @@ export function clearSessionCacheProvider(provider) {
   d.exec('BEGIN IMMEDIATE');
   try {
     d.prepare('DELETE FROM session_fts WHERE provider = ?').run(normalized);
+    d.prepare('DELETE FROM session_fts_lookup WHERE provider = ?').run(normalized);
     d.prepare('DELETE FROM session_cache WHERE provider = ?').run(normalized);
     d.exec('COMMIT');
   } catch (error) {

@@ -21,8 +21,9 @@
 // saved guide or the guide keeps that class of run out.
 
 import { createHash, randomBytes } from 'node:crypto';
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { getDataHome } from '../../../lib/paths.js';
 import { exportCss } from './export-css.js';
 import { exportDtcgText } from './export-dtcg.js';
@@ -44,6 +45,25 @@ const PROPOSAL_FORBIDDEN_KEYS = Object.freeze(['schemaVersion', 'projectPath', '
 const GENERATED_MARK = 'SynaBun Style Guide';
 const DESIGN_FILE = 'DESIGN.md';
 const DESIGN_BACKUP = 'DESIGN.before-synabun.md';
+// The browser extension ships its own copy of SynaBun's tokens, byte for byte (browser-extension-contract.test.mjs).
+const OWN_REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const EXTENSION_TOKENS = 'browser-extension/tokens.css';
+const EXTENSION_NAME = 'SynaBun Browser Bridge';
+
+/**
+ * Whether `root` is the SynaBun git checkout this code runs from: the same folder by device and inode, with a
+ * `.git`, the package name and the extension's manifest. A folder that only looks like it never qualifies, and
+ * neither does an installed copy (no `.git`).
+ */
+function isOwnCheckout(root, ownRoot) {
+  try {
+    const project = statSync(root);
+    const own = statSync(ownRoot);
+    if (project.dev !== own.dev || project.ino !== own.ino || !existsSync(join(root, '.git'))) return false;
+    if (JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).name !== 'synabun') return false;
+    return JSON.parse(readFileSync(join(root, 'browser-extension', 'manifest.json'), 'utf8')).name === EXTENSION_NAME;
+  } catch { return false; }
+}
 
 export class StyleGuideError extends Error {
   constructor(code, message, status = 400, extra = {}) {
@@ -127,9 +147,10 @@ export function renderFormat(config, format, { theme = null } = {}) {
 
 /**
  * The store over one data home. `projects()` returns the registered projects ([{ path, label }] or
- * paths); without it the list is read from <dataDir>/claude-code-projects.json. `now()` is injectable.
+ * paths); without it the list is read from <dataDir>/claude-code-projects.json. `now()` is injectable,
+ * and so is `ownRepoRoot`, the checkout whose extension copy of the tokens a save keeps in step.
  */
-export function createStyleGuideStore({ dataHome = null, dataDir = null, projects = null, now = () => new Date(), log = () => {} } = {}) {
+export function createStyleGuideStore({ dataHome = null, dataDir = null, projects = null, now = () => new Date(), log = () => {}, ownRepoRoot = OWN_REPO_ROOT } = {}) {
   const dataFolder = resolve(dataDir || resolve(dataHome || getDataHome(), 'data'));
   const dir = resolve(dataFolder, 'style-guides');
   const assetsDir = resolve(dir, 'assets');
@@ -232,6 +253,24 @@ export function createStyleGuideStore({ dataHome = null, dataDir = null, project
   }
 
   /**
+   * In SynaBun's own checkout, bring the extension's tokens.css to the bytes of the file just written. It only
+   * replaces a regular file that is already there, and a failure is logged: the guide stays saved.
+   */
+  function syncExtensionTokens(root, files) {
+    const css = files.find((file) => file.format === 'css');
+    if (!css || css.path !== resolve(root, STYLE_GUIDE_OUT_DIR, 'tokens.css') || !isOwnCheckout(root, ownRepoRoot)) return;
+    try {
+      const target = resolve(root, EXTENSION_TOKENS);
+      if (!containedPath(root, target, { noSymlinks: true })) throw new Error('its path goes through a link');
+      if (!lstatSync(target).isFile()) throw new Error('it is not a regular file');
+      const bytes = readFileSync(css.path);
+      if (!readFileSync(target).equals(bytes)) writeAtomic(target, bytes);
+    } catch (error) {
+      log('style-guide', `extension tokens copy failed: ${error.message}`);
+    }
+  }
+
+  /**
    * Write the project's artifacts for `config`. Without `formats`: the enabled exports (and stale
    * generated token files removed); with `formats`: the requested subset of enabled exports.
    * → [{ format, path, changed, backup? }]
@@ -259,6 +298,7 @@ export function createStyleGuideStore({ dataHome = null, dataDir = null, project
     }
     if (!formats) dropStale(root, config, new Set(files.map((file) => file.path)));
     mirrorLogos(root, config);
+    syncExtensionTokens(root, files);
     return written;
   }
 

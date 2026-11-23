@@ -45,7 +45,9 @@ export async function reconcilePreflightProfiles(profiles, list, { requested = [
       log('MoreLogin local API unavailable (MORELOGIN_UNREACHABLE) and no MoreLogin browser processes found; continuing OpenCode build verification without profile port exclusions. Native browser attachment still requires verified serves.');
       return [];
     }
-    throw profileError('MORELOGIN_LIST_UNREADABLE', `MoreLogin profile listing failed: ${moreLoginFailureDetail(error)}. OpenCode build verification has not started.`);
+    // `transient`: the read got no answer (a deadline, a reset), which says nothing about the profiles.
+    throw Object.assign(profileError('MORELOGIN_LIST_UNREADABLE', `MoreLogin profile listing failed: ${moreLoginFailureDetail(error)}. OpenCode build verification has not started.`),
+      { transient: error?.code === 'MORELOGIN_UNREACHABLE' });
   }
   if (!Array.isArray(live) || live.moreloginError || live.some(p => !p?.id)) throw profileError('MORELOGIN_LIST_UNREADABLE', 'MoreLogin profile listing is malformed or incomplete.');
   const byId = new Map(live.map(p => [String(p.id), p]));
@@ -56,6 +58,21 @@ export async function reconcilePreflightProfiles(profiles, list, { requested = [
     log(`Skipping stale MoreLogin profile ${profile.envId}: absent from the complete live listing.`);
     return [];
   });
+}
+
+/**
+ * OpenCode's start at server boot. A MoreLogin read that got no answer while the server is still busy starting is no
+ * verdict: the start is tried again once things settle, a bounded number of times. Each try is a whole start with its
+ * own single bounded read, and no start lock is held while waiting. Any other refusal stands at once.
+ */
+export async function startOpencodeAtBoot(start, lastRefusal, { attempts = 2, delayMs = 5000,
+  wait = (ms) => new Promise((done) => setTimeout(done, ms)) } = {}) {
+  let ready = await start();
+  for (let attempt = 0; !ready && attempt < attempts && lastRefusal()?.transient === true; attempt += 1) {
+    await wait(delayMs);
+    ready = await start();
+  }
+  return ready;
 }
 
 export async function preflightExcludedPorts(profiles, readDetail) {

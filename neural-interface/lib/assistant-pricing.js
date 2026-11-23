@@ -6,17 +6,17 @@
 // sheet, agent_catalog, the pickers), the usage ledger (Codex tokens, Claude
 // estimates), the budget caps and the side panel's cost scanner all read it.
 //
-// Sources, read 2026-10-01:
+// Sources, verified 2026-11-20:
 //   Anthropic  https://platform.claude.com/docs/en/about-claude/pricing
 //   OpenAI     https://developers.openai.com/api/docs/pricing
-//              (gpt-6-sol: https://developers.openai.com/api/docs/models/gpt-6-sol)
-//   claude-haiku-5-5: added 2026-10-13 from the Claude API reference bundled with Claude Code
-//              (its model table, cached 2026-10-06), not from a reading of the pricing page.
+//              (long-context boundary: https://developers.openai.com/api/docs/models/gpt-6.2-sol)
+//              (gpt-5.3-codex: https://developers.openai.com/api/docs/models/gpt-5.3-codex)
+//   Ollama     https://ollama.com/pricing (verified overrides for stale OpenCode catalog rows)
 //
 // $ per million tokens, one rate per token class:
 //   input         uncached input
 //   cacheRead     a cache hit ("cached input")
-//   cacheWrite    a cache write (Anthropic: the 5-minute cache, 1.25x input)
+//   cacheWrite    a cache write (Anthropic: the 5-minute cache, 1.25x input; OpenAI GPT-6/5.6: 30-min cache, 1.25x input)
 //   cacheWrite1h  Anthropic's 1-hour cache write (2x input). The Claude CLI writes most of
 //                 its cache at this rate, so an estimate of its usage prices writes with it.
 //   output        output, reasoning / thinking included
@@ -32,10 +32,11 @@
 //
 // Pure: no I/O, no dependencies.
 
-export const PRICING_VERIFIED = '2026-10-01';
+export const PRICING_VERIFIED = '2026-11-20';
 export const PRICING_SOURCES = Object.freeze({
   anthropic: 'https://platform.claude.com/docs/en/about-claude/pricing',
   openai: 'https://developers.openai.com/api/docs/pricing',
+  ollama: 'https://ollama.com/pricing',
 });
 /** OpenAI's long-context boundary: a prompt over this many input tokens is priced at the long rates. */
 export const LONG_PROMPT_TOKENS = 272_000;
@@ -54,16 +55,22 @@ function claude(input, output, cacheRead, over = null) {
   }) : null;
   return Object.freeze({ input, output, cacheRead, cacheWrite: round(input * 1.25), cacheWrite1h: round(input * 2), long });
 }
-/** OpenAI: cache writes are 1.25x input; over 272K prompt tokens input and cache rates double and output is 1.5x. */
-function openai(input, output, cacheRead) {
-  const cacheWrite = round(input * 1.25);
-  return Object.freeze({
-    input, output, cacheRead, cacheWrite, cacheWrite1h: null,
-    long: Object.freeze({ size: LONG_PROMPT_TOKENS, input: round(input * 2), output: round(output * 1.5), cacheRead: round(cacheRead * 2), cacheWrite: round(cacheWrite * 2) }),
-  });
+/**
+ * OpenAI: GPT-6 / GPT-5.6 models price 30-minute cache writes at 1.25x input (12-hour writes at 2.5x);
+ * older models with no write fee leave `cacheWrite: null` (priced as input). Over 272K prompt tokens
+ * input and cache rates double and output is 1.5x where long-context pricing applies.
+ */
+function openai(input, output, cacheRead, { cacheWrite: hasCacheWrite = true, long: hasLong = true } = {}) {
+  const cacheWrite = hasCacheWrite ? round(input * 1.25) : null;
+  const long = hasLong ? Object.freeze({
+    size: LONG_PROMPT_TOKENS, input: round(input * 2), output: round(output * 1.5), cacheRead: round(cacheRead * 2),
+    cacheWrite: cacheWrite != null ? round(cacheWrite * 2) : null,
+  }) : null;
+  return Object.freeze({ input, output, cacheRead, cacheWrite, cacheWrite1h: null, long });
 }
 
 const ANTHROPIC = Object.freeze({
+  'claude-fable-5-2': claude(8, 40, 0.2), // cache reads 0.025x
   'claude-fable-5-1': claude(10, 50, 0.25), // cache reads 0.025x
   'claude-fable-5': claude(10, 50, 1),
   'claude-opus-5-5': claude(4, 20, 0.2), // cache reads 0.05x
@@ -72,7 +79,7 @@ const ANTHROPIC = Object.freeze({
   'claude-opus-4-7': claude(5, 25, 0.5),
   'claude-opus-4-6': claude(5, 25, 0.5),
   'claude-opus-4-5': claude(5, 25, 0.5),
-  'claude-sonnet-5-5': claude(2, 10, 0.2),
+  'claude-sonnet-5-5': claude(2, 10, 0.1), // cache reads 0.05x
   // $2 / $10 was introductory until 2026-08-31 and is the standard price now (the $3 / $15 increase was cancelled).
   'claude-sonnet-5': claude(2, 10, 0.2),
   'claude-sonnet-4-6': claude(3, 15, 0.3),
@@ -86,11 +93,55 @@ const ANTHROPIC = Object.freeze({
 });
 
 const OPENAI = Object.freeze({
+  'gpt-6.2-astra': openai(8, 40, 0.4),
+  'gpt-6.2-sol': openai(2, 10, 0.1),
   'gpt-6-astra': openai(10, 50, 1),
   'gpt-6.1-sol': openai(2, 10, 0.1),
+  'gpt-6.1-terra': openai(1, 5, 0.05),
   'gpt-6-sol': openai(2, 10, 0.2),
   'gpt-6-luna': openai(0.1, 0.5, 0.01),
+  // Promotional pricing valid through 2026-11-30 per OpenAI pricing page.
+  'gpt-5.6-sol': openai(4, 20, 0.4),
+  'gpt-5.6-terra': openai(2, 12, 0.2),
+  'gpt-5.6-luna': openai(0.2, 1.2, 0.02),
+  'gpt-5.5': openai(5, 30, 0.5, { cacheWrite: false }),
+  'gpt-5.4': openai(2.5, 15, 0.25, { cacheWrite: false }),
+  'gpt-5.4-mini': openai(0.75, 4.5, 0.075, { cacheWrite: false, long: false }),
+  // Deprecated on OpenAI docs; kept for CODEX_FALLBACK_MODELS and historic sessions.
+  'gpt-5.3-codex': openai(1.75, 14, 0.175, { cacheWrite: false, long: false }),
+  'chat-latest': openai(5, 30, 0.5, { cacheWrite: false, long: false }),
 });
+
+/**
+ * Verified OpenCode catalog price overrides (`provider/model`, lower-case) where the vendor's official
+ * pricing page differs from OpenCode's upstream catalog feed (e.g. a model that ceased to be free).
+ * `cacheWrite: 0` is an assumption: https://ollama.com/pricing lists only input, cached input and output
+ * (no cache-write rate).
+ */
+export const OPENCODE_PRICE_OVERRIDES = Object.freeze({
+  'ollama-cloud/beam': Object.freeze({ input: 0.125, output: 0.4, cacheRead: 0.015, cacheWrite: 0, source: PRICING_SOURCES.ollama, verified: PRICING_VERIFIED }),
+  'ollama-cloud/mistral-large-4': Object.freeze({ input: 0.7, output: 2.1, cacheRead: 0.07, cacheWrite: 0, source: PRICING_SOURCES.ollama, verified: PRICING_VERIFIED }),
+});
+
+/** Verified override for an OpenCode `provider/model` entry, or null when the upstream catalog stands as-is. */
+export function opencodePriceOverride(providerId, modelId) {
+  const pid = String(providerId || '').trim().toLowerCase();
+  const mid = String(modelId || '').trim().toLowerCase();
+  if (!pid || !mid) return null;
+  const key = mid.startsWith(`${pid}/`) ? mid : `${pid}/${mid}`;
+  return OPENCODE_PRICE_OVERRIDES[key] || null;
+}
+
+/** Return an OpenCode model's cost object with any verified vendor override applied (never mutates `cost`). */
+export function applyOpencodeCostOverride(providerId, modelId, cost) {
+  const override = opencodePriceOverride(providerId, modelId);
+  if (!override) return cost;
+  const base = cost && typeof cost === 'object' ? cost : {};
+  const cache = base.cache && typeof base.cache === 'object'
+    ? { ...base.cache, read: override.cacheRead, write: override.cacheWrite }
+    : { read: override.cacheRead, write: override.cacheWrite };
+  return { ...base, input: override.input, output: override.output, cache };
+}
 
 const TABLES = Object.freeze({ anthropic: ANTHROPIC, openai: OPENAI });
 const VENDOR = Object.freeze({ 'claude-code': 'anthropic', claude: 'anthropic', anthropic: 'anthropic', codex: 'openai', openai: 'openai' });

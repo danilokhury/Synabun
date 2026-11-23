@@ -1,3 +1,4 @@
+import { withMemoryWrite } from './sqlite-write.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { getDb, rowToPayload, upsertMemory, memoryVectors } from './sqlite.js';
@@ -106,10 +107,14 @@ export function undoRevision(id: string, revision: number, expected: number) {
   } catch (error) { d.exec('ROLLBACK'); memoryVectors.invalidate(); throw error; }
 }
 
+export function maintenancePaused(d = getDb()): boolean {
+  return d.prepare("SELECT value FROM kv_config WHERE key='memory_maintenance_paused'").get()?.value === 'true';
+}
+
 export function maintenanceStatus() {
   const d = getDb();
   return {
-    paused: (d.prepare("SELECT value FROM kv_config WHERE key='memory_maintenance_paused'").get() as {value:string}|undefined)?.value === 'true',
+    paused: maintenancePaused(d),
     jobs:d.prepare('SELECT status,COUNT(*) AS count FROM memory_jobs GROUP BY status').all(),
     jobsByKind:d.prepare('SELECT kind,status,COUNT(*) AS count FROM memory_jobs GROUP BY kind,status').all(),
     review:d.prepare("SELECT * FROM memory_relations WHERE active=1 AND (kind IN ('possible_conflict','similar','conflicts_with') OR (kind='supersedes' AND automatic=1)) ORDER BY created_at DESC LIMIT 50").all(),
@@ -134,48 +139,48 @@ let maintenanceTimer: ReturnType<typeof setInterval> | null = null;
 /** One bounded job at a time. Claims expire after interruption; no request
  * transaction is held while waiting for local inference. */
 export async function runMaintenanceBatch(embed = embedPassages) {
-  if (running || maintenanceStatus().paused) return;
+  if (running || maintenancePaused()) return;
   running = true;
   const d = getDb();
-  let job: Record<string, any> | undefined;
+  let claimedId: string | undefined;
   try {
-    d.exec('BEGIN IMMEDIATE');
-    d.prepare("UPDATE memory_jobs SET status='pending' WHERE status='running' AND updated_at<?").run(new Date(Date.now()-300_000).toISOString());
-    // `judge` jobs (the TypeSafe backfill) have their own runner with its own
-    // pacing; this loop is for the interactive kinds only.
-    job = d.prepare("SELECT * FROM memory_jobs WHERE status='pending' AND attempts<3 AND kind!='judge' ORDER BY CASE WHEN kind='verify' THEN 0 ELSE 1 END,updated_at,id LIMIT 1").get();
-    if (job) d.prepare("UPDATE memory_jobs SET status='running',attempts=attempts+1,updated_at=? WHERE id=?").run(new Date().toISOString(),job.id);
-    d.exec('COMMIT');
+    const job = await withMemoryWrite(d, () => {
+      if (maintenancePaused(d)) return;
+      d.prepare("UPDATE memory_jobs SET status='pending' WHERE status='running' AND updated_at<?").run(new Date(Date.now()-300_000).toISOString());
+      // The judge backfill has its own runner and pacing.
+      const next = d.prepare("SELECT * FROM memory_jobs WHERE status='pending' AND attempts<3 AND kind!='judge' ORDER BY CASE WHEN kind='verify' THEN 0 ELSE 1 END,updated_at,id LIMIT 1").get() as { id: string; entity_id: string; kind: string } | undefined;
+      if (next) d.prepare("UPDATE memory_jobs SET status='running',attempts=attempts+1,updated_at=? WHERE id=?").run(new Date().toISOString(), next.id);
+      return next;
+    });
     if (!job) return;
+    claimedId = job.id;
     if(job.kind==='verify') {
       await verifyMemorySources(d,job.entity_id);
-      d.prepare("UPDATE memory_jobs SET status='complete',updated_at=? WHERE id=?").run(new Date().toISOString(),job.id);
+      await withMemoryWrite(d, () => d.prepare("UPDATE memory_jobs SET status='complete',updated_at=? WHERE id=?").run(new Date().toISOString(),job.id));
       return;
     }
     if (job.kind === 'session') {
       const row = d.prepare('SELECT content FROM session_chunks WHERE id=?').get(job.entity_id);
-      if (!row) {d.prepare('DELETE FROM memory_jobs WHERE id=?').run(job.id);return;}
+      if (!row) { await withMemoryWrite(d, () => d.prepare('DELETE FROM memory_jobs WHERE id=?').run(job.id)); return; }
       const parts = await embed(String(row.content));
-      if (maintenanceStatus().paused) {d.prepare("UPDATE memory_jobs SET status='pending' WHERE id=?").run(job.id);return;}
       // Mean of all normalized passage vectors covers long session events;
       // full text remains indexed and retrievable without truncation.
       const vector = new Float32Array(parts[0]?.vector.length || 384);
       for (const part of parts) part.vector.forEach((v,i)=>{vector[i]+=v;});
       const norm=Math.sqrt(vector.reduce((sum,v)=>sum+v*v,0));
       if(norm)vector.forEach((v,i)=>{vector[i]=v/norm;});
-      d.exec('BEGIN IMMEDIATE');
-      try {
+      await withMemoryWrite(d, () => {
+        if (maintenancePaused(d)) { d.prepare("UPDATE memory_jobs SET status='pending' WHERE id=?").run(job.id); return; }
         const current=d.prepare('SELECT content FROM session_chunks WHERE id=?').get(job.entity_id);
         if(current?.content===row.content) {
           d.prepare('UPDATE session_chunks SET vector=? WHERE id=?').run(new Uint8Array(vector.buffer),job.entity_id);
           d.prepare("UPDATE memory_jobs SET status='complete',error=NULL,updated_at=? WHERE id=?").run(new Date().toISOString(),job.id);
         } else d.prepare("UPDATE memory_jobs SET status='pending' WHERE id=?").run(job.id);
-        d.exec('COMMIT');
-      } catch(error){d.exec('ROLLBACK');throw error;}
+      });
       return;
     }
     const row = d.prepare('SELECT * FROM memories WHERE id=?').get(job.entity_id);
-    if (!row) { d.prepare('DELETE FROM memory_jobs WHERE id=?').run(job.id); return; }
+    if (!row) { await withMemoryWrite(d, () => d.prepare('DELETE FROM memory_jobs WHERE id=?').run(job.id)); return; }
     const content = String(row.content);
     const hash = contentHash(content);
     const revision = memoryRevision(String(row.id));
@@ -194,12 +199,10 @@ export async function runMaintenanceBatch(embed = embedPassages) {
       candidates = relationCandidates(d,row,chunks[0].vector);
       verdicts = await judgeRelations({content,recordedAt:String(row.created_at)},candidates,{...judgeContext,...relationJudgeOptions()});
     }
-    if (maintenanceStatus().paused) { d.prepare("UPDATE memory_jobs SET status='pending' WHERE id=?").run(job.id); return; }
-    d.exec('BEGIN IMMEDIATE');
-    try {
-      if (memoryRevision(String(row.id)) !== revision) {
+    await withMemoryWrite(d, () => {
+      if (maintenancePaused(d) || memoryRevision(String(row.id)) !== revision) {
         d.prepare("UPDATE memory_jobs SET status='pending' WHERE id=?").run(job.id);
-        d.exec('COMMIT'); return;
+        return;
       }
       d.prepare('DELETE FROM memory_passages WHERE memory_id=?').run(String(row.id));
       const insert = d.prepare('INSERT INTO memory_passages VALUES(?,?,?,?,?,?,?)');
@@ -216,12 +219,12 @@ export async function runMaintenanceBatch(embed = embedPassages) {
       }
       applyJudgments(d,row,{hash,judgment,candidates,verdicts});
       d.prepare("UPDATE memory_jobs SET status='complete',error=NULL,updated_at=? WHERE id=?").run(new Date().toISOString(),job.id);
-      d.exec('COMMIT');
-    } catch (error) { d.exec('ROLLBACK'); memoryVectors.invalidate(); throw error; }
+    }).catch(error => { memoryVectors.invalidate(); throw error; });
   } catch (error) {
-    if (job) d.prepare("UPDATE memory_jobs SET status=CASE WHEN attempts>=3 THEN 'failed' ELSE 'pending' END,error=?,updated_at=? WHERE id=?")
-      .run((error as Error).message,new Date().toISOString(),job.id);
-    else throw error;
+    if (!claimedId) throw error;
+    const id = claimedId;
+    await withMemoryWrite(d, () => d.prepare("UPDATE memory_jobs SET status=CASE WHEN attempts>=3 THEN 'failed' ELSE 'pending' END,error=?,updated_at=? WHERE id=?")
+      .run((error as Error).message,new Date().toISOString(),id));
   } finally { running = false; }
 }
 export interface RelationCandidate { id: string; content: string; score: number; recordedAt: string }

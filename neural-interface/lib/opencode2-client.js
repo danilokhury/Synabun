@@ -26,6 +26,7 @@
 
 import { basicAuthHeader } from './opencode-protocol.js';
 import { opencodeMcpServerEntry } from './opencode-config.js';
+import { applyOpencodeCostOverride } from './assistant-pricing.js';
 import {
   answersToForm,
   createEventTranslator,
@@ -446,7 +447,7 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
         output: flags(output),
         interleaved: false,
       },
-      cost: { input: Number(cost.input) || 0, output: Number(cost.output) || 0, cache: { read: Number(cost.cache?.read) || 0, write: Number(cost.cache?.write) || 0 } },
+      cost: applyOpencodeCostOverride(str(model.providerID), str(model.id), { input: Number(cost.input) || 0, output: Number(cost.output) || 0, cache: { read: Number(cost.cache?.read) || 0, write: Number(cost.cache?.write) || 0 } }),
       limit: { context: Number(model.limit?.context) || 0, ...(model.limit?.input ? { input: Number(model.limit.input) } : {}), output: Number(model.limit?.output) || 0 },
       status: str(model.status) || 'active',
       options: {},

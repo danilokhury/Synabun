@@ -2,9 +2,9 @@
 // SynaBun Neural Interface — Skills Studio 2.0: where the window is, and where a link takes it
 // ═══════════════════════════════════════════
 //
-// The window opens where it was left (the shared panel system saves a moved or resized window, ui-panels.js), at
-// min(1180px, 94% of the width) × min(760px, 86% of the height) the first time, and is kept inside the viewport
-// below the menu bar. It can be docked: then it fills the work area beside the side panels (like the code editor)
+// Every Studio (Skills, Agents, Automation, Schedules) opens at DEFAULT_SIZE, the one definition of that size:
+// min(1180px, 94% of the width) × min(760px, 86% of the height), kept inside the viewport below the menu bar.
+// A saved position is still used; a saved size stays stored but is not read on open (openRect). It can be docked: then it fills the work area beside the side panels (like the code editor)
 // and leaves them usable. Its own width decides the layout (CSS container queries at 900 / 760 / 560 px):
 // the rail folds to icons, the editor shows one pane at a time, the Library's rows become cards.
 // A link into the Studio (`skills:open` with a detail) names a place, a skill, a review, a tab, a file and a line,
@@ -43,6 +43,15 @@ export function initialRect({ vw, vh, navbar = 48, saved = null, frame = null })
   left = Math.round(Math.max(b.left, Math.min(left, b.right - width)));
   top = Math.round(Math.max(b.top, Math.min(top, b.bottom - height)));
   return { left, top, width, height };
+}
+
+/**
+ * The rectangle of a Studio that is opening: the shared default size at its saved position, if it has one.
+ * A size in `saved` is ignored, so a resize lasts only until the window closes.
+ * @param {Parameters<typeof initialRect>[0]} o
+ */
+export function openRect({ saved = null, ...rest }) {
+  return initialRect({ ...rest, saved: saved ? { left: saved.left, top: saved.top } : null });
 }
 
 /** The layout a width of the window gets (the same thresholds as the CSS container queries). */

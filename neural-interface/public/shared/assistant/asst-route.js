@@ -26,8 +26,11 @@ import { closeMenu, isMenuOpen, openMenu } from './asst-menu.js';
 import { decorateControlHead } from './asst-control.js';
 import { accountSummary } from '../account-view.js';
 import { accountUsageText, autoAccountLabel } from '../account-usage.js';
+import { registerLaunchPrefetch } from '../launch-prefetch.js';
+import { createLazyModule } from '../lazy-module.js';
 import {
   DEFAULT_ROUTE_MODE,
+  displayProvider,
   fmtConfidence,
   modelShortName,
   normalizeBrain,
@@ -87,6 +90,40 @@ function tf(t) {
     if (v && v !== key && typeof v === 'string') return v;
     return params ? String(fallback).replace(/\{(\w+)\}/g, (_, k) => (params[k] != null ? params[k] : `{${k}}`)) : fallback;
   };
+}
+
+/**
+ * A task class in the user's language, keyed by its id (`assistant.routes.taskClass.<id>`); the server's
+ * label (English) is the fallback. `lower` is the sentence form.
+ */
+export function routeClassLabel(taskClass, serverLabel, t, { lower = false } = {}) {
+  const tr = tf(t);
+  const id = str(taskClass);
+  const base = str(serverLabel) || humanizeClass(id);
+  const label = id ? tr(`assistant.routes.taskClass.${id}`, base) : base;
+  return lower ? label.toLowerCase() : label;
+}
+
+/**
+ * An effort id in the user's language (`assistant.routes.effortWord.<id>`), for display only: the id that is
+ * sent back to the server never changes. A locale that only repeats the id (English), or has no key, and an
+ * id nothing names (an OpenCode variant) keep `fallback` (default: the card's own word, "none" → "off").
+ */
+export function routeEffortLabel(effort, t, fallback) {
+  const id = str(effort);
+  const raw = routeEffortWord(id);
+  const base = fallback == null ? raw : fallback;
+  if (!id) return base;
+  const v = tf(t)(`assistant.routes.effortWord.${id.toLowerCase()}`, '');
+  return v && v !== raw ? v : base;
+}
+
+/** A row's title with its trailing effort word in the user's language (the stored title stays English). */
+export function routeTitleLocalized(o, t) {
+  const title = str(o?.title);
+  if (!o?.titleEffort || !o?.effort) return title;
+  const word = routeEffortLabel(o.effort, t);
+  return word === routeEffortWord(o.effort) ? title : `${routeTitleWithoutEffort(title, o.effort)} · ${word}`;
 }
 
 function humanizeClass(value) {
@@ -197,6 +234,7 @@ export function normalizeRouteRequest(packet) {
     needsVision: req.needsVision === true,
     // Image / video creation: the medium the model must generate ('image' | 'video'), always on a worker.
     requires: req.requires === 'image' || req.requires === 'video' ? req.requires : null,
+    needsHost: req.needsHost === true || req.sides?.dispatch?.code === 'host_only',
     dispatchOnly: req.dispatchOnly === true,
     // Design: only models that can see.
     visionOnly: req.visionOnly === true,
@@ -359,6 +397,7 @@ export function routeOptions(n, { brainLabel = '', t = null } = {}) {
   }
   const kept = [];
   for (const o of options) {
+    if (n.needsHost && o.kind !== 'direct') continue;
     const twin = kept.find(k => sameRouteTarget(k, o));
     if (twin) {
       if (defaultId === o.id) defaultId = twin.id;
@@ -426,10 +465,13 @@ export function routeCardSides(n, options, { t = null } = {}) {
     const usable = list.filter((o) => !o.disabled);
     const said = server?.[kind] || null;
     const out = { kind, options: list, available: usable.length > 0, reason: null, code: null, needsPick: false, defaultId: null };
+    if (kind === 'dispatch' && n?.needsHost) {
+      return { ...out, options: [], available: false, code: 'host_only', reason: tr('assistant.routes.side.hostOnly', 'This task requires host access in this conversation.') };
+    }
     out.defaultId = (usable.find((o) => o.id === n?.defaultOptionId) || usable.find((o) => o.id === n?.defaults?.[kind]) || usable.find((o) => o.selected) || usable[0])?.id || null;
     if (out.available) return out;
     if (kind === 'direct' && n?.dispatchOnly) {
-      return { ...out, code: 'worker_only', reason: tr('assistant.routes.side.workerOnly', '{taskClass} always runs on a worker.', { taskClass: n.taskClassLabel || humanizeClass(n.taskClass) }) };
+      return { ...out, code: 'worker_only', reason: tr('assistant.routes.side.workerOnly', '{taskClass} always runs on a worker.', { taskClass: routeClassLabel(n.taskClass, n.taskClassLabel, t) }) };
     }
     if (kind === 'direct' && (said?.code === 'account_worker' || arr(options).some((o) => o.kind === 'dispatch' && o.accountKind === 'direct'))) {
       return { ...out, code: 'account_worker', reason: tr('assistant.routes.side.accountWorker', "This conversation's account can't take it now, so it runs on a worker.") };
@@ -448,7 +490,7 @@ export function routeCardSides(n, options, { t = null } = {}) {
   const chosen = arr(options).find((o) => o.selected && !o.disabled);
   let initial = chosen ? (chosen.kind === 'direct' ? 'direct' : 'dispatch') : null;
   if (!initial || !sides[initial].available) initial = sides.direct.available && sides.direct.defaultId ? 'direct' : 'dispatch';
-  return { initial, sides };
+  return { initial: n?.needsHost ? 'direct' : initial, sides };
 }
 
 /** control_response payload for a route card. `decline:true` is the Cancel answer. */
@@ -548,7 +590,7 @@ export function routeLineParts(route, phase = 'decided', { brainLabel = '', t = 
   const tr = tf(t);
   const r = obj(route) || {};
   const target = obj(r.target);
-  const cls = firstStr(r.taskClassLabel, r.taskClass) || tr('assistant.routes.task', 'task');
+  const cls = (r.taskClass ? routeClassLabel(r.taskClass, firstStr(r.taskClassLabel, r.taskClass), t) : firstStr(r.taskClassLabel)) || tr('assistant.routes.task', 'task');
   const kind = target ? (str(target.kind) || 'direct') : '';
   const effort = target ? str(target.effort) : '';
   const confidence = fmtConfidence(r.confidence);
@@ -560,6 +602,7 @@ export function routeLineParts(route, phase = 'decided', { brainLabel = '', t = 
     state = str(r.needs) === 'vision' ? tr('assistant.routes.reason.noSeeingModel', 'no model can see images') : tr('assistant.routes.reason.noCapableModel', 'no model can make this');
   }
   else if (str(r.reasonCode) === 'budget_exhausted') state = routeBudgetReason({ dry: r.dry }, t);
+  else if (str(r.reasonCode) === 'BUDGET_UNPRICED') state = routeBudgetReason({ provider: r.provider, unpriced: true }, t);
   else if (phase === 'declined') state = tr('assistant.routes.state.declined', 'declined');
   else if (phase === 'cancelled') state = tr('assistant.routes.state.cancelled', 'cancelled');
   let decided = '';
@@ -576,7 +619,7 @@ export function routeLineParts(route, phase = 'decided', { brainLabel = '', t = 
   if (r.plannedSplit?.workers) meta.push(tf(t)('assistant.routes.splitWorkers', '{count} workers planned', { count: r.plannedSplit.workers }));
   const accountLabel = routeDisplayAccount(target, t);
   if (accountLabel) meta.push(accountLabel);
-  if (effort && effort !== 'off') meta.push(routeEffortWord(effort));
+  if (effort && effort !== 'off') meta.push(routeEffortLabel(effort, t));
   if (confidence) meta.push(confidence);
   return {
     taskClass: cls,
@@ -607,6 +650,11 @@ function correctionText(c, tr) {
   }
   if (c.reason === 'remembered_route') return tr('assistant.routes.correction.remembered', 'your saved route {to} replaced {from}', { to: str(c.to), from: str(c.from) });
   if (c.reason === 'remembered_disabled') return tr('assistant.routes.correction.rememberedDisabled', 'saved route {from} is disabled, kept the pick', { from: str(c.from) });
+  if (c.reason === 'remembered_host') return tr('assistant.routes.correction.rememberedHost', 'Skipped the saved route {from} because this task requires host access.', { from: str(c.from) });
+  if (c.reason === 'superseded_run_active' && arr(c.runs).length) {
+    const runs = c.runs.map(r => [str(r?.runId), str(r?.title)].filter(Boolean).join(' — ')).filter(Boolean).join(', ');
+    return tr('assistant.routes.correction.supersededRunActive', 'Workers from the previous dispatch are still active ({runs}).', { runs });
+  }
   // A "here" pick that runs on a worker: another account, or another provider than this conversation's.
   if (c.reason === 'account_worker') return tr('assistant.routes.correction.accountWorker', '{to}: runs on a worker, because this conversation belongs to another account', { to: str(c.to) });
   if (c.reason === 'other_provider' && c.provider) return tr('assistant.routes.correction.otherProvider', "{provider} is not this conversation's provider, so it runs on a worker", { provider: providerLabel(c.provider) });
@@ -718,9 +766,10 @@ export function createRouteLine(route, opts = {}) {
     arrow.hidden = !p.targetLabel && !p.pending && !p.kindLabel;
     kindEl.textContent = p.kindLabel;
     kindEl.hidden = !p.kindLabel;
-    iconEl.innerHTML = p.targetLabel ? providerIconHtml(p.provider, opts) : '';
+    const brand = displayProvider(current.route?.target) || p.provider;
+    iconEl.innerHTML = p.targetLabel ? providerIconHtml(brand, opts) : '';
     iconEl.hidden = !iconEl.innerHTML;
-    if (p.provider) iconEl.style.color = providerColor(p.provider); else iconEl.style.color = '';
+    if (p.provider) iconEl.style.color = providerColor(brand); else iconEl.style.color = '';
     targetEl.textContent = p.targetLabel;
     targetEl.hidden = !p.targetLabel;
     metaEl.textContent = p.meta.length ? `· ${p.meta.join(' · ')}` : '';
@@ -903,7 +952,7 @@ export function renderRouteCard(container, input, hooks = {}) {
   card.dataset.requestId = n.requestId;
   card.dataset.routeId = n.routeId;
   card.setAttribute('role', 'group');
-  const heading = tr('assistant.routes.cardTitle', 'Route this request · {taskClass}', { taskClass: n.taskClassLabel });
+  const heading = tr('assistant.routes.cardTitle', 'Route this request · {taskClass}', { taskClass: routeClassLabel(n.taskClass, n.taskClassLabel, hooks.t) });
   card.setAttribute('aria-label', heading);
 
   const head = el('div', 'asst-control-head');
@@ -933,8 +982,9 @@ export function renderRouteCard(container, input, hooks = {}) {
   const sidesEl = el('div', 'asst-route-sides');
   sidesEl.setAttribute('role', 'radiogroup');
   sidesEl.setAttribute('aria-label', tr('assistant.routes.side.label', 'Where it runs'));
+  const visibleSides = n.needsHost ? ['direct'] : ROUTE_SIDES;
   const sideBtns = {};
-  for (const kind of ROUTE_SIDES) {
+  for (const kind of visibleSides) {
     const btn = el('button', 'asst-route-side', kind === 'direct' ? tr('assistant.routes.side.here', 'Here') : tr('assistant.routes.side.dispatch', 'Dispatch'));
     btn.type = 'button';
     btn.dataset.side = kind;
@@ -953,6 +1003,7 @@ export function renderRouteCard(container, input, hooks = {}) {
   card.appendChild(list);
 
   function optionRow(o) {
+    const brand = displayProvider(o);
     const row = el('div', 'asst-route-option');
     row.setAttribute('role', 'radio');
     row.dataset.optionId = o.id;
@@ -960,17 +1011,17 @@ export function renderRouteCard(container, input, hooks = {}) {
     row.setAttribute('aria-disabled', o.disabled ? 'true' : 'false');
     row.tabIndex = -1;
     const kindWord = o.kind && o.kind !== 'direct' ? routeKindWord(o.kind, hooks.t) : '';
-    const sub = [kindWord, o.agentRef, routeDisplayAccount(o, hooks.t), o.effort && o.effort !== 'off' && !o.titleEffort ? routeEffortWord(o.effort) : '', o.price ? priceText(o.price) : '', o.vision ? tr('assistant.brain.vision', 'vision') : '', o.reason].filter(Boolean).join(' · ');
+    const sub = [kindWord, o.agentRef, routeDisplayAccount(o, hooks.t), o.effort && o.effort !== 'off' && !o.titleEffort ? routeEffortLabel(o.effort, hooks.t) : '', o.price ? priceText(o.price) : '', o.vision ? tr('assistant.brain.vision', 'vision') : '', o.reason].filter(Boolean).join(' · ');
     row.innerHTML = `
       <span class="asst-route-num" aria-hidden="true">${esc(o.number)}</span>
-      <span class="asst-route-opt-icon asst-icon" aria-hidden="true"${o.provider ? ` style="color:${esc(providerColor(o.provider))}"` : ''}>${providerIconHtml(o.provider, hooks)}</span>
+      <span class="asst-route-opt-icon asst-icon" aria-hidden="true"${o.provider ? ` style="color:${esc(providerColor(brand))}"` : ''}>${providerIconHtml(brand, hooks)}</span>
       <span class="asst-route-opt-main">
         <span class="asst-route-opt-title"></span>
         ${sub ? '<span class="asst-route-opt-sub"></span>' : ''}
         ${o.warning || (o.disabled && o.disabledReason) ? '<span class="asst-route-opt-warn"></span>' : ''}
       </span>
       ${o.badgeText ? `<span class="asst-route-badge" data-badge="${esc(o.badge || '')}"></span>` : ''}`;
-    row.querySelector('.asst-route-opt-title').textContent = o.title;
+    row.querySelector('.asst-route-opt-title').textContent = routeTitleLocalized(o, hooks.t);
     if (sub) row.querySelector('.asst-route-opt-sub').textContent = sub;
     const warn = row.querySelector('.asst-route-opt-warn');
     if (warn) warn.textContent = o.accountError ? routeAccountError(o.accountError, hooks.t) : o.disabled && o.disabledReason ? o.disabledReason : o.warning;
@@ -1013,7 +1064,7 @@ export function renderRouteCard(container, input, hooks = {}) {
   /** The switch, its note (why the other side is unavailable, what a worker side still needs, else what the side means) and the Run label. */
   function syncSides() {
     card.dataset.side = state.side;
-    for (const kind of ROUTE_SIDES) {
+    for (const kind of visibleSides) {
       const btn = sideBtns[kind];
       const side = view.sides[kind];
       const on = state.side === kind;
@@ -1078,11 +1129,15 @@ export function renderRouteCard(container, input, hooks = {}) {
   }
   function syncFields() {
     const target = selected();
-    setFieldLabel(otherBtn, target ? routeTargetLabel(target) : tr('assistant.routes.other', 'Other model…'));
+    // The router's "Do it here with ‹model›" label reads in the user's language, like the list rows.
+    const targetText = !target ? '' : target.kind === 'direct' && /^do it here with\s+/i.test(str(target.label))
+      ? tr('assistant.routes.doHere', 'Do it here with {model}', { model: routeHereModelLabel(target) || modelShortName(target.model) || target.id })
+      : routeTargetLabel(target);
+    setFieldLabel(otherBtn, target ? targetText : tr('assistant.routes.other', 'Other model…'));
     otherBtn.setAttribute('aria-label', tr('assistant.brain.model', 'Model'));
     otherBtn.disabled = busy();
     setFieldLabel(effortBtn, !target?.effort ? tr('assistant.routes.editorEffortAuto', 'Auto')
-      : target.effort === ROUTE_EFFORT_OFF ? tr('assistant.routes.editorEffortOff', 'Off') : target.effort);
+      : target.effort === ROUTE_EFFORT_OFF ? tr('assistant.routes.editorEffortOff', 'Off') : routeEffortLabel(target.effort, hooks.t, target.effort));
     effortBtn.setAttribute('aria-label', tr('assistant.brain.effort', 'Thinking effort'));
     setFieldLabel(accountBtn, routeDisplayAccount(target, hooks.t) || tr('assistant.routes.account.workersDefault', 'Workers default'));
     accountBtn.setAttribute('aria-label', tr('assistant.brain.account', 'Account profile'));
@@ -1097,7 +1152,7 @@ export function renderRouteCard(container, input, hooks = {}) {
     const choices = routeEffortChoices(target.provider, catalogModelRow(target.provider, target.model));
     openMenu(effortBtn, { title: tr('assistant.brain.effort', 'Thinking effort'), placement: 'auto', items: [
       { kind: 'radio', label: tr('assistant.routes.editorEffortAuto', 'Auto'), selected: !target.effort, onSelect: () => editTarget({ effort: null }) },
-      ...choices.map(e => ({ kind: 'radio', label: e.off ? tr('assistant.routes.editorEffortOff', 'Off') : e.label, selected: target.effort === e.id, onSelect: () => editTarget({ effort: e.id }) })),
+      ...choices.map(e => ({ kind: 'radio', label: e.off ? tr('assistant.routes.editorEffortOff', 'Off') : routeEffortLabel(e.id, hooks.t, e.label), selected: target.effort === e.id, onSelect: () => editTarget({ effort: e.id }) })),
     ] });
   });
   accountBtn.addEventListener('click', async () => {
@@ -1176,7 +1231,9 @@ export function renderRouteCard(container, input, hooks = {}) {
     rememberInput.type = 'checkbox';
     rememberInput.addEventListener('change', () => { state.remember = rememberInput.checked; });
     // `remember.label` is the task-class label ("Code"), not a sentence.
-    const text = tr('assistant.routes.rememberFor', 'Use this choice for {taskClass} tasks', { taskClass: (n.remember.label || n.taskClassLabel).toLowerCase() });
+    // A key per class carries the whole phrase so the plural noun agrees ("tarefas rápidas"); the generic one is the fallback.
+    const rememberClass = n.remember.taskClass || n.taskClass;
+    const text = tr(`assistant.routes.rememberForClass.${rememberClass}`, '') || tr('assistant.routes.rememberFor', 'Use this choice for {taskClass} tasks', { taskClass: routeClassLabel(rememberClass, n.remember.label || n.taskClassLabel, hooks.t, { lower: true }) });
     label.append(rememberInput, el('span', null, text));
     if (n.remember.current) label.appendChild(el('span', 'asst-route-remember-current', tr('assistant.routes.rememberCurrent', 'now: {current}', { current: n.remember.current })));
     card.appendChild(label);
@@ -1188,7 +1245,7 @@ export function renderRouteCard(container, input, hooks = {}) {
   card.appendChild(error);
 
   const actions = el('div', 'asst-control-actions');
-  const cancelBtn = el('button', 'asst-btn asst-btn-secondary asst-route-cancel', n.decline.label || tr('common.cancel', 'Cancel'));
+  const cancelBtn = el('button', 'asst-btn asst-btn-secondary asst-route-cancel', (n.decline.label && n.decline.label !== 'Cancel' ? n.decline.label : tr('common.cancel', 'Cancel')));
   cancelBtn.type = 'button';
   // When the server does not accept a decline, the card can only be answered.
   cancelBtn.hidden = !n.decline.allowed;
@@ -1388,11 +1445,13 @@ export function renderRouteCard(container, input, hooks = {}) {
       return collapse(phase, route);
     },
     /** ROUTE_INVALID: keep (or re-open) the card with the message. */
-    fail(message) {
+    fail(message, code) {
       clearTimers();
       restore();
       setPending(false, '');
-      error.textContent = message || tr('assistant.routes.invalid', 'That route is not available. Pick another option.');
+      error.textContent = n.needsHost && code === 'ROUTE_IS_DIRECT'
+        ? view.sides.dispatch.reason
+        : message || tr('assistant.routes.invalid', 'That route is not available. Pick another option.');
       error.hidden = false;
       if (expires) { tick(); if (!state.expired) state.timer = setInterval(tick, 1000); }
       entry.focus();
@@ -1403,8 +1462,28 @@ export function renderRouteCard(container, input, hooks = {}) {
 }
 
 // ── Routes editor (draft, modes, task choices) ───────────────────────────────
-// Its model lists still come only through asst-route-models.js.
-export { openRoutesEditor } from './asst-routes-editor.js';
+// Its model lists still come only through asst-route-models.js. The module loads in an idle moment after the page
+// is shown or at the first open, whichever comes first (lazy-module.js), so the page does not wait for it at boot.
+// A browser keeps a failed module address failed for the life of the page (a server restart can refuse the idle
+// load), so a later attempt asks under a new address. A failed load never ran, so there is still one editor.
+let routesEditorAttempts = 0;
+const routesEditorModule = createLazyModule(() => {
+  const attempt = routesEditorAttempts++;
+  return attempt ? import(`./asst-routes-editor.js?retry=${attempt}`) : import('./asst-routes-editor.js');
+}, { name: 'Routes editor' });
+if (typeof document !== 'undefined') registerLaunchPrefetch('assistant-routes-editor', () => routesEditorModule.load(), { order: 16 });
+
+export function openRoutesEditor(hooks = {}) {
+  const loaded = routesEditorModule.module;
+  if (loaded) return loaded.openRoutesEditor(hooks);
+  // Focus can move during the load: the control that opened the editor is the one it gives focus back to.
+  const opened = { ...hooks, returnTo: hooks.returnTo ?? globalThis.document?.activeElement };
+  return routesEditorModule.load().then(mod => mod.openRoutesEditor(opened), (err) => {
+    const text = hooks.t?.('assistant.routes.loadFailed');
+    hooks.onToast?.(typeof text === 'string' && text !== 'assistant.routes.loadFailed' ? text : 'Could not load model routes');
+    throw err;
+  });
+}
 
 // ── Models manager (Assistant → Models…) ───────────────────────────────────
 

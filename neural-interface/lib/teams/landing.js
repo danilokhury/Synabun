@@ -74,7 +74,7 @@ export function createTeamLanding({ state, git, locks, claims, identity = null, 
    * @returns {Promise<{ ok: true, landed: object, changed: object[] } | { ok: false, code: string, message: string, report?: object }>}
    */
   async function land(teamId, { targetBranch = null, mode = 'ff', allowUntested = false, allowPartial = false } = {}) {
-    const record = isTeamSlug(teamId) ? state.record(teamId) : null;
+    const record = isTeamSlug(teamId) ? await state.record(teamId) : null;
     if (!record) return refuse('TEAM_NOT_FOUND', `No team named "${teamId}" is recorded.`);
     if (record.plan.readOnly) return refuse('TEAM_READ_ONLY', 'Read-only teams never commit, integrate or land.');
     if (!LANDING_MODES.includes(mode)) return refuse('INVALID_MODE', 'mode is "ff" (move the branch forward) or "merge" (make a merge commit).');
@@ -156,26 +156,26 @@ export function createTeamLanding({ state, git, locks, claims, identity = null, 
 
       const previous = record.state;
       const landing = { targetBranch: target, mode, from: targetHead, to, integrationHead: head, mergeCommit, checkout: checkout?.path || null, startedAt: now() };
-      state.writeTeam(teamId, 'landing', { landing });
+      await state.writeTeam(teamId, 'landing', { landing });
       if (checkout) {
         // Branch, index and files together; a file the landing does not touch keeps its uncommitted changes.
         const moved = await git(['merge', '--ff-only', '-q', to], { cwd: checkout.path });
         const after = await commitOf(git, cwd, `refs/heads/${target}`);
         if (!moved.ok || after !== to) {
-          state.writeTeam(teamId, previous, { landing: null });
+          await state.writeTeam(teamId, previous, { landing: null });
           if (after === targetHead) return refuse('CHECKOUT_REFUSED', `git would not update ${checkout.path}: ${gitSaid(moved)}. Nothing was landed.`, { report: { checkout: checkout.path, userShouldRun: byHand(mode) } });
           return refuse('TARGET_MOVED', `${target} is at ${after}, neither where it was nor where the landing put it. Nothing more was done; look at ${checkout.path} before landing again.`, { report: { checkout: checkout.path, targetHead: after, from: targetHead, to } });
         }
       } else {
         const moved = await git(['update-ref', '-m', `synabun: land team ${teamId}`, `refs/heads/${target}`, to, targetHead], { cwd });
         if (!moved.ok) {
-          state.writeTeam(teamId, previous, { landing: null });
+          await state.writeTeam(teamId, previous, { landing: null });
           return refuse('TARGET_MOVED', `${target} moved while the landing was prepared: ${gitSaid(moved)}. Nothing was landed.`, { report: { targetBranch: target, from: targetHead, to } });
         }
       }
       const landed = { ...landing, files: changed.length, at: now(), partial: open.length > 0, tested };
-      state.writeTeam(teamId, 'merged', { landing: null, landed });
-      claims.end(teamId);
+      await state.writeTeam(teamId, 'merged', { landing: null, landed });
+      await claims.end(teamId);
       return { ok: true, landed, changed };
     }));
   }

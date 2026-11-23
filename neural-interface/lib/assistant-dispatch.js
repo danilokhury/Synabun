@@ -25,12 +25,13 @@ import { browserToolsConflict, dispatchTools, launchTools, toolsView } from './a
 import { storedToolList, toolListRecord } from './tool-lists.js';
 import { randomBytes } from 'node:crypto';
 import { chooseUsageAccount } from './account-usage.js';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import {
   RESULT_STATUSES, buildTaskPrompt, buildFollowUpPrompt, buildResultRetryPrompt, buildResumePrompt, parseResultContract,
 } from './assistant-task-prompt.js';
-import { MAX_RESUMES, clockTime, endOrphanProcess, endProcessTree, findClaudeTranscript, isInside, readCostState, resumeRefusal } from './worker-resume.js';
+import { MAX_RESUMES, clockTime, endOrphanProcess, endProcessTree, findClaudeTranscript, isInside, isMissingConversationError, readCostState, resumeRefusal } from './worker-resume.js';
+import { mayEndSuspendedRun, stampStopProvenance, systemStopProvenance } from './worker-stop.js';
 import { normalizeCapability, normalizePermissionPolicy } from './native-loop-providers.js';
 import { WORKER_GUARD_DEFAULT, describeConfinementEvent, normalizeWorkerGuardMode } from './worker-confinement.js';
 import { draftConfinementSupport } from './skills/draft-confinement.js';
@@ -413,6 +414,9 @@ export function createAssistantDispatcher({
   observeSkillEvent = () => {},
   completeSkillUsage = () => {},
   log = () => {},
+  // How long the resumes of one start wait for the browser extension, which reconnects by itself after a restart.
+  resumeBrowserWaitMs = 90_000,
+  resumeBrowserPollMs = 1_000,
   PACKAGE_ROOT = process.cwd(),
   findCodexAccount = () => null,
   getCodexAccount = () => null,
@@ -528,7 +532,7 @@ export function createAssistantDispatcher({
   const tails = createRunTailStore({ dir: resolve(dataDir, 'run-tails'), log: (tag, detail) => log(null, tag, detail) });
   // What image / video creation runs generated, and design runs' screenshots: <dataDir>/media/<runId>/<n>-<name>.
   const mediaRoot = resolve(dataDir, 'media');
-  // A guarded worker's own scratch folder (lib/worker-confinement.js): <dataDir>/scratch/<runId>, removed when empty.
+  // Scratch retention also owns empty folders: an empty directory can still be a process's cwd.
   const scratchRoot = resolve(dataDir, 'scratch');
   /** A known task class, else null. */
   const knownClass = (value) => (Object.prototype.hasOwnProperty.call(TASK_CLASS_META, String(value || '')) ? String(value) : null);
@@ -558,9 +562,9 @@ export function createAssistantDispatcher({
   // in memory. Now each is a row of the outbox: it survives a restart, keeps its place, is marked sent in the step
   // that hands it to the run's provider, and the queue refuses more than its bound.
   /** Queue a follow-up for a run → { id, position }. Throws FOLLOW_UP_QUEUE_FULL (409) at the bound. */
-  function queueFollowUp(entry, item) {
+  async function queueFollowUp(entry, item) {
     try {
-      return coordination.followUps.enqueue({ runId: entry.runId, text: item.text, sessionId: entry.assistantSessionId || null, origin: item.origin, taskId: item.taskId, at: item.at });
+      return await coordination.followUps.enqueue({ runId: entry.runId, text: item.text, sessionId: entry.assistantSessionId || null, origin: item.origin, taskId: item.taskId, at: item.at });
     } catch (error) {
       if (error?.code === 'OUTBOX_FULL') {
         throw new DispatchError('FOLLOW_UP_QUEUE_FULL', `Run ${entry.runId} already has ${error.queued} follow-up${error.queued === 1 ? '' : 's'} waiting (at most ${error.limit}). Wait until it took some (agent_wait), or send one message that says it all.`, { status: 409, queued: error.queued, limit: error.limit });
@@ -569,28 +573,29 @@ export function createAssistantDispatcher({
     }
   }
   /** The run's oldest follow-up not handed to its provider yet ({ id, kind: 'follow-up', text, origin, taskId, at }), or null. */
-  function nextFollowUp(runId) {
-    try { return coordination.followUps.next(runId); } catch { return null; }
+  async function nextFollowUp(runId) {
+    try { return await coordination.followUps.next(runId); } catch { return null; }
   }
   function followUpCount(runId) {
-    try { return coordination.followUps.count(runId); } catch { return 0; }
+    try { return coordination.followUps.cachedCount(runId); } catch { return 0; }
   }
   /** The run will take no more follow-ups (it ended, was stopped, did not resume): they leave the queue → the items. */
-  function cancelFollowUps(runId) {
-    try { return coordination.followUps.cancel(runId); } catch { return []; }
+  async function cancelFollowUps(runId) {
+    try { return await coordination.followUps.cancel(runId); } catch { return []; }
   }
   /** After a restart: follow-ups queued for runs that are gone or ended reach nobody. Their run's notes say so. */
-  function settleOrphanFollowUps() {
+  async function settleOrphanFollowUps() {
     let runIds = [];
-    try { runIds = coordination.followUps.runs(); } catch { runIds = []; }
+    try { runIds = await coordination.followUps.runs(); } catch { runIds = []; }
     for (const runId of runIds) {
       const entry = entries.get(runId);
       if (entry && !TERMINAL_STATES.has(entry.state)) continue;
-      const dropped = cancelFollowUps(runId);
+      const dropped = await cancelFollowUps(runId);
       if (entry && dropped.length) entry.notes = [...(Array.isArray(entry.notes) ? entry.notes : []), `${dropped.length} queued follow-up${dropped.length === 1 ? '' : 's'} not delivered: the run ended first (the first: "${clip(dropped[0].text, 160)}")`];
     }
   }
   const resumeInProgress = new Set(); // runIds resumeRun works on (they hold their slot; the others waiting do not)
+  let resumeBrowserDeadline = 0; // one deadline per start: every run waits for the same extension
   // The server is going down (suspendForShutdown ran): a resume under way stops where it is, for the next start.
   let closing = false;
 
@@ -825,17 +830,25 @@ export function createAssistantDispatcher({
   }
 
   function touch(entry) { entry.version = (Number(entry.version) || 0) + 1; entry.updatedAt = iso(now()); }
-  function emit(entry, reason, extra = {}) {
+  async function emit(entry, reason, extra = {}, transition = null) {
     touch(entry);
-    persist({ force: TERMINAL_STATES.has(entry.state) });
-    const payload = { type: 'assistant:dispatch', reason, run: view(entry), ...extra };
+    if (!transition) persist({ force: TERMINAL_STATES.has(entry.state) });
+    const payload = { type: 'assistant:dispatch', reason, run: view(transition ? { ...entry, ...transition } : entry), ...extra };
     // Agents P2: the event goes into the durable log in the step that changed the run, under an id that names it
     // (recording it again stores nothing), before anyone is told. It never throws: the run goes on either way.
-    coordination.recordDispatch(payload);
+    await coordination.recordDispatch(payload);
+    if (transition) {
+      Object.assign(entry, transition);
+      persist({ force: true });
+    }
     if (['turn_completed', 'idle', 'failed', 'stopped', 'completed'].includes(reason)) { try { completeSkillUsage(entry); } catch {} }
     try { broadcastSync(payload); } catch {}
-    for (const listener of listeners) { try { listener(payload); } catch {} }
+    const notified = [];
+    for (const listener of listeners) { try { notified.push(Promise.resolve(listener(payload)).catch(() => {})); } catch {} }
     notifyWaiters(entry.runId, reason);
+    // A turn can depend on its listeners (e.g. restoring claims). An ended worker can release its slot
+    // as soon as its event is recorded and announced, even if a listener is waiting for shutdown.
+    if (!TERMINAL_STATES.has(reason)) await Promise.all(notified);
   }
 
   // ── browser route (a run's browser moved while it works) ───────────────────
@@ -896,9 +909,9 @@ export function createAssistantDispatcher({
    * Agents P2: events a brain read through agent_wait until:"event" are settled in its session's mailbox by their
    * ids (never a second turn for them). The log keeps them: the same cursor returns them again. → how many.
    */
-  function markEventsDelivered(assistantSessionId, eventIds) {
+  async function markEventsDelivered(assistantSessionId, eventIds) {
     if (!assistantSessionId || !Array.isArray(eventIds) || !eventIds.length) return 0;
-    try { return coordination.mailbox.ack(String(assistantSessionId), eventIds).acked; } catch { return 0; }
+    try { return (await coordination.mailbox.ack(String(assistantSessionId), eventIds)).acked; } catch { return 0; }
   }
 
   // ── waiters (Agents P2: lib/assistant-run-wait.js) ─────────────────────────
@@ -2430,15 +2443,24 @@ export function createAssistantDispatcher({
     const waitForFollowUp = () => new Promise((resolveWait) => {
       const finish = (value) => { if (liveState.idleTimer) { clearTimeout(liveState.idleTimer); liveState.idleTimer = null; } liveState.waitResolve = null; resolveWait(value); };
       // The outbox first (Agents P2): what was queued while the turn worked, or while a restart had the run away.
-      const queued = nextFollowUp(entry.runId);
-      if (queued) { finish(queued); return; }
-      if (liveState.abortReason) { finish({ kind: 'abort' }); return; }
-      // sendTurn signals { kind: 'follow-up' } once its text is in the outbox: the oldest queued one is taken from there.
-      liveState.waitResolve = (value) => {
-        if (value?.kind !== 'follow-up') { finish(value); return; }
-        const next = nextFollowUp(entry.runId);
-        if (next) finish(next);
+      // Install the wake-up before reading. A commit arriving during that read
+      // triggers another look, without two takes racing for the same oldest row.
+      let reading = false, again = false;
+      const look = async () => {
+        if (reading) { again = true; return; }
+        reading = true;
+        do {
+          again = false;
+          const next = await nextFollowUp(entry.runId);
+          if (liveState.waitResolve !== wake) return;
+          if (next) { finish(next); return; }
+        } while (again);
+        reading = false;
       };
+      const wake = value => value?.kind === 'follow-up' ? look() : finish(value);
+      liveState.waitResolve = wake;
+      if (liveState.abortReason) { finish({ kind: 'abort' }); return; }
+      look();
       liveState.idleTimer = setTimeout(() => finish({ kind: 'timeout' }), entry.idleTimeoutMs);
       liveState.idleTimer.unref?.();
     });
@@ -2462,7 +2484,7 @@ export function createAssistantDispatcher({
       // The work clock runs from here to the turn's end (its result-retry turn included).
       startWork(entry, liveState);
       ctx.setTurnState('running');
-      emit(entry, 'turn_started', { turn: turnNumber });
+      await emit(entry, 'turn_started', { turn: turnNumber });
       persist({ force: true });
       // What this turn runs (commands, tool results, edited files): the evidence behind a "done".
       liveState.evidence = createTurnEvidence();
@@ -2470,7 +2492,7 @@ export function createAssistantDispatcher({
       liveState.turnMeteredUsd = 0;
       // A queued follow-up is sent exactly here, as its prompt goes to the provider: a restart from now on continues
       // this turn (resumeInfo.inFlight) and never sends the text a second time.
-      if (outboxId) { try { coordination.followUps.markSent([outboxId]); } catch (error) { log(entry.runId, 'assistant:follow-up-error', error?.message || String(error)); } }
+      if (outboxId) { try { await coordination.followUps.markSent([outboxId]); } catch (error) { log(entry.runId, 'assistant:follow-up-error', error?.message || String(error)); } }
       let raw = await inner.runTurn(prompt, { ...meta, turn: turnNumber, outputSchema: entry.outputSchema || undefined });
       if (entry.provider === 'codex') settleCodexTurn(entry, liveState, raw);
       else if (entry.provider === 'antigravity') settleAntigravityTurn(entry, liveState, raw);
@@ -2588,7 +2610,7 @@ export function createAssistantDispatcher({
       // The worker remembers before its ## Result block: this turn's events carry that memory.
       syncMemory(entry);
       if (parsed.status === 'needs_input') emit(entry, 'needs_input', { turn: turnNumber, question: parsed.question });
-      emit(entry, 'turn_completed', { turn: turnNumber });
+      await emit(entry, 'turn_completed', { turn: turnNumber });
       announceUnpriced(entry);
       checkSession(entry.assistantSessionId, { source: entry });
       return parsed;
@@ -2610,6 +2632,10 @@ export function createAssistantDispatcher({
               : { origin: 'dispatch' });
           } catch (error) {
             pauseWork(entry, liveState);
+            // The CLI says nothing was saved under this session: the run starts its task again instead of failing.
+            if (resume && entry.provider === 'claude-code' && !entry.resumeInfo?.noConversation && !liveState.abortReason && !liveState.suspending && isMissingConversationError(error)) {
+              return restartWithoutConversation(entry, liveState);
+            }
             return handleTurnError(error, liveState, entry, ctx);
           }
         }
@@ -2630,7 +2656,15 @@ export function createAssistantDispatcher({
           const next = await waitForFollowUp();
           if (liveState.suspending) return { providerSessionId: null };
           if (next.kind === 'abort') { entry.completionReason = entry.completionReason || liveState.abortReason || 'aborted'; return { providerSessionId: inner.identity?.()?.providerSessionId }; }
-          if (next.kind === 'complete') { entry.completionReason = next.reason || 'complete'; liveState.completed = true; return { providerSessionId: inner.identity?.()?.providerSessionId }; }
+          if (next.kind === 'complete') {
+            entry.completionReason = next.reason || 'complete';
+            if (next.stopProvenance) {
+              entry.stopProvenance = next.stopProvenance;
+              ctx.noteTabClose?.(next.stopProvenance);
+            }
+            liveState.completed = true;
+            return { providerSessionId: inner.identity?.()?.providerSessionId };
+          }
           if (next.kind === 'timeout') { entry.completionReason = 'idle_timeout'; return { providerSessionId: inner.identity?.()?.providerSessionId }; }
           if (liveState.turnCounter >= entry.maxTurns) {
             entry.completionReason = 'max_turns';
@@ -3434,7 +3468,10 @@ export function createAssistantDispatcher({
     closing = true;
     const kept = [];
     for (const entry of entries.values()) {
-      if (!SUSPENDABLE_STATES.has(entry.state)) continue;
+      // Idempotent in its answer too: on a signal the Assistant's handler (shutdown()) gets here before the graceful
+      // shutdown does, and a run left out of `keep` would be stopped by the runtime instead of suspended.
+      if (entry.state === 'suspended' && live.get(entry.runId)?.suspending && !finalizations.has(entry.runId)) { kept.push(entry.runId); continue; }
+      if (!SUSPENDABLE_STATES.has(entry.state) || finalizations.has(entry.runId)) continue;
       const liveState = live.get(entry.runId) || null;
       // Only a run whose worker is up, or whose resume is starting it (its session is known): one still starting for
       // the first time has no session to resume yet.
@@ -3477,6 +3514,32 @@ export function createAssistantDispatcher({
     }
     if (kept.length) persist({ force: true });
     return kept;
+  }
+  /**
+   * A resumed Claude Code worker whose session id has no saved conversation (it was cut off before the CLI wrote one):
+   * suspended again and resumed with no session, so it runs its original task from the beginning. Once per run.
+   */
+  async function restartWithoutConversation(entry, liveState) {
+    liveState.suspending = true;
+    liveState.turnOpen = false;
+    stopUsagePolling(liveState);
+    const info = resumeInfoOf(entry);
+    delete info.inFlight;
+    info.noConversation = true;
+    // The attempt that found nothing never ran: it does not count against the run's resumes.
+    entry.resumes = Math.max(0, (Number(entry.resumes) || 0) - 1);
+    entry.state = 'resuming';
+    entry.turnState = 'resuming';
+    entry.notes.push('no conversation was saved before the restart: the run starts its original task again');
+    persist({ force: true });
+    const held = await safeRuntime()?.suspend?.(entry.runId, 'no_saved_conversation');
+    if (held) {
+      setTimeout(() => {
+        if (entry.state !== 'resuming' || closing) return;
+        resumeRun(entry).catch((error) => notResumed(entry, error?.message || String(error)));
+      }, 0);
+    }
+    return { providerSessionId: null };
   }
   /** Book pending provider usage and save the meter baseline before the process ends. */
   function suspendUsage(entry, liveState) {
@@ -3561,12 +3624,22 @@ export function createAssistantDispatcher({
     const ids = bootResumes.splice(0)
       .map((runId) => entries.get(runId)).filter((entry) => entry?.state === 'resuming')
       .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
+      // A run that may wait for the browser extension goes after those that need nothing to come back.
+      .sort((a, b) => Number(!!a.usesBrowser) - Number(!!b.usesBrowser))
       .map((entry) => entry.runId);
     // Held for this dispatcher from here on: the runtime's own hold no longer ends them.
     for (const runId of ids) { try { runtime?.keepSuspended?.(runId); } catch { /* ended meanwhile */ } }
     for (const runId of bootInterrupts.splice(0)) {
       const entry = entries.get(runId);
       if (!entry) continue;
+      // Stopped on purpose while the last server went down (after this dispatcher stopped listening): that stop stands.
+      const stoppedRecord = runtime?.get?.(runId);
+      if (stoppedRecord?.status === 'stopped' && stoppedRecord.stopProvenance) {
+        Object.assign(entry, { state: 'stopped', completionReason: stoppedRecord.stoppedReason, stopProvenance: stoppedRecord.stopProvenance });
+        delete entry.resumeRefused;
+        emit(entry, 'stopped');
+        continue;
+      }
       // A CLI a crash left behind goes with the run.
       await endOldProcess(entry);
       try { await runtime?.endSuspended?.(runId, 'server_restart', { error: entry.resumeRefused ? `not resumed: ${entry.resumeRefused}` : null }); } catch { /* not held */ }
@@ -3582,7 +3655,7 @@ export function createAssistantDispatcher({
       const block = railBlock(spec, entry.assistantSessionId, { except: runId });
       if (block) { entry.notes.push(`resume queued: ${block}`); held.push(runId); persist(); continue; }
       // What it threw (a folder that cannot be made, a full disk) ends it, with why: nothing else would.
-      try { await resumeRun(entry); } catch (error) { log(runId, 'assistant:resume-error', error?.message || String(error)); notResumed(entry, error?.message || String(error)); }
+      try { await resumeRun(entry); } catch (error) { log(runId, 'assistant:resume-error', error?.message || String(error)); await notResumed(entry, error?.message || String(error)); }
     }
     if (held.length) { queue.unshift(...held); processQueue().catch(() => {}); }
   }
@@ -3603,26 +3676,30 @@ export function createAssistantDispatcher({
   async function continueRun(entry) {
     if (closing) return null;
     const runtime = safeRuntime();
-    if (!runtime?.resume) return notResumed(entry, 'the native loop runtime is not available');
+    if (!runtime?.resume) return await notResumed(entry, 'the native loop runtime is not available');
+    // Its record ended while the last server went down (a deliberate stop after this dispatcher stopped listening):
+    // that end stands, with who asked for it.
+    const endedRecord = runtime.get?.(entry.runId);
+    if (endedRecord && TERMINAL_STATES.has(endedRecord.status)) { await finalize(entry, endedRecord); return null; }
     refreshLimits();
     const refusal = resumeRefusal(entry, { now: now(), workLeftMs: workLeftMs(entry), isDirectory, accountUnusable: providerAccountUnusable });
-    if (refusal) return notResumed(entry, refusal);
-    try { await fitBudget(entry, { routed: true }); } catch (error) { return notResumed(entry, `the budget does not allow it (${error?.message || error})`); }
+    if (refusal) return await notResumed(entry, refusal);
+    try { await fitBudget(entry, { routed: true }); } catch (error) { return await notResumed(entry, `the budget does not allow it (${error?.message || error})`); }
     if (entry.state !== 'resuming' || closing) return null; // stopped meanwhile, or the server is going down again
     // Its own ceiling (budget_usd), with what its cut-off turn was booked at the suspension (fitBudget checks the
     // session and the share only): a run out of money is not resumed, as a turn that ends out of money does not idle.
     const spentOut = budgetBlock(entry);
     if (spentOut && spentOut.code !== 'BUDGET_SHARE_EXHAUSTED') {
       entry.completionReason = spentOut.reason;
-      return notResumed(entry, `the budget does not allow it (${spentOut.message})`);
+      return await notResumed(entry, `the budget does not allow it (${spentOut.message})`);
     }
-    if (!runtime.isSuspended?.(entry.runId)) return notResumed(entry, 'its runtime record is gone');
+    if (!runtime.isSuspended?.(entry.runId)) return await notResumed(entry, 'its runtime record is gone');
     // A crash ended no process: the CLI the run had may still be there, finishing the cut-off tool call. It is ended
     // first; one that cannot be checked keeps the run from resuming (two processes on one session would both write its
     // transcript).
     const orphan = await endOldProcess(entry);
     if (orphan.state === 'unknown' || orphan.state === 'still_running') {
-      return notResumed(entry, `its old ${providerName(entry.provider)} process (pid ${orphan.pid}) ${orphan.state === 'unknown' ? 'may still be running and could not be checked' : 'did not stop'}`);
+      return await notResumed(entry, `its old ${providerName(entry.provider)} process (pid ${orphan.pid}) ${orphan.state === 'unknown' ? 'may still be running and could not be checked' : 'did not stop'}`);
     }
     if (entry.state !== 'resuming' || closing) return null;
     const costBaseUsd = entry.provider === 'claude-code' ? rebaseClaudeUsage(entry) : 0;
@@ -3632,8 +3709,9 @@ export function createAssistantDispatcher({
     let browserTabId = null;
     if (entry.usesBrowser && typeof acquireLoopBrowserAndTab === 'function') {
       pinEntryBrowserProfile(entry);
-      const acq = await acquireLoopBrowserAndTab({ requestedBrowserSessionId: entry.requestedBrowserSessionId, terminalSessionId: entry.runId, logTag: 'assistant:browser' }).catch((error) => ({ error: error?.message || String(error) }));
-      if (acq?.error) return notResumed(entry, `no browser tab: ${acq.error}`);
+      const acq = await acquireResumeBrowser(entry);
+      if (acq?.cancelled) return null;
+      if (acq?.error) return await notResumed(entry, `no browser tab: ${acq.error}`);
       browserSessionId = acq.browserSessionId || null;
       browserTabId = acq.browserTabId || null;
     }
@@ -3646,7 +3724,9 @@ export function createAssistantDispatcher({
     if (entry.scratchDir) { try { mkdirSync(entry.scratchDir, { recursive: true }); } catch { /* the guard says so when it needs it */ } }
     const inFlight = entry.resumeInfo?.inFlight || null;
     const turned = lastTurnNumber(entry);
-    const mode = inFlight ? 'mid_turn' : turned > 0 ? 'idle' : 'fresh';
+    // Nothing was saved under its session (restartWithoutConversation): its task runs from the beginning, in a new one.
+    const noConversation = !!entry.resumeInfo?.noConversation;
+    const mode = noConversation ? 'fresh' : inFlight ? 'mid_turn' : turned > 0 ? 'idle' : 'fresh';
     const liveState = newLiveState(entry);
     liveState.turnCounter = turned;
     liveState.resume = { mode, taskId: inFlight?.taskId || null };
@@ -3658,7 +3738,7 @@ export function createAssistantDispatcher({
     const state = runState(entry, {
       browserSessionId, browserTabId, desktopGrant,
       startedAt: entry.startedAt || iso(now()),
-      extra: { resumeSessionId: entry.providerSessionId, resumeThreadId: entry.providerThreadId, costBaseUsd, resumingWorker: true, antigravityHome: entry.resumeInfo?.antigravityHome || null },
+      extra: { resumeSessionId: noConversation ? null : entry.providerSessionId, resumeThreadId: entry.providerThreadId, costBaseUsd, resumingWorker: true, antigravityHome: entry.resumeInfo?.antigravityHome || null },
     });
     // The CLI's spend stop (--max-budget-usd) counts from the total the resumed CLI restores (costBaseUsd): what the run
     // may still spend (its ceiling less what it spent, never more than the session has left) goes on top of that. A
@@ -3694,7 +3774,7 @@ export function createAssistantDispatcher({
       // The runtime ended its record (resume_failed): its run-stopped event ended the run here too.
       const why = error?.message || String(error);
       if (browserSessionId) await releaseSharedBrowserTab(browserSessionId, entry.runId).catch(() => {});
-      if (!TERMINAL_STATES.has(entry.state)) return notResumed(entry, why);
+      if (!TERMINAL_STATES.has(entry.state)) return await notResumed(entry, why);
       entry.notes.push(`not resumed: ${why}`);
       persist();
       return null;
@@ -3708,6 +3788,23 @@ export function createAssistantDispatcher({
     });
     reconcileKeepAwake();
     return view(entry);
+  }
+  /**
+   * A browser tab for a resuming run. The extension reconnects by itself a moment after the server is back, so "not
+   * connected" is waited out up to this start's deadline; any other answer is final. → the acquisition, { error }, or
+   * { cancelled } when the run was stopped or the server began to go down during the wait.
+   */
+  async function acquireResumeBrowser(entry) {
+    if (!resumeBrowserDeadline) resumeBrowserDeadline = now() + resumeBrowserWaitMs;
+    for (;;) {
+      const acq = await acquireLoopBrowserAndTab({ requestedBrowserSessionId: entry.requestedBrowserSessionId, terminalSessionId: entry.runId, logTag: 'assistant:browser' }).catch((error) => ({ error: error?.message || String(error) }));
+      if (!/EXTENSION_NOT_CONNECTED/.test(String(acq?.error || ''))) return acq;
+      if (entry.state !== 'resuming' || closing) return { cancelled: true };
+      const left = resumeBrowserDeadline - now();
+      if (left <= 0) return { error: `the browser extension did not reconnect within ${Math.round(resumeBrowserWaitMs / 1000)} seconds of the restart` };
+      await new Promise((done) => { const timer = setTimeout(done, Math.min(left, resumeBrowserPollMs)); timer.unref?.(); });
+      if (entry.state !== 'resuming' || closing) return { cancelled: true };
+    }
   }
   /**
    * The CLI a run had before a crash may still be there, finishing its cut-off tool call (a crash ends no process): it
@@ -3727,12 +3824,12 @@ export function createAssistantDispatcher({
     return { ...orphan, pid };
   }
   /** A run that could not be resumed after a restart ends as interrupted, with why (its notes, its error, its event). */
-  function notResumed(entry, why) {
+  async function notResumed(entry, why) {
     if (TERMINAL_STATES.has(entry.state)) return null;
     const index = queue.indexOf(entry.runId);
     if (index !== -1) queue.splice(index, 1);
     // Follow-ups accepted for it while it was away (agent_send) reach nobody: its end says so, with the first of them.
-    const waiting = cancelFollowUps(entry.runId);
+    const waiting = await cancelFollowUps(entry.runId);
     const undelivered = waiting.length ? `; ${waiting.length} follow-up${waiting.length === 1 ? '' : 's'} sent while it was away ${waiting.length === 1 ? 'was' : 'were'} not delivered (${waiting.length === 1 ? '' : 'the first: '}"${clip(waiting[0].text, 160)}")` : '';
     // Nothing of it may go on: a CLI a crash left behind is ended too.
     endOldProcess(entry).then(() => persist()).catch(() => {});
@@ -3744,7 +3841,7 @@ export function createAssistantDispatcher({
     try { ended = !!safeRuntime()?.isSuspended?.(entry.runId); } catch { ended = false; }
     // The runtime's run-stopped event finalizes the run here (onRuntimeMessage); without a record it is done here.
     if (ended) safeRuntime().endSuspended(entry.runId, 'server_restart', { error }).catch(() => {});
-    if (!TERMINAL_STATES.has(entry.state)) finalize(entry, { status: 'interrupted', stoppedReason: 'server_restart', error });
+    if (!TERMINAL_STATES.has(entry.state)) await finalize(entry, { status: 'interrupted', stoppedReason: 'server_restart', error });
     return null;
   }
 
@@ -3759,7 +3856,7 @@ export function createAssistantDispatcher({
     const message = String(text || '').trim();
     if (!message) throw new DispatchError('MESSAGE_REQUIRED', 'text is required');
     if (message.length > 20_000) throw new DispatchError('MESSAGE_TOO_LONG', 'text must be at most 20000 characters');
-    if (TERMINAL_STATES.has(entry.state)) throw new DispatchError('RUN_NOT_ACTIVE', `Run ${runId} is ${entry.state}; dispatch a new run with the previous result as context.`, { status: 409, resumable: false });
+    if (TERMINAL_STATES.has(entry.state) || finalizations.has(runId)) throw new DispatchError('RUN_NOT_ACTIVE', `Run ${runId} is ${TERMINAL_STATES.has(entry.state) ? entry.state : 'finishing'}; dispatch a new run with the previous result as context.`, { status: 409, resumable: false });
     if (entry.state === 'queued') throw new DispatchError('RUN_NOT_STARTED', `Run ${runId} is still queued`, { status: 409 });
     // Away for a server restart (suspended, or being resumed): the follow-up waits for the run and goes to it after
     // its resume, like a follow-up queued behind a turn. Should the run not resume, it ends and says why.
@@ -3785,23 +3882,24 @@ export function createAssistantDispatcher({
     const item = { kind: 'follow-up', text: message, origin, at: iso(now()), taskId: taskNow(entry.assistantSessionId) || entry.taskId || null };
     // Every follow-up goes through the outbox (Agents P2), also one an idle run takes at once: the queue is one, in
     // order, and what it holds outlives a restart.
-    const idle = !away && !!liveState.waitResolve;
+    const idle = !away && !!liveState.waitResolve && !followUpCount(runId);
     if (!idle && !allowQueue) {
       throw new DispatchError('TURN_ACTIVE', away
         ? `Run ${runId} is ${entry.state === 'suspended' ? 'suspended while the server restarts' : 'being resumed after a server restart'}; retry when it is idle or pass queue:true`
         : `Run ${runId} is busy; retry when idle or pass queue:true`, { status: 409 });
     }
-    const queued = queueFollowUp(entry, item);
-    if (origin === 'user') emit(entry, 'user_intervened', { text: clip(message, 200) });
-    if (idle) {
-      liveState.waitResolve({ kind: 'follow-up' });
-      return { ok: true, queued: false, turn: liveState.turnCounter + 1, followUpId: queued.id, run: view(entry) };
-    }
-    emit(entry, 'follow_up_queued', { queued: queued.position });
-    return {
-      ok: true, queued: true, position: queued.position, followUpId: queued.id, run: view(entry),
-      ...(away ? { note: 'The run resumes after the server restart; this follow-up goes to it then.' } : {}),
-    };
+    return queueFollowUp(entry, item).then(queued => {
+      if (origin === 'user') emit(entry, 'user_intervened', { text: clip(message, 200) });
+      liveState?.waitResolve?.({ kind: 'follow-up' });
+      if (idle) {
+        return { ok: true, queued: false, turn: liveState.turnCounter + 1, followUpId: queued.id, run: view(entry) };
+      }
+      emit(entry, 'follow_up_queued', { queued: queued.position });
+      return {
+        ok: true, queued: true, position: queued.position, followUpId: queued.id, run: view(entry),
+        ...(away ? { note: 'The run resumes after the server restart; this follow-up goes to it then.' } : {}),
+      };
+    });
   }
   /**
    * Before a follow-up: when the run's provider share is used up, the session's unspent budget is
@@ -3815,12 +3913,12 @@ export function createAssistantDispatcher({
     if (blocked?.code !== 'BUDGET_SHARE_EXHAUSTED') return !blocked;
     return coverShare(entry);
   }
-  function complete(runId, { reason = 'complete' } = {}) {
+  function complete(runId, { reason = 'complete', stopProvenance = null } = {}) {
     const entry = requireEntry(runId);
     const liveState = live.get(runId);
     if (TERMINAL_STATES.has(entry.state)) return { ok: true, run: view(entry) };
-    if (liveState?.waitResolve) { liveState.waitResolve({ kind: 'complete', reason }); return { ok: true, run: view(entry) }; }
-    return stop(runId, reason);
+    if (liveState?.waitResolve) { liveState.waitResolve({ kind: 'complete', reason, stopProvenance }); return { ok: true, run: view(entry) }; }
+    return stop(runId, reason, stopProvenance);
   }
   /**
    * The user closed the sidepanel tab of a worker that reported its task done
@@ -3831,21 +3929,24 @@ export function createAssistantDispatcher({
    * the tab then stops it as its X always did. A run that already ended is
    * left as it is.
    */
-  function completeClosedTab(runId) {
+  function completeClosedTab(runId, stopProvenance = null) {
     const entry = requireEntry(runId);
     if (TERMINAL_STATES.has(entry.state)) return { ok: true, completed: false, alreadyTerminal: true, run: view(entry) };
     if (!finishedIdle(entry, { outcomes: ['done'] }) || !live.get(runId)?.waitResolve) {
       const outcome = entry.lastResult?.status || null;
       throw new DispatchError('RUN_NOT_FINISHED', `Run ${runId} is ${entry.state}${outcome ? ` (last result: ${outcome})` : ''}: closing its tab completes only a worker that reported its task done and waits for a follow-up.`, { status: 409, state: entry.state, outcome });
     }
-    return { ...complete(runId, { reason: 'tab_closed' }), completed: true };
+    return { ...complete(runId, { reason: 'tab_closed', stopProvenance: stopProvenance ? stampStopProvenance('tab_closed', stopProvenance, iso(now())) : null }), completed: true };
   }
-  async function stop(runId, reason = 'assistant') {
+  async function stop(runId, reason = 'unknown', stopProvenance = null) {
     const entry = requireEntry(runId);
+    if (!TERMINAL_STATES.has(entry.state) && finalizations.has(runId)) await finalizations.get(runId);
+    const provenance = stampStopProvenance(reason, stopProvenance, iso(now()));
     if (WAITING_STATES.has(entry.state)) {
       const held = entry.state === 'awaiting_route';
       const index = queue.indexOf(runId);
       if (index !== -1) queue.splice(index, 1);
+      entry.stopProvenance = provenance;
       entry.state = 'stopped'; entry.completionReason = reason; entry.finishedAt = iso(now()); entry.turnState = 'terminal';
       delete entry.rawSpec;
       delete entry.heldAgent;
@@ -3854,38 +3955,70 @@ export function createAssistantDispatcher({
       return { ok: true, run: view(entry) };
     }
     if (TERMINAL_STATES.has(entry.state)) return { ok: true, run: view(entry), alreadyTerminal: true };
-    entry.completionReason = entry.completionReason || reason;
     // A run waiting for its resume after a restart leaves the queue and drops the follow-ups that waited for it; its
     // runtime record (suspended) ends as stopped.
     if (entry.state === 'resuming' || entry.state === 'suspended') {
+      // Its old process, a page reacting to the restart or an unidentified caller never ends it (lib/worker-stop.js).
+      if (!mayEndSuspendedRun(provenance)) {
+        log(runId, 'assistant:stop-refused', 'a suspended run stays suspended: this caller may not end it', { reason, stopProvenance: provenance });
+        throw new DispatchError('RUN_SUSPENDED', `Run ${runId} is ${entry.state === 'suspended' ? 'suspended for a server restart' : 'being resumed after a server restart'} and continues by itself; only a deliberate stop ends it.`, { status: 409, state: entry.state });
+      }
       const index = queue.indexOf(runId);
       if (index !== -1) queue.splice(index, 1);
-      cancelFollowUps(runId);
+      await cancelFollowUps(runId);
       // A CLI a crash left behind (this start has not ended it yet) goes with the run.
       if (entry.state === 'resuming') await endOldProcess(entry);
     }
     const runtime = safeRuntime();
-    const stopped = runtime ? await runtime.stop(runId, reason) : false;
-    if (!stopped) finalize(entry, { status: 'stopped', stoppedReason: reason });
+    const stopped = runtime ? await runtime.stop(runId, reason, { stopProvenance: provenance }) : false;
+    if (!stopped) {
+      // Another stop can win while it is disposing the adapter. Keep its action and caller.
+      const winner = runtime?.get?.(runId);
+      await finalize(entry, TERMINAL_STATES.has(winner?.status) ? winner : { status: 'stopped', stoppedReason: reason, stopProvenance: provenance });
+    } else if (!TERMINAL_STATES.has(entry.state)) {
+      // During a shutdown this dispatcher no longer hears the runtime: the stop is recorded here.
+      await finalize(entry, runtime.get?.(runId) || { status: 'stopped', stoppedReason: reason, stopProvenance: provenance });
+    }
     return { ok: true, run: view(entry) };
   }
-  async function killAll({ assistantSessionId = null, workflowId = null, reason = 'kill_all' } = {}) {
+  async function killAll({ assistantSessionId = null, workflowId = null, reason = 'kill_all', stopProvenance = null } = {}) {
     const targets = [...entries.values()].filter((entry) => ACTIVE_STATES.has(entry.state)
       && (!assistantSessionId || entry.assistantSessionId === assistantSessionId)
       && (!workflowId || entry.workflowId === workflowId));
     const stopped = [];
-    for (const entry of targets) { try { await stop(entry.runId, reason); stopped.push(entry.runId); } catch {} }
+    for (const entry of targets) { try { await stop(entry.runId, reason, stopProvenance); stopped.push(entry.runId); } catch {} }
     return { ok: true, stopped };
   }
 
   // ── runtime feed → registry ────────────────────────────────────────────────
+  // Native runtime notifications do not await subscribers. Keep terminal events
+  // admitted through their outbox cancellation before closing the shared store.
+  const finalizations = new Map();
   function finalize(entry, runtimeRun) {
+    if (finalizations.has(entry.runId)) return finalizations.get(entry.runId);
+    if (TERMINAL_STATES.has(entry.state)) return Promise.resolve();
+    // Reserve the run before cleanup: settling a pending permission can synchronously notify us again.
+    const work = Promise.resolve().then(() => finalizeRun(entry, runtimeRun));
+    finalizations.set(entry.runId, work);
+    const settled = () => finalizations.delete(entry.runId);
+    work.then(settled, settled);
+    return work;
+  }
+  async function drainFinalizations() {
+    if (!finalizations.size) return;
+    let timer;
+    try {
+      await Promise.race([
+        Promise.all(finalizations.values()),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Timed out draining terminal run events')), 8000); }),
+      ]);
+    } finally { clearTimeout(timer); }
+  }
+  async function finalizeRun(entry, runtimeRun) {
     if (TERMINAL_STATES.has(entry.state)) return;
     const liveState = live.get(entry.runId);
     // Follow-ups still queued for it (behind a turn, or for its resume after a restart) go with it: its notes say so.
-    const unsent = cancelFollowUps(entry.runId);
-    const undelivered = unsent.length ? `${unsent.length} queued follow-up${unsent.length === 1 ? '' : 's'} not delivered: the run ended first (the first: "${clip(unsent[0].text, 160)}")` : null;
-    if (undelivered) entry.notes.push(undelivered);
+    const cancelled = cancelFollowUps(entry.runId);
     // What its transcript showed last stays readable (agent_read format "tail") after the worker is gone.
     if (liveState) tails.flush(entry.runId, liveState.ring);
     pauseWork(entry, liveState);
@@ -3895,10 +4028,18 @@ export function createAssistantDispatcher({
     if (status === 'stopped' && liveState?.completed && /^state_(removed|inactive)$/.test(String(runtimeRun?.stoppedReason || ''))) status = 'completed';
     // A Claude Code worker the shutdown could not suspend (suspendForShutdown) ends interrupted, with why.
     if (status === 'stopped' && entry.refusedAtShutdown) status = 'interrupted';
-    entry.state = TERMINAL_STATES.has(status) ? status : 'completed';
-    entry.turnState = 'terminal';
-    entry.finishedAt = iso(now());
+    const terminal = { state: TERMINAL_STATES.has(status) ? status : 'completed', turnState: 'terminal', finishedAt: iso(now()) };
+    // agent_wait reads this entry directly, and a registry flush can happen at any await.
+    // Stage a successful completion until its log write returns. Failures can be visible while their cause is judged.
+    const completion = terminal.state === 'completed' ? terminal : null;
+    if (!completion) Object.assign(entry, terminal);
     entry.completionReason = entry.completionReason || runtimeRun?.stoppedReason || (status === 'completed' ? 'complete' : status);
+    if (runtimeRun?.stopProvenance) entry.stopProvenance = runtimeRun.stopProvenance;
+    else if (!entry.stopProvenance) {
+      // A limit that ended it from inside its turn loop (idle timeout, max turns) has no stop call to carry this.
+      const system = systemStopProvenance(entry.completionReason);
+      if (system) entry.stopProvenance = stampStopProvenance(entry.completionReason, system, terminal.finishedAt);
+    }
     if (runtimeRun?.error) entry.error = runtimeRun.error;
     try { finishUsage(entry, liveState || null); } catch (error) { log(entry.runId, 'assistant:meter-error', error?.message || String(error)); }
     if (liveState) {
@@ -3909,19 +4050,20 @@ export function createAssistantDispatcher({
     }
     entry.pending = [];
     releaseDesktop(entry);
-    // The run's scratch folder goes when it left nothing there (what it wrote is the user's to look at).
-    if (entry.scratchDir) { try { rmdirSync(entry.scratchDir); } catch { /* not empty, or already gone */ } }
     // A run that ended gives back what it did not spend: the session's split is made again (debounced).
     if (entry.assistantSessionId) { try { budget.onRunEnded(entry.assistantSessionId); } catch { /* the split stays as it is */ } }
+    const unsent = await cancelled;
+    const undelivered = unsent.length ? `${unsent.length} queued follow-up${unsent.length === 1 ? '' : 's'} not delivered: the run ended first (the first: "${clip(unsent[0].text, 160)}")` : null;
+    if (undelivered) entry.notes.push(undelivered);
     if (entry.state === 'failed' && !budgetStopReason(entry.completionReason) && judge?.workerOutcome && !isEvalRun(entry)) {
       // State, queue and desktop move on now; the 'failed' event waits for its cause.
-      emitFailed(entry, liveState?.evidence || null);
+      const failed = emitFailed(entry, liveState?.evidence || null);
       processQueue().catch(() => {});
-      return;
+      return failed;
     }
-    if (entry.state === 'failed' || entry.lastResult?.status === 'blocked') { noteLimit(entry); entry.escalation = computeEscalation(entry); }
+    if (entry.state === 'failed' || entry.lastResult?.status === 'blocked') { noteLimit(entry); entry.escalation = computeEscalation(entry, terminal.state); }
     // The end event says which follow-ups never reached the worker (a stop the brain hears of carries it to its mailbox).
-    emit(entry, entry.state, undelivered ? { text: undelivered } : {});
+    await emit(entry, terminal.state, undelivered ? { text: undelivered } : {}, completion);
     // A memory already stored for the run (by the worker or the brain) is the run's memory.
     // An evaluation run (lib/skills/evals.js) is a measurement, not work to remember: it stores no memory.
     if (memory?.rememberDispatch && !isEvalRun(entry) && !syncMemory(entry, { announce: true }) && (entry.state === 'completed' || (entry.state === 'stopped' && entry.lastResult))) {
@@ -3988,7 +4130,7 @@ export function createAssistantDispatcher({
     if (calls.size > 200) calls.delete(calls.keys().next().value);
     return { ...payload, event: call };
   }
-  function onRuntimeMessage(message) {
+  async function onRuntimeMessage(message) {
     const runId = message?.run?.runId;
     if (!runId || !entries.has(runId)) return;
     const entry = entries.get(runId);
@@ -4009,11 +4151,11 @@ export function createAssistantDispatcher({
         // Antigravity streams each message in small chunks: one transcript line per message, grown as it streams.
         if (entry.provider === 'antigravity' && message.event?.eventType === 'agent_message_chunk') { growMessageLine(liveState, message.event.event); return; }
         const summary = summarizeProviderEvent(entry.provider === 'antigravity' ? withAcpCall(liveState, message.event || {}) : message.event || {});
-        // A guard decision (lib/worker-confinement.js) is also a note of the run: what was refused or warned about,
-        // with its reason, so the brain and the panel see it without the transcript. The first twenty.
+        // A guard decision (lib/worker-confinement.js) is also a note of the run: what was refused, warned about or
+        // noted after it ran, with its reason, so the brain and the panel see it without the transcript. The first twenty.
         if ((message.event?.eventType || message.event?.event?.type) === 'synabun.confinement') {
           const count = (liveState.guardEvents = (liveState.guardEvents || 0) + 1);
-          if (count <= 20) entry.notes.push(`guard ${message.event.event?.action || 'refused'}: ${clip(summary, 300)}`);
+          if (count <= 20) entry.notes.push(summary.startsWith('guard ') ? clip(summary, 300) : `guard ${message.event.event?.action || 'refused'}: ${clip(summary, 300)}`);
           else if (count === 21) entry.notes.push('guard: more decisions follow in the transcript');
         }
         if (summary) pushRingLine(liveState, `${iso(now()).slice(11, 19)} ${summary}`);
@@ -4034,7 +4176,11 @@ export function createAssistantDispatcher({
     const newIdentity = (run.providerSessionId && run.providerSessionId !== entry.providerSessionId)
       || (run.providerThreadId && run.providerThreadId !== entry.providerThreadId)
       || (run.antigravityHome && run.antigravityHome !== entry.antigravityHome);
-    if (run.providerSessionId) entry.providerSessionId = run.providerSessionId;
+    if (run.providerSessionId) {
+      // The restart without a saved conversation has its new session: a later restart resumes that one.
+      if (entry.resumeInfo?.noConversation && run.providerSessionId !== entry.providerSessionId) delete entry.resumeInfo.noConversation;
+      entry.providerSessionId = run.providerSessionId;
+    }
     if (run.providerThreadId) entry.providerThreadId = run.providerThreadId;
     if (run.antigravityHome) entry.antigravityHome = run.antigravityHome;
     if (newIdentity) persist({ force: true });
@@ -4045,7 +4191,7 @@ export function createAssistantDispatcher({
       return;
     }
     if (['sidepanel:run-completed', 'sidepanel:run-failed', 'sidepanel:run-stopped'].includes(message.type) || TERMINAL_STATES.has(run.status)) {
-      finalize(entry, run);
+      await finalize(entry, run);
     }
   }
   function attachRuntime() {
@@ -4065,7 +4211,7 @@ export function createAssistantDispatcher({
       const spec = { provider: entry.provider, accountId: entry.accountId, workflowId: entry.workflowId, usesComputer: !!entry.usesComputer };
       if (railBlock(spec, entry.assistantSessionId, resuming ? { except: runId } : {})) continue;
       queue.splice(queue.indexOf(runId), 1);
-      if (resuming) { try { await resumeRun(entry); } catch (error) { notResumed(entry, error?.message || String(error)); } continue; }
+      if (resuming) { try { await resumeRun(entry); } catch (error) { await notResumed(entry, error?.message || String(error)); } continue; }
       try { await start(entry); emit(entry, 'queue_started'); } catch (error) { entry.notes.push(`queue start failed: ${error?.message || error}`); }
     }
   }
@@ -4111,6 +4257,13 @@ export function createAssistantDispatcher({
   // Unbounded inventory, including removed runs, for conservative team cleanup checks.
   function teamRuns(teamId, workflowId) {
     return [...entries.values()].filter(entry => entry.teamId === teamId || entry.team?.teamId === teamId || entry.workflowId === workflowId).map(entry => view(entry));
+  }
+  // Approved work can still be queued when its route is replaced. Held runs belong to the pending card.
+  function activeRouteRuns(sessionId, routeId) {
+    return [...entries.values()]
+      .filter(entry => entry.assistantSessionId === sessionId && entry.route?.routeId === routeId
+        && ACTIVE_STATES.has(entry.state) && entry.state !== 'awaiting_route')
+      .map(({ runId, title, state }) => ({ runId, title, state }));
   }
   function totals({ assistantSessionId = null, workflowId = null } = {}) {
     const rows = [...entries.values()].filter((entry) => (!assistantSessionId || entry.assistantSessionId === assistantSessionId) && (!workflowId || entry.workflowId === workflowId));
@@ -4252,6 +4405,7 @@ export function createAssistantDispatcher({
     // what is left). A run waiting for its resume stays as it is, for the next start.
     suspendForShutdown(reason);
     for (const entry of entries.values()) {
+      if (finalizations.has(entry.runId)) continue;
       if (entry.state === 'suspended') { signalWorkerProcess(entry); continue; }
       if (entry.state === 'resuming') continue;
       if (ACTIVE_STATES.has(entry.state)) {
@@ -4268,7 +4422,7 @@ export function createAssistantDispatcher({
     // Agents P2: the transcript tails are written; a service this dispatcher made for itself goes with it (the one
     // server.js shares is closed there, after the runtime).
     tails.flushAll();
-    if (!sharedCoordination) coordination.close();
+    try { await drainFinalizations(); } finally { if (!sharedCoordination) await coordination.close(); }
   }
 
   loadRegistry();
@@ -4286,13 +4440,21 @@ export function createAssistantDispatcher({
   }
 
   return {
-    dispatch, sendTurn, complete, completeClosedTab, stop, killAll, get, peek, teamRuns, hasRunAwaitingOwner, list, totals, wait, transcript, pendingPermissions,
-    respondPermission, subscribe, shutdown, limits, suspendForShutdown,
+    dispatch, sendTurn, complete, completeClosedTab, stop, killAll, get, peek, teamRuns, activeRouteRuns, hasRunAwaitingOwner, list, totals, wait, transcript, pendingPermissions,
+    respondPermission, subscribe, shutdown, limits, suspendForShutdown, drainFinalizations,
     sessionBudget, checkSession, refreshLimits, providerSpend, coverFollowUp, budget,
     resolveRoute, declineRoute, heldRouteRefusal, escalate,
     markDelivered, deliveryState, markEventsDelivered, noteBrowserRoute, noteBrowserProfile,
     remove, removeFinished,
     mediaFile,
+    scratchReleased(runId, isTask, finishedMs) {
+      if (!coordination.durable) return false;
+      const entry = entries.get(runId);
+      if (!entry) return !isTask;
+      return isTask && removable(entry) && (entry.turnState == null || entry.turnState === 'terminal') && Date.parse(entry.finishedAt) <= finishedMs
+        && !entry.team && !entry.teamId && !entry.pending?.length && !finalizations.has(runId)
+        && coordination.followUps.cachedCount(runId) === 0;
+    },
     accountInUse: (provider, accountId) => activeEntries((e) => e.provider === provider && e.accountId === accountId).length > 0,
     // agents-p4: the session's Agent density as the server reads it (the default when it is not set or cannot be read).
     agentDensity: (assistantSessionId) => { try { return normalizeAgentDensity(agentDensity(assistantSessionId || null)); } catch { return normalizeAgentDensity(null); } },

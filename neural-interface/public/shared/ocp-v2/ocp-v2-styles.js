@@ -6,6 +6,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { installCodeCopy } from '../ui-code-copy.js';
+import { installOutput } from '../ui-output.js';
 
 const STYLE_ID = 'ocp-v2-styles';
 
@@ -748,99 +749,9 @@ body.ui-interacting .ocpv2-pill-ring > i { animation-play-state: paused; }
 .ocpv2-part { display: block; }
 .ocpv2-part + .ocpv2-part { margin-top: 6px; }
 .ocpv2-part-text { white-space: normal; }
-.ocpv2-part-text p { margin: 0 0 8px; }
-.ocpv2-part-text p:last-child { margin-bottom: 0; }
-.ocpv2-part-text h1, .ocpv2-part-text h2, .ocpv2-part-text h3,
-.ocpv2-part-text h4, .ocpv2-part-text h5, .ocpv2-part-text h6 {
-  margin: 0.75em 0 0.3em;
-  line-height: 1.35;
-  color: rgba(255,255,255,0.96);
-  font-weight: 600;
-}
-.ocpv2-part-text h1 { font-size: 16px; }
-.ocpv2-part-text h2 { font-size: 14px; }
-.ocpv2-part-text h3 { font-size: 13px; }
-.ocpv2-part-text h4 { font-size: 12px; }
-.ocpv2-part-text h5 { font-size: 11.5px; opacity: 0.92; }
-.ocpv2-part-text h6 { font-size: 11px; opacity: 0.85; text-transform: uppercase; letter-spacing: 0.04em; }
-.ocpv2-part-text ul, .ocpv2-part-text ol {
-  margin: 0 0 8px 18px;
-  padding: 0;
-}
-.ocpv2-part-text li + li { margin-top: 4px; }
-.ocpv2-part-text a { color: rgba(151,214,255,0.92); text-decoration: none; }
-.ocpv2-part-text a:hover { text-decoration: underline; }
-.ocpv2-part-text code {
-  background: rgba(255,255,255,0.05);
-  border: 1px solid rgba(255,255,255,0.06);
-  padding: 1px 5px;
-  border-radius: 4px;
-  font-size: 11.5px;
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-}
-.ocpv2-part-text pre {
-  background: rgba(0,0,0,0.28);
-  border: 1px solid rgba(255,255,255,0.05);
-  border-radius: 8px;
-  padding: 10px;
-  margin: 8px 0;
-  overflow-x: auto;
-  font-size: 11px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.ocpv2-part-text pre code {
-  background: none;
-  border: none;
-  padding: 0;
-  font-size: inherit;
-}
-.ocpv2-part-text strong { color: rgba(255,255,255,0.95); font-weight: 600; }
-.ocpv2-part-text em     { font-style: italic; color: rgba(255,255,255,0.78); }
-.ocpv2-part-text del    { opacity: 0.55; text-decoration: line-through; }
-.ocpv2-part-text hr {
-  border: none;
-  border-top: 1px solid rgba(255,255,255,0.08);
-  margin: 12px 0;
-}
-.ocpv2-part-text blockquote {
-  margin: 6px 0;
-  padding: 4px 12px;
-  border-left: 3px solid rgba(232,224,220,0.25);
-  color: rgba(255,255,255,0.72);
-  background: rgba(255,255,255,0.02);
-  border-radius: 0 6px 6px 0;
-}
-.ocpv2-part-text blockquote p { margin: 4px 0; }
-.ocpv2-part-text table {
-  border-collapse: collapse;
-  margin: 8px 0;
-  font-size: 11px;
-  width: 100%;
-  display: block;
-  overflow-x: auto;
-}
-.ocpv2-part-text thead {
-  background: rgba(255,255,255,0.04);
-}
-.ocpv2-part-text th,
-.ocpv2-part-text td {
-  border: 1px solid rgba(255,255,255,0.08);
-  padding: 5px 8px;
-  text-align: left;
-  vertical-align: top;
-}
-.ocpv2-part-text th { font-weight: 600; color: rgba(255,255,255,0.92); }
-.ocpv2-part-text input[type="checkbox"] {
-  margin-right: 4px;
-  vertical-align: middle;
-}
-.ocpv2-part-text img {
-  max-width: 100%;
-  height: auto;
-  border-radius: 6px;
-}
+/* An answer's prose, tables and code are the shared reading layer (../ui-output.js): one system for the six
+   side panels. A tag is never styled here again; this panel's voice (mono, 12.5px, its link blue, wrapped code)
+   is the --sbo-* values that sheet gives .ocpv2-part-text. */
 
 /* ── Part: reasoning (CLI-style streaming thinking block) ──────────────── */
 .ocpv2-part-reasoning {
@@ -2323,6 +2234,13 @@ img.ocpv2-tool-screenshot {
   opacity: 0.4;
   transition: opacity 0.15s;
 }
+.ocpv2-model-mark svg {
+  width: 1em;
+  height: 1em;
+  margin-inline-end: 4px;
+  vertical-align: -0.12em;
+}
+.ocpv2-brand-link > svg { width: 14px; height: 14px; }
 .ocpv2-brand-link:hover { opacity: 0.85; }
 .ocpv2-brand {
   width: 14px;
@@ -3757,11 +3675,27 @@ const PARITY_CSS = `
 }
 .ocpv2-panel.ocp-cli-blocked .ocpv2-compose-btn:not(.ocpv2-compose-abort) { opacity: 0.4; cursor: not-allowed; }
 .ocpv2-panel.ocp-cli-blocked .ocpv2-compose-input { opacity: 0.7; }
+
+/* ── Reading pass (2026-11-21): what the agent did is legible and quiet, what it answered leads ──
+   An answer's prose, tables and code are ../ui-output.js. This block is the rest of the transcript: the labels,
+   the metadata and the tool rows' secondary text were 9.5–10.5px at 22–45% white. They keep their mono voice and
+   their place; the faint text is 55% white (the style guide's muted text). Nothing moved, nothing was removed. */
+.ocpv2-msg-role { font-size: 10px; color: rgba(255,255,255,0.55); }
+.ocpv2-msg-meta { font-size: 10.5px; color: rgba(255,255,255,0.55); }
+.ocpv2-part-step { color: rgba(255,255,255,0.45); }
+.ocpv2-part-note, .ocpv2-thinking-preview, .ocpv2-tc-summary, .ocpv2-tc-meta { color: rgba(255,255,255,0.55); }
+.ocpv2-tc-summary, .ocpv2-tc-meta { font-size: 10.5px; }
+/* What the agent says right before a tool call is secondary text; its answer is primary. Colour only. */
+.ocpv2-msg-part-text:has(+ .ocpv2-msg-part-tool) .ocpv2-part-text { --sbo-text: rgba(255,255,255,0.72); --sbo-strong: rgba(255,255,255,0.9); }
+/* A touch screen has no hover: a message's actions (Copy, Undo, Fork, Retry) are always shown there. */
+@media (hover: none) { .ocpv2-msg-actions, .ocpv2-msg-action { opacity: 1; } }
 `;
 
 export function injectStyles() {
   // The Copy button of every code block: its stylesheet and its one click listener, in this document.
   installCodeCopy(document);
+  // The reading layer of an agent's answer (prose, tables, code): one stylesheet for the six panels.
+  installOutput(document);
   const full = CSS + '\n' + PARITY_CSS + '\n' + CHILD_CSS;
   const existing = document.getElementById(STYLE_ID);
   if (existing) {

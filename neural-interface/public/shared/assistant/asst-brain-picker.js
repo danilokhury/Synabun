@@ -30,7 +30,7 @@ import {
   modelSelectorValue,
 } from '../agent-runtime-options.js';
 import { getHiddenModels, HIDDEN_MODELS_EVENT, hiddenModelMatch } from '../ocp-hidden-models.js';
-import { getProviderMeta } from '../provider-icons.js';
+import { effortDescFor } from '../effort-i18n.js';
 import { on } from '../state.js';
 import { registerLaunchPrefetch } from '../launch-prefetch.js';
 import { fetchAssistantCatalog, fetchProjects, patchClaudeAccount, patchCodexAccount, setClaudeWorkerAccount, setCodexWorkerAccount } from './asst-api.js';
@@ -54,6 +54,7 @@ import {
   PLAN_MODE_PROVIDERS,
   permissionModeLabel,
   PROVIDERS,
+  displayProvider,
   providerMeta,
   projectLabel,
   resolveBrainDefaults,
@@ -64,6 +65,7 @@ import {
   AGENT_DENSITIES,
   agentDensityFigures,
   normalizeAgentDensity,
+  brainEffortWord,
 } from './asst-state.js';
 
 let _projectsCache = null;
@@ -703,16 +705,18 @@ export async function openModelMenu(anchor, opts = {}) {
       const hiddenCount = metadata.hiddenCounts[provider] || 0;
       const note = opts.routingEditor && provider === run ? tr('assistant.routes.menu.hiddenCount', '{count} hidden in Models', { count: hiddenCount }) : warnSwitch && run !== b.provider ? tr('assistant.brain.newConversation', 'starts a new conversation') : '';
       items.push({ kind: 'header', label: meta.label, icon: meta.icon, color: meta.color, note });
+      const rowBrand = provider === 'maritaca' ? { icon: meta.icon, color: meta.color } : {};
       const unavailable = models.filter(m => m.status === 'unavailable');
       if (unavailable.length) items.push({ kind: 'info', label: tr('assistant.routes.menu.maritacaUnavailable', 'Register Maritaca under Settings → OpenCode → Providers') });
       for (const m of models) {
         if (m.status === 'unavailable') {
-          items.push({ id: `${provider}:${m.id}`, label: m.label, desc: modelDesc(m, tr, false), tag: tierTag(m, tr), keywords: `${meta.label} ${m.id}`, disabled: true, title: m.hint || '' });
+          items.push({ ...rowBrand, id: `${provider}:${m.id}`, label: m.label, desc: modelDesc(m, tr, false), tag: tierTag(m, tr), keywords: `${meta.label} ${m.id}`, disabled: true, title: m.hint || '' });
           continue;
         }
         const target = runnableProvider(provider, m);
         items.push({
           kind: 'radio',
+          ...rowBrand,
           id: `${provider}:${m.id}`,
           label: m.label,
           desc: modelDesc(m, tr, opts.routingEditor),
@@ -908,7 +912,10 @@ export function createBrainPicker(host, hooks = {}) {
     const model = catalogModelRow(brain.provider, brain.model) || modelOf(brain);
     return brainEffortChoices(brain.provider, getEffortLevelsForModel(brain.provider, model)).map((e) => (e.key === 'auto'
       ? { ...e, label: t('assistant.brain.effortAuto', e.label), desc: t('assistant.brain.effortAutoDesc', e.desc) }
-      : e.key === 'none' ? { ...e, label: t('assistant.brain.effortNone', e.label), desc: t('assistant.brain.effortNoneDesc', e.desc) } : e));
+      : e.key === 'none' ? { ...e, label: t('assistant.brain.effortNone', e.label), desc: t('assistant.brain.effortNoneDesc', e.desc) }
+        // Codex / Antigravity: the `off` row is "Default" (stored as no effort); its words are its own.
+        : e.id === 'off' ? { ...e, label: t('assistant.brain.effortDefault', e.label), desc: effortDescFor(e.desc, hooks.t) }
+          : { ...e, label: brainEffortWord(e.id, e.label, hooks.t), desc: effortDescFor(e.desc, hooks.t) }));
   }
 
   function accountOf(brain) {
@@ -965,7 +972,7 @@ export function createBrainPicker(host, hooks = {}) {
   }
 
   function values(brain = currentBrain()) {
-    const meta = getProviderMeta(brain.provider);
+    const meta = providerMeta(displayProvider(brain));
     const efforts = effortsFor(brain);
     // Claude's Auto row stands for no effort and for the `off` a server writes when it resets a level.
     const level = efforts.find(e => e.id === brain.effort)
@@ -979,9 +986,9 @@ export function createBrainPicker(host, hooks = {}) {
       effort: brain.provider === 'opencode'
         ? (brain.agent || t('assistant.brain.agentDefault', 'default'))
         // Antigravity has no "off" level: no level is the model's own default ("Default").
-        : (level ? level.label : (brain.effort || (brain.provider === 'antigravity' ? (efforts.find(e => e.id === 'off')?.label || t('assistant.brain.effortOff', 'off')) : t('assistant.brain.effortOff', 'off')))),
+        : (level ? level.label : (brainEffortWord(brain.effort, brain.effort, hooks.t) || (brain.provider === 'antigravity' ? (efforts.find(e => e.id === 'off')?.label || t('assistant.brain.effortOff', 'off')) : t('assistant.brain.effortOff', 'off')))),
       variantSupported: brain.provider === 'opencode' && hasEfforts,
-      variant: level ? level.label : (brain.effort || t('assistant.brain.variantDefault', 'default variant')),
+      variant: level ? level.label : (brainEffortWord(brain.effort, brain.effort, hooks.t) || t('assistant.brain.variantDefault', 'default variant')),
       project: brain.project ? projectLabel(brain.project, _projectsCache || []) : t('assistant.brain.projectHome', 'Home'),
       mode: permissionModeLabel(brain, (id, fallback) => t(`assistant.brain.modes.${id}`, fallback)),
       mcp: toolListView(toolCatalog, brain.tools, { translate: hooks.t }).summary,

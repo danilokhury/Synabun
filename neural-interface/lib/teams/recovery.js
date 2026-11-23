@@ -22,7 +22,8 @@
 // copy of commits a slice still has. Anything it does not understand it leaves alone and lists under `attention`.
 // The user's checkout and branch are never touched.
 
-import { existsSync, lstatSync, realpathSync, rmSync, rmdirSync } from 'node:fs';
+import { existsSync, lstatSync, realpathSync, rmdirSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { INTEGRATION_SLICE_ID, branchName, integrationBranchName, integrationWorktreePath, worktreesRoot } from './schema.js';
 import { gitSaid, operationsUnderWay } from './git.js';
@@ -68,7 +69,7 @@ export function createTeamRecovery({ state, git, locks, worktrees, claims, integ
     for (const piece of pieces) {
       if (present(piece.path)) {
         await git(['worktree', 'remove', '--force', piece.path], { cwd });
-        if (present(piece.path)) rmSync(piece.path, { recursive: true, force: true });
+        if (present(piece.path)) await rm(piece.path, { recursive: true, force: true });
       }
     }
     await git(['worktree', 'prune'], { cwd });
@@ -80,11 +81,11 @@ export function createTeamRecovery({ state, git, locks, worktrees, claims, integ
         if (await commitOf(git, cwd, `refs/heads/${piece.branch}`) === plan.baseCommit) await git(['branch', '-D', piece.branch], { cwd });
       }
       try { rmdirSync(join(worktreesRoot(cwd), plan.teamId)); } catch { /* not empty, or not there */ }
-      state.writeTeam(plan.teamId, 'failed', { error: built.failed, failedAt: now(), recovered: true });
+      await state.writeTeam(plan.teamId, 'failed', { error: built.failed, failedAt: now(), recovered: true });
       report.actions.push({ action: 'creation_failed', error: built.failed.error });
       return;
     }
-    state.writeTeam(plan.teamId, 'planned', { worktrees: built.made.map(({ sliceId, path, branch }) => ({ sliceId, path, branch })), recovered: true });
+    await state.writeTeam(plan.teamId, 'planned', { worktrees: built.made.map(({ sliceId, path, branch }) => ({ sliceId, path, branch })), recovered: true });
     report.actions.push({ action: 'creation_completed', worktrees: built.made.length });
   }
 
@@ -106,8 +107,8 @@ export function createTeamRecovery({ state, git, locks, worktrees, claims, integ
     if (await branchAt(git, place) !== branch) {
       // Not the integration worktree as SynaBun left it (a plain folder, another branch): nothing is reset.
       report.attention.push({ code: 'integration_worktree_not_on_its_branch', path: place, branch });
-      state.writeTeam(teamId, 'running', { integrating: null, recoveredAt: now() });
-      if (under.sliceId && sliceState(record, under.sliceId) === 'integrating') state.writeSlice(teamId, under.sliceId, 'done', { recovered: true });
+      await state.writeTeam(teamId, 'running', { integrating: null, recoveredAt: now() });
+      if (under.sliceId && sliceState(record, under.sliceId) === 'integrating') await state.writeSlice(teamId, under.sliceId, 'done', { recovered: true });
       return;
     }
     const head = await commitOf(git, place, 'HEAD');
@@ -121,18 +122,18 @@ export function createTeamRecovery({ state, git, locks, worktrees, claims, integ
         : descends && !under.sliceId ? 0 : -1;
       if (foreign !== 0) {
         report.attention.push({ code: 'integration_has_other_commits', head, before, branch });
-        state.writeTeam(teamId, 'running', { integrating: null, recoveredAt: now() });
-        if (under.sliceId && sliceState(record, under.sliceId) === 'integrating') state.writeSlice(teamId, under.sliceId, 'done', { recovered: true });
+        await state.writeTeam(teamId, 'running', { integrating: null, recoveredAt: now() });
+        if (under.sliceId && sliceState(record, under.sliceId) === 'integrating') await state.writeSlice(teamId, under.sliceId, 'done', { recovered: true });
         return;
       }
     }
     const clean = await integration.settle(place, before);
     report.actions.push({ action: 'integration_reset', to: before, from: head, clean, phase: under.phase || null });
     if (under.sliceId && sliceState(record, under.sliceId) === 'integrating') {
-      state.writeSlice(teamId, under.sliceId, 'done', { recovered: true });
+      await state.writeSlice(teamId, under.sliceId, 'done', { recovered: true });
       report.actions.push({ action: 'slice_ready_again', sliceId: under.sliceId });
     }
-    state.writeTeam(teamId, 'running', { integrating: null, recoveredAt: now() });
+    await state.writeTeam(teamId, 'running', { integrating: null, recoveredAt: now() });
   }
 
   /** A team whose landing was under way: where the target branch is now says whether it landed. */
@@ -141,15 +142,15 @@ export function createTeamRecovery({ state, git, locks, worktrees, claims, integ
     const cwd = record.projectPath;
     const landing = record.landing && typeof record.landing === 'object' ? record.landing : null;
     const ready = record.plan.slices.every((slice) => ['integrated', 'cancelled'].includes(sliceState(record, slice.id)));
-    if (!landing) { state.writeTeam(teamId, ready ? 'ready' : 'running', { landing: null, recoveredAt: now() }); return; }
+    if (!landing) { await state.writeTeam(teamId, ready ? 'ready' : 'running', { landing: null, recoveredAt: now() }); return; }
     const at = await commitOf(git, cwd, `refs/heads/${landing.targetBranch}`);
     if (at && at === landing.to) {
-      state.writeTeam(teamId, 'merged', { landing: null, landed: { ...landing, at: now(), recovered: true } });
-      claims.end(teamId);
+      await state.writeTeam(teamId, 'merged', { landing: null, landed: { ...landing, at: now(), recovered: true } });
+      await claims.end(teamId);
       report.actions.push({ action: 'landing_confirmed', targetBranch: landing.targetBranch, to: landing.to });
       return;
     }
-    state.writeTeam(teamId, ready ? 'ready' : 'running', { landing: null, recoveredAt: now() });
+    await state.writeTeam(teamId, ready ? 'ready' : 'running', { landing: null, recoveredAt: now() });
     report.actions.push({ action: 'landing_not_done', targetBranch: landing.targetBranch, at });
     if (at !== landing.from) report.attention.push({ code: 'target_moved', targetBranch: landing.targetBranch, at, from: landing.from, to: landing.to });
     if (landing.checkout && at === landing.from && isDirectory(landing.checkout)) {
@@ -187,7 +188,7 @@ export function createTeamRecovery({ state, git, locks, worktrees, claims, integ
           if (added?.ok) report.actions.push({ action: 'integration_branch_restored', at });
           else report.attention.push({ code: 'integration_branch_missing', branch: info.branch });
         } else if (current !== 'integrated') {
-          state.writeSlice(teamId, sliceId, 'failed', { reason: 'its branch and its worktree are gone', failedAt: now() });
+          await state.writeSlice(teamId, sliceId, 'failed', { reason: 'its branch and its worktree are gone', failedAt: now() });
           report.actions.push({ action: 'slice_failed', sliceId, reason: 'missing' });
         }
         continue;
@@ -197,10 +198,10 @@ export function createTeamRecovery({ state, git, locks, worktrees, claims, integ
       else report.attention.push({ code: 'worktree_not_restored', sliceId, path: info.path, error: gitSaid(added) });
       registered = await listWorktrees(git, cwd);
     }
-    const fresh = state.record(teamId);
+    const fresh = await state.record(teamId);
     for (const slice of fresh.plan.slices) {
       if (sliceState(fresh, slice.id) === 'integrating' && fresh.state !== 'integrating') {
-        state.writeSlice(teamId, slice.id, 'done', { recovered: true });
+        await state.writeSlice(teamId, slice.id, 'done', { recovered: true });
         report.actions.push({ action: 'slice_ready_again', sliceId: slice.id });
       }
     }
@@ -223,9 +224,9 @@ export function createTeamRecovery({ state, git, locks, worktrees, claims, integ
    */
   async function recover({ teamId = null } = {}) {
     const out = [];
-    for (const entry of state.teams()) {
+    for (const entry of await state.teams()) {
       if (teamId && entry.teamId !== teamId) continue;
-      const first = state.record(entry.teamId);
+      const first = await state.record(entry.teamId);
       if (!first || first.removed || TERMINAL_TEAM_STATES.includes(first.state)) continue;
       const report = { teamId: first.teamId, was: first.state, state: first.state, actions: [], attention: [] };
       out.push(report);
@@ -233,11 +234,11 @@ export function createTeamRecovery({ state, git, locks, worktrees, claims, integ
       if (!repo.ok) { report.attention.push({ code: repo.code, message: repo.message }); continue; }
       try {
         await locks.run(repoLockKey(first.projectPath), () => locks.run(`team:${first.teamId}`, async () => {
-          const record = state.record(first.teamId);
+          const record = await state.record(first.teamId);
           if (record.state === 'creating') await recoverCreation(record, report);
           else if (record.state === 'integrating') await recoverIntegration(record, report);
           else if (record.state === 'landing') await recoverLanding(record, report);
-          const after = state.record(first.teamId);
+          const after = await state.record(first.teamId);
           if (!TERMINAL_TEAM_STATES.includes(after.state) && after.state !== 'creating') await recoverPieces(after, report);
           // An empty folder a failed creation left behind.
           if (after.state === 'failed') { try { rmdirSync(join(worktreesRoot(after.projectPath), after.teamId)); } catch { /* not empty, or not there */ } }
@@ -246,9 +247,9 @@ export function createTeamRecovery({ state, git, locks, worktrees, claims, integ
         log('teams:recover-failed', { teamId: first.teamId, error: error?.message || String(error) });
         report.attention.push({ code: 'recovery_failed', message: error?.message || String(error) });
       }
-      report.state = state.record(first.teamId)?.state || report.state;
+      report.state = (await state.record(first.teamId))?.state || report.state;
     }
-    const restored = claims.restore();
+    const restored = await claims.restore();
     return { ok: true, teams: out, claims: restored };
   }
 

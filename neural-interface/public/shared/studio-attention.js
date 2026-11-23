@@ -2,6 +2,12 @@
 // cannot clear a newer decision, and discard reads belonging to a previous owner session.
 const SOURCES = ['drafts', 'teams', 'skills', 'automations', 'schedules', 'workers', 'runs'];
 
+/** The count badge's text: nothing for none, the number, "99+" above it. */
+export function badgeText(count) {
+  if (!Number.isInteger(count) || count <= 0) return '';
+  return count > 99 ? '99+' : String(count);
+}
+
 export function watchStudioAttention({ read, paint }) {
   let owner = false;
   let session = 0;

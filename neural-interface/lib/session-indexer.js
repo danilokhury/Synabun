@@ -1,4 +1,6 @@
-import { queueMemoryCapture, captureMemoryFileBatch } from './memory-session-capture.js';
+import { captureMemoryFileBatch } from './memory-session-capture.js';
+import { withMemoryWrite } from '../../mcp-server/dist/services/sqlite-write.js';
+import { runSessionJob } from './session-cache-worker.js';
 /**
  * Session Indexer — Pipeline orchestrator for indexing Claude Code session transcripts.
  * Queues local JSONL files through the shared, incremental memory event intake.
@@ -66,10 +68,15 @@ function detectProjectFromDir(dirName) {
   return (parts[parts.length - 1] || 'global').toLowerCase();
 }
 
-function upsertMemories(points) {
-  const d=getDb(); d.exec('BEGIN IMMEDIATE');
-  try { for(const point of points) sharedUpsert(point.id,point.vector,point.payload);d.exec('COMMIT'); }
-  catch(error){d.exec('ROLLBACK');memoryVectors.invalidate();throw error;}
+async function upsertMemories(points) {
+  try {
+    await withMemoryWrite(getDb(), () => {
+      for (const point of points) sharedUpsert(point.id, point.vector, point.payload);
+    });
+  } catch (error) {
+    memoryVectors.invalidate();
+    throw error;
+  }
 }
 
 // --- Main indexing pipeline ---
@@ -170,26 +177,26 @@ export async function startIndexing(options = {}) {
     try {
       // All providers use the same durable event intake and local embedding queue.
       // Preserve this entry point and its UI progress events for Claude hooks.
-      queueMemoryCapture({host:'claude-code',sessionId:session.sessionId,filePath:session.filePath,project:detectProjectFromDir(session.projectDir)});
-      let complete=false;
-      while(!isCancelled?.()) {
-        const before=getDb().prepare('SELECT byte_offset,status FROM memory_capture_files WHERE host=? AND session_id=?').get('claude-code',session.sessionId);
-        const outcome=await captureMemoryFileBatch({host:'claude-code',sessionId:session.sessionId});
-        if(outcome?.busy){await new Promise(resolve=>setTimeout(resolve,20));continue;}
-        if(outcome?.paused)break;
-        const after=getDb().prepare('SELECT byte_offset,status,error FROM memory_capture_files WHERE host=? AND session_id=?').get('claude-code',session.sessionId);
-        if(after?.status==='failed')throw new Error(after.error);
-        if(after?.status==='complete'){complete=true;break;}
-        if(after?.byte_offset===before?.byte_offset)break; // incomplete JSONL tail
+      const target = { host: 'claude-code', sessionId: session.sessionId };
+      const project = detectProjectFromDir(session.projectDir);
+      await runSessionJob('queue-capture', { ...target, filePath: session.filePath, project });
+      let complete = false;
+      while (!isCancelled?.()) {
+        const outcome = await captureMemoryFileBatch(target, { reportProgress: true });
+        if (outcome.busy) { await new Promise(resolve => setTimeout(resolve, 20)); continue; }
+        if (outcome.paused) break;
+        if (outcome.status === 'failed') throw new Error(outcome.error);
+        if (outcome.status === 'complete') { complete = true; break; }
+        if (!outcome.advanced) break; // incomplete JSONL tail
         emit({type:'indexing:session-progress',sessionId:session.sessionId,phase:'indexing'});
       }
-      const chunks=getDb().prepare('SELECT chunk_id FROM memory_session_sources WHERE host=? AND session_id=?').all('claude-code',session.sessionId);
-      totalChunks+=chunks.length;
+      const chunkIds = await runSessionJob('capture-chunks', target);
+      totalChunks += chunkIds.length;
       state.sessions[session.sessionId]={session_id:session.sessionId,file_path:session.filePath,file_size:session.fileSize,file_mtime:session.fileMtime,
-        chunk_count:chunks.length,chunk_ids:chunks.map(r=>r.chunk_id),indexed_at:new Date().toISOString(),project:detectProjectFromDir(session.projectDir),
+        chunk_count:chunkIds.length,chunk_ids:chunkIds,indexed_at:new Date().toISOString(),project,
         status:complete ? 'complete' : 'partial',last_line_indexed:0};
       saveState(state);
-      emit({type:'indexing:session-complete',sessionId:session.sessionId,chunkCount:chunks.length,sessionIndex:si,totalSessions});
+      emit({type:'indexing:session-complete',sessionId:session.sessionId,chunkCount:chunkIds.length,sessionIndex:si,totalSessions});
 
     } catch (err) {
       errors++;
@@ -300,7 +307,7 @@ export async function mirrorExistingChunks(onProgress, { ensureCategory = null }
       if (typeof ensureCategory === 'function') ensureCategory();
       for (let i = 0; i < mirrorPoints.length; i += UPSERT_BATCH_SIZE) {
         const batch = mirrorPoints.slice(i, i + UPSERT_BATCH_SIZE);
-        upsertMemories(batch);
+        await upsertMemories(batch);
         mirrored += batch.length;
         emit({ type: 'mirror:progress', mirrored, skipped, errors, batch: Math.floor(i / UPSERT_BATCH_SIZE) });
       }

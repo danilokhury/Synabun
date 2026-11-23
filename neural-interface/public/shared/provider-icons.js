@@ -33,3 +33,9 @@ export function getProviderMeta(providerId = 'claude-code') {
 }
 
 export { PROVIDER_META };
+
+/** OpenCode stores a model as providerID/modelID or as its serialized string. */
+export function isMaritacaModel(model) {
+  const provider = typeof model === 'string' ? model.split('/', 1)[0] : model?.providerID;
+  return typeof provider === 'string' && provider.toLowerCase() === 'maritaca';
+}

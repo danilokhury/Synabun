@@ -34,6 +34,8 @@
 import { OPENCODE_SESSION_TABLES } from './opencode-db-schema.js';
 import { opencodeMcpServerEntry } from './opencode-config.js';
 import { storedToolList } from './tool-lists.js';
+import { statSync } from 'node:fs';
+import { LOCATION_MISSING_CODE, locationNotFoundMessage } from '../public/shared/ocp-v2/ocp-v2-location-logic.js';
 
 // Types answered by the switch in server.js.
 export const OPENCODE_V2_WS_INLINE_TYPES = Object.freeze([
@@ -89,13 +91,37 @@ export function canonicalizeOpencodeV2Message(msg) {
   return null;
 }
 
+// ── A folder that does not exist ────────────────────────────────────────────
+// OpenCode 2 creates a session in a folder that does not exist and then
+// refuses every prompt of it (404 "Location not found: <folder>"); a session is
+// bound to its folder for good. So a request that starts work in a folder is
+// refused here, in OpenCode's own words (the panel reads one sentence for both:
+// public/shared/ocp-v2/ocp-v2-location-logic.js), before a session is made
+// that can never run or a serve is started for a turn that cannot begin.
+export const OPENCODE_V2_WS_FOLDER_TYPES = Object.freeze(['session:create', 'message:send', 'command:run', 'session:shell']);
+
+/**
+ * Whether `folder` is certainly not a folder that exists: nothing is there, or
+ * something that is not a folder. A folder that cannot be asked (no permission,
+ * a disk that does not answer) is not called gone: OpenCode decides.
+ */
+export function folderIsGone(folder, stat = statSync) {
+  try {
+    return !stat(folder).isDirectory();
+  } catch (err) {
+    return err?.code === 'ENOENT' || err?.code === 'ENOTDIR';
+  }
+}
+
 /**
  * Everything that must hold before a request is answered, in one place so it
  * can be tested: a canonical session id, no write while history is being
  * cleared, and the native-automation ownership rules. Returns null to let the
  * request through, or `{ status, error }`.
  *   ctx: { historyClearing, historyWriteTypes, nativeMutationTypes,
- *          protectedRunFor(sessionId), ownsRun(run) }
+ *          protectedRunFor(sessionId), ownsRun(run),
+ *          folderGone(folder) }   folderIsGone, or absent to check no folder
+ * A refusal for a folder that is gone also carries `code` (LOCATION_MISSING).
  */
 export function guardOpencodeV2Request(msg, ctx = {}) {
   const malformed = canonicalizeOpencodeV2Message(msg);
@@ -110,6 +136,10 @@ export function guardOpencodeV2Request(msg, ctx = {}) {
   }
   if (protectedRun && ctx.nativeMutationTypes?.has(type)) {
     return { status: 409, error: 'Stop the native automation before modifying its session' };
+  }
+  const folder = OPENCODE_V2_WS_FOLDER_TYPES.includes(type) ? directoryOf(msg) : undefined;
+  if (folder && ctx.folderGone?.(folder)) {
+    return { status: 404, code: LOCATION_MISSING_CODE, error: locationNotFoundMessage(folder) };
   }
   return null;
 }

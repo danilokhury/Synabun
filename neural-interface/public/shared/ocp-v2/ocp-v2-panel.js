@@ -1,4 +1,6 @@
 import { syncOpenCodeWorkerQuestions, forgetWorkerQuestions } from './ocp-v2-ws.js';
+import { getProviderMeta, isMaritacaModel } from '../provider-icons.js';
+
 import { workerRestart } from '../worker-restart.js';
 import { t } from '../i18n.js';
 import { hostedSidepanelId, sidepanelHost } from '../ui-sidepanel-runtime.js';
@@ -37,6 +39,7 @@ import { closeWithPromptsConfirm, prefilledDraft, samePrompts } from './ocp-v2-c
 import { setSelectOptions, projectOptionRows } from './ocp-v2-select.js';
 import { replyFailed, replyError } from './ocp-v2-caps.js';
 import { rehydratePanelSession, recoveredErrorSweep } from './ocp-v2-rehydrate.js';
+import { missingLocationOf, missingPanelLocation, planLocationRecovery, sameFolder } from './ocp-v2-location-logic.js';
 import { headerStatus } from './ocp-v2-render-logic.js';
 import { runTurnLive } from '../sidepanel-session-status.js';
 import {
@@ -104,6 +107,7 @@ let _statusEl = null;
 let _titleEl = null;
 let _tabSessionIds = [];        // ordered session IDs that own a tray pill
 let _tabPills = new Map();      // sessionId -> pill element
+const maritacaTabs = new Set();
 let _tabInfoCache = new Map();  // sessionId -> last-known session info (title, etc.)
 const _automationRunIds = new Map(); // sessionId -> native loop runId
 // The sessions whose automation run is live. The ownership module keeps the set, so that the socket layer
@@ -140,6 +144,9 @@ let _docClickWired = false;
 let _healTimer = null;
 let _healingPromise = null;
 let _healRetryCount = 0;
+// Folders OpenCode said are gone ("Location not found"), and the move away from one that is under way.
+const _goneLocations = new Set();
+let _locationRecovery = null;
 const _sessionTitleState = new Map(); // sessionId -> { state, title, requestId, controller }
 const _titleReassertTimers = new Map();
 // Renames whose request is out. Until the server has answered, the title a
@@ -635,7 +642,7 @@ function buildPanel() {
         (runId) => fetch('/api/loop/stop', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ runId }),
+          body: JSON.stringify({ runId, action: 'stop' }),
         }).catch(() => {}),
       );
       if (stopped) saveAutomationTabs();
@@ -719,10 +726,12 @@ function handleStoreEvent(event, stateSnapshot) {
   if (event?.type === 'running:set' && !nextState.running && nextState.sessionId) {
     _titleNeedsReassert(nextState.sessionId);
   }
+  if (event?.type === 'config:model') rememberTabBrand(nextState.sessionId, nextState.model);
   if (event?.type === 'session:info') keepOwnSessionTitle(nextState);
   if (TRANSCRIPT_EVENTS.has(event?.type)) queueHeaderSync();
   else syncHeader();
   maybeScheduleAutoHeal(event, nextState);
+  maybeRecoverMissingLocation(event, nextState);
 }
 
 // A message, a part or a streamed chunk changes nothing the header or the pills show (headerStatus and the tab
@@ -877,7 +886,84 @@ function isRecoverablePanelError(err) {
   const msg = String(err?.message || err?.error || err || '').trim();
   if (!msg) return true;
   if (/choose continue|question reply failed|plan action failed|could not create plan file|could not read the plan|rename failed|could not delete|could not unarchive|not queued/i.test(msg)) return false;
+  // A folder that is gone is not a lost connection: maybeRecoverMissingLocation moves the panel on.
+  if (missingLocationOf(msg)) return false;
   return /websocket|closed|disconnect|offline|reconnect|request timeout|timeout|network|failed|server|session|opencode|send|boot|no session|not connected/i.test(msg);
+}
+
+// ── A session whose folder is gone ───────────────────────────────────────────
+// OpenCode binds a session to the folder it was created in and refuses every
+// prompt of one whose folder no longer exists ("Location not found: …"): a
+// worktree that was removed, a project that was moved. Nothing repairs such a
+// session, so the panel moves on by itself: a new session in the registered
+// project the folder was inside (else with no project), and a notice that says
+// so. The prompt that failed is back in the box by then, and the box is the
+// panel's: it stays. ocp-v2-location-logic.js decides; this is the panel's own
+// rebinding (repair), so a choice the user makes meanwhile still wins.
+function isGoneLocation(folder) {
+  for (const gone of _goneLocations) if (sameFolder(gone, folder)) return true;
+  return false;
+}
+
+function maybeRecoverMissingLocation(event, s) {
+  if (event?.type !== 'error:push' || !_panelEl || _locationRecovery) return;
+  const last = s.errors[s.errors.length - 1];
+  if (!last || last.notice) return;
+  const missing = missingPanelLocation({
+    message: last.message, cwd: s.cwd || '', sessionDirectory: s.sessionInfo?.directory || '',
+  });
+  if (!missing) return;
+  const at = captureBinding(getDefaultStore());
+  _locationRecovery = recoverMissingLocation(missing, at)
+    .catch((err) => console.warn('[ocp-v2-panel] missing-folder recovery failed', err))
+    .finally(() => { _locationRecovery = null; });
+}
+
+async function recoverMissingLocation(missing, at) {
+  // The send that failed settles first (its text and attachments return to the box).
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const projects = await loadProjectsOnce();
+  // The user went somewhere else meanwhile: that choice stands.
+  if (!at.isCurrent()) return;
+  _goneLocations.add(missing);
+  // A folder the panel moves to may be gone as well (a registered project that was deleted): the next one, then none.
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const plan = planLocationRecovery({ missing, cwd: getState().cwd || '', projects, avoid: [..._goneLocations] });
+    if (!plan) return;
+    const moved = await moveToFolder(plan.fallback);
+    if (moved.ok) {
+      pushError({ message: plan.notice, notice: true });
+      return;
+    }
+    if (!moved.missing || !sameFolder(moved.missing, plan.fallback)) {
+      pushError({ message: moved.error });
+      return;
+    }
+    _goneLocations.add(moved.missing);
+  }
+}
+
+// The panel on `folder` ('' for no project) with a new session, leaving the one on screen.
+async function moveToFolder(folder) {
+  const next = String(folder || '');
+  const nav = _nav.repair();
+  setCwd(next);
+  if (next) storage.setItem(STOR_PROJECT, next);
+  else      storage.removeItem(STOR_PROJECT);
+  if (nav.sessionId) {
+    nav.apply(() => {
+      clearMessages();
+      setSession(null, null);
+      bindPrimarySession(getDefaultStore(), null);
+    });
+  }
+  try {
+    await startFreshSession({ cwd: next || undefined, nav });
+    return { ok: true };
+  } catch (err) {
+    const error = err?.message || 'New session failed';
+    return { ok: false, error, missing: missingLocationOf(error) };
+  }
 }
 
 // ── Session picker + rename ─────────────────────────────────────────────────
@@ -1471,7 +1557,8 @@ async function switchToSession(sid, info = null, { nav } = {}) {
     const dirFromInfo = info?.directory;
     if (dirFromInfo && dirFromInfo !== getState().cwd) {
       setCwd(dirFromInfo);
-      storage.setItem(STOR_PROJECT, dirFromInfo);
+      // (Not a folder OpenCode said is gone: the next new session would start there.)
+      if (!isGoneLocation(dirFromInfo)) storage.setItem(STOR_PROJECT, dirFromInfo);
     }
   });
   if (!bound) { ensureTab(sid, info); renderPill(); return; }
@@ -1498,8 +1585,9 @@ async function restoreSessionSelections(sid, info) {
     const dir = full.directory;
     if (dir && dir !== getState().cwd) {
       setCwd(dir);
-      storage.setItem(STOR_PROJECT, dir);
+      if (!isGoneLocation(dir)) storage.setItem(STOR_PROJECT, dir);
     }
+    rememberTabBrand(sid, full.model);
     applySessionSelections(getDefaultStore(), full);
     // Fresh metadata too: keeps the title right after a switch.
     getDefaultStore().setSessionInfo(full);
@@ -1625,6 +1713,10 @@ async function boot() {
         for (const sid of savedTabs) {
           const info = byId.get(sid);
           if (info) {
+            if (info.model) {
+              if (isMaritacaModel(info.model)) maritacaTabs.add(sid);
+              else maritacaTabs.delete(sid);
+            }
             liveTabs.push(sid);
             _tabInfoCache.set(sid, info);
             ensureOpenCodeTitleState(sid, info, { manual: true });
@@ -2152,7 +2244,9 @@ function loadTabSessions() {
   try {
     const raw = storage.getItem(STOR_TABS);
     if (!raw) return [];
-    return readSavedTabs(JSON.parse(raw))
+    const tabs = readSavedTabs(JSON.parse(raw));
+    for (const tab of tabs) if (tab.modelBrand === 'maritaca') maritacaTabs.add(tab.sessionId);
+    return tabs
       .map(({ sessionId }) => sessionId)
       .filter((sessionId) => !_foreignActiveAutomationSessions.has(sessionId));
   } catch { return []; }
@@ -2169,7 +2263,7 @@ function saveTabSessions() {
       .map((row) => row.sessionId));
     const preserved = existing.filter(({ sessionId }) => foreignSessionIds.has(sessionId) && !_tabSessionIds.includes(sessionId));
     const tabs = _tabSessionIds.map((sessionId) => ({
-      ...savedById.get(sessionId), sessionId, needsYou: tabNeedsYou(sessionId),
+      ...savedById.get(sessionId), sessionId, modelBrand: maritacaTabs.has(sessionId) ? 'maritaca' : undefined, needsYou: tabNeedsYou(sessionId),
     }));
     storage.setItem(STOR_TABS, JSON.stringify([...tabs, ...preserved]));
     _savedTabWaiting = new Map(tabs.map(({ sessionId, needsYou }) => [sessionId, needsYou]));
@@ -2198,10 +2292,20 @@ function syncSavedTabWaiting() {
   if (_tabSessionIds.some((sid) => _savedTabWaiting.get(sid) !== tabNeedsYou(sid))) saveTabSessions();
 }
 
+function rememberTabBrand(sessionId, model) {
+  if (!sessionId || !model) return;
+  const maritaca = isMaritacaModel(model);
+  if (maritaca === maritacaTabs.has(sessionId)) return;
+  if (maritaca) maritacaTabs.add(sessionId);
+  else maritacaTabs.delete(sessionId);
+  if (_tabSessionIds.includes(sessionId)) saveTabSessions();
+}
+
 function ensureTab(sessionId, info = null) {
   if (!sessionId) return;
   if (info) _tabInfoCache.set(sessionId, info);
   if (!_tabSessionIds.includes(sessionId)) {
+    rememberTabBrand(sessionId, info?.model || (sessionId === getState().sessionId && getState().model));
     _tabSessionIds.push(sessionId);
     saveTabSessions();
   }
@@ -2216,7 +2320,7 @@ function dismissAutomationSession(sessionId) {
     endWorkerRunOnClose(runId, () => fetch('/api/loop/stop', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ runId }),
+      body: JSON.stringify({ runId, action: 'tab_close' }),
     }).catch(() => {}));
   }
   return true;
@@ -2285,6 +2389,7 @@ function removeTab(sessionId, { byUser = false } = {}) {
   _tabSessionIds = _tabSessionIds.filter((s) => s !== sessionId);
   if (_tabSessionIds.length !== before) saveTabSessions();
   _tabInfoCache.delete(sessionId);
+  maritacaTabs.delete(sessionId);
   const titleState = _sessionTitleState.get(sessionId);
   titleState?.controller?.abort();
   _sessionTitleState.delete(sessionId);
@@ -2326,6 +2431,8 @@ function createTabPill(sessionId) {
   pill.className = 'term-minimized-pill ocpv2-session-pill';
   pill.dataset.owner = PANEL_OWNER;
   pill.dataset.sessionId = sessionId;
+  pill.getAutomationRunId = () => _automationRunIds.get(sessionId);
+  pill.hasQueuedWorkerPrompts = () => _automationRunIds.has(sessionId) && promptsWaitingFor(sessionId).length > 0;
   pill.innerHTML = `
     <span class="ocpv2-pill-ring" aria-hidden="true"><i></i></span>
     <span class="term-minimized-pill-icon">${OPENCODE_ICON}</span>
@@ -2424,6 +2531,11 @@ function renderPill() {
       pill = createTabPill(sid);
       if (!pill) continue;
       _tabPills.set(sid, pill);
+    }
+    const brand = maritacaTabs.has(sid) ? 'maritaca' : 'opencode';
+    if (pill.dataset.modelBrand !== brand) {
+      pill.querySelector('.term-minimized-pill-icon').innerHTML = brand === 'maritaca' ? getProviderMeta(brand).icon : OPENCODE_ICON;
+      pill.dataset.modelBrand = brand;
     }
     const labelEl = pill.querySelector('.term-minimized-pill-label');
     // Written only when it changed: the same text again is still a new text node, which the tray's

@@ -6,10 +6,13 @@
 // its mark and nothing else. Every rule below uses a token; add a value to the block first.
 
 import { installCodeCopy } from '../ui-code-copy.js';
+import { installOutput } from '../ui-output.js';
 
 export function injectMaritacaStyles() {
   // The Copy button of every code block: its stylesheet and its one click listener, in this document.
   installCodeCopy(document);
+  // The reading layer of an agent's answer (prose, tables, code): one stylesheet for the six panels.
+  installOutput(document);
   if (document.getElementById('maritaca-panel-styles')) return;
   const style = document.createElement('style');
   style.id = 'maritaca-panel-styles';
@@ -146,18 +149,9 @@ export function injectMaritacaStyles() {
     .mtc-msg-user .mtc-msg-card { max-width: 85%; border-radius: var(--mtc-radius-lg); background: var(--mtc-surface-2); padding: var(--mtc-space-2) var(--mtc-space-3); }
     .mtc-msg-text { white-space: pre-wrap; word-break: break-word; font-size: var(--mtc-fs-md); line-height: var(--mtc-lh); }
     .mtc-msg-agent { flex-direction: column; color: var(--mtc-text); word-break: break-word; gap: 4px; }
-    .mtc-md { font-size: var(--mtc-fs-md); line-height: var(--mtc-lh); color: var(--mtc-text); min-width: 0; overflow-wrap: anywhere; }
-    .mtc-md > :first-child { margin-top: 0; } .mtc-md > :last-child { margin-bottom: 0; }
-    .mtc-md :is(p, ul, ol, pre, blockquote, table) { margin: 0 0 8px; }
-    .mtc-md :is(h1, h2, h3, h4) { margin: 12px 0 6px; font-size: var(--mtc-fs-lg); font-weight: 600; line-height: var(--mtc-lh-tight); }
-    .mtc-md :is(ul, ol) { padding-left: 18px; }
-    .mtc-md a { color: var(--mtc-link); }
-    .mtc-md code { font-family: var(--mtc-mono); font-size: 0.92em; background: var(--mtc-surface-2); padding: 1px 4px; border-radius: var(--mtc-radius-sm); }
-    .mtc-md pre { background: var(--mtc-surface-1); border-radius: var(--mtc-radius-md); padding: 8px 10px; overflow-x: auto; font: var(--mtc-fs-sm)/1.55 var(--mtc-mono); }
-    .mtc-md pre code { background: none; padding: 0; }
-    .mtc-md blockquote { border-left: 2px solid var(--mtc-border-strong); padding-left: 10px; color: var(--mtc-text-2); }
-    .mtc-md table { border-collapse: collapse; display: block; overflow-x: auto; }
-    .mtc-md :is(th, td) { border: 1px solid var(--mtc-border); padding: 3px 8px; text-align: left; }
+    /* An answer's prose, tables and code are the shared reading layer (../ui-output.js): one system for the six
+       side panels. A tag is never styled here again; this panel's voice is its link colour. */
+    .mtc-md { --sbo-link: var(--mtc-link); }
     .mtc-thought { margin: 2px 0; font-size: var(--mtc-fs-sm); color: var(--mtc-text-3); flex-shrink: 0; }
     .mtc-thought summary { cursor: pointer; list-style: none; padding: 4px 0; display: inline-flex; align-items: center; gap: 6px; }
     .mtc-thought summary::-webkit-details-marker { display: none; }
@@ -435,6 +429,13 @@ export function injectMaritacaStyles() {
     @media (prefers-reduced-motion: reduce) {
       .mtc-panel, .mtc-panel *, .mtc-panel *::before, .mtc-panel *::after, .mtc-session-pill, .mtc-session-pill *, .mtc-pop, .mtc-pop * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
     }
+
+    /* ── Reading pass (2026-11-21) ──
+       An answer's prose, tables and code are ../ui-output.js. Here: what the user wrote reads at the answer's size,
+       a turn's footer is legible, and a touch screen (no hover) always shows a message's Copy / Edit / Retry. */
+    .mtc-msg-text { font-size: var(--mtc-fs-lg); }
+    .mtc-turn-foot { font-size: var(--mtc-fs-sm); }
+    @media (hover: none) { .mtc-turn-actions { opacity: 1; } }
   `;
   document.head.appendChild(style);
 }

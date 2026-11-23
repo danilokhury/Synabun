@@ -8,10 +8,13 @@
 // the tray pill).
 
 import { installCodeCopy } from '../ui-code-copy.js';
+import { installOutput } from '../ui-output.js';
 
 export function injectAntigravityStyles() {
   // The Copy button of every code block: its stylesheet and its one click listener, in this document.
   installCodeCopy(document);
+  // The reading layer of an agent's answer (prose, tables, code): one stylesheet for the six panels.
+  installOutput(document);
   if (document.getElementById('antigravity-panel-styles')) return;
   const style = document.createElement('style');
   style.id = 'antigravity-panel-styles';
@@ -212,18 +215,9 @@ export function injectAntigravityStyles() {
     .agy-msg-agent, .agy-msg-relay { flex-direction: column; color: var(--agy-text); word-break: break-word; }
     .agy-msg-relay { margin: 0 var(--agy-space-2); border-left: 2px solid var(--agy-border-strong); padding-left: var(--agy-space-3); }
     .agy-msg-relay-label { font-size: var(--agy-fs-sm); color: var(--agy-text-3); }
-    .agy-md { font-size: var(--agy-fs-md); line-height: var(--agy-lh); color: var(--agy-text); min-width: 0; overflow-wrap: anywhere; }
-    .agy-md > :first-child { margin-top: 0; } .agy-md > :last-child { margin-bottom: 0; }
-    .agy-md :is(p, ul, ol, pre, blockquote, table) { margin: 0 0 8px; }
-    .agy-md :is(h1, h2, h3, h4) { margin: 12px 0 6px; font-size: var(--agy-fs-lg); font-weight: 600; line-height: var(--agy-lh-tight); }
-    .agy-md :is(ul, ol) { padding-left: 18px; }
-    .agy-md a { color: var(--agy-link); }
-    .agy-md code { font-family: var(--agy-mono); font-size: 0.92em; background: var(--agy-surface-2); padding: 1px 4px; border-radius: var(--agy-radius-sm); }
-    .agy-md pre { background: var(--agy-surface-1); border-radius: var(--agy-radius-md); padding: 8px 10px; overflow-x: auto; font: var(--agy-fs-sm)/1.55 var(--agy-mono); }
-    .agy-md pre code { background: none; padding: 0; }
-    .agy-md blockquote { border-left: 2px solid var(--agy-border-strong); padding-left: 10px; color: var(--agy-text-2); }
-    .agy-md table { border-collapse: collapse; display: block; overflow-x: auto; }
-    .agy-md :is(th, td) { border: 1px solid var(--agy-border); padding: 3px 8px; text-align: left; }
+    /* An answer's prose, tables and code are the shared reading layer (../ui-output.js): one system for the six
+       side panels. A tag is never styled here again; this panel's voice is its link colour. */
+    .agy-md { --sbo-link: var(--agy-link); }
     .agy-attach-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
     .agy-msg-image { display: block; width: auto; height: auto; max-width: min(220px, 100%); max-height: 180px; object-fit: contain; border-radius: var(--agy-radius-sm); }
     .agy-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 220px; padding: 2px 6px; border-radius: var(--agy-radius-sm); background: var(--agy-surface-2); color: var(--agy-text-2); font-size: var(--agy-fs-sm); }
@@ -624,6 +618,14 @@ export function injectAntigravityStyles() {
       .agy-panel { transition: none; }
       .agy-panel *, .agy-pop * { animation: none !important; transition: none !important; }
     }
+
+    /* ── Reading pass (2026-11-21) ──
+       An answer's prose, tables and code are ../ui-output.js. Here: what the user wrote reads at the answer's size,
+       a turn's footer is legible, and what the agent says right before a tool call is secondary text (colour only). */
+    .agy-msg-text { font-size: var(--agy-fs-lg); }
+    .agy-turn-foot { font-size: var(--agy-fs-sm); }
+    .agy-msg-agent:has(+ .agy-card) .agy-md { --sbo-text: var(--agy-text-2); --sbo-strong: var(--agy-text); }
+    @media (hover: none) { .agy-turn-actions { opacity: 1; } }
   `;
   document.head.appendChild(style);
 }

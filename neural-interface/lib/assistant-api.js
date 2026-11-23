@@ -7,6 +7,7 @@
 // composer attachments, Claude/Codex account management, and the sidepanel tab registry.
 // Mounted from server.js with `app.use('/api/assistant', createAssistantApi(deps))`.
 
+import { assistantStopProvenance, pageStopProvenance, personAskedToStop } from './worker-stop.js';
 import { dispatchInput } from './assistant-tools.js';
 import { expandAgentProposals, getAgentResolver } from './agents/resolve.js'; // agents-p1
 import { Router } from 'express';
@@ -213,7 +214,7 @@ export function createAssistantApi({
       // identified (macOS, the lookup failed) never verifies: it is nobody here, and its refusals say 503
       // PEER_UNAVAILABLE (uiOnly, refuseRunRead) rather than a 403 the page could not cure.
       if (pageSession && typeof pageSession.verify === 'function' && !pageSession.verify(req)) return { kind: 'unknown', assistantSessionId: bodySession ? String(bodySession) : null, pin: '', pageless: true };
-      return { kind: 'ui', assistantSessionId: bodySession ? String(bodySession) : null };
+      return { kind: 'ui', verifiedPage: typeof pageSession?.verify === 'function', assistantSessionId: bodySession ? String(bodySession) : null };
     }
     // The pin counts only with its proof: a forged one names nobody here, not even for attribution.
     let verdict = null;
@@ -921,9 +922,11 @@ export function createAssistantApi({
       if (!assistantSessionId && !workflowId && req.assistantCaller.kind !== 'ui') {
         return res.status(400).json({ ok: false, code: 'SCOPE_REQUIRED', error: 'Pass assistant_session_id (your ASSISTANT_SESSION_ID) or workflow_id to stop runs.' });
       }
-      const reason = body.reason || 'kill_all';
-      const result = await dispatcher.killAll({ assistantSessionId, workflowId, reason });
-      // Who stopped every run, when: the records only say `kill_all` (2026-10-24 had to be traced by elimination).
+      const stopProvenance = { ...assistantStopProvenance(req.assistantCaller, body.action), scope: workflowId ? 'workflow' : assistantSessionId ? 'session' : 'all' };
+      // 'user' is recorded only for a control a person operated, whatever the request says.
+      const reason = body.reason && (body.reason !== 'user' || personAskedToStop(stopProvenance)) ? body.reason : 'kill_all';
+      const result = await dispatcher.killAll({ assistantSessionId, workflowId, reason, stopProvenance });
+      // Keep the scope in the operational log as well as provenance on each stopped run.
       const caller = req.assistantCaller.kind === 'ui' ? 'the page' : `the brain of ${req.assistantCaller.assistantSessionId || 'an unknown session'}`;
       const scope = [assistantSessionId ? `session ${assistantSessionId}` : null, workflowId ? `workflow ${workflowId}` : null].filter(Boolean).join(', ') || 'every session';
       const stopped = Array.isArray(result?.stopped) ? result.stopped : [];
@@ -1040,7 +1043,7 @@ export function createAssistantApi({
       // A run whose provider share is used up: the session's unspent budget is divided again first, then
       // sendTurn decides (it refuses with BUDGET_SHARE_EXHAUSTED when no money could move).
       try { await dispatcher.coverFollowUp?.(req.params.runId); } catch { /* sendTurn decides on the shares as they are */ }
-      res.json(dispatcher.sendTurn(req.params.runId, body.text ?? body.message, { origin, queue: body.queue !== false }));
+      res.json(await dispatcher.sendTurn(req.params.runId, body.text ?? body.message, { origin, queue: body.queue !== false }));
     } catch (error) { sendError(res, error); }
   });
   router.post('/runs/:runId/permission', orchestrationGuard, (req, res) => {
@@ -1067,7 +1070,13 @@ export function createAssistantApi({
     } catch (error) { sendError(res, error); }
   });
   router.post('/runs/:runId/stop', orchestrationGuard, async (req, res) => {
-    try { res.json(await dispatcher.stop(req.params.runId, req.body?.reason || (req.assistantCaller.kind === 'ui' ? 'user' : 'assistant'))); } catch (error) { sendError(res, error); }
+    const caller = req.assistantCaller;
+    const stopProvenance = assistantStopProvenance(caller, req.body?.action);
+    // 'user' is recorded only for a control a person operated, whatever the request says.
+    const said = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    const person = personAskedToStop(stopProvenance);
+    const reason = said && (said !== 'user' || person) ? said : person ? 'user' : caller.credentialed ? 'assistant' : 'unknown';
+    try { res.json(await dispatcher.stop(req.params.runId, reason, stopProvenance)); } catch (error) { sendError(res, error); }
   });
   // Finished runs are cleared from the agents tray by the owner (the page) or the Assistant brain of the run's
   // own session; never by a worker (even its own run). A brain's delete is scoped to its session's runs.
@@ -1102,8 +1111,10 @@ export function createAssistantApi({
   // The user closed the sidepanel tab of a worker that finished its task: completed, never "stopped
   // by the user" (409 RUN_NOT_FINISHED for any other run, which the tab then stops as before).
   router.post('/runs/:runId/tab-closed', (req, res) => {
-    if (callerContext(req).kind !== 'ui') return uiOnly(req, res, 'Only the sidepanel that closed the tab reports it.');
-    try { res.json(dispatcher.completeClosedTab(req.params.runId)); } catch (error) { sendError(res, error); }
+    const caller = callerContext(req);
+    if (caller.kind !== 'ui') return uiOnly(req, res, 'Only the sidepanel that closed the tab reports it.');
+    const action = req.body?.action === 'tray_auto_close' ? 'tray_auto_close' : 'tab_close';
+    try { res.json(dispatcher.completeClosedTab(req.params.runId, pageStopProvenance(action, caller.verifiedPage))); } catch (error) { sendError(res, error); }
   });
   router.post('/runs/:runId/focus', (req, res) => {
     const run = dispatcher.get(req.params.runId);

@@ -56,7 +56,10 @@ export function deleteSessionRows(db, sessionId, provider) {
   if (!isSessionId(sessionId)) return out;
   const failures = [];
   const drop = (key, table, sql, ...params) => {
-    try { out[key] = Number(db.prepare(sql).run(...params).changes) || 0; }
+    try {
+      const changes = db.prepare(sql).run(...params).changes;
+      if (key) out[key] = Number(changes) || 0;
+    }
     catch (err) {
       const message = String(err?.message || err);
       if (/no such table/i.test(message)) return;
@@ -65,6 +68,7 @@ export function deleteSessionRows(db, sessionId, provider) {
   };
   drop('chunks', 'session_chunks', 'DELETE FROM session_chunks WHERE session_id = ?', sessionId);
   drop('fts', 'session_fts', 'DELETE FROM session_fts WHERE session_id = ? AND provider = ?', sessionId, provider);
+  drop(null, 'session_fts_lookup', 'DELETE FROM session_fts_lookup WHERE session_id = ? AND provider = ?', sessionId, provider);
   drop('cache', 'session_cache', 'DELETE FROM session_cache WHERE session_id = ? AND provider = ?', sessionId, provider);
   if (failures.length) throw Object.assign(new Error(failures.join('; ')), { partial: out });
   return out;

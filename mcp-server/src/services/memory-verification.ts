@@ -1,3 +1,4 @@
+import { withMemoryWrite } from './sqlite-write.js';
 import { createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { isAbsolute, resolve } from 'node:path';
@@ -61,8 +62,10 @@ export async function verifyMemorySources(d: DatabaseSync,id:string) {
     }catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'){if(relative)unknown=true;else stale=true;}else unknown=true;}
     finally{stream.destroy();}
   }
-  if(Number(d.prepare('SELECT MAX(revision) AS n FROM memory_revisions WHERE memory_id=?').get(id)?.n || 0)!==revision)return;
-  d.prepare(`INSERT INTO memory_metadata(memory_id,verification,verified_revision,checked_at) VALUES(?,?,?,?)
-    ON CONFLICT(memory_id) DO UPDATE SET verification=excluded.verification,verified_revision=excluded.verified_revision,checked_at=excluded.checked_at`)
-    .run(id,stale ? 'stale' : unknown ? 'unknown' : 'current',revision,new Date().toISOString());
+  await withMemoryWrite(d, () => {
+    if(Number(d.prepare('SELECT MAX(revision) AS n FROM memory_revisions WHERE memory_id=?').get(id)?.n || 0)!==revision)return;
+    d.prepare(`INSERT INTO memory_metadata(memory_id,verification,verified_revision,checked_at) VALUES(?,?,?,?)
+      ON CONFLICT(memory_id) DO UPDATE SET verification=excluded.verification,verified_revision=excluded.verified_revision,checked_at=excluded.checked_at`)
+      .run(id,stale ? 'stale' : unknown ? 'unknown' : 'current',revision,new Date().toISOString());
+  });
 }

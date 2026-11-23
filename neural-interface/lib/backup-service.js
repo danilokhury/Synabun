@@ -1,5 +1,6 @@
 import {
   accessSync,
+  chmodSync,
   closeSync,
   copyFileSync,
   constants as FS_CONSTANTS,
@@ -18,17 +19,27 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { basename, dirname, extname, isAbsolute, join, parse as parsePath, relative, resolve, sep } from 'node:path';
 import * as nodeSqlite from 'node:sqlite';
 import { DatabaseSync } from 'node:sqlite';
-import { Worker } from 'node:worker_threads';
+import { parentPort, Worker, workerData } from 'node:worker_threads';
 import archiver from 'archiver';
+import { markActivity } from './loop-stall.js';
 import { openZipArchive, readZipEntry, verifyBackupChecksums } from './backup-zip-reader.js';
 import { writeZipArchive } from './backup-zip-writer.js';
+import { authKeyOf, BACKUP_ENC_EXTENSION, BackupEncryptionError, isEncryptedBackupFile, readBackupHeaderFile, snapshotRecordDigest } from './backup-crypto.js';
+import { sweepRestoreStages } from './backup-restore-stage.js';
+import { createEncryptedBackupWriter, openEncryptedBackupSource } from './backup-crypto-io.js';
+import { backupRecipientFor } from './backup-encryption.js';
 import { hashFileSync, walkDataHomeTree } from '../../lib/data-home-files.js';
 import { LOCK_FILE_NAME } from './rulesets/lock.js';
+import {
+  BACKUP_GROUP_IDS, backupGroupOf, checkManifestGroups, dataDirsOfGroup, estimateArchivedBytes, isNeverBackedUp,
+  isNeverBackedUpDir, manifestGroups, selectedBackupGroups,
+} from './backup-groups.js';
 
 export const BACKUP_MANIFEST_VERSION = 3;
 export const BACKUP_PREFIX = 'synabun-auto-backup';
@@ -129,7 +140,10 @@ const ESSENTIAL_STATE_EXTENSIONS = new Set(['.db', '.sqlite', '.sqlite3', '.json
 // npm update path is what made upgrades look broken.
 const UPGRADE_SNAPSHOT_SOFT_LIMIT_BYTES = 1024 * 1024 * 1024;
 
+// For estimates only (what a snapshot leaves out, a progress hint): any file it cannot stat counts as 0 bytes. A
+// decision about what to archive uses backupFileSize, where only a missing file is 0 and any other error is thrown.
 function fileBytes(path) {
+  reportBackupWorkerProgress();
   try { return statSync(path).size; } catch { return 0; }
 }
 
@@ -183,8 +197,73 @@ function safeTimestamp(date) {
   return date.toISOString().replace(/[:.]/g, '-');
 }
 
-function archiveNameFor(kind, createdAt) {
-  return `synabun-${kind}-${safeTimestamp(createdAt)}.zip`;
+function archiveNameFor(kind, createdAt, encrypted = false) {
+  return `synabun-${kind}-${safeTimestamp(createdAt)}.zip${encrypted ? BACKUP_ENC_EXTENSION : ''}`;
+}
+
+// ── Encryption (lib/backup-encryption.js, docs/backup-encryption.md) ──
+//
+// Every function that makes a backup asks here who it is for, by itself: a caller that says nothing gets what the
+// data home's key file says, so a new caller cannot forget it. There is no way to ask for a plain backup while the
+// owner has encryption on, and no fallback to one: when the key file is there and cannot be used, the lookup throws
+// and the backup fails.
+
+/**
+ * Who a backup of `dataHome` is encrypted for: null (the owner has not turned encryption on) or
+ * { recipient, chunkSize? }. `encryption`: what the caller passed; undefined means "what the owner set".
+ */
+function backupEncryptionFor(dataHome, encryption) {
+  if (encryption === undefined) {
+    const recipient = backupRecipientFor(dataHome);
+    return recipient ? { recipient } : null;
+  }
+  if (encryption && typeof encryption === 'object' && encryption.recipient) return encryption;
+  throw new BackupEncryptionError('BACKUP_ENC_OPTION', 'createVerifiedBackup: `encryption` is { recipient } or left out', { status: 500 });
+}
+
+/** Where an encrypted backup stages its plaintext copies: inside the data home, never in the destination folder. */
+export function privateBackupStagingRoot(dataHome) {
+  return resolve(dataHome, 'backups', 'encrypt-staging');
+}
+
+/**
+ * The staging folder of an encrypted backup, made private (0700): the copies in it are plaintext, and the
+ * destination may be a drive without permissions or a folder another program uploads. Removed with the backup.
+ */
+async function makePrivateStage(dataHome) {
+  const root = privateBackupStagingRoot(dataHome);
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  if (process.platform !== 'win32') await chmod(root, 0o700);
+  const stage = await mkdtemp(resolve(root, `.synabun-files-${process.pid}-`));
+  if (process.platform !== 'win32') await chmod(stage, 0o700);
+  return stage;
+}
+
+/** The sidecar of an encrypted upgrade snapshot: what a later start reads without the password (see writeSnapshotInfo). */
+export function backupInfoPath(path) {
+  return `${path}.info.json`;
+}
+
+/** Removes a backup file and what belongs to it (an encrypted upgrade snapshot's sidecar). */
+export async function removeBackupFile(path) {
+  await unlink(path);
+  await rm(backupInfoPath(path), { force: true }).catch(() => {});
+}
+
+function pathInside(candidate, parent) {
+  const rel = relative(resolve(parent), resolve(candidate));
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+/** Room on two volumes: the archive in the destination, the staged copies in the data home's private folder. */
+function checkSplitWorkingSpace(folderPath, stageRoot, estimate, getAvailableBytes, reserveBytes) {
+  let sameVolume = true;
+  try { sameVolume = statSync(folderPath).dev === statSync(stageRoot).dev; } catch { /* one check, as before */ }
+  if (sameVolume) return checkWorkingSpace(folderPath, estimate, getAvailableBytes);
+  const reserve = Math.max(0, Number(reserveBytes) || 0);
+  const staged = estimate.stagedMutableBytes + estimate.sqliteSnapshotBytes;
+  checkWorkingSpace(stageRoot, { ...estimate, requiredBytes: reserve + staged }, getAvailableBytes);
+  return checkWorkingSpace(folderPath, { ...estimate, requiredBytes: Math.max(0, estimate.requiredBytes - staged) }, getAvailableBytes);
 }
 
 function hashFile(path) {
@@ -199,28 +278,6 @@ function hashFile(path) {
 
 function escapeSqliteString(value) {
   return String(value).replace(/'/g, "''");
-}
-
-function createConsistentSqliteSnapshot(sourcePath, snapshotPath) {
-  if (!existsSync(sourcePath)) return null;
-  try { if (existsSync(snapshotPath)) unlinkSync(snapshotPath); } catch {}
-  let source;
-  let snapshot;
-  try {
-    source = new DatabaseSync(sourcePath);
-    source.exec('PRAGMA busy_timeout = 10000');
-    source.exec(`VACUUM INTO '${escapeSqliteString(snapshotPath)}'`);
-    snapshot = new DatabaseSync(snapshotPath, { readOnly: true });
-    const integrityRow = snapshot.prepare('PRAGMA integrity_check').get();
-    const integrity = integrityRow?.integrity_check || integrityRow?.integrity || 'unknown';
-    if (integrity !== 'ok') throw new Error(`SQLite snapshot integrity check returned: ${integrity}`);
-    let memoryCount = null;
-    try { memoryCount = Number(snapshot.prepare('SELECT COUNT(*) AS count FROM memories').get()?.count || 0); } catch {}
-    return { path: snapshotPath, integrity, memoryCount, sizeBytes: statSync(snapshotPath).size };
-  } finally {
-    try { snapshot?.close(); } catch {}
-    try { source?.close(); } catch {}
-  }
 }
 
 // SQLite rollback journals, including the ones left beside migration copies
@@ -241,19 +298,19 @@ export function isLocalProfileFolderPath(relativePath) {
   return parts[0] === 'local-profiles' && parts.length > 2;
 }
 
+// What no archive of any kind holds: one list, in backup-groups.js (isNeverBackedUp), asked by the full backup, the
+// upgrade snapshot and the size estimate. It names what the three lists above name, and since 2026-11-21 also every
+// log (a rotated server-stdout.log.1 was 50 MB of a backup), the launcher's and supervisor's records, the hooks' lock
+// file, the automation browser's Chromium profiles, imports left in staging, and the system's own .DS_Store files.
 function shouldSkipDataPath(relativePath) {
   const normalized = relativePath.replace(/\\/g, '/');
   const parts = normalized.split('/');
   const name = parts.at(-1);
+  if (isNeverBackedUp(normalized)) return true;
   if (isLocalProfileFolderPath(normalized)) return true;
-  if (parts[0] === 'updater') return true;
-  if (parts[0] === 'logs') return true;
   if (parts.length > 1 && EXCLUDED_DATA_DIRS.has(parts[0])) return true;
   if (TRANSIENT_DATA_NAMES.has(name)) return true;
   if (isLockOnlyDataFile(name)) return true;
-  if (name.endsWith('.tmp') || name.endsWith('.pid')) return true;
-  if (/\.db-(?:wal|shm)$/i.test(name)) return true;
-  if (SQLITE_JOURNAL_RE.test(name)) return true;
   return false;
 }
 
@@ -306,20 +363,24 @@ export function assertBackupDestinationMounted(folderPath, options) {
 
 // De-duplicate as files are discovered. Later additional entries take precedence,
 // as before, without constructing an argument list or a second subtree listing.
-function collectBackupFiles(dataHome, filters, additionalEntries) {
+// `skipDirs[dir]`: a folder of that data folder (relative path) the walk does not enter, because the filter would
+// drop every file in it anyway.
+function collectBackupFiles(dataHome, filters, additionalEntries, skipDirs = {}) {
   const entries = new Map();
   const add = (diskPath, archivePath) => entries.set(archivePath.replace(/\\/g, '/'), { diskPath, archivePath });
   const envPath = resolve(dataHome, '.env');
   if (existsSync(envPath)) add(envPath, 'env.bak');
 
-  function collect(root, archiveRoot, filter) {
-    for (const { path, stat } of walkDataHomeTree(root)) {
+  function collect(root, archiveRoot, filter, skipDir = null) {
+    const descend = skipDir ? (path) => !skipDir(relative(root, path).replace(/\\/g, '/')) : null;
+    for (const { path, stat } of walkDataHomeTree(root, { descend })) {
+      reportBackupWorkerProgress();
       if (!stat.isFile()) continue;
       const rel = relative(root, path).replace(/\\/g, '/');
       if (!filter || filter(rel)) add(path, rel ? `${archiveRoot}/${rel}` : archiveRoot);
     }
   }
-  for (const dir of BACKUP_DATA_DIRS) collect(resolve(dataHome, dir), dir, filters[dir]);
+  for (const dir of BACKUP_DATA_DIRS) collect(resolve(dataHome, dir), dir, filters[dir], skipDirs[dir]);
   for (const entry of additionalEntries) {
     if (entry?.diskPath && entry?.archivePath) collect(entry.diskPath, entry.archivePath);
   }
@@ -327,6 +388,7 @@ function collectBackupFiles(dataHome, filters, additionalEntries) {
 }
 
 function backupFileSize(file) {
+  reportBackupWorkerProgress();
   try { return statSync(file.diskPath).size; }
   catch (error) {
     if (error?.code === 'ENOENT') return 0;
@@ -350,13 +412,11 @@ export function backupAvailableBytes(folderPath) {
   return Number(stats.bavail) * Number(stats.bsize);
 }
 
-export function assertBackupWorkingSpace({
-  folderPath,
+function estimateBackupWorkingSpace({
   files = [],
   databasePath = null,
   expectedArchiveBytes = 0,
   freeSpaceReserveBytes = BACKUP_FREE_SPACE_RESERVE_BYTES,
-  getAvailableBytes = backupAvailableBytes,
 } = {}) {
   const primaryDatabaseBytes = databasePath && existsSync(databasePath) ? statSync(databasePath).size : 0;
   let inputBytes = primaryDatabaseBytes;
@@ -373,17 +433,19 @@ export function assertBackupWorkingSpace({
     + stagedMutableBytes
     + sqliteSnapshotBytes
     + archiveBytes;
+  return { requiredBytes, archiveBytes, stagedMutableBytes, sqliteSnapshotBytes };
+}
+
+function checkWorkingSpace(folderPath, estimate, getAvailableBytes) {
   const availableBytes = Number(getAvailableBytes(folderPath));
-  if (Number.isFinite(availableBytes) && availableBytes < requiredBytes) {
-    throw new BackupStorageError({ availableBytes, requiredBytes, folderPath });
+  if (Number.isFinite(availableBytes) && availableBytes < estimate.requiredBytes) {
+    throw new BackupStorageError({ availableBytes, requiredBytes: estimate.requiredBytes, folderPath });
   }
-  return {
-    availableBytes,
-    requiredBytes,
-    archiveBytes,
-    stagedMutableBytes,
-    sqliteSnapshotBytes,
-  };
+  return { availableBytes, ...estimate };
+}
+
+export function assertBackupWorkingSpace({ folderPath, getAvailableBytes = backupAvailableBytes, ...inputs } = {}) {
+  return checkWorkingSpace(folderPath, estimateBackupWorkingSpace(inputs), getAvailableBytes);
 }
 
 /**
@@ -392,20 +454,27 @@ export function assertBackupWorkingSpace({
  * so its partial archive is orphaned forever — a killed pre-update snapshot
  * left hundreds of MB behind with nothing to reclaim it.
  */
-export function cleanupStaleBackupArtifacts(folderPath, { maxAgeMs = 60 * 60 * 1000, now = Date.now } = {}) {
+export function cleanupStaleBackupArtifacts(folderPath, { maxAgeMs = 60 * 60 * 1000, now = Date.now, ownerGone = null } = {}) {
   if (!existsSync(folderPath)) return [];
   const removed = [];
   let entries;
   try { entries = readdirSync(folderPath); }
   catch { return removed; }
   for (const name of entries) {
-    const isArchiveTemp = /\.zip\.\d+\.tmp$/.test(name);
+    reportBackupWorkerProgress();
+    const archiveTemp = name.match(/\.zip(?:\.enc)?(?:\.info\.json)?\.(\d+)\.tmp$/);
     const isSqliteTemp = /^\.synabun-(?:db|extra-db)-.*\.tmp$/.test(name);
-    const isStageDir = /^\.synabun-files-/.test(name);
-    if (!isArchiveTemp && !isSqliteTemp && !isStageDir) continue;
+    const stageDir = name.match(/^\.synabun-files-(\d+)-/);
+    // A sidecar whose snapshot is gone (its removal was interrupted) describes nothing.
+    const orphanInfo = /\.zip\.enc\.info\.json$/.test(name) && !entries.includes(name.slice(0, -'.info.json'.length));
+    if (!archiveTemp && !isSqliteTemp && !stageDir && !orphanInfo) continue;
     const path = resolve(folderPath, name);
     try {
-      if (now() - statSync(path).mtimeMs < maxAgeMs) continue;
+      // The process that made it is named in it. One that is gone will never finish or remove it: it goes now,
+      // whatever its age (a staged copy is plaintext). One that still runs keeps its files for `maxAgeMs`.
+      const owner = Number((archiveTemp || stageDir)?.[1]) || 0;
+      const abandoned = !!ownerGone && owner > 0 && owner !== process.pid && ownerGone(owner);
+      if (!abandoned && now() - statSync(path).mtimeMs < maxAgeMs) continue;
       rmSync(path, { recursive: true, force: true });
       removed.push(name);
     } catch { /* another process may be mid-cleanup; leave it */ }
@@ -413,38 +482,121 @@ export function cleanupStaleBackupArtifacts(folderPath, { maxAgeMs = 60 * 60 * 1
   return removed;
 }
 
-function snapshotMutableBackupFiles(files, folderPath) {
-  if (!files.some(isMutableBackupInput)) return { files, stageDir: null };
-  const stageDir = mkdtempSync(resolve(folderPath, `.synabun-files-${process.pid}-`));
-  const snapshots = [];
+/**
+ * cleanupCrashedBackupArtifacts on a worker thread: the server calls it once as it starts, and a backup folder can
+ * be a drive that answers slowly. `before` defaults to when this process started.
+ */
+export function sweepCrashedBackupArtifacts({ dataHome, folders = [], scratchFolders = [], before = Date.now() - Math.round(process.uptime() * 1000), workerOptions = {} } = {}) {
+  if (!dataHome) throw new Error('dataHome is required');
+  return runBackupTask('sweep', { dataHome, folders, scratchFolders, before }, workerOptions);
+}
+
+/** True when no process has this id any more. A process this one may not signal (EPERM) is there. */
+export function processIsGone(pid) {
+  try { process.kill(pid, 0); return false; }
+  catch (error) { return error?.code === 'ESRCH'; }
+}
+
+/**
+ * What a backup that never finished left behind (a crash, a kill, a power cut): the partial archives, the staged
+ * plaintext copies and the uploads of a restore. The server calls this once as it starts, for every folder a backup
+ * can have worked in; `folders` that do not exist are skipped. Working files of a process that is gone are removed
+ * at once, the rest after an hour, as before a backup. Returns the names removed, by folder.
+ * @param {{ dataHome: string, folders?: string[], scratchFolders?: string[] }} o  `scratchFolders`: folders that hold
+ *        nothing but working files of this server (restore uploads, the browser download's staging): emptied.
+ */
+export function cleanupCrashedBackupArtifacts({ dataHome, folders = [], scratchFolders = [], ownerGone = processIsGone, before = Date.now() } = {}) {
+  const removed = {};
+  const sweep = [...new Set([privateBackupStagingRoot(dataHome), resolve(dataHome, 'backups', 'updates'), ...folders.filter(Boolean).map(folder => resolve(folder))])];
+  for (const folder of sweep) {
+    let names = [];
+    try { names = cleanupStaleBackupArtifacts(folder, { ownerGone }); } catch { /* a drive that is not there */ }
+    if (names.length) removed[folder] = names;
+  }
+  // The command-line restore stages next to the data home; a killed one leaves decrypted files there.
   try {
-    for (let index = 0; index < files.length; index++) {
-      const file = files[index];
-      if (!isMutableBackupInput(file)) {
-        snapshots.push(file);
-        continue;
-      }
-      const diskPath = resolve(stageDir, String(index));
+    const stages = sweepRestoreStages(dataHome, { ownerGone });
+    if (stages.length) removed[dirname(resolve(dataHome))] = stages;
+  } catch { /* a parent folder that cannot be read */ }
+  for (const folder of scratchFolders.filter(Boolean).map(item => resolve(item))) {
+    let names = [];
+    try { names = readdirSync(folder); } catch { continue; }
+    const gone = [];
+    for (const name of names) {
+      // `before`: when this server started. What was written since belongs to a request it is serving now.
       try {
-        copyFileSync(file.diskPath, diskPath);
-        snapshots.push({ ...file, diskPath });
-      } catch (error) {
-        // A runtime file deleted between enumeration and snapshotting is no
-        // longer part of the state being backed up. Other failures are fatal.
-        if (error?.code !== 'ENOENT') throw error;
-      }
+        if (statSync(resolve(folder, name)).mtimeMs >= before) continue;
+        rmSync(resolve(folder, name), { recursive: true, force: true });
+        gone.push(name);
+      } catch { /* in use */ }
     }
-    return { files: snapshots, stageDir };
-  } catch (error) {
-    try { rmSync(stageDir, { recursive: true, force: true }); } catch {}
-    throw error;
+    if (gone.length) removed[folder] = [...(removed[folder] || []), ...gone];
+  }
+  return removed;
+}
+
+/** Raised when a backup is cancelled (createVerifiedBackup `signal`): nothing is published, its working files are removed. */
+export class BackupCancelledError extends Error {
+  constructor() {
+    super('The backup was cancelled.');
+    this.name = 'BackupCancelledError';
+    this.code = 'BACKUP_CANCELLED';
   }
 }
 
-async function writeArchive({ tempPath, files, manifest, level = 6 }) {
+function throwIfCancelled(signal) {
+  if (signal?.aborted) throw new BackupCancelledError();
+}
+
+/**
+ * Start a worker task and await it, stopping its thread when `signal` aborts (the task then rejects, and this throws
+ * cancelled). `start` is called only when the backup is not already cancelled: a thread started for a cancelled backup
+ * would run on against working files its caller is removing.
+ */
+async function cancellable(start, signal) {
+  throwIfCancelled(signal);
+  const task = start();
+  if (!signal) return task;
+  const stop = () => { try { task.cancel?.(); } catch { /* already over */ } };
+  signal.addEventListener('abort', stop, { once: true });
+  try { return await task; }
+  catch (error) {
+    // The thread's own end is kept on the error: the caller's cleanup tries again once native I/O has let go.
+    if (signal.aborted) throw Object.assign(new BackupCancelledError(), { workerTermination: error?.workerTermination });
+    throw error;
+  } finally { signal.removeEventListener('abort', stop); }
+}
+
+// `privateFiles`: the copies are made readable by their owner alone (an encrypted backup's staging).
+async function snapshotMutableBackupFiles(files, stageDir, signal = null, { privateFiles = false } = {}) {
+  const snapshots = [];
+  for (const [index, file] of files.entries()) {
+    throwIfCancelled(signal);
+    if (!isMutableBackupInput(file)) {
+      snapshots.push(file);
+      continue;
+    }
+    const diskPath = resolve(stageDir, String(index));
+    try {
+      await copyFile(file.diskPath, diskPath);
+      if (privateFiles && process.platform !== 'win32') await chmod(diskPath, 0o600);
+      snapshots.push({ ...file, diskPath });
+    } catch (error) {
+      // A runtime file deleted since enumeration is no longer part of the backup.
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
+  return snapshots;
+}
+
+// `output`: where the archive goes instead of a new file at `tempPath` (the encrypted writer's stream).
+async function writeArchive({ tempPath, files, manifest, level = 6, signal = null, output: givenOutput = null }) {
   const { createWriteStream } = await import('node:fs');
-  await new Promise((resolveWrite, reject) => {
-    const output = createWriteStream(tempPath, { flags: 'wx' });
+  throwIfCancelled(signal);
+  let onAbort = null;
+  try {
+    await new Promise((resolveWrite, reject) => {
+    const output = givenOutput || createWriteStream(tempPath, { flags: 'wx' });
     const archive = archiver('zip', { zlib: { level } });
     const remaining = files.values();
     let failure;
@@ -454,6 +606,8 @@ async function writeArchive({ tempPath, files, manifest, level = 6 }) {
       archive.abort();
       output.destroy();
     }
+    onAbort = () => fail(new BackupCancelledError());
+    signal?.addEventListener('abort', onAbort, { once: true });
     // Archiver queues a stat and a lazy stream for each file handed to it.
     // Feed one member after the preceding entry has finished.
     function appendNext() {
@@ -473,30 +627,108 @@ async function writeArchive({ tempPath, files, manifest, level = 6 }) {
     archive.on('entry', appendNext);
     archive.pipe(output);
     archive.append(JSON.stringify(manifest, null, 2), { name: `${BACKUP_PREFIX}/manifest.json` });
-  });
+    });
+  } finally {
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
+  }
 }
 
 /**
  * Reopen a finished archive and stream every manifest-listed entry through
  * sha256. Streaming matters: reading the archive into memory failed every
  * backup over 2 GiB, which is when a backup matters most.
+ *
+ * An archive whose manifest records its groups (backup-groups.js) is also held to them: it holds exactly the groups
+ * it names, the memory database exactly when `memories` is one of them, and no entry its manifest does not list.
+ * `signal`: stops between two entries (BackupCancelledError).
  */
-export async function verifyBackupArchive(path, { onBytes = null } = {}) {
-  const zip = await openZipArchive(path);
+/**
+ * A backup file opened as a ZIP, encrypted or not (told by how the file begins, never by its name). An encrypted
+ * one needs `fileKey` (the backup just written) or `password`; without either it throws BACKUP_PASSWORD_REQUIRED,
+ * with a wrong password WRONG_PASSWORD, and nothing of its contents is read. The ZIP inside is read through the
+ * decrypting source: no plaintext copy of the archive is written. `zip.encrypted` says which it was.
+ */
+export async function openBackupArchive(path, { fileKey = null, authKey = null, password = null, inline = false } = {}) {
+  if (!(await isEncryptedBackupFile(path))) return openZipArchive(path);
+  const source = await openEncryptedBackupSource(path, { fileKey, authKey, password, inline });
+  return openZipArchive(path, { source });
+}
+
+/**
+ * For an encrypted archive (`fileKey` with `authKey`, or `password`, as openBackupArchive) the check also opens every part of the
+ * file the ZIP's entries did not reach, so that every byte of it has passed its authentication.
+ */
+export async function verifyBackupArchive(path, { onBytes = null, signal = null, fileKey = null, authKey = null, password = null, inline = false } = {}) {
+  const zip = await openBackupArchive(path, { fileKey, authKey, password, inline });
   try {
     const manifestEntry = zip.getEntry(`${BACKUP_PREFIX}/manifest.json`);
     if (!manifestEntry) throw new Error('Backup verification failed: manifest is missing');
     const manifest = JSON.parse((await readZipEntry(zip, manifestEntry)).toString('utf-8'));
-    await verifyBackupChecksums(zip, { prefix: BACKUP_PREFIX, manifest, onBytes });
+    assertBackupGroups(zip, manifest, BACKUP_PREFIX, 'Backup verification failed');
+    await verifyBackupChecksums(zip, { prefix: BACKUP_PREFIX, manifest, onBytes, signal });
+    throwIfCancelled(signal);
+    if (zip.encrypted) await zip.source.authenticateRest({ signal });
+    throwIfCancelled(signal);
     return manifest;
+  } catch (error) {
+    if (signal?.aborted) throw new BackupCancelledError();
+    throw error;
   } finally {
     await zip.close();
   }
 }
 
-/** The manifest of a backup archive, read without reading anything else (its central directory and the manifest entry). */
-export async function readBackupArchiveManifest(path) {
-  const zip = await openZipArchive(path);
+/**
+ * Refuse an archive that does not hold what its manifest says it holds (checkManifestGroups). The restore paths call
+ * it before they write anything; a manifest from before groups passes (it promised nothing about them).
+ */
+export function assertBackupGroups(zip, manifest, prefix, label = 'Invalid backup') {
+  const problems = checkManifestGroups(manifest, zip.entries.filter(entry => !entry.isDirectory).map(entry => entry.name), prefix);
+  if (problems.length) throw Object.assign(new Error(`${label}: ${problems[0]}`), { code: 'BACKUP_GROUPS_MISMATCH' });
+}
+
+/**
+ * What an encrypted upgrade snapshot says about itself outside its ciphertext: `<archive>.info.json`, beside it.
+ * The start after an update decides without a password whether the snapshot still stands for the data
+ * (checkUpgradeSnapshotFreshness), and that needs what the snapshot was taken from: its manifest without the file
+ * list and its checksums. A plain SHA-256 of `.env` beside the ciphertext would let anybody test a guess at it, so the
+ * checksums are kept keyed by the authentication key (`keyedChecksums`): the next start, which has the key file, can
+ * compare them and nobody else can read them. The sidecar names the archive's own header (a hash of it), so it
+ * describes that file and no other. It is written only for a snapshot inside the data home.
+ */
+async function writeSnapshotInfo(tempInfoPath, archivePath, manifest, authKey) {
+  const header = await readBackupHeaderFile(archivePath);
+  const { files, checksums, ...rest } = manifest;
+  const info = {
+    version: 2,
+    header: createHash('sha256').update(header.start).update(header.mac).digest('hex'),
+    manifest: { ...rest, fileCount: Array.isArray(files) ? files.length : 0 },
+    keyedChecksums: Object.fromEntries(Object.entries(checksums || {}).map(([entry, value]) => [entry, snapshotRecordDigest(authKey, `${entry}\0${value}`)])),
+  };
+  await writeFile(tempInfoPath, `${JSON.stringify(info)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+}
+
+async function readSnapshotInfo(path) {
+  let info;
+  try { info = JSON.parse(await readFile(backupInfoPath(path), 'utf8')); }
+  catch { throw new BackupEncryptionError('BACKUP_PASSWORD_REQUIRED', 'This backup is encrypted: its password is needed to read it.', { status: 401 }); }
+  const header = await readBackupHeaderFile(path);
+  const actual = createHash('sha256').update(header.start).update(header.mac).digest('hex');
+  if (info?.version !== 2 || info.header !== actual || !info.manifest || typeof info.manifest !== 'object' || !info.keyedChecksums || typeof info.keyedChecksums !== 'object') {
+    throw new Error('Backup verification failed: the record beside this encrypted snapshot is not its own');
+  }
+  return { ...info.manifest, keyedChecksums: info.keyedChecksums };
+}
+
+/**
+ * The manifest of a backup archive, read without reading anything else (its central directory and the manifest entry).
+ * An encrypted one is opened with `fileKey` and `authKey`, or `password`; without them, an encrypted upgrade snapshot answers
+ * with the record beside it (writeSnapshotInfo: the manifest without its file list), any other encrypted backup
+ * with BACKUP_PASSWORD_REQUIRED.
+ */
+export async function readBackupArchiveManifest(path, { fileKey = null, authKey = null, password = null, inline = false } = {}) {
+  if (!fileKey && password == null && await isEncryptedBackupFile(path)) return readSnapshotInfo(path);
+  const zip = await openBackupArchive(path, { fileKey, authKey, password, inline });
   try {
     const manifestEntry = zip.getEntry(`${BACKUP_PREFIX}/manifest.json`);
     if (!manifestEntry) throw new Error('Backup verification failed: manifest is missing');
@@ -504,6 +736,80 @@ export async function readBackupArchiveManifest(path) {
   } finally {
     await zip.close();
   }
+}
+
+// What a full backup takes from data/ and mcp-data/: everything but what no archive holds, the migration copies of
+// memory.db, and memory.db itself (archived as database/memory.db, from a consistent copy).
+const fullBackupFilters = () => ({
+  data: rel => !shouldSkipDataPath(rel),
+  'mcp-data': rel => !shouldSkipDataPath(rel)
+    && !isDatabaseCopyArtifact(rel)
+    && !/^memory\.db(?:-wal|-shm)?$/i.test(rel)
+    && !/\.db-(?:wal|shm)$/i.test(rel),
+});
+
+// The folders of data/ a walk can leave unread: what no archive holds, and the folders a left-out group owns.
+function dataDirsToSkip(groups) {
+  const left = groups ? BACKUP_GROUP_IDS.filter(id => !groups.includes(id)).flatMap(dataDirsOfGroup) : [];
+  return { data: rel => isNeverBackedUpDir(rel) || left.includes(rel), 'mcp-data': rel => isNeverBackedUpDir(rel) };
+}
+
+// The tree walk, space estimate and stale-directory removal can touch every file in a data home.
+// `groups`: the ids of the groups to archive (backup-groups.js), or null for everything a full backup holds.
+function collectVerifiedBackupInputs({ dataHome, folderPath, additionalEntries, leanSnapshot, upgradeSoftLimitBytes, groups = null, ...space }) {
+  cleanupStaleBackupArtifacts(folderPath);
+  const chosen = groups ? new Set(groups) : null;
+  const deduped = collectBackupFiles(dataHome, fullBackupFilters(), additionalEntries, dataDirsToSkip(groups))
+    .filter((file) => {
+      const group = backupGroupOf(file.archivePath);
+      return group !== null && (!chosen || chosen.has(group));
+    });
+
+  // Keep the upgrade path bounded: state is archived, generated media is not.
+  const selection = leanSnapshot
+    ? selectUpgradeSnapshotFiles(deduped, { softLimitBytes: upgradeSoftLimitBytes })
+    : { files: deduped, excluded: null };
+  const includeDatabase = !chosen || chosen.has('memories');
+  return {
+    ...selection, includeDatabase,
+    estimate: estimateBackupWorkingSpace({ ...space, databasePath: includeDatabase ? space.databasePath : null, files: selection.files }),
+  };
+}
+
+/**
+ * How much each group holds right now: { groups: { id: { files, bytes, archiveBytes } }, never: { files, bytes } }.
+ * `bytes` is what the files take on disk, `archiveBytes` about what they take in the ZIP (estimateArchivedBytes).
+ * `never`: what no backup holds, as far as it is cheap to count (the folders the walk never enters are not read).
+ * Every group is measured whatever the selection, so the page can show what switching one on would add. Only names
+ * and sizes are read, no file is opened; it runs on a worker thread (runBackupTask 'measure').
+ */
+function measureBackupGroups({ dataHome, databasePath, additionalEntries = [] }) {
+  const groups = Object.fromEntries(BACKUP_GROUP_IDS.map(id => [id, { files: 0, bytes: 0, archiveBytes: 0 }]));
+  const never = { files: 0, bytes: 0 };
+  const count = (archivePath, bytes) => {
+    const group = backupGroupOf(archivePath);
+    if (group === null) { never.files += 1; never.bytes += bytes; return; }
+    groups[group].files += 1;
+    groups[group].bytes += bytes;
+    groups[group].archiveBytes += estimateArchivedBytes(archivePath, bytes);
+  };
+  // Everything a walk reaches, the never-archived files too (they are counted as such, not dropped unseen).
+  const everything = { data: () => true, 'mcp-data': rel => !isDatabaseCopyArtifact(rel) && !/^memory\.db(?:-wal|-shm|-journal)?$/i.test(rel) };
+  for (const file of collectBackupFiles(dataHome, everything, additionalEntries, dataDirsToSkip(null))) count(file.archivePath, fileBytes(file.diskPath));
+  if (databasePath) {
+    const bytes = fileBytes(databasePath) + fileBytes(`${databasePath}-wal`);
+    if (bytes > 0) count('database/memory.db', bytes);
+  }
+  return { groups, never };
+}
+
+// A dead mount can also wedge cleanup. After a worker timeout, try each cleanup for at most a second;
+// the async removal continues and the worker's eventual termination schedules another attempt.
+async function waitForBackupCleanup(cleaning, workerTimedOut) {
+  if (!workerTimedOut) return cleaning;
+  let timer;
+  try { await Promise.race([cleaning, new Promise(resolve => { timer = setTimeout(resolve, 1000); })]); }
+  finally { clearTimeout(timer); }
 }
 
 /** Create, reopen, checksum-verify, and atomically publish one immutable ZIP. */
@@ -519,54 +825,55 @@ export async function createVerifiedBackup({
   expectedArchiveBytes = 0,
   freeSpaceReserveBytes = BACKUP_FREE_SPACE_RESERVE_BYTES,
   getAvailableBytes = backupAvailableBytes,
+  checkIntegrity = checkSqliteIntegrity,
+  workerOptions = {},
   onBeforeArchive = null,
   onProgress = null,
   upgradeSoftLimitBytes = UPGRADE_SNAPSHOT_SOFT_LIMIT_BYTES,
+  // Which groups go in (backup-groups.js): ids, or a { id: boolean } selection; null is everything. The manifest
+  // records them, and the archive is verified against them before it is published.
+  groups = null,
+  // An AbortSignal: aborting stops the backup at its next step (BackupCancelledError); nothing is published and the
+  // archive under way and the staged copies are removed, as after any failure.
+  signal = null,
+  // Left out: the backup is encrypted when the owner turned encryption on (the data home's key file), and fails
+  // when that key cannot be used. { recipient } names the key directly (tests). There is no value for "plain".
+  encryption = undefined,
   now = () => new Date(),
 } = {}) {
   // A large data home spends minutes in checksum/archive with no output. Phase
   // reporting is what stops that from reading as a hang to the caller.
   const report = typeof onProgress === 'function' ? onProgress : () => {};
   if (!dataHome || !folderPath) throw new Error('dataHome and folderPath are required');
+  const chosenGroups = groups == null ? null : selectedBackupGroups(groups);
+  if (chosenGroups && !chosenGroups.length) {
+    throw Object.assign(new Error('Nothing is selected for this backup: switch on at least one group.'), { code: 'BACKUP_NOTHING_SELECTED', status: 400 });
+  }
+  throwIfCancelled(signal);
+  // Before anything is written: a key file that cannot be used fails the backup here.
+  const encrypt = backupEncryptionFor(dataHome, encryption);
   const createdAt = now();
   assertBackupDestinationMounted(folderPath);
-  mkdirSync(folderPath, { recursive: true });
-  cleanupStaleBackupArtifacts(folderPath);
-  const destination = resolve(folderPath, archiveNameFor(kind, createdAt));
+  await mkdir(folderPath, { recursive: true });
+  const destination = resolve(folderPath, archiveNameFor(kind, createdAt, !!encrypt));
   const tempPath = `${destination}.${process.pid}.tmp`;
-  const sqliteTemp = resolve(folderPath, `.synabun-db-${process.pid}-${Date.now()}.tmp`);
-  const extraSqliteTemps = [];
   if (existsSync(destination)) throw new Error(`Backup already exists: ${destination}`);
 
-  let sqliteSnapshot = null;
   let stageDir = null;
+  let workerTimedOut = false;
+  // The encrypted writer and this file's key, while they exist: both are gone before this function returns.
+  let writer = null;
   try {
-    // BACKUP_DATA_DIRS is the list other modules read (backupRoots): every folder copied here is on it.
-    const dataDirFilters = {
-      data: rel => !shouldSkipDataPath(rel),
-      'mcp-data': rel => !shouldSkipDataPath(rel)
-        && !isDatabaseCopyArtifact(rel)
-        && !/^memory\.db(?:-wal|-shm)?$/i.test(rel)
-        && !/\.db-(?:wal|shm)$/i.test(rel),
-    };
-    const deduped = collectBackupFiles(dataHome, dataDirFilters, additionalEntries);
-
-    // Keep the upgrade path bounded: state is archived, generated media is not.
     const leanSnapshot = UPGRADE_BACKUP_KINDS.has(kind);
-    const selection = leanSnapshot
-      ? selectUpgradeSnapshotFiles(deduped, { softLimitBytes: upgradeSoftLimitBytes })
-      : { files: deduped, excluded: null };
-    const files = selection.files;
-    const excluded = selection.excluded;
-
-    const workingSpace = assertBackupWorkingSpace({
-      folderPath,
-      files,
-      databasePath,
-      expectedArchiveBytes,
-      freeSpaceReserveBytes,
-      getAvailableBytes,
-    });
+    markActivity('backup:collect');
+    const { files, excluded, estimate, includeDatabase } = await cancellable(() => runBackupTask('collect', {
+      dataHome, folderPath, additionalEntries, leanSnapshot, upgradeSoftLimitBytes, groups: chosenGroups,
+      databasePath, expectedArchiveBytes, freeSpaceReserveBytes,
+    }, workerOptions.collect), signal);
+    if (encrypt) cleanupStaleBackupArtifacts(privateBackupStagingRoot(dataHome));
+    const workingSpace = encrypt
+      ? checkSplitWorkingSpace(folderPath, existsSync(privateBackupStagingRoot(dataHome)) ? privateBackupStagingRoot(dataHome) : dataHome, estimate, getAvailableBytes, freeSpaceReserveBytes)
+      : checkWorkingSpace(folderPath, estimate, getAvailableBytes);
     report({
       phase: 'collect',
       files: files.length,
@@ -576,32 +883,54 @@ export async function createVerifiedBackup({
       skippedReason: excluded?.reason ?? null,
     });
 
-    sqliteSnapshot = createConsistentSqliteSnapshot(databasePath, sqliteTemp);
-    if (sqliteSnapshot) {
-      const primary = { diskPath: sqliteSnapshot.path, archivePath: 'database/memory.db' };
-      const duplicate = files.findIndex(file => file.archivePath.replace(/\\/g, '/') === primary.archivePath);
-      if (duplicate === -1) files.push(primary);
-      else files[duplicate] = primary;
-    }
+    // Own all staged files, including partial database copies and their SQLite sidecars. They are plaintext: an
+    // encrypted backup stages them in the data home's private folder, never in the destination.
+    stageDir = encrypt ? await makePrivateStage(dataHome) : await mkdtemp(resolve(folderPath, `.synabun-files-${process.pid}-`));
+    const databases = files.filter(file => /\.db$/i.test(file.archivePath));
+    markActivity('backup:copy');
+    // The memory database is copied only when the memories are part of this backup.
+    const copied = await cancellable(() => runBackupTask('copy', { databasePath: includeDatabase === false ? null : databasePath, databases, stageDir, privateFiles: !!encrypt }, {
+      inputBytes: estimate.sqliteSnapshotBytes, ...workerOptions.copy,
+    }), signal);
+    // An empty extra database (and its sidecars) is left out of the archive, the manifest and the checks.
+    const skippedDatabases = new Set(copied.filter(copy => copy.skipped).map(copy => copy.archivePath.replace(/\\/g, '/')));
+    const copies = copied.filter(copy => !copy.skipped);
+    const sqliteSnapshot = copies.find(copy => copy.primary);
+    const byEntry = new Map(files.map(file => [file.archivePath.replace(/\\/g, '/'), file])
+      .filter(([entry]) => !skippedDatabases.has(entry.replace(/-(?:wal|shm|journal)$/i, ''))));
+    // The phases from here on count what is archived. Collect counted every collected file: these say what of it the
+    // copy found empty and left out (the databases, and them with their sidecars), so the two counts add up.
+    const skippedEmpty = { skippedEmptyDatabases: skippedDatabases.size, skippedEmptyDatabaseFiles: files.length - byEntry.size };
+    for (const { archivePath, path } of copies) byEntry.set(archivePath.replace(/\\/g, '/'), { archivePath, diskPath: path });
 
-    // UI blob/state databases also use WAL. Snapshot every additional SQLite
-    // file rather than pairing an arbitrary main file with a moving WAL.
-    for (let index = 0; index < files.length; index++) {
-      const file = files[index];
-      if (!/\.db$/i.test(file.archivePath) || file.archivePath === 'database/memory.db') continue;
-      const temp = resolve(folderPath, `.synabun-extra-db-${process.pid}-${Date.now()}-${index}.tmp`);
-      const consistent = createConsistentSqliteSnapshot(file.diskPath, temp);
-      if (!consistent) continue;
-      extraSqliteTemps.push(temp);
-      files[index] = { ...file, diskPath: temp };
+    let results;
+    try {
+      markActivity('backup:integrity');
+      results = await cancellable(() => checkIntegrity(copies.map(copy => copy.path), {
+        inputBytes: copies.reduce((sum, copy) => sum + copy.sizeBytes, 0), ...workerOptions.integrity,
+      }), signal);
+    } catch (cause) {
+      if (cause.code === 'BACKUP_WORKER_TIMEOUT' || cause.code === 'BACKUP_CANCELLED') throw cause;
+      throw Object.assign(new Error(`SQLite's integrity check of the copies could not run: ${cause.message}`, { cause }), { code: 'EINTEGRITY' });
     }
-
-    const stableInputs = snapshotMutableBackupFiles(files, folderPath);
-    stageDir = stableInputs.stageDir;
-    const finalFiles = stableInputs.files.sort((a, b) => a.archivePath.localeCompare(b.archivePath));
-    report({ phase: 'checksum', files: finalFiles.length });
+    for (const copy of copies) {
+      const verdict = results?.find(result => result?.path === copy.path);
+      if (verdict?.ok !== true) throw new SnapshotIntegrityError(copy.archivePath, verdict?.lines || []);
+    }
+    markActivity('backup:snapshot-files');
+    const finalFiles = await snapshotMutableBackupFiles([...byEntry.values()], stageDir, signal, { privateFiles: !!encrypt });
+    finalFiles.sort((a, b) => a.archivePath.localeCompare(b.archivePath));
+    markActivity('backup:checksum');
+    report({ phase: 'checksum', files: finalFiles.length, ...skippedEmpty });
     const checksums = {};
-    for (const file of finalFiles) checksums[file.archivePath] = `sha256:${await hashFile(file.diskPath)}`;
+    for (const file of finalFiles) {
+      throwIfCancelled(signal);
+      checksums[file.archivePath] = `sha256:${await hashFile(file.diskPath)}`;
+    }
+    // What this archive holds, by group. `absent`: a group that was asked for and had nothing to give (a data home
+    // without a memory database), so a reader does not take the missing database for damage.
+    const recordedGroups = leanSnapshot ? null : manifestGroups(chosenGroups);
+    if (recordedGroups && recordedGroups.included.includes('memories') && !sqliteSnapshot) recordedGroups.absent = ['memories'];
 
     const manifest = {
       version: BACKUP_MANIFEST_VERSION,
@@ -612,59 +941,76 @@ export async function createVerifiedBackup({
       sourceFingerprint,
       storage: 'sqlite',
       database: sqliteSnapshot ? {
-        file: 'database/memory.db',
+        file: sqliteSnapshot.archivePath,
         sizeBytes: sqliteSnapshot.sizeBytes,
         memoryCount: sqliteSnapshot.memoryCount,
-        integrity: sqliteSnapshot.integrity,
+        integrity: 'ok',
       } : null,
       files: finalFiles.map(file => file.archivePath),
       checksums,
-      // A lean snapshot is not a whole-data-home backup. Recording that here
-      // keeps a restore from silently presenting it as one.
-      scope: leanSnapshot ? 'state-only' : 'complete',
+      // A lean snapshot is not a whole-data-home backup, and neither is one the owner left groups out of. Recording
+      // that here keeps a restore from silently presenting it as one.
+      scope: leanSnapshot ? 'state-only' : recordedGroups.excluded.length ? 'selected' : 'complete',
+      ...(recordedGroups ? { groups: recordedGroups } : {}),
       excluded,
       verified: true,
       verification: { algorithm: 'sha256', publication: 'verify-before-atomic-rename' },
     };
     if (typeof onBeforeArchive === 'function') await onBeforeArchive({ files: finalFiles, manifest });
-    report({ phase: 'archive', files: finalFiles.length, bytes: workingSpace.archiveBytes });
+    throwIfCancelled(signal);
+    markActivity('backup:archive');
+    // tempPath: where the archive grows, for a caller that shows how much is written (lib/backup-download.js).
+    report({ phase: 'archive', files: finalFiles.length, bytes: workingSpace.archiveBytes, tempPath, ...skippedEmpty });
     // Level 1 on the blocking upgrade path: the remaining payload is mostly
     // SQLite and JSON, where fast deflate still shrinks well.
-    await writeArchive({ tempPath, files: finalFiles, manifest, level: leanSnapshot ? 1 : 6 });
-    report({ phase: 'verify', files: finalFiles.length });
-    const publishedManifest = await verifyBackupArchive(tempPath);
-    renameSync(tempPath, destination);
+    // Encrypted: the archive never exists in plaintext. Its bytes go from archiver through the encrypting thread
+    // into the file, and the file is then read back with this file's key, which nothing else ever holds.
+    if (encrypt) writer = createEncryptedBackupWriter(tempPath, encrypt.recipient, { chunkSize: encrypt.chunkSize, now });
+    await writeArchive({ tempPath, files: finalFiles, manifest, level: leanSnapshot ? 1 : 6, signal, output: writer ? writer.stream() : null });
+    markActivity('backup:verify');
+    report({ phase: 'verify', files: finalFiles.length, tempPath, ...skippedEmpty });
+    const publishedManifest = await verifyBackupArchive(tempPath, { signal, fileKey: writer ? writer.fileKey : null, authKey: writer ? writer.authKey : null });
+    throwIfCancelled(signal);
+    // No downgrade, checked on the file itself: with encryption on, what is published begins as an encrypted backup.
+    if (encrypt && !(await isEncryptedBackupFile(tempPath))) throw new BackupEncryptionError('BACKUP_ENC_NOT_ENCRYPTED', 'The backup was not encrypted: it is not published.', { status: 500 });
+    // rename replaces: a file that took the name while this archive was built is kept, and this one is not published.
+    if (existsSync(destination)) throw new Error(`Backup already exists: ${destination}`);
+    await rename(tempPath, destination);
     return {
       path: destination,
       name: basename(destination),
       kind,
       createdAt: createdAt.toISOString(),
-      sizeBytes: statSync(destination).size,
+      sizeBytes: (await stat(destination)).size,
       manifest: publishedManifest,
+      encrypted: !!encrypt,
+      ...(writer ? { keyId: writer.keyId } : {}),
     };
   } catch (error) {
-    try { if (existsSync(tempPath)) unlinkSync(tempPath); } catch {}
+    workerTimedOut = error.code === 'BACKUP_WORKER_TIMEOUT';
+    // Native I/O may outlive terminate(). Retry cleanup when it finally releases its files (notably on Windows).
+    error.workerTermination?.then(async () => {
+      await rm(tempPath, { force: true }).catch(() => {});
+      if (stageDir) await rm(stageDir, { recursive: true, force: true }).catch(() => {});
+    }).catch(() => {});
+    // The encrypting thread lets go of the file before it is removed.
+    if (writer) await writer.abort().catch(() => {});
+    await waitForBackupCleanup(rm(tempPath, { force: true }).catch(() => {}), workerTimedOut);
     throw error;
   } finally {
-    try { if (existsSync(sqliteTemp)) unlinkSync(sqliteTemp); } catch {}
-    for (const path of extraSqliteTemps) {
-      try { if (existsSync(path)) unlinkSync(path); } catch {}
-    }
-    if (stageDir) {
-      try { rmSync(stageDir, { recursive: true, force: true }); } catch {}
-    }
+    if (writer) writer.wipe();
+    if (stageDir) await waitForBackupCleanup(rm(stageDir, { recursive: true, force: true }).catch(() => {}), workerTimedOut);
   }
 }
 
 // ── The pre-update snapshot: quick at any size ──
 //
-// createVerifiedBackup() is the full backup (scheduled, manual, the npm updater's): VACUUM INTO, an integrity
-// check, deflate, and a re-read through inflate. On a 3.9 GB memory.db that is 81 s on an Apple M-series SSD,
-// and the pre-update snapshot is taken while SynaBun restarts into a new version, with the user waiting.
+// The full backup deflates database copies and reads them back through inflate. The pre-update snapshot
+// is taken while SynaBun restarts into a new version, with the user waiting.
 // createUpgradeSnapshot() keeps what that snapshot promises (the state as of one commit, every byte in a ZIP the
 // restore paths read, every database copy passing the integrity check the restore runs, read back once and checked
-// before it is published) and drops what made it slow: VACUUM INTO, deflating the database and inflating it again.
-// The integrity check runs on a thread of its own while the archive is written (about 28 s for that 3.9 GB file).
+// before it is published) and avoids deflating the database and inflating it again.
+// Its integrity check runs on a thread of its own while the archive is written.
 //
 // The snapshot also records what it was taken from (`inputs` in its manifest): checkUpgradeSnapshotFreshness()
 // tells later, from any process, whether it still stands for the data as it is (lib/update-snapshot.js before the
@@ -688,8 +1034,10 @@ export function cloneMethodFor(source, targetDir, { platform = process.platform,
 }
 
 function cloneFileNow(source, target, method) {
-  if (method === 'clone') execFileSync('/bin/cp', ['-c', source, target], { stdio: 'ignore', timeout: 60_000 });
-  else copyFileSync(source, target, FS_CONSTANTS.COPYFILE_FICLONE_FORCE);
+  // A worker thread shares the server's POSIX locks. Closing a raw descriptor for the live database
+  // in this process can release SQLite's locks, so let cp open and close its own descriptors.
+  const cloneFlag = method === 'clone' ? '-c' : '--reflink=always';
+  execFileSync('/bin/cp', [cloneFlag, resolve(source), resolve(target)], { stdio: 'ignore', timeout: 60_000 });
 }
 
 const SQLITE_HEADER = Buffer.from('SQLite format 3\0', 'latin1');
@@ -767,38 +1115,52 @@ export function sameSqliteFingerprint(a, b) {
  *            can reset it while the lock is held.
  *   backup   anywhere else (or when the lock is not free within `busyTimeoutMs`), SQLite's online backup in
  *            one step: one sequential read and write, from one read transaction, and no writer ever waits.
- *   vacuum   a Node without the backup API (before 22.16): VACUUM INTO, as the full backups do.
+ *   vacuum   a Node without the backup API (before 22.16): VACUUM INTO.
  *
- * First the WAL is emptied when nothing holds an older snapshot (a TRUNCATE checkpoint, waiting a second at most),
- * so the source's fingerprint (sqliteFingerprint) survives the close of its last connection; it is taken under the
- * write lock for a clone, right before the copy otherwise (a commit in between makes a later check find it written:
- * never the other way round). The copy is then opened read-only once: its header must account for its whole size,
+ * For an upgrade freshness fingerprint, try a TRUNCATE checkpoint (waiting up to a second for older readers)
+ * so the fingerprint survives the close of the last connection. Take it under the write lock for a clone or
+ * immediately before the copy otherwise. Full backups need only the copy and can leave the live WAL alone.
+ * The copy is then opened read-only once: its header must account for its whole size,
  * and the memories of the `primary` database are counted (a query that fails there fails the copy). Resolves
  * { method, path, sizeBytes, memoryCount, pageCount, fingerprint }, or null when there is no database.
  */
 export async function copySqliteDatabase(sourcePath, targetPath, {
   platform = process.platform, method: forced = null, busyTimeoutMs = 15_000, clone = cloneFileNow, primary = false,
+  captureFingerprint = true, skipEmpty = false,
 } = {}) {
   if (!existsSync(sourcePath)) return null;
   for (const suffix of ['', '-wal', '-shm', '-journal']) rmSync(`${targetPath}${suffix}`, { force: true });
   const fallback = typeof nodeSqlite.backup === 'function' ? 'backup' : 'vacuum';
   let method = forced || cloneMethodFor(sourcePath, dirname(targetPath), { platform }) || fallback;
   let fingerprint = null;
+  const readFingerprint = () => captureFingerprint ? sqliteFingerprint(sourcePath) : null;
   const source = new DatabaseSync(sourcePath);
   try {
-    // Readers that hold an older snapshot keep the WAL as it is: the copy is right either way.
-    try {
-      source.exec('PRAGMA busy_timeout = 1000');
-      source.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get();
-    } catch { /* busy or not a WAL database */ }
+    // Only an upgrade freshness check needs a stable fingerprint. A full backup can copy the WAL as it is.
+    if (captureFingerprint) {
+      try {
+        source.exec('PRAGMA busy_timeout = 1000');
+        source.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get();
+      } catch { /* busy or not a WAL database */ }
+    }
     source.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(busyTimeoutMs))}`);
+    // An extra database nothing ever initialized (no page on disk or in its WAL) holds nothing to keep.
+    if (skipEmpty && Number(source.prepare('PRAGMA page_count').get().page_count) === 0) {
+      return { skipped: true, reason: 'empty', path: null };
+    }
+    // A zero-byte, uninitialized database is valid SQLite. Cloning it leaves an empty file; SQLite's
+    // backup/VACUUM materializes its header. Read logical pages (including WAL) BEFORE BEGIN IMMEDIATE,
+    // which gives an empty database a virtual first page without writing it to disk.
+    if ((method === 'clone' || method === 'reflink') && Number(source.prepare('PRAGMA page_count').get().page_count) === 0) {
+      method = fallback;
+    }
     if (method === 'clone' || method === 'reflink') {
       let locked = false;
       let cloned = false;
       try {
         source.exec('BEGIN IMMEDIATE');
         locked = true;
-        fingerprint = sqliteFingerprint(sourcePath);
+        fingerprint = readFingerprint();
         clone(sourcePath, targetPath, method);
         const wal = `${sourcePath}-wal`;
         if (existsSync(wal) && statSync(wal).size > 0) clone(wal, `${targetPath}-wal`, method);
@@ -812,11 +1174,11 @@ export async function copySqliteDatabase(sourcePath, targetPath, {
       if (!cloned) method = fallback;
     }
     if (method === 'backup') {
-      fingerprint = sqliteFingerprint(sourcePath);
+      fingerprint = readFingerprint();
       // One step holds one read transaction for the whole copy: no restart, whatever the server writes.
       await nodeSqlite.backup(source, targetPath, { rate: 1_000_000_000 });
     } else if (method === 'vacuum') {
-      fingerprint = sqliteFingerprint(sourcePath);
+      fingerprint = readFingerprint();
       source.exec(`VACUUM INTO '${escapeSqliteString(targetPath)}'`);
     }
   } finally {
@@ -850,26 +1212,138 @@ export async function copySqliteDatabase(sourcePath, targetPath, {
   }
 }
 
+// Even the online-copy path can wait synchronously for locks, checkpoint a large WAL or use VACUUM on old Node.
+// `databasePath` null: a backup without the memories. The memory database is then not opened at all.
+async function copyVerifiedDatabases({ databasePath, databases, stageDir, privateFiles = false }) {
+  const copies = [];
+  const primary = databasePath ? { archivePath: 'database/memory.db', diskPath: databasePath, primary: true } : null;
+  for (const [index, file] of [...(primary ? [primary] : []), ...databases].entries()) {
+    const isPrimary = file === primary;
+    if (!isPrimary && file.archivePath.replace(/\\/g, '/') === 'database/memory.db') continue;
+    // A single online backup/VACUUM has no intermediate progress; give this database room to finish.
+    reportBackupWorkerProgress(fileBytes(file.diskPath) + fileBytes(`${file.diskPath}-wal`), true);
+    const target = resolve(stageDir, `db-${index}.tmp`);
+    let copy;
+    try {
+      copy = await copySqliteDatabase(file.diskPath, target, { primary: isPrimary, captureFingerprint: false, skipEmpty: !isPrimary });
+    } catch (cause) {
+      throw Object.assign(new Error(`Could not copy ${file.archivePath}: ${cause.message}`, { cause }), { code: cause.code });
+    }
+    if (!copy) {
+      if (isPrimary) continue;
+      throw Object.assign(new Error(`SQLite backup input disappeared: ${file.archivePath}`), { code: 'ENOENT' });
+    }
+    if (copy.skipped) { copies.push({ archivePath: file.archivePath, skipped: copy.reason }); continue; }
+    if (privateFiles && process.platform !== 'win32') chmodSync(copy.path, 0o600);
+    copies.push({ archivePath: file.archivePath, path: copy.path, sizeBytes: copy.sizeBytes, memoryCount: copy.memoryCount, primary: isPrimary });
+  }
+  return copies;
+}
+
+/**
+ * How much each backup group holds right now, measured on a worker thread (names and sizes only; no file is opened
+ * and the server's own thread does nothing but wait). Resolves { groups: { id: { files, bytes, archiveBytes } },
+ * never: { files, bytes } }; `cancel()` on the promise stops the thread.
+ */
+export function measureBackupContents({ dataHome, databasePath = resolve(dataHome, 'mcp-data', 'memory.db'), additionalEntries = [], workerOptions = {} } = {}) {
+  if (!dataHome) throw new Error('dataHome is required');
+  return runBackupTask('measure', { dataHome, databasePath, additionalEntries }, workerOptions);
+}
+
+// Early Node 22 releases gate node:sqlite on a flag. File-backed workers cannot inherit --input-type or --eval.
+const sqliteWorkerArgs = process.execArgv.filter(arg => arg === '--experimental-sqlite' || arg === '--disable-warning=ExperimentalWarning');
+
+// Collection reports actual filesystem progress, never a heartbeat that could mask a stuck operation.
+let lastBackupWorkerProgress = 0;
+function reportBackupWorkerProgress(inputBytes, force = false) {
+  if (!parentPort || !workerData?.verifiedBackupTask) return;
+  const now = Date.now();
+  if (!force && now - lastBackupWorkerProgress < 1000) return;
+  lastBackupWorkerProgress = now;
+  parentPort.postMessage({ progress: true, inputBytes });
+}
+
+/** Inactivity budgets: two minutes per collection operation; 10 min + 5 min/GiB per native database operation. */
+export function backupWorkerTimeoutMs(task, inputBytes = 0) {
+  if (task === 'collect' || task === 'measure' || task === 'sweep') return 2 * 60_000;
+  return Math.min(2_147_000_000, 10 * 60_000 + Math.ceil(Math.max(0, Number(inputBytes) || 0) / 1024 ** 3) * 5 * 60_000);
+}
+
+function watchBackupWorker(task, data, {
+  spawnWorker, timeoutMs = null, inputBytes = 0, terminationGraceMs = 1000,
+} = {}) {
+  let cancel = () => {};
+  const checking = new Promise((resolveTask, reject) => {
+    let worker;
+    let timer;
+    let grace;
+    let settled = false;
+    let stopping = null;
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(grace);
+      fn(value);
+    };
+    const stop = (error) => {
+      if (settled || stopping) return;
+      stopping = error;
+      clearTimeout(timer);
+      // Usually termination is immediate. A thread stuck in native I/O may not exit until the OS returns:
+      // still settle the caller after a bounded grace period, and let its cleanup retry after that exit.
+      try { error.workerTermination = Promise.resolve(worker.terminate()); }
+      catch { error.workerTermination = Promise.resolve(); }
+      error.workerTermination.then(() => settle(reject, error), () => settle(reject, error));
+      grace = setTimeout(() => { worker.unref?.(); settle(reject, error); }, terminationGraceMs);
+    };
+    const reset = (bytes = inputBytes) => {
+      inputBytes = bytes;
+      clearTimeout(timer);
+      const limit = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : backupWorkerTimeoutMs(task, inputBytes);
+      timer = setTimeout(() => stop(Object.assign(
+        new Error(`Backup ${task} worker timed out after ${limit} ms without progress`),
+        { code: 'BACKUP_WORKER_TIMEOUT', task, timeoutMs: limit },
+      )), limit);
+    };
+    try { worker = spawnWorker(data); }
+    catch (error) { settle(reject, error); return; }
+    worker.on('message', (message) => {
+      if (settled || stopping) return;
+      if (message?.progress === true) { reset(message.inputBytes); return; }
+      if (message?.error) settle(reject, Object.assign(message.error, { code: message.code }));
+      else settle(resolveTask, Array.isArray(message) ? message : message.result);
+    });
+    worker.once('error', (error) => settle(reject, stopping || error));
+    worker.once('exit', (code) => settle(reject, stopping || Object.assign(
+      new Error(`Backup ${task} worker exited (${code}) without a result`), { code: 'BACKUP_WORKER_EXIT', task },
+    )));
+    cancel = () => stop(Object.assign(new Error(`Backup ${task} worker cancelled`), { code: 'BACKUP_WORKER_CANCELLED', task }));
+    reset();
+  });
+  checking.cancel = () => cancel();
+  return checking;
+}
+
+export function runBackupTask(task, options, {
+  spawnWorker = (data) => new Worker(new URL(import.meta.url), { workerData: data, execArgv: sqliteWorkerArgs }),
+  ...watchdog
+} = {}) {
+  return watchBackupWorker(task, { verifiedBackupTask: task, options }, { ...watchdog, spawnWorker });
+}
+
 /**
  * SQLite's PRAGMA integrity_check, the one `synabun restore-backup` runs, on each file in `paths`, on a thread of
  * its own (sqlite-integrity-worker.js): a 3.9 GB memory.db takes about 28 s, spent while the archive is written.
  * Resolves [{ path, ok, lines, ms }] (`lines`: SQLite's first findings when a file is not ok); `cancel()` on the
- * promise stops the thread (it then rejects).
+ * promise stops the thread (it then rejects). Each database gets a size-based inactivity budget.
  */
-export function checkSqliteIntegrity(paths, { spawnWorker = (workerData) => new Worker(new URL('./sqlite-integrity-worker.js', import.meta.url), { workerData }) } = {}) {
+export function checkSqliteIntegrity(paths, {
+  spawnWorker = (data) => new Worker(new URL('./sqlite-integrity-worker.js', import.meta.url), { workerData: data, execArgv: sqliteWorkerArgs }),
+  ...watchdog
+} = {}) {
   if (!paths.length) return Object.assign(Promise.resolve([]), { cancel: () => {} });
-  let worker = null;
-  const checking = new Promise((resolveCheck, reject) => {
-    let settled = false;
-    const settle = (fn, value) => { if (!settled) { settled = true; fn(value); } };
-    try { worker = spawnWorker({ paths }); }
-    catch (error) { reject(error); return; }
-    worker.once('message', (results) => settle(resolveCheck, results));
-    worker.once('error', (error) => settle(reject, error));
-    worker.once('exit', (code) => settle(reject, new Error(`the integrity check ended (exit ${code}) without a result`)));
-  });
-  checking.cancel = () => { try { worker?.terminate(); } catch { /* already gone */ } };
-  return checking;
+  return watchBackupWorker('integrity', { paths }, { ...watchdog, spawnWorker });
 }
 
 /** Raised when a database copy fails SQLite's integrity check: the snapshot is not published. */
@@ -943,13 +1417,29 @@ function collectUpgradeInputs({ dataHome, additionalEntries = [], softLimitBytes
   };
   const deduped = collectBackupFiles(dataHome, dataDirFilters, additionalEntries);
   const { files: kept, excluded } = selectUpgradeSnapshotFiles(deduped, { softLimitBytes });
-  const marked = kept.map(file => ({ ...file, sqlite: isSqliteDatabaseFile(file.diskPath) }));
-  const databases = new Set(marked.filter(file => file.sqlite).map(file => file.archivePath.toLowerCase()));
-  const sideFile = (archivePath) => {
+  // An extra .db nothing initialized (0 bytes, no WAL with content) is skipped with its sidecars, as in a full backup.
+  // Only a file that is not there is 0 bytes here (backupFileSize): one whose size cannot be read fails the snapshot
+  // instead of passing for empty and dropping out of it.
+  const empty = new Set(kept.filter(file => /\.db$/i.test(file.archivePath)
+    && backupFileSize(file) === 0 && backupFileSize({ diskPath: `${file.diskPath}-wal` }) === 0).map(file => file.archivePath.toLowerCase()));
+  const marked = kept.filter(file => !empty.has(file.archivePath.toLowerCase()))
+    .map(file => ({ ...file, sqlite: isSqliteDatabaseFile(file.diskPath) }));
+  const databases = new Set([...empty, ...marked.filter(file => file.sqlite).map(file => file.archivePath.toLowerCase())]);
+  // The database a journal, WAL or shared-memory file belongs to (lower case), or null for a file of its own.
+  const ownerOf = (archivePath) => {
     const lower = archivePath.toLowerCase();
-    return SQLITE_SIDE_FILES.some(suffix => suffix && lower.endsWith(suffix) && databases.has(lower.slice(0, -suffix.length)));
+    const suffix = SQLITE_SIDE_FILES.find(item => item && lower.endsWith(item) && databases.has(lower.slice(0, -item.length)));
+    return suffix ? lower.slice(0, -suffix.length) : null;
   };
-  return { inputs: marked.filter(file => !sideFile(file.archivePath)), excluded };
+  const inputs = [];
+  // What the empty-database rule left out, for the progress report: the databases and every file that went with them.
+  const skippedEmpty = { databases: kept.length - marked.length, files: kept.length - marked.length };
+  for (const file of marked) {
+    const owner = ownerOf(file.archivePath);
+    if (!owner) inputs.push(file);
+    else if (empty.has(owner)) skippedEmpty.files += 1;
+  }
+  return { inputs, excluded, skippedEmpty };
 }
 
 /** Where an input is, as the manifest records it: relative to the data home (forward slashes), absolute outside it. */
@@ -970,6 +1460,19 @@ export async function checkUpgradeSnapshotFreshness({
 } = {}) {
   const recorded = manifest?.inputs?.entries;
   if (!dataHome || !Array.isArray(recorded)) return { fresh: false, reason: 'it does not record what it was taken from', changed: [] };
+  // An encrypted snapshot's record keeps its checksums keyed: they are compared with this installation's key. A new
+  // password keeps that key; one that did change since (encryption turned off and on, a key file replaced) cannot
+  // match, and a new snapshot is taken.
+  let recordKey = null;
+  if (manifest.keyedChecksums) {
+    try { const recipient = backupRecipientFor(dataHome); recordKey = recipient ? authKeyOf(recipient) : null; } catch { /* below */ }
+    if (!recordKey) return { fresh: false, reason: 'its record needs the backup key, which is not here', changed: [] };
+  }
+  const sameContent = (entry, actual) => {
+    if (actual === null) return false;
+    if (recordKey) return manifest.keyedChecksums[entry] === snapshotRecordDigest(recordKey, `${entry}\0${actual}`);
+    return actual === manifest.checksums?.[entry];
+  };
   const current = new Map(collectUpgradeInputs({ dataHome, softLimitBytes: upgradeSoftLimitBytes }).inputs.map(file => [file.archivePath, file]));
   if (existsSync(databasePath)) current.set('database/memory.db', { archivePath: 'database/memory.db', diskPath: databasePath, sqlite: true });
   const before = new Map(recorded.filter(item => item && typeof item.entry === 'string').map(item => [item.entry, item]));
@@ -992,7 +1495,7 @@ export async function checkUpgradeSnapshotFreshness({
       }
       let actual = null;
       try { actual = `sha256:${await hashFile(file.diskPath)}`; } catch { /* gone or unreadable: changed */ }
-      if (actual !== manifest.checksums?.[entry] && differs(entry, path, 'changed')) break scan;
+      if (!sameContent(entry, actual) && differs(entry, path, 'changed')) break scan;
     }
   }
   return changed.length
@@ -1023,8 +1526,10 @@ export async function checkUpgradeSnapshotFreshness({
  * restore-backup` restore it as they restore any backup.
  *
  * onProgress({ phase: 'collect' | 'copy' | 'archive' | 'verify' | 'integrity', ... }): collect says how much (files,
- * bytes, skipped), archive and verify say how far (done, total, in bytes); integrity says that the archive is ready
- * and the integrity check still runs (state 'running'), then that it passed (state 'ok').
+ * bytes, skipped; `files` already leaves out the empty extra databases: skippedEmptyDatabases counts them,
+ * skippedEmptyDatabaseFiles them and their sidecars), archive and verify say how far (done, total, in bytes);
+ * integrity says that the archive is ready and the integrity check still runs (state 'running'), then that it passed
+ * (state 'ok').
  */
 export async function createUpgradeSnapshot({
   dataHome,
@@ -1041,28 +1546,37 @@ export async function createUpgradeSnapshot({
   upgradeSoftLimitBytes = UPGRADE_SNAPSHOT_SOFT_LIMIT_BYTES,
   copyDatabase = copySqliteDatabase,
   checkIntegrity = checkSqliteIntegrity,
+  // As for createVerifiedBackup: left out, the snapshot is encrypted when the owner turned encryption on.
+  encryption = undefined,
   now = () => new Date(),
 } = {}) {
-  const report = (detail) => { try { if (typeof onProgress === 'function') onProgress(detail); } catch { /* reporting never stops a snapshot */ } };
+  const report = (detail) => { markActivity(`backup:${detail.phase}`); try { if (typeof onProgress === 'function') onProgress(detail); } catch { /* reporting never stops a snapshot */ } };
   if (!dataHome || !folderPath) throw new Error('dataHome and folderPath are required');
   if (!UPGRADE_BACKUP_KINDS.has(kind)) throw new Error(`An upgrade snapshot is ${[...UPGRADE_BACKUP_KINDS].join(' or ')}, not ${kind}`);
   const started = Date.now();
+  // Before anything is written: a key file that cannot be used fails the snapshot here.
+  const encrypt = backupEncryptionFor(dataHome, encryption);
   const createdAt = now();
   assertBackupDestinationMounted(folderPath);
   mkdirSync(folderPath, { recursive: true });
   cleanupStaleBackupArtifacts(folderPath);
-  const destination = resolve(folderPath, archiveNameFor(kind, createdAt));
+  const destination = resolve(folderPath, archiveNameFor(kind, createdAt, !!encrypt));
   if (existsSync(destination)) throw new Error(`Backup already exists: ${destination}`);
   const tempPath = `${destination}.${process.pid}.tmp`;
-  // Everything this snapshot copies lives here until the archive is published (an abandoned one is swept after an hour).
-  const work = mkdtempSync(resolve(folderPath, `.synabun-files-${process.pid}-`));
+  const tempInfoPath = `${backupInfoPath(destination)}.${process.pid}.tmp`;
+  // Everything this snapshot copies lives here until the archive is published (an abandoned one is swept after an
+  // hour). The copies are plaintext: an encrypted snapshot keeps them in the data home's private folder.
+  if (encrypt) cleanupStaleBackupArtifacts(privateBackupStagingRoot(dataHome));
+  const work = encrypt ? await makePrivateStage(dataHome) : mkdtempSync(resolve(folderPath, `.synabun-files-${process.pid}-`));
+  let writer = null;
   const timings = {};
   const mark = (name, since) => { timings[name] = Date.now() - since; };
   // The integrity check of the database copies, once they exist: { results, ms } or { error, ms }, never a rejection.
   let integrity = null;
+  let workerTimedOut = false;
   try {
     let since = Date.now();
-    const { inputs: kept, excluded } = collectUpgradeInputs({ dataHome, additionalEntries, softLimitBytes: upgradeSoftLimitBytes });
+    const { inputs: kept, excluded, skippedEmpty } = collectUpgradeInputs({ dataHome, additionalEntries, softLimitBytes: upgradeSoftLimitBytes });
     const databaseBytes = existsSync(databasePath) ? statSync(databasePath).size : 0;
     const walBytes = existsSync(`${databasePath}-wal`) ? statSync(`${databasePath}-wal`).size : 0;
     const keptBytes = kept.reduce((sum, file) => sum + backupFileSize(file), 0);
@@ -1073,6 +1587,8 @@ export async function createUpgradeSnapshot({
       skippedFiles: excluded?.files ?? 0,
       skippedBytes: excluded?.bytes ?? 0,
       skippedReason: excluded?.reason ?? null,
+      skippedEmptyDatabases: skippedEmpty.databases,
+      skippedEmptyDatabaseFiles: skippedEmpty.files,
     });
 
     // Room for it: the archive holds everything once; a database that cannot be cloned is copied first.
@@ -1125,6 +1641,7 @@ export async function createUpgradeSnapshot({
         if (error?.code === 'ENOENT') continue;
         throw error;
       }
+      if (encrypt && process.platform !== 'win32') chmodSync(staged, 0o600);
       entries.push({ diskPath: staged, archivePath: file.archivePath, store });
       recorded.push({ entry: file.archivePath, path: inputPath(dataHome, file.diskPath) });
     }
@@ -1173,10 +1690,12 @@ export async function createUpgradeSnapshot({
         verification: { algorithm: 'sha256', publication: 'verify-before-atomic-rename', writer: 'one-pass', integrity: 'integrity_check' },
       }, null, 2);
     };
+    // Encrypted: the ZIP goes through the encrypting thread as it is written and never exists in plaintext.
+    if (encrypt) writer = createEncryptedBackupWriter(tempPath, encrypt.recipient, { chunkSize: encrypt.chunkSize, now });
     await writeZipArchive(tempPath, [
       ...entries.map(entry => ({ name: `${BACKUP_PREFIX}/${entry.archivePath}`, diskPath: entry.diskPath, store: entry.store })),
       { name: `${BACKUP_PREFIX}/manifest.json`, data: manifestFor },
-    ], { now, onProgress: ({ bytes, totalBytes }) => report({ phase: 'archive', done: bytes, total: Math.max(total, totalBytes) }) });
+    ], { now, sink: writer, onProgress: ({ bytes, totalBytes }) => report({ phase: 'archive', done: bytes, total: Math.max(total, totalBytes) }) });
     mark('archive', since);
 
     since = Date.now();
@@ -1184,6 +1703,8 @@ export async function createUpgradeSnapshot({
     let reportedAt = 0;
     report({ phase: 'verify', done: 0, total });
     const publishedManifest = await verifyBackupArchive(tempPath, {
+      fileKey: writer ? writer.fileKey : null,
+      authKey: writer ? writer.authKey : null,
       onBytes: (bytes) => {
         checked += bytes;
         if (checked - reportedAt >= 64 * 1024 * 1024 || checked >= total) { reportedAt = checked; report({ phase: 'verify', done: checked, total }); }
@@ -1197,6 +1718,7 @@ export async function createUpgradeSnapshot({
     timings.integrity = verdict.ms;
     mark('integrityWait', since);
     if (verdict.error) {
+      if (verdict.error.code === 'BACKUP_WORKER_TIMEOUT') throw verdict.error;
       throw Object.assign(new Error(`SQLite's integrity check of the copies could not run: ${verdict.error?.message || verdict.error}`), { code: 'EINTEGRITY' });
     }
     for (const [index, result] of copies.entries()) {
@@ -1206,7 +1728,12 @@ export async function createUpgradeSnapshot({
     report({ phase: 'integrity', state: 'ok' });
     // The copies are in the archive and checked: their room goes back.
     try { rmSync(work, { recursive: true, force: true }); } catch {}
+    if (encrypt && !(await isEncryptedBackupFile(tempPath))) throw new BackupEncryptionError('BACKUP_ENC_NOT_ENCRYPTED', 'The snapshot was not encrypted: it is not published.', { status: 500 });
+    // What the next start reads without the password, for a snapshot that stays inside the data home.
+    const withInfo = !!encrypt && pathInside(folderPath, dataHome);
+    if (withInfo) await writeSnapshotInfo(tempInfoPath, tempPath, publishedManifest, writer.authKey);
     renameSync(tempPath, destination);
+    if (withInfo) renameSync(tempInfoPath, backupInfoPath(destination));
     return {
       path: destination,
       name: basename(destination),
@@ -1214,25 +1741,36 @@ export async function createUpgradeSnapshot({
       createdAt: createdAt.toISOString(),
       sizeBytes: statSync(destination).size,
       manifest: publishedManifest,
+      encrypted: !!encrypt,
       stamp: backupFileStamp(destination),
       database: database ? { method: database.method, sizeBytes: database.sizeBytes, memoryCount: database.memoryCount, integrity: 'ok' } : null,
       timings: { ...timings, total: Date.now() - started },
     };
   } catch (error) {
-    try { if (existsSync(tempPath)) unlinkSync(tempPath); } catch {}
+    workerTimedOut = error.code === 'BACKUP_WORKER_TIMEOUT';
+    error.workerTermination?.then(async () => {
+      await rm(tempPath, { force: true }).catch(() => {});
+      await rm(work, { recursive: true, force: true }).catch(() => {});
+    }).catch(() => {});
+    if (writer) await writer.abort().catch(() => {});
+    try { rmSync(tempInfoPath, { force: true }); } catch {}
+    if (workerTimedOut) await waitForBackupCleanup(rm(tempPath, { force: true }).catch(() => {}), true);
+    else { try { if (existsSync(tempPath)) unlinkSync(tempPath); } catch {} }
     throw error;
   } finally {
-    // A check still running reads the copies: it ends first (its thread is stopped), then they go.
+    if (writer) writer.wipe();
+    // Cancel a check still reading the copies before cleanup; a native I/O timeout also retries on exit.
     if (integrity) {
       integrity.cancel();
       await integrity;
     }
-    try { rmSync(work, { recursive: true, force: true }); } catch {}
+    if (workerTimedOut) await waitForBackupCleanup(rm(work, { recursive: true, force: true }).catch(() => {}), true);
+    else { try { rmSync(work, { recursive: true, force: true }); } catch {} }
   }
 }
 
 function dateFromSnapshotName(name, stat) {
-  const match = name.match(/^synabun-[a-z-]+-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)\.zip$/i);
+  const match = name.match(/^synabun-[a-z-]+-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)\.zip(?:\.enc)?$/i);
   if (!match) return stat.mtime;
   const iso = match[1].replace(/T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/, 'T$1:$2:$3.$4Z');
   const value = new Date(iso);
@@ -1244,25 +1782,34 @@ function kindFromName(name) {
   return match?.[1]?.toLowerCase() || (name === 'synabun-auto-backup.zip' ? 'legacy' : 'unknown');
 }
 
-export function listBackupSnapshots(folderPath) {
-  if (!folderPath || !existsSync(folderPath)) return [];
-  return readdirSync(folderPath)
-    .filter(name => name.endsWith('.zip') && (name.startsWith('synabun-') || name === 'synabun-auto-backup.zip'))
-    .map(name => {
-      const path = resolve(folderPath, name);
-      const stat = statSync(path);
-      const created = dateFromSnapshotName(name, stat);
-      return {
-        name,
-        path,
-        kind: kindFromName(name),
-        pinned: name === 'synabun-auto-backup.zip',
-        createdAt: created.toISOString(),
-        createdMs: created.getTime(),
-        sizeBytes: stat.size,
-      };
-    })
-    .sort((a, b) => b.createdMs - a.createdMs);
+export async function listBackupSnapshots(folderPath) {
+  if (!folderPath) return [];
+  let names;
+  try { names = await readdir(folderPath); }
+  catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+  const snapshots = [];
+  // Metadata only: never open or inflate an archive. Sequential awaits keep filesystem work bounded.
+  for (const name of names) {
+    // A backup, plain (.zip) or encrypted (.zip.enc): told by the name here, by its first bytes when it is opened.
+    const encrypted = name.endsWith(`.zip${BACKUP_ENC_EXTENSION}`);
+    if ((!name.endsWith('.zip') && !encrypted) || !name.startsWith('synabun-')) continue;
+    const path = resolve(folderPath, name);
+    let info;
+    try { info = await stat(path); }
+    catch (error) {
+      if (error.code === 'ENOENT') continue; // another retention pass/download may have removed it
+      throw error;
+    }
+    const created = dateFromSnapshotName(name, info);
+    snapshots.push({
+      name, path, kind: kindFromName(name), pinned: name === 'synabun-auto-backup.zip',
+      createdAt: created.toISOString(), createdMs: created.getTime(), sizeBytes: info.size, encrypted,
+    });
+  }
+  return snapshots.sort((a, b) => b.createdMs - a.createdMs);
 }
 
 function utcDay(dateMs) {
@@ -1276,15 +1823,15 @@ function utcWeek(dateMs) {
   return date.toISOString().slice(0, 10);
 }
 
-export function applyBackupRetention({
+export async function applyBackupRetention({
   folderPath,
   retention = DEFAULT_BACKUP_RETENTION,
   incomingBytes = 0,
   now = () => new Date(),
-  remove = path => unlinkSync(path),
+  remove = path => removeBackupFile(path),
 } = {}) {
   const policy = { ...DEFAULT_BACKUP_RETENTION, ...(retention || {}) };
-  const snapshots = listBackupSnapshots(folderPath);
+  const snapshots = await listBackupSnapshots(folderPath);
   const currentMs = now().getTime();
   const recentCutoff = currentMs - policy.recentHours * 60 * 60 * 1000;
   const dailyCutoff = currentMs - policy.dailyDays * 24 * 60 * 60 * 1000;
@@ -1320,11 +1867,11 @@ export function applyBackupRetention({
   const removed = [];
   for (const item of snapshots) {
     if (keep.has(item.path) || item.kind === 'manual' || item.kind === 'unknown') continue;
-    remove(item.path);
+    await remove(item.path);
     removed.push(item.path);
   }
 
-  let retained = listBackupSnapshots(folderPath);
+  let retained = await listBackupSnapshots(folderPath);
   let totalBytes = retained.reduce((sum, item) => sum + item.sizeBytes, 0);
   const normalizedIncomingBytes = Math.max(0, Number(incomingBytes) || 0);
   const targetBytes = Math.max(0, policy.maxBytes - normalizedIncomingBytes);
@@ -1334,11 +1881,11 @@ export function applyBackupRetention({
       .sort((a, b) => a.createdMs - b.createdMs);
     for (const item of removable) {
       if (totalBytes <= targetBytes) break;
-      remove(item.path);
+      await remove(item.path);
       removed.push(item.path);
       totalBytes -= item.sizeBytes;
     }
-    retained = listBackupSnapshots(folderPath);
+    retained = await listBackupSnapshots(folderPath);
   }
   return {
     retention: policy,
@@ -1444,4 +1991,12 @@ export function saveBackupConfig(path, value) {
     throw error;
   }
   return config;
+}
+
+if (parentPort && workerData?.verifiedBackupTask) {
+  const tasks = { collect: collectVerifiedBackupInputs, copy: copyVerifiedDatabases, measure: measureBackupGroups, sweep: cleanupCrashedBackupArtifacts };
+  Promise.resolve().then(() => tasks[workerData.verifiedBackupTask](workerData.options)).then(
+    result => parentPort.postMessage({ result }),
+    error => parentPort.postMessage({ error, code: error.code }),
+  );
 }

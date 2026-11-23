@@ -262,6 +262,7 @@ function readPayload(key, meta = null) {
         const automation = automationBySession.get(sid);
         return {
           sessionId: sid,
+          modelBrand: tab.modelBrand,
           needsYou: needsYou(tab),
           automationRunId: automation?.runId || null,
           automationActive: !!automation?.running,
@@ -579,7 +580,7 @@ function createPlaceholder(provider, payload, tab, index) {
   const tray = document.getElementById('term-minimized-tray');
   const meta = PROVIDERS[provider];
   if (!tray || !meta) return null;
-  const providerMeta = getProviderMeta(meta.providerId);
+  const providerMeta = getProviderMeta(provider === 'opencode' && tab.modelBrand === 'maritaca' ? 'maritaca' : meta.providerId);
   const id = tabId(provider, tab, index);
   const pill = document.createElement('div');
   pill.className = `term-minimized-pill ${meta.pillClass} ${PLACEHOLDER_CLASS}`;
@@ -604,7 +605,7 @@ function createPlaceholder(provider, payload, tab, index) {
       fetch('/api/loop/stop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ runId: tab.automationRunId }),
+        body: JSON.stringify({ runId: tab.automationRunId, action: 'tab_close' }),
       }).catch(() => {});
     } else {
       killBackendSession(provider, tab, payload.key);

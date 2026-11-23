@@ -86,13 +86,13 @@ export function createTeamIntegration({ store, state, git, locks, claims, runTes
   const sliceKey = (teamId, sliceId) => `slice:${teamId}/${sliceId}`;
   const isAncestor = async (cwd, older, newer) => (await git(['merge-base', '--is-ancestor', older, newer], { cwd })).ok;
 
-  function announce(kind, teamId, payload) {
-    try { store.append({ teamId, kind, payload }); } catch (error) { log('teams:announce-failed', { teamId, error: error?.message || String(error) }); }
+  async function announce(kind, teamId, payload) {
+    try { await store.append({ teamId, kind, payload }); } catch (error) { log('teams:announce-failed', { teamId, error: error?.message || String(error) }); }
   }
 
   /** The record and the slice, or the refusal. */
-  function load(teamId, sliceId) {
-    const record = state.record(teamId);
+  async function load(teamId, sliceId) {
+    const record = await state.record(teamId);
     if (!record) return refuse('TEAM_NOT_FOUND', `No team named "${teamId}" is recorded.`);
     if (record.plan.readOnly) return refuse('TEAM_READ_ONLY', 'Read-only teams never commit, integrate or land.');
     const slice = planSlice(record, sliceId);
@@ -181,7 +181,7 @@ export function createTeamIntegration({ store, state, git, locks, claims, runTes
    *   | { ok: false, code: 'OWNERSHIP_VIOLATION'|'STRAY_CHANGES'|string, message: string, violations?: object[], stray?: object[] }>}
    */
   async function finishSlice(teamId, sliceId, { message = null, allowStray = false, runId = null, isCurrent = () => true } = {}) {
-    const loaded = load(teamId, sliceId);
+    const loaded = await load(teamId, sliceId);
     if (!loaded.ok) return loaded;
     const { record, slice } = loaded;
     const current = sliceState(record, sliceId);
@@ -259,15 +259,15 @@ export function createTeamIntegration({ store, state, git, locks, claims, runTes
       };
       if (verdict.violations.length) {
         const violations = verdict.violations.map((entry) => ({ path: entry.path, status: entry.status, owner: entry.owner }));
-        state.writeSlice(teamId, sliceId, 'rejected', { ...data, violations: cap(violations.map((entry) => ({ ...entry, path: short(entry.path) }))) }, runId);
+        await state.writeSlice(teamId, sliceId, 'rejected', { ...data, violations: cap(violations.map((entry) => ({ ...entry, path: short(entry.path) }))) }, runId);
         return refuse('OWNERSHIP_VIOLATION', `Slice "${sliceId}" committed changes to files it does not own (${violations.slice(0, 5).map((entry) => entry.path).join(', ')}${violations.length > 5 ? '…' : ''}): it is rejected and nothing of it is joined.`, { sliceId, head: verdict.head, violations, stray: verdict.stray, ignored, committed });
       }
       if (verdict.stray.length && !allowStray) {
-        state.writeSlice(teamId, sliceId, 'rejected', data, runId);
+        await state.writeSlice(teamId, sliceId, 'rejected', data, runId);
         return refuse('STRAY_CHANGES', `Slice "${sliceId}" changed files it does not own (${verdict.stray.slice(0, 5).map((entry) => entry.path).join(', ')}${verdict.stray.length > 5 ? '…' : ''}). They were left uncommitted in its worktree and the slice is rejected; its own files are committed.`, { sliceId, head: verdict.head, stray: verdict.stray, ignored, committed });
       }
-      state.writeSlice(teamId, sliceId, 'done', { ...data, violations: [] }, runId);
-      claims.release(teamId, sliceId);
+      await state.writeSlice(teamId, sliceId, 'done', { ...data, violations: [] }, runId);
+      await claims.release(teamId, sliceId);
       return { ok: true, sliceId, head: verdict.head, committed, changed: verdict.changed, stray: verdict.stray, warnings: verdict.warnings, ignored };
     });
   }
@@ -369,7 +369,7 @@ export function createTeamIntegration({ store, state, git, locks, claims, runTes
    */
   async function integrate(teamId, sliceId, { test = true, testCommand = undefined, isCurrent = () => true } = {}) {
     return locks.run(teamKey(teamId), async () => {
-      const loaded = load(teamId, sliceId);
+      const loaded = await load(teamId, sliceId);
       if (!loaded.ok) return loaded;
       const { record, slice } = loaded;
       if (record.state === 'integrating') return refuse('TEAM_NEEDS_RECOVERY', `Team "${teamId}" is recorded in the middle of a join: run recover() first.`, { state: record.state });
@@ -400,16 +400,16 @@ export function createTeamIntegration({ store, state, git, locks, claims, runTes
       const method = nothingNew ? 'none' : merges === 0 ? 'cherry-pick' : (await isAncestor(cwd, before, sliceHead)) ? 'fast-forward' : 'merge';
 
       const under = { sliceId, before, sliceHead, method, startedAt: now() };
-      state.writeTeam(teamId, 'integrating', { integrating: { ...under, phase: 'applying' } });
-      state.writeSlice(teamId, sliceId, 'integrating', {}, own.runId || null);
+      await state.writeTeam(teamId, 'integrating', { integrating: { ...under, phase: 'applying' } });
+      await state.writeSlice(teamId, sliceId, 'integrating', {}, own.runId || null);
 
       // A follow-up can supersede this turn while git or the tests are running.
       // The next turn keeps the slice. Only the disposable integration candidate is rolled back.
-      function superseded(clean) {
+      async function superseded(clean) {
         if (!clean) return refuse('TEAM_NEEDS_RECOVERY', 'The superseded candidate could not be rolled back. Inspect the integration worktree before retrying.', { sliceId });
-        state.writeSlice(teamId, sliceId, 'running', {}, own.runId || null);
-        state.writeTeam(teamId, 'running', { integrating: null });
-        const assigned = claims.assign(teamId, sliceId, own.runId);
+        await state.writeSlice(teamId, sliceId, 'running', {}, own.runId || null);
+        await state.writeTeam(teamId, 'running', { integrating: null });
+        const assigned = await claims.assign(teamId, sliceId, own.runId);
         return assigned.ok ? { ok: false, sliceId, skipped: 'new-turn' } : assigned;
       }
 
@@ -427,15 +427,15 @@ export function createTeamIntegration({ store, state, git, locks, claims, runTes
           if (!clean) log('teams:integration-not-clean', { teamId, sliceId });
           if (!report.files.length) {
             // Not a conflict: git could not apply the commits for another reason. The slice is still finished.
-            state.writeSlice(teamId, sliceId, 'done', { lastJoinError: short(gitSaid(applied)) }, own.runId || null);
-            state.writeTeam(teamId, 'running', { integrating: null });
+            await state.writeSlice(teamId, sliceId, 'done', { lastJoinError: short(gitSaid(applied)) }, own.runId || null);
+            await state.writeTeam(teamId, 'running', { integrating: null });
             return refuse('INTEGRATION_FAILED', `Slice "${sliceId}" could not be joined: ${gitSaid(applied)}. The integration branch is unchanged.`, { sliceId, before });
           }
           report.clean = clean;
           const stored = { ...report, files: cap(report.files.map((file) => ({ ...file, path: short(file.path), excerpt: file.excerpt ? short(file.excerpt, 1500) : null })), 40) };
-          state.writeSlice(teamId, sliceId, 'conflict', { conflict: stored, conflictAt: now() }, own.runId || null);
-          state.writeTeam(teamId, 'running', { integrating: null });
-          announce(EVENT_KINDS.INTEGRATION_CONFLICT, teamId, { teamId, sliceId, files: report.files.map((file) => file.path).slice(0, 50), integrationHead: before, sliceHead });
+          await state.writeSlice(teamId, sliceId, 'conflict', { conflict: stored, conflictAt: now() }, own.runId || null);
+          await state.writeTeam(teamId, 'running', { integrating: null });
+          await announce(EVENT_KINDS.INTEGRATION_CONFLICT, teamId, { teamId, sliceId, files: report.files.map((file) => file.path).slice(0, 50), integrationHead: before, sliceHead });
           return refuse('CONFLICT', `Slice "${sliceId}" conflicts with what is already on ${branch} in ${report.files.slice(0, 5).map((file) => file.path).join(', ')}${report.files.length > 5 ? '…' : ''}. The join was aborted and the integration branch is unchanged; nothing was resolved.`, { sliceId, report });
         }
       }
@@ -445,24 +445,24 @@ export function createTeamIntegration({ store, state, git, locks, claims, runTes
       let tests = record.integration.tests;
       let lastGood = record.integration.lastGood;
       if (method !== 'none' && test !== false && command) {
-        state.writeTeam(teamId, 'integrating', { integrating: { ...under, candidate, phase: 'testing' } });
+        await state.writeTeam(teamId, 'integrating', { integrating: { ...under, candidate, phase: 'testing' } });
         tests = await testsOn(record, place, candidate, command, sliceId);
         if (!tests.ok) {
           const clean = await settle(place, before);
           if (!isCurrent()) return superseded(clean);
-          state.writeSlice(teamId, sliceId, 'tests-failed', { tests: { ...tests, output: short(tests.output, 6000).slice(-6000) }, candidate, testsFailedAt: now() }, own.runId || null);
-          state.writeTeam(teamId, 'running', { integrating: null });
+          await state.writeSlice(teamId, sliceId, 'tests-failed', { tests: { ...tests, output: short(tests.output, 6000).slice(-6000) }, candidate, testsFailedAt: now() }, own.runId || null);
+          await state.writeTeam(teamId, 'running', { integrating: null });
           return refuse('TESTS_FAILED', `The tests failed on ${candidate.slice(0, 12)} (slice "${sliceId}" joined on ${branch}). The integration branch is back at ${before.slice(0, 12)}, the last good commit.`, { sliceId, report: { teamId, sliceId, candidate, before, tests, clean } });
         }
         lastGood = candidate;
       }
       if (!isCurrent()) return superseded(await settle(place, before));
-      state.writeSlice(teamId, sliceId, 'integrated', { integrationCommit: candidate, integratedHead: sliceHead, method, integratedAt: now() }, own.runId || null);
-      const after = state.record(teamId);
+      await state.writeSlice(teamId, sliceId, 'integrated', { integrationCommit: candidate, integratedHead: sliceHead, method, integratedAt: now() }, own.runId || null);
+      const after = await state.record(teamId);
       const ready = after.plan.slices.every((each) => ['integrated', 'cancelled'].includes(sliceState(after, each.id)));
-      state.writeTeam(teamId, ready ? 'ready' : 'running', { integrating: null, integration: { head: candidate, lastGood, tests: tests && tests.commit === candidate ? { ...tests, output: short(tests.output, 2000).slice(-2000) } : tests } });
-      claims.release(teamId, sliceId);
-      if (ready) announce(EVENT_KINDS.INTEGRATION_READY, teamId, { teamId, integrationBranch: branch, head: candidate, tested: !!tests && tests.commit === candidate && tests.ok === true });
+      await state.writeTeam(teamId, ready ? 'ready' : 'running', { integrating: null, integration: { head: candidate, lastGood, tests: tests && tests.commit === candidate ? { ...tests, output: short(tests.output, 2000).slice(-2000) } : tests } });
+      await claims.release(teamId, sliceId);
+      if (ready) await announce(EVENT_KINDS.INTEGRATION_READY, teamId, { teamId, integrationBranch: branch, head: candidate, tested: !!tests && tests.commit === candidate && tests.ok === true });
       return { ok: true, sliceId, method, commit: candidate, before, tests: tests && tests.commit === candidate ? tests : null, ready };
     });
   }
@@ -474,12 +474,12 @@ export function createTeamIntegration({ store, state, git, locks, claims, runTes
    * @returns {Promise<{ ok: boolean, ready: boolean, results: object[] }>}
    */
   async function integrateAll(teamId, options = {}, joinSlice = integrate) {
-    const first = state.record(teamId);
+    const first = await state.record(teamId);
     if (!first) return refuse('TEAM_NOT_FOUND', `No team named "${teamId}" is recorded.`);
     if (first.plan.readOnly) return refuse('TEAM_READ_ONLY', 'Read-only teams never commit, integrate or land.');
     const results = [];
     for (const sliceId of integrationOrder(first.plan)) {
-      const record = state.record(teamId);
+      const record = await state.record(teamId);
       const current = sliceState(record, sliceId);
       if (current === 'integrated') { results.push({ sliceId, ok: true, already: true }); continue; }
       if (current !== 'done') { results.push({ sliceId, ok: false, skipped: current }); continue; }
@@ -487,7 +487,7 @@ export function createTeamIntegration({ store, state, git, locks, claims, runTes
       if (waiting.length) { results.push({ sliceId, ok: false, skipped: 'blocked', waiting }); continue; }
       results.push({ sliceId, ...(await joinSlice(teamId, sliceId, options)) });
     }
-    const last = state.record(teamId);
+    const last = await state.record(teamId);
     return { ok: results.every((each) => each.ok), ready: last.state === 'ready', results };
   }
 
@@ -497,7 +497,7 @@ export function createTeamIntegration({ store, state, git, locks, claims, runTes
    */
   async function testIntegration(teamId, { testCommand = undefined } = {}) {
     return locks.run(teamKey(teamId), async () => {
-      const record = state.record(teamId);
+      const record = await state.record(teamId);
       if (!record) return refuse('TEAM_NOT_FOUND', `No team named "${teamId}" is recorded.`);
       if (record.plan.readOnly) return refuse('TEAM_READ_ONLY', 'Read-only teams never commit, integrate or land.');
       if (TERMINAL_TEAM_STATES.includes(record.state) || record.removed || ['creating', 'integrating', 'landing'].includes(record.state)) return refuse('TEAM_NOT_ACTIVE', `Team "${teamId}" is ${record.removed ? 'removed' : record.state}.`, { state: record.state });
@@ -509,9 +509,9 @@ export function createTeamIntegration({ store, state, git, locks, claims, runTes
       const head = await commitOf(git, place, 'HEAD');
       if (head !== record.integration.head) return refuse('INTEGRATION_MOVED', `${integrationBranchName(teamId)} is at ${head}, not at ${record.integration.head}.`, { head, recorded: record.integration.head });
       const previous = record.state;
-      state.writeTeam(teamId, 'integrating', { integrating: { sliceId: null, before: head, candidate: head, phase: 'testing', startedAt: now() } });
+      await state.writeTeam(teamId, 'integrating', { integrating: { sliceId: null, before: head, candidate: head, phase: 'testing', startedAt: now() } });
       const tests = await testsOn(record, place, head, command, null);
-      state.writeTeam(teamId, previous, { integrating: null, integration: { head, lastGood: tests.ok ? head : record.integration.lastGood, tests: { ...tests, output: short(tests.output, 2000).slice(-2000) } } });
+      await state.writeTeam(teamId, previous, { integrating: null, integration: { head, lastGood: tests.ok ? head : record.integration.lastGood, tests: { ...tests, output: short(tests.output, 2000).slice(-2000) } } });
       return tests.ok ? { ok: true, commit: head, tests } : refuse('TESTS_FAILED', `The tests failed on ${head.slice(0, 12)}.`, { report: { teamId, candidate: head, tests } });
     });
   }
@@ -523,7 +523,7 @@ export function createTeamIntegration({ store, state, git, locks, claims, runTes
    * @returns {Promise<{ ok: true, sliceId: string, worktree: string, integrationHead: string, conflicts: string[] } | { ok: false, code: string }>}
    */
   async function resolveInSlice(teamId, sliceId, { runId = null } = {}) {
-    const loaded = load(teamId, sliceId);
+    const loaded = await load(teamId, sliceId);
     if (!loaded.ok) return loaded;
     const { record } = loaded;
     const current = sliceState(record, sliceId);
@@ -540,9 +540,9 @@ export function createTeamIntegration({ store, state, git, locks, claims, runTes
       const conflicts = nulList((await git(['diff', '--name-only', '--diff-filter=U', '-z'], { cwd: worktree })).stdout);
       const started = (await operationsUnderWay(git, worktree, { exists })).merge;
       if (!started) return refuse('MERGE_NOT_STARTED', `The integration branch could not be brought into slice "${sliceId}": ${gitSaid(merged)}`, { path: worktree });
-      const claimed = claims.assign(teamId, sliceId, runId);
+      const claimed = await claims.assign(teamId, sliceId, runId);
       if (!claimed.ok) { await git(['merge', '--abort'], { cwd: worktree }); return claimed; }
-      state.writeSlice(teamId, sliceId, 'running', { resolving: { integrationHead: integration, files: cap(conflicts.map((path) => short(path)), 60) }, rework: true, startedAt: now() }, runId);
+      await state.writeSlice(teamId, sliceId, 'running', { resolving: { integrationHead: integration, files: cap(conflicts.map((path) => short(path)), 60) }, rework: true, startedAt: now() }, runId);
       return { ok: true, sliceId, worktree, branch, integrationHead: integration, conflicts };
     });
   }
@@ -555,7 +555,7 @@ export function createTeamIntegration({ store, state, git, locks, claims, runTes
    */
   async function acceptIntegrationHead(teamId) {
     return locks.run(teamKey(teamId), async () => {
-      const record = state.record(teamId);
+      const record = await state.record(teamId);
       if (!record) return refuse('TEAM_NOT_FOUND', `No team named "${teamId}" is recorded.`);
       if (record.plan.readOnly) return refuse('TEAM_READ_ONLY', 'Read-only teams never commit, integrate or land.');
       if (TERMINAL_TEAM_STATES.includes(record.state) || record.removed || ['creating', 'integrating', 'landing'].includes(record.state)) return refuse('TEAM_NOT_ACTIVE', `Team "${teamId}" is ${record.removed ? 'removed' : record.state}.`, { state: record.state });
@@ -571,7 +571,7 @@ export function createTeamIntegration({ store, state, git, locks, claims, runTes
       if (head === previous) return { ok: true, head, previous, commits: 0 };
       if (!await isAncestor(record.projectPath, previous, head)) return refuse('INTEGRATION_REWOUND', `${branch} no longer has ${previous.slice(0, 12)}, the commit SynaBun left it on: only commits added on top of it are taken.`, { head, recorded: previous });
       const commits = Number(line(await git(['rev-list', '--count', `${previous}..${head}`], { cwd: record.projectPath })) || 0);
-      state.writeTeam(teamId, record.state, { integration: { head, lastGood: record.integration.lastGood, tests: record.integration.tests }, acceptedAt: now() });
+      await state.writeTeam(teamId, record.state, { integration: { head, lastGood: record.integration.lastGood, tests: record.integration.tests }, acceptedAt: now() });
       return { ok: true, head, previous, commits };
     });
   }

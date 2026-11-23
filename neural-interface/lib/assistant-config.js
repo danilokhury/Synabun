@@ -25,7 +25,6 @@ export const DEFAULT_ROUTING = Object.freeze({
   defaultMode: 'ask-unsure',
   askBelow: 0.75,
   waitSeconds: 45,
-  cardTimeoutMinutes: 30,
   preferences: Object.freeze({}),
   ladders: Object.freeze({}),
   catalogFilter: Object.freeze({}),
@@ -90,11 +89,6 @@ export function validateRoutingPatch(patch = {}, { taskClasses = null } = {}) {
     if (!Number.isFinite(n) || n < 0 || n > 110) throw routingError('waitSeconds', 'routing.waitSeconds must be between 0 and 110');
     out.waitSeconds = Math.round(n);
   }
-  if ('cardTimeoutMinutes' in patch) {
-    const n = Number(patch.cardTimeoutMinutes);
-    if (!Number.isFinite(n) || n < 1 || n > 24 * 60) throw routingError('cardTimeoutMinutes', 'routing.cardTimeoutMinutes must be between 1 and 1440');
-    out.cardTimeoutMinutes = Math.round(n);
-  }
   if ('preferences' in patch) {
     if (!patch.preferences || typeof patch.preferences !== 'object') throw routingError('preferences', 'routing.preferences must be an object');
     out.preferences = {};
@@ -147,7 +141,6 @@ export function effectiveRouting(raw = {}) {
     defaultMode: mode,
     askBelow: num(r.askBelow, DEFAULT_ROUTING.askBelow, 0, 1),
     waitSeconds: Math.round(num(r.waitSeconds, DEFAULT_ROUTING.waitSeconds, 0, 110)),
-    cardTimeoutMinutes: Math.round(num(r.cardTimeoutMinutes, DEFAULT_ROUTING.cardTimeoutMinutes, 1, 1440)),
     preferences: r.preferences && typeof r.preferences === 'object' ? { ...r.preferences } : {},
     ladders: r.ladders && typeof r.ladders === 'object' ? { ...r.ladders } : {},
     catalogFilter: r.catalogFilter && typeof r.catalogFilter === 'object' ? { ...r.catalogFilter } : {},

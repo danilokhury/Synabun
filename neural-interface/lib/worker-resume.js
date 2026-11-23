@@ -88,6 +88,11 @@ export function resumeRefusal(entry, { now = Date.now(), workLeftMs = Infinity, 
   return null;
 }
 
+/** The CLI refused to resume because it saved no conversation under that session id (a run cut off very early). */
+export function isMissingConversationError(error) {
+  return /No conversation found with session ID/i.test(String(error?.message || error || ''));
+}
+
 /** Whether `path` is `root` or inside it (both resolved; a missing path is compared as written). */
 export function isInside(path, root) {
   if (!path || !root) return false;

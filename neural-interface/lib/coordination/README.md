@@ -161,10 +161,15 @@ Project-relative patterns with forward slashes. `*` and `?` match inside one seg
 One SQLite file in WAL mode (`node:sqlite`, no new dependency), `DATA_HOME/data/coordination.db` by `coordinationDbPath(dataDir)`. Apart from `memory.db` on purpose. A backup includes it without anything being registered: `backup-service.js` takes a consistent snapshot of every `.db` in the data home. A restore therefore brings back the open events and claims of that time. Phase P2 treats them like a restart: the sessions restored with them are told what was open for them, and what is open for a session that no longer exists is settled.
 
 ```js
-const store = createCoordinationStore({ path, now, newId, busyTimeoutMs, synchronous, log, migrations });
+const store = createCoordinationStore({ path });
+await store.ready;
 ```
 
-Only `path` is required. Everything is synchronous except `waitFor`. Invalid input throws `CoordinationError` (`code`, `status`).
+A dedicated worker opens and migrates the file. All database methods below return promises. SQLite reads and writes share a FIFO, so even a read submitted immediately after an unawaited write observes its commit if it succeeds. Subscriptions register synchronously. Long polls release the queue after registration. The server keeps committed claim and count projections in memory for the synchronous worker guard and scheduling predicates.
+
+The worker retries locked transactions with backoff for up to `busyTimeoutMs` (default 5 seconds). An exhausted request rejects with `SQLITE_BUSY`. Unexpected exit rejects outstanding requests with `WORKER_EXIT` and reopens the disk store. A write that lost its reply may already have committed. Reconcile by stable event or outbox ID before resubmitting. A lost in-memory store stays unavailable.
+
+Await `store.close()` after scheduler shutdown. It stops admission and drains accepted requests, closes the WAL connection and answers outstanding waits. At the 8-second default shutdown deadline, it terminates the worker and reports `DRAIN_TIMEOUT`. The schema and existing WAL files are compatible across this change. Custom JavaScript migration callbacks are exercised inside the database engine. The worker uses the versioned steps in `MIGRATIONS`.
 
 ### Event schema
 
@@ -284,6 +289,7 @@ The Assistant's mailbox was a list in the runtime's memory: batched for a fixed 
 
 ```js
 const service = createCoordinationService({ dataDir });   // or { path }, or { store }; nothing: in memory
+await service.ready;
 shareCoordinationService(service);                         // server.js: the dispatcher and the runtime take it by themselves
 ```
 

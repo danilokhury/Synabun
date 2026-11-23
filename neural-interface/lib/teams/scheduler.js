@@ -28,10 +28,12 @@
 // Nothing here is reachable by a worker except the channel functions (`member`, `post`, `read`, `wait`, `ack`,
 // `claims`, `request`), which take the caller's proven run id and find its team themselves.
 
-import { randomBytes } from 'node:crypto';
+import { markActivity } from '../loop-stall.js';
+import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { AGENT_DENSITY_LABELS, DEFAULT_AGENT_DENSITY, maxWorkers, normalizeAgentDensity } from '../agents/density.js';
+import { splitTitle } from '../agents/split.js';
 import { sessionRecipient } from '../coordination/store.js';
 import {
   PEER_NOTICE, TEAM_ACTION_KINDS, TEAM_MESSAGE_KINDS, conflictFollowUp, peerMessagesText, teamBrief, testsFailedFollowUp,
@@ -41,6 +43,7 @@ import {
   worktreePath, branchName, integrationBranchName, isTeamSlug, normalizeRelPath, normalizeTeamPlan, pathOwner, validateTeamPlan,
 } from './schema.js';
 import { TEAM_TEST_TIMEOUT_MS } from './test-runner.js';
+import { testCommandOf } from './worktrees.js';
 
 /** The team events the scheduler emits: what the Assistant reads (`kind`), the log's kind, the priority, and whether the session's mailbox gets it. */
 export const TEAM_EVENTS = Object.freeze({
@@ -143,6 +146,21 @@ function dispatchDefaults(input = {}) {
  * @param {(tag: string, detail: any) => void} [deps.log]
  * @param {() => string} [deps.newRunId]
  */
+/** What differs between an approved route's planned_split and a team plan, as one sentence; null when they match. */
+export function routeSplitDifference(split, plan) {
+  if (!split || split.flow !== 'team') return 'the approved route has no team split (it runs as one worker).';
+  const given = plan?.slices || [];
+  if (split.projectPath !== plan?.projectPath) return `project differs: approved ${JSON.stringify(split.projectPath)}, given ${JSON.stringify(plan?.projectPath ?? null)}.`;
+  if (split.workers !== given.length) return `slice count differs: approved ${split.workers}, given ${given.length}.`;
+  // Both sides are read the same way (splitTitle): a route stored with a title over the limit starts with the cut title.
+  for (let i = 0; i < split.slices.length; i++) {
+    const approved = splitTitle(split.slices[i]);
+    if (approved !== splitTitle(given[i]?.title)) return `slice ${i + 1} title differs: approved ${JSON.stringify(approved)}, given ${JSON.stringify(given[i]?.title ?? null)}.`;
+  }
+  if (split.workers < split.target && split.reason !== plan.fewerReason) return `fewer_reason differs: approved ${JSON.stringify(split.reason)}, given ${JSON.stringify(plan.fewerReason ?? null)}.`;
+  return null;
+}
+
 export function createTeamScheduler({
   teams, coordination, dispatcher: givenDispatcher, density = null, router: givenRouter = null, session: sessionInfo = null,
   git = null, dataDir, broadcast = () => {}, limits: limitOverrides = {}, now = Date.now, log = () => {},
@@ -161,6 +179,13 @@ export function createTeamScheduler({
   const postTimes = new Map();    // runId → the times of its recent posts
   let unsubscribe = null;
   let watchdog = null;
+  let watchdogPass = null;
+  const background = new Set();
+  function track(task) {
+    background.add(task);
+    task.then(() => background.delete(task), () => background.delete(task));
+    return task;
+  }
   const reconciling = new Set();  // one pending watchdog replay per run
   let closed = false;
   // Nothing of a team runs before the library's own recovery has (recover()): a team a stop cut off mid-join is
@@ -237,7 +262,7 @@ export function createTeamScheduler({
    * A team event: one entry of the durable log with the team's id (the team's timeline), addressed to the session
    * that runs the team when its brain must hear it, and one broadcast to the owner's pages.
    */
-  function emit(record, name, detail = {}, { critical = false, mailbox = null, quiet = false } = {}) {
+  async function emit(record, name, detail = {}, { critical = false, mailbox = null, quiet = false } = {}) {
     const spec = TEAM_EVENTS[name];
     if (!spec) return null;
     record.eventSeq = (Number(record.eventSeq) || 0) + 1;
@@ -250,7 +275,7 @@ export function createTeamScheduler({
     };
     let out = null;
     try {
-      out = store.append({
+      out = await store.append({
         id: `team:${record.teamId}:event:${record.eventSeq}`,
         kind: spec.kind, priority: critical ? 'critical' : spec.priority,
         teamId: record.teamId, sessionId: record.sessionId || null, runId: detail.runId || null,
@@ -285,7 +310,7 @@ export function createTeamScheduler({
   const runIdle = (run) => !!run && run.state === 'idle';
 
   /** The team's journal record, or null. */
-  const journalOf = (teamId) => { try { return teams.get(teamId); } catch { return null; } };
+  const journalOf = teamId => teams.get(teamId);
   const sliceStateOf = (journal, sliceId) => journal?.slices?.[sliceId]?.state || 'pending';
 
   function summary(record) {
@@ -297,11 +322,11 @@ export function createTeamScheduler({
   }
 
   /** The newest `limit` events of a team's log, oldest first. */
-  function tailOfLog(teamId, kinds, limit) {
+  async function tailOfLog(teamId, kinds, limit) {
     const out = [];
     let afterSeq = 0;
     for (let page = 0; page < 40; page += 1) {
-      const rows = store.events({ teamId, afterSeq, kinds, limit: 500 });
+      const rows = await store.events({ teamId, afterSeq, kinds, limit: 500 });
       out.push(...rows);
       if (out.length > limit * 2) out.splice(0, out.length - limit);
       if (rows.length < 500) break;
@@ -332,11 +357,11 @@ export function createTeamScheduler({
   async function status(teamId, { timeline = limits.timeline } = {}) {
     const record = records.get(String(teamId || ''));
     if (!record) return refuse('TEAM_NOT_FOUND', `No team named "${teamId}" is known here.`, { status: 404 });
-    let journal = journalOf(record.teamId);
+    let journal = await journalOf(record.teamId);
     let inspected = null;
     if (journal && !journal.removed) { try { inspected = await teams.inspect(record.teamId); } catch (error) { inspected = null; say('teams:inspect-failed', { teamId: record.teamId, error: error?.message || String(error) }); } }
     // Inspection asks git about every checkout; the join can change phase while it runs.
-    journal = journalOf(record.teamId);
+    journal = await journalOf(record.teamId);
     const seen = inspected?.ok ? inspected : null;
     const plan = journal?.plan || record.plan || { slices: [] };
     const slices = plan.slices.map((slice) => {
@@ -357,10 +382,10 @@ export function createTeamScheduler({
       };
     });
     let claims = [];
-    try { claims = store.claimsFor({ teamId: record.teamId }).map((claim) => ({ sliceId: claim.sliceId, runId: claim.runId || null, glob: claim.glob, claimedAt: claim.claimedAt || claim.createdAt || null })); } catch { claims = []; }
+    try { claims = (await store.claimsFor({ teamId: record.teamId })).map((claim) => ({ sliceId: claim.sliceId, runId: claim.runId || null, glob: claim.glob, claimedAt: claim.claimedAt || claim.createdAt || null })); } catch { claims = []; }
     const tests = journal?.integration?.tests || null;
-    const events = tailOfLog(record.teamId, TEAM_EVENT_LOG_KINDS, timeline).map(eventView);
-    const messages = tailOfLog(record.teamId, [TEAM_MESSAGE_LOG_KIND], timeline).map(messageView);
+    const events = (await tailOfLog(record.teamId, TEAM_EVENT_LOG_KINDS, timeline)).map(eventView);
+    const messages = (await tailOfLog(record.teamId, [TEAM_MESSAGE_LOG_KIND], timeline)).map(messageView);
     return {
       ok: true,
       team: {
@@ -504,11 +529,9 @@ export function createTeamScheduler({
     const checked = await plan({ ...input, taskClass }, { sessionId: session });
     if (!checked.ok) return { ...refuse(checked.code, checked.message, { status: checked.code === 'INVALID_PLAN' ? 400 : 409 }), plan: checked.plan, density: checked.density, errors: checked.errors };
     const split = routed.route?.plannedSplit;
-    if (routed.route && (!split || split.flow !== 'team' || split.workers !== checked.plan.slices.length
-      || split.projectPath !== checked.plan.projectPath
-      || split.slices.some((title, i) => title !== checked.plan.slices[i]?.title)
-      || (split.workers < split.target && split.reason !== checked.plan.fewerReason))) {
-      return refuse('TEAM_ROUTE_SPLIT_MISMATCH', 'The team must match the approved project, slice count, titles and fewer_reason. Route the complete plan once before starting.', { status: 409 });
+    const splitDiff = routed.route ? routeSplitDifference(split, checked.plan) : null;
+    if (splitDiff) {
+      return refuse('TEAM_ROUTE_SPLIT_MISMATCH', `The team must match the approved split: ${splitDiff} Route the complete plan once before starting.`, { status: 409 });
     }
     if (routed.route?.workflowId && routed.route.workflowId !== `team:${checked.plan.teamId}`) return refuse('TEAM_ROUTE_SPLIT_MISMATCH', 'This route already belongs to another team.', { status: 409 });
     const defaults = dispatchDefaults(input);
@@ -530,7 +553,7 @@ export function createTeamScheduler({
       landing: null, cleanup: null, createdAt: at, updatedAt: at,
     };
     save(record);
-    emit(record, 'team_started', { text: `${checked.plan.slices.length} slices at Agent density ${checked.density.label}`, slices: checked.plan.slices.map((slice) => slice.id), baseCommit: made.team.baseCommit });
+    await emit(record, 'team_started', { text: `${checked.plan.slices.length} slices at Agent density ${checked.density.label}`, slices: checked.plan.slices.map((slice) => slice.id), baseCommit: made.team.baseCommit });
     const started = await teamStep(record, () => startReady(record));
     return { ok: true, teamId: record.teamId, workflowId: record.workflowId, density: checked.density, setup: made.setup || [], started, team: (await status(record.teamId, { timeline: 20 })) };
   }
@@ -550,7 +573,7 @@ export function createTeamScheduler({
       : await teams.startSlice(record.teamId, sliceId, { runId });
     if (!started.ok) return started;
     const worktree = started.worktree;
-    const journal = journalOf(record.teamId);
+    const journal = await journalOf(record.teamId);
     const brief = teamBrief(journal, sliceId, { title: record.title, worktree, rework: rework || resolve, startCommit: started.startCommit || '' });
     const attempt = (mine.runIds || []).length + 1;
     // A slice that runs as one of the owner's agents runs on what that agent runs on: the team's own provider,
@@ -584,7 +607,7 @@ export function createTeamScheduler({
     try {
       const out = await dispatcher.dispatch(spec, { assistantSessionId: record.sessionId, origin: 'assistant', team: brief, runId });
       mine.phase = out.queued ? 'queued' : 'working';
-      emit(record, 'slice_started', { sliceId, runId, text: `${slice.title || sliceId}${rework || resolve ? ' (sent back)' : ''}${out.queued ? ' (queued for a free slot)' : ''}`, rework: rework || resolve, queued: out.queued === true });
+      await emit(record, 'slice_started', { sliceId, runId, text: `${slice.title || sliceId}${rework || resolve ? ' (sent back)' : ''}${out.queued ? ' (queued for a free slot)' : ''}`, rework: rework || resolve, queued: out.queued === true });
       return { ok: true, sliceId, runId, queued: out.queued === true, worktree };
     } catch (error) {
       mine.phase = 'failed';
@@ -599,7 +622,7 @@ export function createTeamScheduler({
   async function startReady(record) {
     const started = [];
     if (record.status !== 'running') return started;
-    const journal = journalOf(record.teamId);
+    const journal = await journalOf(record.teamId);
     if (!journal) return started;
     for (const slice of record.plan.slices) {
       const mine = record.slices[slice.id];
@@ -607,18 +630,18 @@ export function createTeamScheduler({
       if (slice.dependsOn.some((dep) => sliceStateOf(journal, dep) !== 'integrated')) continue;
       const out = await dispatchSlice(record, slice.id);
       started.push(out.ok ? { sliceId: slice.id, runId: out.runId, queued: out.queued } : { sliceId: slice.id, ok: false, code: out.code, message: out.message });
-      if (!out.ok) attention(record, { code: out.code || 'SLICE_NOT_STARTED', sliceId: slice.id, message: `Slice ${slice.id} could not start: ${out.message}` });
+      if (!out.ok) await attention(record, { code: out.code || 'SLICE_NOT_STARTED', sliceId: slice.id, message: `Slice ${slice.id} could not start: ${out.message}` });
     }
     return started;
   }
 
   // ── needs attention ────────────────────────────────────────────────────────
   /** The team cannot go on by itself: say so once, to the session that runs it, as critical. */
-  function attention(record, { code, sliceId = null, message, report = null, event = 'needs_attention' } = {}) {
+  async function attention(record, { code, sliceId = null, message, report = null, event = 'needs_attention' } = {}) {
     record.status = 'needs_attention';
     record.attention = { code, sliceId, message: clip(message, 600), at: iso(now()) };
     if (sliceId && record.slices[sliceId]) record.slices[sliceId].lastReport = { code, message: clip(message, 600), at: iso(now()), ...(report ? { report } : {}) };
-    emit(record, event, { sliceId, code, text: message, final: true, ...(report ? { report: reportBrief(report) } : {}) }, { critical: true, mailbox: true });
+    await emit(record, event, { sliceId, code, text: message, final: true, ...(report ? { report: reportBrief(report) } : {}) }, { critical: true, mailbox: true });
   }
   /** A report as an event carries it: the files and the test result's end, never whole blobs. */
   function reportBrief(report) {
@@ -640,7 +663,7 @@ export function createTeamScheduler({
     const run = runOf(mine.runId);
     if (dispatcher && runLive(run)) {
       try {
-        dispatcher.sendTurn(mine.runId, text, { origin });
+        await dispatcher.sendTurn(mine.runId, text, { origin });
         mine.phase = 'working';
         save(record);
         return { ok: true, runId: mine.runId, via: 'follow-up' };
@@ -656,20 +679,20 @@ export function createTeamScheduler({
   }
 
   /** The unread messages of a member that somebody waits on (questions, change requests). */
-  function waitingMessages(teamId, runId) {
+  async function waitingMessages(teamId, runId) {
     let rows = [];
-    try { rows = coordination.team.read({ teamId, runId, limit: 100, peek: true }); } catch { rows = []; }
+    try { rows = await coordination.team.read({ teamId, runId, limit: 100, peek: true }); } catch { rows = []; }
     return rows.filter((event) => event.kind === TEAM_MESSAGE_LOG_KIND && TEAM_ACTION_KINDS.includes(event.payload?.messageKind));
   }
 
   // Read-only workers never commit or join. End a warm run before removing its checkout.
   async function finishReader(record, sliceId, { failed = false } = {}) {
     const mine = record.slices[sliceId];
-    if (journalOf(record.teamId)?.slices[sliceId]?.cleanup) return;
+    if ((await journalOf(record.teamId))?.slices[sliceId]?.cleanup) return;
     const run = runOf(mine.runId);
     if (runLive(run)) {
       try { await dispatcherOf().complete(mine.runId, { reason: 'read_only_done' }); }
-      catch (error) { return attention(record, { code: 'WORKER_STILL_ACTIVE', sliceId, message: `Worktree kept: worker could not end (${error.message}).` }); }
+      catch (error) { return await attention(record, { code: 'WORKER_STILL_ACTIVE', sliceId, message: `Worktree kept: worker could not end (${error.message}).` }); }
       // complete() wakes the idle run; its terminal dispatch event resumes cleanup.
       if (runLive(runOf(mine.runId))) return;
     }
@@ -677,12 +700,12 @@ export function createTeamScheduler({
     mine.phase = failed ? 'failed' : 'completed';
     mine.released = true;
     mine.doneAt = iso(now());
-    emit(record, 'slice_done', { sliceId, runId: mine.runId, text: cleanup.removed ? 'Read-only worker ended; worktree removed.' : `Worktree kept: ${cleanup.kept?.path || cleanup.path} (${cleanup.kept?.reason || cleanup.code}).` });
-    if (!cleanup.ok || cleanup.kept) attention(record, { code: 'READ_ONLY_WORKTREE_KEPT', sliceId, message: `Read-only worker worktree kept at ${cleanup.kept?.path || cleanup.path}: ${cleanup.kept?.reason || cleanup.message}. Inspect it; no changes were committed or landed.`, report: cleanup });
-    else if (failed) attention(record, { code: 'SLICE_WORKER_ENDED', sliceId, message: 'Read-only worker ended before reporting done; its clean worktree was removed.' });
+    await emit(record, 'slice_done', { sliceId, runId: mine.runId, text: cleanup.removed ? 'Read-only worker ended; worktree removed.' : `Worktree kept: ${cleanup.kept?.path || cleanup.path} (${cleanup.kept?.reason || cleanup.code}).` });
+    if (!cleanup.ok || cleanup.kept) await attention(record, { code: 'READ_ONLY_WORKTREE_KEPT', sliceId, message: `Read-only worker worktree kept at ${cleanup.kept?.path || cleanup.path}: ${cleanup.kept?.reason || cleanup.message}. Inspect it; no changes were committed or landed.`, report: cleanup });
+    else if (failed) await attention(record, { code: 'SLICE_WORKER_ENDED', sliceId, message: 'Read-only worker ended before reporting done; its clean worktree was removed.' });
     if (Object.values(record.slices).every(s => s.released) && record.status !== 'needs_attention') {
       record.status = 'completed';
-      emit(record, 'team_completed', { text: 'All read-only workers finished. Synthesize their results; no integration or landing is needed.' });
+      await emit(record, 'team_completed', { text: 'All read-only workers finished. Synthesize their results; no integration or landing is needed.' });
     }
     save(record);
   }
@@ -691,20 +714,20 @@ export function createTeamScheduler({
   async function sliceReportedDone(record, sliceId, runId) {
     if (record.plan.readOnly) return finishReader(record, sliceId);
     const mine = record.slices[sliceId];
-    const journal = journalOf(record.teamId);
+    const journal = await journalOf(record.teamId);
     const current = sliceStateOf(journal, sliceId);
     if (current === 'integrated') return;
     // Somebody asked this worker something while it worked: it answers before its slice is closed.
-    const asks = waitingMessages(record.teamId, runId);
+    const asks = await waitingMessages(record.teamId, runId);
     if (asks.length && (Number(mine.deferrals) || 0) < limits.maxPeerDeferrals) {
       mine.deferrals = (Number(mine.deferrals) || 0) + 1;
       const handed = await sendBack(record, sliceId, peerMessagesText(record.teamId, asks.map(messageView), { beforeIntegration: true }), { origin: 'peer' });
       if (!handed.ok) {
         mine.phase = 'failed';
-        return attention(record, { code: handed.code || 'SLICE_NOT_SENT_BACK', sliceId, message: `Could not deliver the peer follow-up to ${sliceId}: ${handed.message}. Inspect agent_team status and retry with agent_team integrate.` });
+        return await attention(record, { code: handed.code || 'SLICE_NOT_SENT_BACK', sliceId, message: `Could not deliver the peer follow-up to ${sliceId}: ${handed.message}. Inspect agent_team status and retry with agent_team integrate.` });
       }
       if (handed.via === 'follow-up') {
-        try { coordination.team.ack({ teamId: record.teamId, runId, eventIds: asks.map((event) => event.id) }); } catch { /* handed over all the same */ }
+        try { await coordination.team.ack({ teamId: record.teamId, runId, eventIds: asks.map((event) => event.id) }); } catch { /* handed over all the same */ }
       }
       return;
     }
@@ -734,11 +757,11 @@ export function createTeamScheduler({
       if (finished.code === 'UNRESOLVED_CONFLICTS') return retry(record, sliceId, 'conflict', { report: { files: finished.files || [] }, text: unresolvedFollowUp({ teamId: record.teamId, sliceId, files: finished.files || [] }), message: finished.message });
       if (finished.code === 'SLICE_ALREADY_INTEGRATED') return;
       mine.phase = 'rejected';
-      return attention(record, { code: finished.code, sliceId, message: `Slice ${sliceId} was not committed: ${finished.message} Inspect the worktree and retry with agent_team integrate.`, report: { violations: finished.violations, stray: finished.stray } });
+      return await attention(record, { code: finished.code, sliceId, message: `Slice ${sliceId} was not committed: ${finished.message} Inspect the worktree and retry with agent_team integrate.`, report: { violations: finished.violations, stray: finished.stray } });
     }
     mine.phase = 'done';
     mine.doneAt = iso(now());
-    emit(record, 'slice_done', { sliceId, runId, text: `${finished.changed?.length || 0} files${finished.committed ? '' : ' (nothing new to commit)'}${mine.stray?.length ? `, ${mine.stray.length} left out (not its own)` : ''}`, head: finished.head, changed: (finished.changed || []).length, stray: mine.stray || [] });
+    await emit(record, 'slice_done', { sliceId, runId, text: `${finished.changed?.length || 0} files${finished.committed ? '' : ' (nothing new to commit)'}${mine.stray?.length ? `, ${mine.stray.length} left out (not its own)` : ''}`, head: finished.head, changed: (finished.changed || []).length, stray: mine.stray || [] });
     return true;
   }
 
@@ -751,7 +774,7 @@ export function createTeamScheduler({
     mine.lastReport = { code: kind === 'tests' ? 'TESTS_FAILED' : 'CONFLICT', message: clip(message || '', 600), at: iso(now()), ...(report ? { report: reportBrief(report) } : {}) };
     if (used >= limits.maxRetries) {
       mine.phase = kind === 'tests' ? 'tests_failed' : 'conflict';
-      return attention(record, {
+      return await attention(record, {
         code: kind === 'tests' ? 'TESTS_FAILED' : 'CONFLICT', sliceId, report, event,
         message: `Slice ${sliceId} ${kind === 'tests' ? 'failed the integration tests' : 'conflicts with the integration branch'} after ${used} ${used === 1 ? 'retry' : 'retries'}: ${message || ''} Decide what happens next (agent_team status has the report): fix the plan, send the worker a hint with agent_send and then agent_team integrate, or discard the team.`,
       });
@@ -761,8 +784,8 @@ export function createTeamScheduler({
     save(record);
     const body = typeof text === 'function' ? text(used + 1) : text;
     const sent = await sendBack(record, sliceId, body, { resolve });
-    emit(record, event, { sliceId, runId: mine.runId, attempt: used + 1, of: limits.maxRetries, text: `${clip(message || '', 300)} Sent back to its worker (${sent.ok ? sent.via : 'could not be sent'}).`, ...(report ? { report: reportBrief(report) } : {}) });
-    if (!sent.ok) attention(record, { code: sent.code || 'SLICE_NOT_SENT_BACK', sliceId, message: `Slice ${sliceId} could not be sent back to a worker: ${sent.message}`, report });
+    await emit(record, event, { sliceId, runId: mine.runId, attempt: used + 1, of: limits.maxRetries, text: `${clip(message || '', 300)} Sent back to its worker (${sent.ok ? sent.via : 'could not be sent'}).`, ...(report ? { report: reportBrief(report) } : {}) });
+    if (!sent.ok) await attention(record, { code: sent.code || 'SLICE_NOT_SENT_BACK', sliceId, message: `Slice ${sliceId} could not be sent back to a worker: ${sent.message}`, report });
   }
 
   async function handleJoin(record, result) {
@@ -771,7 +794,7 @@ export function createTeamScheduler({
       mine.phase = 'integrated';
       mine.integratedAt = iso(now());
       mine.lastReport = null;
-      emit(record, 'integrated', { sliceId: result.sliceId, runId: mine.runId, commit: result.commit, method: result.method, tests: result.tests ? { ok: result.tests.ok === true, exitCode: result.tests.exitCode ?? null } : null, text: `${result.method || 'joined'}${result.tests ? (result.tests.ok ? ', tests passed' : ', tests failed') : ', not tested (no test command)'}` });
+      await emit(record, 'integrated', { sliceId: result.sliceId, runId: mine.runId, commit: result.commit, method: result.method, tests: result.tests ? { ok: result.tests.ok === true, exitCode: result.tests.exitCode ?? null } : null, text: `${result.method || 'joined'}${result.tests ? (result.tests.ok ? ', tests passed' : ', tests failed') : ', not tested (no test command)'}` });
       release(record, result.sliceId, 'team_integrated');
       return;
     }
@@ -787,7 +810,7 @@ export function createTeamScheduler({
       }
       if (resolved && !resolved.ok) {
         mine.phase = 'conflict';
-        attention(record, { code: resolved.code || 'CONFLICT', sliceId: result.sliceId, message: `Slice ${result.sliceId} conflicts with the integration branch and the conflict could not be brought into its worktree: ${resolved.message}`, report: result.report, event: 'conflict' });
+        await attention(record, { code: resolved.code || 'CONFLICT', sliceId: result.sliceId, message: `Slice ${result.sliceId} conflicts with the integration branch and the conflict could not be brought into its worktree: ${resolved.message}`, report: result.report, event: 'conflict' });
         return;
       }
       await retry(record, result.sliceId, 'conflict', {
@@ -801,7 +824,7 @@ export function createTeamScheduler({
       // The slice is the worker's again (its claims with it) before it is told: a live worker keeps its run.
       if (runLive(mineRun) && (Number(mine.attempts?.tests) || 0) < limits.maxRetries) {
         const again = await teams.startSlice(record.teamId, result.sliceId, { runId: mine.runId });
-        if (!again.ok) { mine.phase = 'tests_failed'; attention(record, { code: again.code, sliceId: result.sliceId, message: `Slice ${result.sliceId} failed the integration tests and could not be reopened: ${again.message}`, report: result.report, event: 'tests_failed' }); return; }
+        if (!again.ok) { mine.phase = 'tests_failed'; await attention(record, { code: again.code, sliceId: result.sliceId, message: `Slice ${result.sliceId} failed the integration tests and could not be reopened: ${again.message}`, report: result.report, event: 'tests_failed' }); return; }
       }
       await retry(record, result.sliceId, 'tests', {
         report: result.report, message: result.message,
@@ -810,7 +833,7 @@ export function createTeamScheduler({
       return;
     }
     mine.phase = 'failed';
-    attention(record, { code: result.code || 'INTEGRATION_FAILED', sliceId: result.sliceId, message: `Slice ${result.sliceId} could not be joined: ${result.message}`, report: result.report });
+    await attention(record, { code: result.code || 'INTEGRATION_FAILED', sliceId: result.sliceId, message: `Slice ${result.sliceId} could not be joined: ${result.message}`, report: result.report });
   }
 
   async function joinFinished(record) {
@@ -833,7 +856,7 @@ export function createTeamScheduler({
       joined = refuse('INTEGRATION_FAILED', `${error?.message || String(error)}. Inspect the integration worktree before retrying.`);
     }
     if (joined.ok === false && !Array.isArray(joined.results)) {
-      attention(record, { code: joined.code || 'INTEGRATION_FAILED', message: `The team could not be joined: ${joined.message}` });
+      await attention(record, { code: joined.code || 'INTEGRATION_FAILED', message: `The team could not be joined: ${joined.message}` });
       return joined;
     }
     for (const result of joined.results || []) {
@@ -846,9 +869,9 @@ export function createTeamScheduler({
     if (joined.ready && record.status !== 'ready') {
       record.status = 'ready';
       record.attention = null;
-      const journal = journalOf(record.teamId);
+      const journal = await journalOf(record.teamId);
       const tests = journal?.integration?.tests || null;
-      emit(record, 'team_ready', {
+      await emit(record, 'team_ready', {
         integrationBranch: integrationBranchName(record.teamId), head: journal?.integration?.head || null,
         tests: tests ? { ok: tests.ok === true, commit: tests.commit || null } : null,
         text: `Every slice is joined on ${integrationBranchName(record.teamId)}${tests ? (tests.ok ? ' and the tests passed on that commit' : ' but the tests have not passed on that commit') : ' (no test command: not tested)'}. Land it with agent_team land when the tests passed, the owner's branch has not moved and no locally changed file is touched; otherwise ask the owner.`,
@@ -883,7 +906,7 @@ export function createTeamScheduler({
   // an idle worker with an empty follow-up outbox, or a successfully ended worker, is done.
   function canFinish(run) {
     return (run?.lastResult?.status || run?.outcome) === 'done' &&
-      (run.state === 'completed' || (runIdle(run) && !coordination.followUps?.count(run.runId)));
+      (run.state === 'completed' || (runIdle(run) && !coordination.followUps?.cachedCount(run.runId)));
   }
 
   async function reconcileRun(record, sliceId, runId) {
@@ -891,7 +914,7 @@ export function createTeamScheduler({
     if (!OPEN_STATUSES.has(record.status) || mine.runId !== runId || mine.released) return;
     const run = runOf(runId);
     if (!run || (!runIdle(run) && !run.terminal)) return;
-    const state = sliceStateOf(journalOf(record.teamId), sliceId);
+    const state = sliceStateOf(await journalOf(record.teamId), sliceId);
     if (state === 'integrated' || state === 'completed') return;
     if (record.plan.readOnly && run.terminal) return finishReader(record, sliceId, { failed: !canFinish(run) });
     if (canFinish(run) && (mine.phase === 'finishing' || !mine.handledTurn || run.resultTurn > mine.handledTurn)) {
@@ -903,7 +926,7 @@ export function createTeamScheduler({
         }
       } catch (error) {
         mine.phase = 'failed';
-        attention(record, { code: 'SLICE_FINALIZATION_FAILED', sliceId, message: `Could not finalize ${sliceId}: ${error.message}. Inspect its worktree and retry with agent_team integrate.` });
+        await attention(record, { code: 'SLICE_FINALIZATION_FAILED', sliceId, message: `Could not finalize ${sliceId}: ${error.message}. Inspect its worktree and retry with agent_team integrate.` });
       }
       return;
     }
@@ -911,7 +934,7 @@ export function createTeamScheduler({
     if (run.terminal) {
       if (state === 'done' && canFinish(run)) return;
       mine.phase = 'failed';
-      attention(record, { code: 'SLICE_WORKER_ENDED', sliceId,
+      await attention(record, { code: 'SLICE_WORKER_ENDED', sliceId,
         message: `The worker of slice ${sliceId} ended (${run.completionReason || run.state}) before its slice was done. Its files are in its worktree. agent_team integrate gives the slice to a new worker; agent_team discard gives the team up.` });
     } else if (run.outcome !== 'done') {
       mine.phase = 'blocked';
@@ -920,7 +943,7 @@ export function createTeamScheduler({
     }
   }
 
-  function onDispatch(payload) {
+  async function onDispatch(payload) {
     if (closed || payload?.type !== 'assistant:dispatch') return;
     const runId = payload.run?.runId;
     const ref = runIndex.get(runId);
@@ -932,9 +955,9 @@ export function createTeamScheduler({
       if (payload.turn <= mine.handledTurn || runOf(runId)?.state !== 'running') return;
       // The dispatcher announces the new turn before handing its prompt to the worker.
       // A finished slice gave back its claims; restore them before the follow-up edits.
-      if (['done', 'integrating'].includes(sliceStateOf(journalOf(record.teamId), ref.sliceId))) {
-        const claims = teams.modules.claims.assign(record.teamId, ref.sliceId, runId);
-        if (!claims.ok) return attention(record, { code: claims.code, sliceId: ref.sliceId, message: claims.message });
+      if (['done', 'integrating'].includes(sliceStateOf(await journalOf(record.teamId), ref.sliceId))) {
+        const claims = await teams.modules.claims.assign(record.teamId, ref.sliceId, runId);
+        if (!claims.ok) return await attention(record, { code: claims.code, sliceId: ref.sliceId, message: claims.message });
         mine.phase = 'working';
         save(record);
       }
@@ -947,15 +970,20 @@ export function createTeamScheduler({
     }
   }
 
-  function checkProgress() {
+  async function checkProgress() {
+    markActivity('scheduler:teams');
     if (closed) return;
+    const cutoff = now() - limits.postWindowMs;
+    for (const [runId, times] of postTimes) {
+      if (times.at(-1) <= cutoff) postTimes.delete(runId);
+    }
     for (const record of records.values()) {
       if (!['running', 'needs_attention'].includes(record.status)) continue;
-      const journal = journalOf(record.teamId);
+      const journal = await journalOf(record.teamId);
       const under = journal?.integrating;
       if (under && now() - under.startedAt >= limits.joinOverdueMs && record.alertedJoin !== under.startedAt) {
         record.alertedJoin = under.startedAt;
-        emit(record, 'needs_attention', { code: 'JOIN_OVERDUE', sliceId: under.sliceId,
+        await emit(record, 'needs_attention', { code: 'JOIN_OVERDUE', sliceId: under.sliceId,
           text: `Integration has been ${under.phase} for ${Math.floor((now() - under.startedAt) / 60000)} minutes. Inspect agent_team status and the integration worktree before retrying.`,
           phase: under.phase, startedAt: under.startedAt, candidate: under.candidate || null });
       }
@@ -974,6 +1002,72 @@ export function createTeamScheduler({
     }
   }
 
+  // Lead amendments share the join reservation and all slice finalization reservations.
+  function amend(teamId, fn) {
+    const record = records.get(teamId);
+    if (!record) return Promise.resolve(refuse('TEAM_NOT_FOUND', `No team named "${teamId}" is known here.`));
+    return teamStep(record, async () => {
+      const journal = await journalOf(teamId);
+      if (!journal) return refuse('TEAM_NOT_FOUND', `No journal for team "${teamId}".`);
+      if (journal.plan.readOnly) return refuse('TEAM_READ_ONLY', 'Research and review teams have read-only slices.');
+      if (!OPEN_STATUSES.has(record.status) || journal.removed || !['planned', 'running', 'ready'].includes(journal.state)) {
+        return refuse('TEAM_NOT_ACTIVE', `Team "${teamId}" cannot be amended in state ${journal.state}.`);
+      }
+      return fn(record, journal);
+    });
+  }
+
+  function assign(teamId, { sliceId, paths } = {}) {
+    return amend(teamId, async (record, journal) => {
+      const result = await teams.modules.claims.assignPaths(journal, sliceId, paths);
+      if (!result.ok) return result;
+      record.plan.slices.find(slice => slice.id === sliceId).ownedPaths = result.ownedPaths;
+      save(record);
+      const runId = record.slices[sliceId].runId;
+      const current = sliceStateOf(journal, sliceId);
+      let notification = 'next_worker_brief';
+      if (member(runId)) {
+        const requested = [...result.requested].sort();
+        const digest = createHash('sha256').update(JSON.stringify(requested)).digest('hex');
+        let posted;
+        try {
+          posted = await coordination.team.post({
+            id: `team:${teamId}:assign:${runId}:${digest}`, teamId, sessionId: record.sessionId, to: [runId],
+            payload: { messageKind: 'request_change', to: 'slice', toSlice: sliceId },
+            text: `The lead assigned these paths to your slice: ${clip(requested.join(', '), 3000)}. Check your current ownership with team claims and make the requested change when your slice is working.`,
+          });
+        } catch (error) {
+          return refuse('ASSIGN_NOTIFICATION_FAILED', `Ownership was saved. Retry the same assignment to confirm mailbox delivery. ${error.message}`,
+            { teamId, sliceId, ownedPaths: result.ownedPaths });
+        }
+        notification = 'mailbox';
+        if (current === 'running' && runIdle(runOf(runId))) {
+          const event = posted.duplicate
+            ? (await waitingMessages(teamId, runId)).find(row => row.id === posted.id)
+            : await store.get(posted.id);
+          if (event && await pushTo(record, runId, [event])) notification = 'follow-up';
+        }
+      }
+      const retry = ['conflict', 'tests-failed', 'rejected'].includes(current) || (current === 'running' && !member(runId));
+      return { ok: true, teamId, sliceId, ownedPaths: result.ownedPaths, notification,
+        ...(retry ? { next: `Call agent_team integrate with team_id "${teamId}" and slice_id "${sliceId}" to resume the slice.` } : {}) };
+    });
+  }
+
+  function setTestCommand(teamId, value) {
+    return amend(teamId, async (_record, journal) => {
+      const command = testCommandOf(value);
+      if (!command) return refuse('INVALID_TEST_COMMAND', 'Give the test command that proves the joined work.');
+      // The current head can be back at base after a failed join. Its journal entry survives rollback and restart.
+      const entries = await teams.modules.state.entriesOf(teamId);
+      if (entries.some(entry => !entry.sliceId && entry.state === 'integrating')) {
+        return refuse('JOIN_ALREADY_STARTED', 'The test command is fixed once the first join starts.');
+      }
+      await teams.modules.state.writeTeam(teamId, journal.state, { testCommand: command });
+      return { ok: true, teamId, testCommand: command };
+    });
+  }
+
   // ── retry, land, discard ───────────────────────────────────────────────────
   /**
    * Take a team that needs attention up again (the Assistant's `integrate`): every slice is looked at as the
@@ -989,7 +1083,7 @@ export function createTeamScheduler({
     return inTurn(record.teamId, async () => {
       await withAllSlices(record, async () => {
         if (record.status === 'needs_attention') { record.status = 'running'; record.attention = null; }
-        const journal = journalOf(record.teamId);
+        const journal = await journalOf(record.teamId);
         for (const slice of record.plan.slices) {
           if (sliceId && slice.id !== sliceId) continue;
           const mine = record.slices[slice.id];
@@ -1003,11 +1097,11 @@ export function createTeamScheduler({
             let conflicts = [];
             let resolved = null;
             if (runLive(run)) { resolved = await teams.resolveInSlice(record.teamId, slice.id, { runId: mine.runId }); conflicts = resolved.ok ? resolved.conflicts || [] : []; }
-            if (resolved && !resolved.ok) { attention(record, { code: resolved.code, sliceId: slice.id, message: `Slice ${slice.id}: ${resolved.message}` }); continue; }
+            if (resolved && !resolved.ok) { await attention(record, { code: resolved.code, sliceId: slice.id, message: `Slice ${slice.id}: ${resolved.message}` }); continue; }
             await retry(record, slice.id, 'conflict', { report, message: 'Conflicts with the integration branch.', resolve: !resolved, text: (attempt) => conflictFollowUp({ teamId: record.teamId, sliceId: slice.id, report, conflicts, attempt, maxAttempts: limits.maxRetries }) });
           } else if (state === 'tests-failed') {
             const report = { tests: journal.slices[slice.id]?.tests || {} };
-            if (runLive(run)) { const again = await teams.startSlice(record.teamId, slice.id, { runId: mine.runId }); if (!again.ok) { attention(record, { code: again.code, sliceId: slice.id, message: `Slice ${slice.id}: ${again.message}` }); continue; } }
+            if (runLive(run)) { const again = await teams.startSlice(record.teamId, slice.id, { runId: mine.runId }); if (!again.ok) { await attention(record, { code: again.code, sliceId: slice.id, message: `Slice ${slice.id}: ${again.message}` }); continue; } }
             await retry(record, slice.id, 'tests', { report, message: 'The integration tests failed.', text: (attempt) => testsFailedFollowUp({ teamId: record.teamId, sliceId: slice.id, report, attempt, maxAttempts: limits.maxRetries }) });
           } else if (state === 'rejected') {
             if (canFinish(run)) await sliceReportedDone(record, slice.id, mine.runId);
@@ -1015,7 +1109,7 @@ export function createTeamScheduler({
           } else if (!runLive(run)) {
             // Its worker is gone and the slice is not finished: a new worker takes it up where the files are.
             const out = await dispatchSlice(record, slice.id, { rework: true, lead: `You take over slice ${slice.id} of team ${record.teamId} from a worker that ended before it was done. What it changed so far is in your worktree, uncommitted: read it (git status, git diff) and finish the slice.` });
-            if (!out.ok) attention(record, { code: out.code || 'SLICE_NOT_STARTED', sliceId: slice.id, message: `Slice ${slice.id} could not be given to a new worker: ${out.message}` });
+            if (!out.ok) await attention(record, { code: out.code || 'SLICE_NOT_STARTED', sliceId: slice.id, message: `Slice ${slice.id} could not be given to a new worker: ${out.message}` });
           } else if (canFinish(run)) {
             await sliceReportedDone(record, slice.id, mine.runId);
           }
@@ -1037,7 +1131,7 @@ export function createTeamScheduler({
     if (!record) return Promise.resolve(refuse('TEAM_NOT_FOUND', `No team named "${teamId}" is known here.`, { status: 404 }));
     if (record.plan.readOnly) return Promise.resolve(refuse('TEAM_READ_ONLY', 'Research/review teams have no integration or landing.', { status: 409 }));
     return teamStep(record, async () => {
-      const journal = journalOf(record.teamId);
+      const journal = await journalOf(record.teamId);
       if (!journal) return refuse('TEAM_NOT_FOUND', `Team "${teamId}" has no record in the journal.`, { status: 404 });
       const assistant = by?.kind !== 'owner';
       const target = targetBranch ? String(targetBranch) : ((await branchOf(record.projectPath)) || journal.baseBranch || null);
@@ -1073,7 +1167,7 @@ export function createTeamScheduler({
         branches: [...record.plan.slices.map(s => branchName(record.teamId, s.id)), integrationBranchName(record.teamId)],
         next: 'When the task is fully finished, suggest deleting these worktrees and branches with a confirm follow-up; call agent_team action cleanup with user_confirmed true only after the user says yes.',
       };
-      emit(record, 'landed', {
+      await emit(record, 'landed', {
         targetBranch: landed.landed?.targetBranch || target, mode: landed.landed?.mode || mode, to: landed.landed?.to || null,
         text: `Landed on ${landed.landed?.targetBranch || target} (${landed.landed?.mode || mode}); worktrees and branches kept pending confirmed cleanup.`, by: by?.kind || 'owner',
       }, { quiet: assistant && by?.sessionId === record.sessionId });
@@ -1133,7 +1227,7 @@ export function createTeamScheduler({
       if (!out.ok) return { ...out, checks: [...checks, ...(out.checks || [])] };
       record.cleanedAt = iso(now());
       record.cleanup = { complete: true, removed: out.removed };
-      emit(record, 'team_cleaned', { text: 'Confirmed cleanup removed the team worktrees and branches.' });
+      await emit(record, 'team_cleaned', { text: 'Confirmed cleanup removed the team worktrees and branches.' });
       return { ok: true, teamId: record.teamId, removed: out.removed, ...(!verified ? { confirmation: 'unverified' } : {}) };
     });
   }
@@ -1151,7 +1245,7 @@ export function createTeamScheduler({
     const record = records.get(String(teamId || ''));
     if (!record) return Promise.resolve(refuse('TEAM_NOT_FOUND', `No team named "${teamId}" is known here.`, { status: 404 }));
     return teamStep(record, async () => {
-      const journal = journalOf(record.teamId);
+      const journal = await journalOf(record.teamId);
       if (journal?.state === 'merged') return refuse('ALREADY_LANDED', `Team "${teamId}" has landed: there is nothing to discard.`, { status: 409 });
       if (record.status === 'discarded' && journal?.removed) return { ok: true, already: true, cleanup: record.cleanup };
       const assistant = by?.kind !== 'owner';
@@ -1161,7 +1255,7 @@ export function createTeamScheduler({
       record.status = 'discarded';
       record.attention = null;
       record.cleanup = { complete: removed.complete === true, kept: (removed.kept || []).map((item) => ({ sliceId: item.sliceId, path: item.path, branch: item.branch, reason: item.reason, files: (item.files || []).slice(0, 20), commits: item.commits ?? null })) };
-      emit(record, 'discarded', {
+      await emit(record, 'discarded', {
         text: `Discarded${reason ? `: ${clip(reason, 200)}` : ''}. ${removed.complete ? 'Worktrees and branches removed.' : `${record.cleanup.kept.length} worktree${record.cleanup.kept.length === 1 ? '' : 's'} or branch${record.cleanup.kept.length === 1 ? '' : 'es'} kept because work is in them.`}`, by: by?.kind || 'owner',
       }, { quiet: assistant && by?.sessionId === record.sessionId });
       return { ok: true, stopped, complete: removed.complete === true, removed: removed.removed || [], kept: record.cleanup.kept };
@@ -1201,13 +1295,13 @@ export function createTeamScheduler({
   }
 
   /** Hand messages to a worker that waits warm: one follow-up, named as untrusted peer content. → delivered or not. */
-  function pushTo(record, recipientRunId, events) {
+  async function pushTo(record, recipientRunId, events) {
     const dispatcher = dispatcherOf();
     const run = runOf(recipientRunId);
     if (!dispatcher || !runIdle(run)) return false;
     try {
-      dispatcher.sendTurn(recipientRunId, peerMessagesText(record.teamId, events.map(messageView)), { origin: 'peer', queue: false });
-      coordination.team.ack({ teamId: record.teamId, runId: recipientRunId, eventIds: events.map((event) => event.id) });
+      await dispatcher.sendTurn(recipientRunId, peerMessagesText(record.teamId, events.map(messageView)), { origin: 'peer', queue: false });
+      await coordination.team.ack({ teamId: record.teamId, runId: recipientRunId, eventIds: events.map((event) => event.id) });
       return true;
     } catch (error) {
       say('teams:peer-push-failed', { teamId: record.teamId, runId: recipientRunId, error: error?.code || error?.message || String(error) });
@@ -1221,7 +1315,7 @@ export function createTeamScheduler({
    * recipient's own mailbox; a recipient that waits warm gets it as a follow-up at once, a working one at its next
    * `team` call or when its turn ends.
    */
-  function post(runId, { to = 'board', kind = 'note', text = '', path = null, id = null } = {}) {
+  async function post(runId, { to = 'board', kind = 'note', text = '', path = null, id = null } = {}) {
     const who = member(runId);
     if (!who) return noMember();
     const record = records.get(who.teamId);
@@ -1248,7 +1342,7 @@ export function createTeamScheduler({
     const payload = { messageKind, fromSlice: who.sliceId, to: toSlice ? 'slice' : (target === 'lead' ? 'lead' : 'board'), ...(toSlice ? { toSlice } : {}), ...(path ? { path: String(path).slice(0, 400) } : {}) };
     let out;
     try {
-      out = coordination.team.post({
+      out = await coordination.team.post({
         teamId: who.teamId, fromRunId: String(runId), kind: TEAM_MESSAGE_LOG_KIND, text: body, payload,
         // Each recipient's own mailbox; the team's log has every message (the lead reads it there: agent_team status).
         to: recipients.map((each) => each.runId),
@@ -1260,14 +1354,14 @@ export function createTeamScheduler({
     }
     const delivered = [];
     if (!out.duplicate) {
-      const event = store.get(out.id);
+      const event = await store.get(out.id);
       for (const each of recipients) {
-        const pushed = event ? pushTo(record, each.runId, [event]) : false;
+        const pushed = event ? await pushTo(record, each.runId, [event]) : false;
         delivered.push({ sliceId: each.sliceId, how: pushed ? 'follow-up' : 'mailbox' });
       }
       // The lead (the Assistant) hears what is addressed to it, and a question or change request nobody else got.
       if (target === 'lead' || (toLead && !recipients.length && TEAM_ACTION_KINDS.includes(messageKind))) {
-        emit(record, 'team_message', { sliceId: who.sliceId, runId: String(runId), messageKind, text: `[${messageKind}] from slice ${who.sliceId}: ${body}`, untrusted: true, ...(path ? { path: String(path).slice(0, 400) } : {}) });
+        await emit(record, 'team_message', { sliceId: who.sliceId, runId: String(runId), messageKind, text: `[${messageKind}] from slice ${who.sliceId}: ${body}`, untrusted: true, ...(path ? { path: String(path).slice(0, 400) } : {}) });
         delivered.push({ sliceId: null, how: 'lead' });
       } else {
         try { broadcast({ type: TEAM_CHANGED, teamId: record.teamId, event: 'message', status: record.status, sliceId: who.sliceId }); } catch { /* no page is listening */ }
@@ -1284,16 +1378,16 @@ export function createTeamScheduler({
   const seqOf = (value) => { if (value === null || value === undefined || value === '') return null; const n = Number(value); return Number.isInteger(n) && n >= 0 ? n : null; };
 
   /** A member's messages after a position (default: what it has not acknowledged), oldest first. */
-  function read(runId, { afterSeq = null, kinds = null, limit = null } = {}) {
+  async function read(runId, { afterSeq = null, kinds = null, limit = null } = {}) {
     const who = member(runId);
     if (!who) return noMember();
     const wanted = kindsOf(kinds);
     const max = Math.max(1, Math.min(limits.readLimit, Number(limit) || limits.readLimit));
     const cursor = seqOf(afterSeq);
     let rows = [];
-    try { rows = coordination.team.read({ teamId: who.teamId, runId: String(runId), afterSeq: cursor, limit: 200 }); } catch (error) { return refuse(error?.code || 'TEAM_READ_FAILED', error?.message || String(error), { status: Number(error?.status) || 400 }); }
+    try { rows = await coordination.team.read({ teamId: who.teamId, runId: String(runId), afterSeq: cursor, limit: 200 }); } catch (error) { return refuse(error?.code || 'TEAM_READ_FAILED', error?.message || String(error), { status: Number(error?.status) || 400 }); }
     const messages = rows.filter((event) => event.kind === TEAM_MESSAGE_LOG_KIND).map(messageView).filter((message) => !wanted || wanted.includes(message.kind)).slice(0, max);
-    const last = rows.length ? rows[rows.length - 1].seq : (cursor ?? coordination.team.cursor({ teamId: who.teamId, runId: String(runId) }));
+    const last = rows.length ? rows[rows.length - 1].seq : (cursor ?? await coordination.team.cursor({ teamId: who.teamId, runId: String(runId) }));
     return { ok: true, teamId: who.teamId, sliceId: who.sliceId, untrusted: true, notice: PEER_NOTICE, messages, cursor: messages.length === max && messages.length ? messages[messages.length - 1].seq : last };
   }
 
@@ -1305,7 +1399,7 @@ export function createTeamScheduler({
     const deadline = now() + budget;
     let cursor = seqOf(afterSeq);
     for (;;) {
-      const got = read(runId, { afterSeq: cursor, kinds });
+      const got = await read(runId, { afterSeq: cursor, kinds });
       if (!got.ok) return got;
       if (got.messages.length) return { ...got, timedOut: false };
       cursor = got.cursor ?? cursor;
@@ -1321,31 +1415,31 @@ export function createTeamScheduler({
   }
 
   /** The member dealt with these messages (their ids), or with everything up to a seq. */
-  function ack(runId, { ids = null, throughSeq = null } = {}) {
+  async function ack(runId, { ids = null, throughSeq = null } = {}) {
     const who = member(runId);
     if (!who) return noMember();
     const through = seqOf(throughSeq);
     const eventIds = (Array.isArray(ids) ? ids : (ids ? [ids] : [])).map(String).slice(0, 200);
     if (through === null && !eventIds.length) return refuse('TEAM_ACK_EMPTY', 'Name the message ids, or through_seq.', { status: 400 });
     try {
-      const out = coordination.team.ack({ teamId: who.teamId, runId: String(runId), ...(through !== null ? { throughSeq: through } : { eventIds }) });
+      const out = await coordination.team.ack({ teamId: who.teamId, runId: String(runId), ...(through !== null ? { throughSeq: through } : { eventIds }) });
       return { ok: true, acked: out.acked, cursor: out.cursor };
     } catch (error) { return refuse(error?.code || 'TEAM_ACK_FAILED', error?.message || String(error), { status: Number(error?.status) || 400 }); }
   }
 
   /** Who owns a path of the project (with `path`), or every slice with what it owns. */
-  function claims(runId, { path = null } = {}) {
+  async function claims(runId, { path = null } = {}) {
     const who = member(runId);
     if (!who) return noMember();
     const record = records.get(who.teamId);
-    const journal = journalOf(who.teamId);
+    const journal = await journalOf(who.teamId);
     const plan = journal?.plan || record.plan;
     if (path !== null && path !== undefined && String(path).trim()) {
       const verdict = teams.checkWrite(who.teamId, who.sliceId, String(path));
       return { ok: true, teamId: who.teamId, sliceId: who.sliceId, path: verdict.relPath || String(path), owner: verdict.owner ?? null, mine: verdict.owner === who.sliceId, writable: verdict.allow === true, code: verdict.code, message: verdict.message || null };
     }
     let held = [];
-    try { held = store.claimsFor({ teamId: who.teamId }); } catch { held = []; }
+    try { held = await store.claimsFor({ teamId: who.teamId }); } catch { held = []; }
     return {
       ok: true, teamId: who.teamId, sliceId: who.sliceId,
       slices: plan.slices.map((slice) => ({
@@ -1357,11 +1451,11 @@ export function createTeamScheduler({
   }
 
   /** Ask the slice that owns a file outside the caller's claim to change it. Nobody open owns it: the lead is asked. */
-  function request(runId, { path = '', text = '' } = {}) {
+  async function request(runId, { path = '', text = '' } = {}) {
     const who = member(runId);
     if (!who) return noMember();
     const record = records.get(who.teamId);
-    const plan = journalOf(who.teamId)?.plan || record.plan;
+    const plan = (await journalOf(who.teamId))?.plan || record.plan;
     const rel = normalizeRelPath(String(path || ''));
     if (!rel) return refuse('TEAM_PATH_REQUIRED', 'path is required: the file you need changed, relative to the project.', { status: 400 });
     const body = String(text ?? '').trim();
@@ -1369,7 +1463,7 @@ export function createTeamScheduler({
     const owner = pathOwner(plan, rel);
     if (owner === who.sliceId) return refuse('TEAM_OWN_FILE', `${rel} is your own file: change it yourself.`, { status: 400, owner });
     const open = owner ? liveMembers(record).some((each) => each.sliceId === owner) : false;
-    const sent = post(runId, { to: open ? owner : 'lead', kind: 'request_change', path: rel, text: open ? body : `${owner ? `The owner of ${rel} (slice ${owner}) has no worker now` : `No slice owns ${rel}`}. Requested change: ${body}` });
+    const sent = await post(runId, { to: open ? owner : 'lead', kind: 'request_change', path: rel, text: open ? body : `${owner ? `The owner of ${rel} (slice ${owner}) has no worker now` : `No slice owns ${rel}`}. Requested change: ${body}` });
     if (!sent.ok) return sent;
     return { ...sent, path: rel, owner: owner || null, askedOf: open ? `slice ${owner}` : 'lead', note: open ? `Slice ${owner} was asked. Wait for its answer with the team tool (wait, kinds ["answer"]) or go on with what does not depend on it.` : 'The team lead (the Assistant) was asked: go on with what does not depend on it, and say in your ## Result block what is still open.' };
   }
@@ -1392,7 +1486,7 @@ export function createTeamScheduler({
       if (!OPEN_STATUSES.has(record.status)) continue;
       out.push(await inTurn(record.teamId, async () => {
         await withAllSlices(record, async () => {
-          const journal = journalOf(record.teamId);
+          const journal = await journalOf(record.teamId);
           if (!journal) { record.status = 'failed'; record.attention = { code: 'TEAM_RECORD_MISSING', sliceId: null, message: 'The team has no record in the journal any more.', at: iso(now()) }; save(record); return { teamId: record.teamId, status: record.status }; }
           if (journal.state === 'merged') { record.status = 'landed'; save(record); return { teamId: record.teamId, status: record.status }; }
           if (journal.state === 'cancelled' || journal.state === 'failed') { record.status = journal.state === 'failed' ? 'failed' : 'discarded'; save(record); return { teamId: record.teamId, status: record.status }; }
@@ -1421,10 +1515,10 @@ export function createTeamScheduler({
             if (runLive(run)) continue;
             if (['running', 'conflict', 'tests-failed', 'rejected'].includes(state) && record.status === 'running') {
               mine.phase = 'failed';
-              attention(record, { code: 'SLICE_WORKER_LOST', sliceId: slice.id, message: `The worker of slice ${slice.id} did not come back after the restart. Its files are in its worktree. agent_team integrate gives the slice to a new worker.` });
+              await attention(record, { code: 'SLICE_WORKER_LOST', sliceId: slice.id, message: `The worker of slice ${slice.id} did not come back after the restart. Its files are in its worktree. agent_team integrate gives the slice to a new worker.` });
             }
           }
-          if (record.plan.readOnly && Object.values(record.slices).every(s => s.released) && record.status === 'running') { record.status = 'completed'; emit(record, 'team_completed', { text: 'Read-only workers finished; synthesize their results.' }); }
+          if (record.plan.readOnly && Object.values(record.slices).every(s => s.released) && record.status === 'running') { record.status = 'completed'; await emit(record, 'team_completed', { text: 'Read-only workers finished; synthesize their results.' }); }
         });
         if (!record.plan.readOnly && OPEN_STATUSES.has(record.status) && record.status !== 'needs_attention') await joinFinished(record);
         save(record);
@@ -1438,8 +1532,12 @@ export function createTeamScheduler({
     if (unsubscribe || closed) return;
     const dispatcher = dispatcherOf();
     if (dispatcher && typeof dispatcher.subscribe === 'function') {
-      unsubscribe = dispatcher.subscribe(onDispatch);
-      watchdog = setInterval(checkProgress, limits.reconcileEveryMs);
+      unsubscribe = dispatcher.subscribe(payload => track(onDispatch(payload)));
+      watchdog = setInterval(() => {
+        if (watchdogPass) return;
+        watchdogPass = track(checkProgress()).catch(error => say('teams:watchdog-failed', error.message))
+          .finally(() => { watchdogPass = null; });
+      }, limits.reconcileEveryMs);
       watchdog.unref?.();
     }
   }
@@ -1448,6 +1546,7 @@ export function createTeamScheduler({
     closed = true;
     clearInterval(watchdog);
     if (unsubscribe) { try { unsubscribe(); } catch { /* gone already */ } unsubscribe = null; }
+    await Promise.allSettled([...background]);
     await settled();
   }
 
@@ -1455,10 +1554,10 @@ export function createTeamScheduler({
 
   return Object.freeze({
     limits,
-    plan, start, status, list, get, ownedBy, integrate, land, cleanup, discard,
+    plan, start, status, list, get, ownedBy, assign, setTestCommand, integrate, land, cleanup, discard,
     // the channel of a worker's `team` tool (the caller's proven run id decides the team)
     member, post, read, wait, ack, claims, request,
-    recover, attach, shutdown, settled,
+    recover: () => track(recover()), attach, shutdown, settled,
     _internals: { records, runIndex, onDispatch, joinFinished, startReady, dispatchSlice, emit },
   });
 }

@@ -23,6 +23,8 @@ import { createTextCache } from '../text-cache.js';
 import { morphChildren } from '../dom-morph.js';
 import { withCodeCopyButtons } from '../code-copy.js';
 import { decorateCodeBlocks, installCodeCopy } from '../ui-code-copy.js';
+import { withOutputFrames } from '../output-format.js';
+import { decorateOutput, installOutput } from '../ui-output.js';
 import { isSynabunServer, synabunToolKey, synabunToolLabel, synabunToolSummary } from '../synabun-tools.js';
 export { setCardExpanded } from './cdx-cards.js';
 
@@ -92,6 +94,8 @@ export function setRenderContext(ctx) {
   // The Copy button of every code block works in this document (its stylesheet and one click listener). Here, not
   // in injectStyles: cdx-styles.js is also run as a plain script (tests/provider-panel-terminal-auth-fixture.mjs).
   if (typeof document !== 'undefined') installCodeCopy(document);
+  // The same for the reading layer of an answer (prose, tables, code): ../ui-output.js.
+  if (typeof document !== 'undefined') installOutput(document);
 }
 
 // ═══════════════════════════════════════════
@@ -157,6 +161,9 @@ export function md(text) {
   catch { html = markdownFallback(key); }
   // Every code block carries the shared Copy button, written in after the sanitiser (../code-copy.js).
   html = withCodeCopyButtons(html);
+  // The reading layer all six panels share: a table's frame, task items, a block's language (../output-format.js).
+  // highlight.js colours a diff here, so its lines are left to it.
+  html = withOutputFrames(html, { diff: false });
   _mdCache.set(key, html);
   return html;
 }
@@ -838,6 +845,8 @@ export function sanitizeStoredTranscriptDom(container) {
   restoreDiffViews(container, { cwd: _ctx.boundTab?.project || _ctx.project });
   // A snapshot's blocks get the shared Copy button; an older one's own button (.cxp-copy-btn) is replaced.
   decorateCodeBlocks(container, { skip: codexOwnCopy });
+  // And an answer saved before the reading layer gets its tables framed (../ui-output.js): Markdown bodies only.
+  container.querySelectorAll('.cxp-msg-assistant .cxp-msg-body, .cxp-plan-card .cxp-msg-body').forEach((body) => decorateOutput(body, { diff: false }));
 }
 
 // ═══════════════════════════════════════════

@@ -13,15 +13,13 @@
 // runMaintenanceBatch's own claim query: pending non-judge jobs under the retry
 // limit, or a `running` claim older than 5 minutes (which the batch resets).
 
+import { beginActivity, markActivity } from './loop-stall.js';
 import { getDb } from '../../mcp-server/dist/services/sqlite.js';
-import { runMaintenanceBatch } from '../../mcp-server/dist/services/memory-maintenance.js';
+import { maintenancePaused, runMaintenanceBatch } from '../../mcp-server/dist/services/memory-maintenance.js';
+
+export { maintenancePaused };
 
 const STALE_RUNNING_MS = 300_000;
-
-export function maintenancePaused(d = getDb()) {
-  const row = d.prepare("SELECT value FROM kv_config WHERE key='memory_maintenance_paused'").get();
-  return row?.value === 'true';
-}
 
 export function maintenanceHasWork(d = getDb(), now = Date.now()) {
   if (d.prepare("SELECT 1 FROM memory_jobs WHERE status='pending' AND kind!='judge' AND attempts<3 LIMIT 1").get()) return true;
@@ -40,6 +38,7 @@ let batchInFlight = false;
 export function startGatedMemoryMaintenance({ intervalMs = 2000, runBatch = runMaintenanceBatch } = {}) {
   if (maintenanceTimer) return;
   maintenanceTimer = setInterval(() => {
+    markActivity('timer:memory-maintenance');
     if (batchInFlight) return;
     try {
       const d = getDb();
@@ -48,10 +47,11 @@ export function startGatedMemoryMaintenance({ intervalMs = 2000, runBatch = runM
       return;
     }
     batchInFlight = true;
+    const endActivity = beginActivity('memory:maintenance-batch');
     Promise.resolve()
       .then(() => runBatch())
       .catch((error) => console.error('[memory maintenance]', error?.message || error))
-      .finally(() => { batchInFlight = false; });
+      .finally(() => { batchInFlight = false; endActivity(); });
   }, intervalMs);
   maintenanceTimer.unref?.();
 }

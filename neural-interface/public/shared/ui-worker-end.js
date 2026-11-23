@@ -72,6 +72,8 @@ function paint(entry) {
   const sig = view?.sig || '';
   if (sig === entry.sig) return;
   entry.sig = sig;
+  const tray = globalThis.document?.getElementById?.('term-minimized-tray');
+  tray?.dispatchEvent(new CustomEvent('worker-end-changed', { detail: { runId: entry.run.runId } }));
   try { entry.apply(view); } catch (error) { console.warn('[worker-end] a panel failed to draw the end of a run', error); }
 }
 
@@ -169,14 +171,31 @@ export function isFinishedWarmWorker(runId, { busy = false } = {}) {
 export function endWorkerRunOnClose(runId, stop, { busy = false } = {}) {
   const stopped = () => { stop(); return 'stopped'; };
   if (!isFinishedWarmWorker(runId, { busy })) return Promise.resolve(stopped());
-  return fetch(`/api/assistant/runs/${encodeURIComponent(runId)}/tab-closed`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: '{}',
-  }).then(async (response) => {
-    const data = response.ok ? await response.json().catch(() => null) : null;
-    return data?.ok ? 'completed' : stopped();
-  }).catch(stopped);
+  return completeWorkerTab(runId, 'tab_close').then(ok => ok ? 'completed' : stopped());
+}
+
+/** The tray timer may detach an ended tab, or one the dispatcher agrees to complete.
+ * Missing or stale evidence leaves the tab and its follow-up channel open. */
+export async function mayAutoCloseWorkerTab(run) {
+  if (!run) return false;
+  // Suspended for a server restart: it resumes by itself, and a timer is never what ends it.
+  if (run.status === 'suspended') return false;
+  if (TERMINAL_STATES.has(run.status)) return true;
+  if (!isDispatchedRun(run) || run.turnState !== 'idle' || (run.outcome && run.outcome !== 'done')) return false;
+  if (!isFinishedWarmWorker(run.runId)) return false;
+  return completeWorkerTab(run.runId, 'tray_auto_close');
+}
+
+/** The dispatcher owns the final decision, including a follow-up that just began. */
+async function completeWorkerTab(runId, action) {
+  try {
+    const response = await fetch(`/api/assistant/runs/${encodeURIComponent(runId)}/tab-closed`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    });
+    const result = response.ok ? await response.json() : null;
+    return result?.ok === true && (action === 'tab_close' || result.completed === true || result.alreadyTerminal === true);
+  } catch { return false; }
 }
 
 /**

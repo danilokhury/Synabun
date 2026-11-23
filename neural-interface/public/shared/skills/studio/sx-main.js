@@ -26,7 +26,7 @@ import { closeDropdowns } from '../../cc-dropdown.js';
 import * as api from '../../api.js';
 import { readWholeCatalog, buildRows, countRows, projectsOf, keepSelection } from './sx-library.js';
 import { applyFixState, readDismissed, addDismissed, removeDismissed, DISMISSED_KEY } from './sx-fixes.js';
-import { initialRect, parseOpen } from './sx-geometry.js';
+import { initialRect, openRect, parseOpen } from './sx-geometry.js';
 import { frameRect } from '../../app-frame.js';
 import { updateCards, reviewCount } from './sx-review.js';
 import { newWorkspace, dirtyTabs, saveTab, dropDraft, backups, keptDrafts } from './sx-docs.js';
@@ -177,6 +177,7 @@ export async function openStudio(detail = {}) {
   S.gen++;
   S.opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   S.docked = storage.getItem(DOCK_KEY) === 'true';
+  S.floating = null;
   S.dim = storage.getItem(DIM_KEY) === 'true' && !S.docked;
   S.lib = { ...S.lib, ...readJson(LIB_KEY, {}), selected: new Set(), focus: null, installNotice: null, fixNotice: null };
   S.backdrop = document.createElement('div');
@@ -227,13 +228,18 @@ export async function openStudioWithImport(file) {
   await importFile(ctx(), file, capabilities);
 }
 
-function placeWindow() {
+function placeWindow(floating = null) {
   const panel = S.panel;
   if (S.docked) { panel.style.left = ''; panel.style.top = ''; panel.style.width = ''; panel.style.height = ''; return; }
-  // Where the shared panel system saved it the last time it was moved or resized (ui-panels.js savePanelLayout).
-  let saved = null;
-  try { saved = JSON.parse(storage.getItem(`${KEYS.PANEL_PREFIX}${PANEL_ID}`) || 'null'); } catch { saved = null; }
-  const rect = initialRect({ vw: window.innerWidth, vh: window.innerHeight, saved, frame: frameRect() });
+  const view = { vw: window.innerWidth, vh: window.innerHeight, frame: frameRect() };
+  let rect;
+  if (floating) rect = initialRect({ ...view, saved: floating }); // Undocked: the size it had before docking.
+  else {
+    // Opening: the shared size, at the position the panel system saved (ui-panels.js savePanelLayout).
+    let saved = null;
+    try { saved = JSON.parse(storage.getItem(`${KEYS.PANEL_PREFIX}${PANEL_ID}`) || 'null'); } catch { saved = null; }
+    rect = openRect({ ...view, saved });
+  }
   Object.assign(panel.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
 }
 
@@ -396,6 +402,7 @@ function onKeydown(e) {
 }
 
 function toggleDock() {
+  if (!S.docked) { const { left, top, width, height } = S.panel.style; S.floating = { left, top, width, height }; }
   S.docked = !S.docked;
   storage.setItem(DOCK_KEY, S.docked ? 'true' : 'false');
   if (S.docked && S.dim) toggleDim(false);
@@ -407,7 +414,7 @@ function toggleDock() {
   if (btn) { btn.setAttribute('aria-pressed', S.docked ? 'true' : 'false'); setHTML(btn, S.docked ? ICONS.undock : ICONS.dock); }
   const dim = S.panel.querySelector('[data-act="dim"]');
   if (dim) dim.disabled = S.docked;
-  placeWindow();
+  placeWindow(S.docked ? null : S.floating);
   announce(t(S.docked ? 'skillsStudio.shell.docked' : 'skillsStudio.shell.undocked'));
 }
 

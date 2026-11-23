@@ -33,7 +33,7 @@
 
 import { routeTaskIdentity } from '../public/shared/assistant/route-identity.js';
 import { agentPinOf, agentRefOf, routedAgent } from './agents/resolve.js';
-import { planRouteSplit } from './agents/split.js';
+import { planRouteSplit, splitChanged } from './agents/split.js';
 import { normalizeAgentDensity } from './agents/density.js';
 import { randomBytes } from 'node:crypto';
 import { CATALOG_PROVIDERS, TIERS, defaultIsHidden, defaultModelRow, findModel, hiddenModelId, priceText, providerAllHidden, providerEmpty, rowIsHidden, rowMakes } from './assistant-catalog.js';
@@ -211,6 +211,8 @@ export function normalizeRouteRequest(body = {}, { brain = {} } = {}) {
   const needsVision = !!(body.needs_vision ?? body.needsVision) || VISION_CLASSES.has(taskClass) || visionOnly;
   const needsOutput = meta.requires || null;
   const dispatchOnly = meta.dispatchOnly === true;
+  const needsHost = body.needs_host === true || body.needsHost === true;
+  if (needsHost && dispatchOnly) throw routeError('ROUTE_INVALID', 'This task class requires a worker and cannot run here.');
   const proposals = [];
   let coercedDirect = false;
   let coercedProvider = null;
@@ -227,13 +229,14 @@ export function normalizeRouteRequest(body = {}, { brain = {} } = {}) {
       } else provider = brain.provider || provider;
     }
     if (!provider) continue;
+    if (needsHost && !runsHere({ kind, provider, accountId: raw.accountId || raw.account_id }, brain)) continue;
     if (dispatchOnly && kind === 'direct') {
       kind = 'dispatch';
       model = model || brain.model || null;
       if (!proposals.length) coercedDirect = true;
     }
     proposals.push({
-      kind, provider, model,
+      kind, provider, model: model || (needsHost ? brain.model || null : null),
       ...(requested ? { agentRequest: requested } : {}),
       effort: raw.effort ? String(raw.effort).trim().slice(0, 40) : null,
       ...(raw.accountId || raw.account_id ? { accountId: String(raw.accountId || raw.account_id).slice(0, 64) } : {}),
@@ -241,14 +244,21 @@ export function normalizeRouteRequest(body = {}, { brain = {} } = {}) {
     });
   }
   if (!proposals.length) {
-    const kind = meta.defaultKind;
+    const kind = needsHost ? 'direct' : meta.defaultKind;
     proposals.push({ kind, provider: brain.provider || 'claude-code', model: kind === 'direct' ? (brain.model || null) : null, effort: null, reason: null });
   }
   const request = { taskClass, taskClassLabel: meta.label, summary: clip(body.summary || '', 400), confidence, needsVision, proposals };
   if (needsOutput || dispatchOnly) Object.assign(request, { needsOutput, dispatchOnly, coercedDirect });
+  if (needsHost) request.needsHost = true;
   if (visionOnly) request.visionOnly = true;
-  if (coercedProvider) request.coercedProvider = coercedProvider;
+  if (!needsHost && coercedProvider) request.coercedProvider = coercedProvider;
   return request;
+}
+
+/** A direct continuation shares the running conversation's provider and account. */
+function runsHere(target, brain) {
+  return target?.kind === 'direct' && target.provider === brain.provider
+    && (!target.accountId || target.accountId === (brain.accountId || 'default'));
 }
 
 /** Why a "here" on `provider` runs on a worker: only the brain's own provider runs in this conversation. */
@@ -303,11 +313,11 @@ export function effortChecked(target, catalog, corrections = null) {
  * A saved route as a target. `dispatchOnly` (image / video creation): a saved
  * "here" becomes a dispatch onto the same model (the brain's, when it named none).
  */
-function preferenceTarget(pref, brain, catalog = null, { dispatchOnly = false } = {}) {
+function preferenceTarget(pref, brain, catalog = null, { dispatchOnly = false, needsHost = false } = {}) {
   if (!pref?.provider) return null;
   const here = pref.kind === 'direct' && pref.provider === brain.provider;
   const kind = here && !dispatchOnly ? 'direct' : 'dispatch';
-  const model = pref.model || (here && dispatchOnly ? brain.model || null : null);
+  const model = pref.model || (here && (dispatchOnly || needsHost) ? brain.model || null : null);
   const target = { kind, provider: pref.provider, model, effort: pref.effort || null };
   if (hasRouteAccounts(pref.provider) && pref.accountId) target.accountId = pref.accountId;
   // A remembered route onto a model the user since disabled is not applied.
@@ -423,6 +433,14 @@ function budgetReroute({ target, request, catalog, brain, routing, coverage, cap
     const t = pick({ kind: p.kind === 'direct' && p.provider === brain.provider && !request.dispatchOnly ? 'direct' : 'dispatch', provider: p.provider, model: p.model || null, effort: p.effort || null, ...(p.accountId ? { accountId: p.accountId } : {}) });
     if (t) return { target: t, moved: true, step: 'proposal' };
   }
+  if (request.needsHost) {
+    if (isUnpricedProvider(brain.provider)) return { declined: true, unpriced: brain.provider };
+    for (const [candidate] of hereCandidates({ request, catalog, brain })) {
+      const t = pick(candidate);
+      if (t) return { target: t, moved: true, step: 'here' };
+    }
+    return { declined: true, dry: [brain.provider] };
+  }
   // 2. The same tier on another provider.
   const tierOf = (t) => (t?.model ? findModel(catalog, t.provider, t.model)?.row?.tier : defaultModelRow(catalog, t?.provider)?.tier) || null;
   const tier = tierOf(target);
@@ -481,12 +499,12 @@ export function capableFor(request, { catalog = null, brain = {}, brainInfo = nu
 }
 /**
  * An approved route whose provider ran out of share after approval: move the dispatch the same way
- * agent_route would (budgetReroute). → { target, correction } or { declined, dry }.
+ * agent_route would (budgetReroute). A decline names the dry providers or the unpriced host provider.
  */
 export function budgetMove({ target, request, catalog = null, brain = {}, brainInfo = null, routing = {}, coverage = null }) {
   if (!coverage || budgetCovers(coverage, catalog, target)) return { target, correction: null };
   const moved = budgetReroute({ target, request, catalog, brain, routing, coverage, capable: capableFor(request, { catalog, brain, brainInfo }) });
-  if (moved.declined) return { declined: true, dry: moved.dry };
+  if (moved.declined) return moved;
   const next = effortChecked(request.dispatchOnly && moved.target.kind !== 'dispatch' ? { ...moved.target, kind: 'dispatch' } : moved.target, catalog);
   return {
     target: next,
@@ -505,8 +523,8 @@ export function budgetMove({ target, request, catalog = null, brain = {}, brainI
  * `budget` ({ coverage }: assistant-budget-split.js coverageOf, null under No limit): a target whose
  * provider has no share left moves to the next capable provider with money (budgetReroute) and the
  * corrections say so (reason budget_share); with a budget the saved routes yield to this. When nothing
- * can pay: { ask: false, unavailable: 'budget_exhausted', dry }. `budgetFrom` names the target that was
- * moved or could not be paid, so the caller can divide the budget again and ask once more.
+ * can pay: { ask: false, unavailable: 'budget_exhausted', dry }. An unpriced host returns
+ * 'budget_unpriced'. Otherwise `budgetFrom` names the target whose share can be re-split.
  */
 export function evaluateRoute({ mode, routing = {}, request, brain = {}, brainInfo = null, catalog = null, budget = null }) {
   const reasons = [];
@@ -545,7 +563,7 @@ export function evaluateRoute({ mode, routing = {}, request, brain = {}, brainIn
   const applyBudget = (target) => {
     if (!coverage || !target) return { target };
     const moved = budgetReroute({ target, request, catalog, brain, routing, coverage, capable });
-    if (moved.declined) return { declined: true, dry: moved.dry, from: target };
+    if (moved.declined) return { ...moved, from: target };
     if (!moved.moved) return { target };
     const next = effortChecked(dispatchOnly && moved.target.kind !== 'dispatch' ? { ...moved.target, kind: 'dispatch' } : moved.target, catalog, corrections);
     corrections.push({
@@ -554,15 +572,19 @@ export function evaluateRoute({ mode, routing = {}, request, brain = {}, brainIn
     });
     return { target: next, from: target };
   };
-  const budgetDeclined = (outcome, extra = {}) => ({
-    ask: false, unavailable: 'budget_exhausted', reasons: ['budget_exhausted'], auto: null, proposal, corrections, source, bound: false,
-    dry: outcome.dry || [], budgetFrom: outcome.from || null, ...extra,
-  });
-  const remembered = preferenceTarget(routing.preferences?.[request.taskClass], brain, null, { dispatchOnly });
+  const budgetDeclined = (outcome) => {
+    const unavailable = outcome.unpriced ? 'budget_unpriced' : 'budget_exhausted';
+    return {
+      ask: false, unavailable, reasons: [unavailable], auto: null, proposal, corrections, source, bound: false,
+      dry: outcome.dry || [], budgetFrom: outcome.unpriced ? null : outcome.from,
+    };
+  };
+  const remembered = preferenceTarget(routing.preferences?.[request.taskClass], brain, null, request);
   const disabled = !!remembered && isDisabled(catalog, remembered);
   // A saved route onto a model that cannot make the medium (or, for design, is not known to see) is not applied either.
   const incapable = !!remembered && !disabled && (!targetMakes(catalog, remembered, medium) || (visionOnly && tooBlind(remembered)));
-  const pref = remembered && !disabled && !incapable ? remembered : null;
+  const fitsHost = !request.needsHost || runsHere(remembered, brain);
+  const pref = remembered && !disabled && !incapable && fitsHost ? remembered : null;
   // In either asking mode, a proposal of the saved target carries its saved account too.
   if (pref && sameTarget({ ...proposal, accountId: null, effort: null }, { ...pref, accountId: null, effort: null }) && (!pref.effort || pref.effort === proposal.effort) && (pref.accountId || proposal.accountId)) proposal.accountId = pref.accountId || null;
   // Omitted model: a remembered preference for the class fills it.
@@ -627,11 +649,16 @@ export function evaluateRoute({ mode, routing = {}, request, brain = {}, brainIn
         field: 'route', from: routeText(remembered), to: null, reason: 'remembered_incapable',
         text: `saved ${label} route ${routeText(remembered)} ${cannot}; not applied`,
       });
+    } else if (remembered && !fitsHost) {
+      corrections.push({
+        field: 'route', from: routeText(remembered), to: null, reason: 'remembered_host',
+        text: `The saved ${label} route ${routeText(remembered)} needs a worker. This task requires host access.`,
+      });
     }
     const invalid = reasons.find((r) => r === 'model_unknown' || r === 'model_disabled');
     if (invalid && auto.model) {
       corrections.push({ field: 'model', from: auto.model, to: null, reason: invalid });
-      auto = { ...auto, model: null };
+      auto = { ...auto, model: request.needsHost ? brain.model || null : null };
     }
     // No model and the provider default is hidden: name the visible stand-in.
     const pinned = pinnedDefault(catalog, auto);
@@ -675,11 +702,14 @@ export function evaluateRoute({ mode, routing = {}, request, brain = {}, brainIn
       }
     }
   }
+  if (request.needsHost && (auto.kind !== 'direct' || isDisabled(catalog, auto) || (request.needsVision && tooBlind(auto)))) {
+    return { ask: true, reasons, auto: null, proposal, corrections, source };
+  }
   if (dispatchOnly && auto.kind !== 'dispatch') auto = { ...auto, kind: 'dispatch' };
   // A corrected model or provider re-checks the effort.
   auto = effortChecked(auto, catalog, corrections);
   // The provider rule only names what always happened (a "here" elsewhere is a worker): it corrects nothing.
-  if (!bound && corrections.some((c) => c.reason !== 'remembered_disabled' && c.reason !== 'remembered_incapable' && c.reason !== 'other_provider')) source = 'corrected';
+  if (!bound && corrections.some((c) => !['remembered_disabled', 'remembered_incapable', 'remembered_host', 'other_provider'].includes(c.reason))) source = 'corrected';
   // With a budget the saved route yields: a provider with no share left moves the task on.
   const budgeted = applyBudget(auto);
   if (budgeted.declined) return budgetDeclined(budgeted);
@@ -784,7 +814,10 @@ export function buildRouteOptions({ request, evaluation, brain = {}, brainInfo =
   const visionOnly = request.visionOnly === true;
   const ctx = { catalog, brain, brainInfo, needsVision: request.needsVision, needsOutput: medium, visionOnly, coverage };
   const options = [];
-  const push = (option) => { if (!options.some((o) => sameTarget(o, option))) options.push(option); };
+  const push = (option) => {
+    if (request.needsHost && !runsHere(option, brain)) return;
+    if (!options.some((o) => sameTarget(o, option))) options.push(option);
+  };
   const hereTarget = { kind: 'direct', provider: brain.provider, model: brain.model || null, effort: brain.effort || null };
   // A direct pick on the brain's own model with no effort is "here" as the brain runs now: one row, not two.
   const onBrainModel = (t) => t.kind === 'direct' && t.provider === brain.provider && String(t.model || '') === String(brain.model || '');
@@ -797,7 +830,7 @@ export function buildRouteOptions({ request, evaluation, brain = {}, brainInfo =
   // The session budget moved the suggestion: the brain's own pick stays on the card, disabled with why.
   if (evaluation.budgetFrom && coverage) push(optionFor('b0', evaluation.budgetFrom, 'suggested', { ...ctx, reason: request.proposals[0]?.reason || null }));
   if (!dispatchOnly) push(optionFor('here', hereTarget, 'current', ctx));
-  const pref = preferenceTarget(routing.preferences?.[request.taskClass], brain, catalog, { dispatchOnly });
+  const pref = preferenceTarget(routing.preferences?.[request.taskClass], brain, catalog, request);
   // Always ask: the saved route is offered and its side starts on it (never binding: the card still asks).
   if (pref) {
     const saved = optionFor('r1', pref, 'remembered', ctx);
@@ -843,7 +876,7 @@ export function buildRouteOptions({ request, evaluation, brain = {}, brainInfo =
     if (first && !options.some((o) => o.kind === kind)) push(first);
   };
   if (request.taskClass !== 'chat' && !dispatchOnly && !runnable('direct')) offer('direct', 'h1', hereCandidates({ request, catalog, brain }));
-  if (request.taskClass !== 'chat' && !runnable('dispatch')) offer('dispatch', 'w1', workerCandidates({ request, catalog, brain, brainInfo }));
+  if (!request.needsHost && request.taskClass !== 'chat' && !runnable('dispatch')) offer('dispatch', 'w1', workerCandidates({ request, catalog, brain, brainInfo }));
   // Order: suggested first, then here, remembered, a capable stand-in, cheaper, stronger.
   const order = { suggested: 0, current: 1, remembered: 2, capable: 3, cheaper: 4, stronger: 5 };
   options.sort((a, b) => (order[a.badge] ?? 9) - (order[b.badge] ?? 9) || String(a.id).localeCompare(String(b.id)));
@@ -909,6 +942,7 @@ export function routeSides({ options = [], request = {}, defaultOptionId = null 
     || (chosen?.kind === kind && usable(chosen) ? chosen : null) || options.find((o) => o.kind === kind && usable(o)) || null;
   const label = request.taskClassLabel || TASK_CLASS_META[request.taskClass]?.label || 'This task';
   const side = (kind) => {
+    if (kind === 'dispatch' && request.needsHost) return { available: false, code: 'host_only', reason: 'This task requires host access in this conversation.' };
     if (firstOf(kind)) return { available: true, reason: null, code: null };
     if (kind === 'direct' && request.dispatchOnly) return { available: false, code: 'worker_only', reason: request.plannedSplit ? 'This task uses the approved worker plan.' : `${label} always runs on a worker.` };
     if (kind === 'direct' && options.some((o) => o.kind === 'dispatch' && o.accountKind === 'direct')) {
@@ -926,6 +960,10 @@ export function routeSides({ options = [], request = {}, defaultOptionId = null 
   };
 }
 
+function hostRouteError() {
+  return routeError('ROUTE_IS_DIRECT', 'This task requires host access. Run it here in the Assistant conversation.', 409);
+}
+
 /** Validate a route-card answer; returns { declined } or { target, optionId, remember }. */
 export function targetFromAnswer({ card, response = {}, catalog = null, brain = {} }) {
   if (response.decline === true || response.behavior === 'deny' || response.cancel === true) return { declined: true };
@@ -939,6 +977,7 @@ export function targetFromAnswer({ card, response = {}, catalog = null, brain = 
   // A card can remain open while the catalog or hidden-model list changes.
   // Check the chosen target again instead of trusting the option's old state.
   const ensureAvailable = (target) => {
+    if (card.needsHost && !runsHere(target, brain)) throw hostRouteError();
     const own = onBrain(target);
     if (target.model && (own ? isDisabled(catalog, target) : findModel(catalog, target.provider, target.model) === null)) {
       if (isDisabled(catalog, target)) throw routeError('MODEL_DISABLED', `${target.model} is disabled in the Assistant's Models list. Pick an enabled model.`);
@@ -980,7 +1019,8 @@ export function targetFromAnswer({ card, response = {}, catalog = null, brain = 
       ? { field: 'kind', from: 'direct', to: 'dispatch', reason: 'dispatch_only', text: `${TASK_CLASS_META[card.taskClass]?.label || 'This task'} always runs on a worker, not here` }
       : otherProviderCorrection(t.provider, brain));
   }
-  const target = effortChecked({ kind, provider: t.provider, model: t.model ? String(t.model) : null, effort: t.effort ? String(t.effort).trim().slice(0, 40) : null, accountId: t.accountId ? String(t.accountId).trim() : null }, catalog, corrections);
+  const model = t.model ? String(t.model) : card.needsHost && kind === 'direct' ? brain.model || null : null;
+  const target = effortChecked({ kind, provider: t.provider, model, effort: t.effort ? String(t.effort).trim().slice(0, 40) : null, accountId: t.accountId ? String(t.accountId).trim() : null }, catalog, corrections);
   ensureAvailable(target);
   return { target, optionId: 'other', remember, corrections };
 }
@@ -1061,7 +1101,7 @@ export function escalationFor({ run, catalog = null, routing = {}, depth = 0 }) 
  * @param {object} deps.sinks  { sendCard(sessionId, packet), cancelCard(sessionId, requestId, reason),
  *                               routeEvent(sessionId, phase, route), mailbox(sessionId, item),
  *                               continueDirect(sessionId, {target, route, text}) → false when the pick's turn is gone,
- *                               startHeld(runId, target, meta),
+ *                               activeRouteRuns(sessionId, routeId) → [{ runId, title, state }], startHeld(runId, target, meta),
  *                               checkHeld(runId, target) → why the held run could not start on target ({ code, message, status }) or null,
  *                               declineHeld(runId, reason), routed(sessionId, result), routeFailed(sessionId, error) }
  * @param {object} [deps.clarifier] assistant-clarify.js — { blocking(sessionId, { independent }) }: while the
@@ -1182,17 +1222,20 @@ export function createAssistantRouter({
   function budgetDeclinedResult({ sessionId, request, mode, cat, brain, brainInfo, evaluation }) {
     const routeId = `route-${randomId()}`;
     const dry = evaluation.dry || [];
+    const unpriced = evaluation.unavailable === 'budget_unpriced' ? unpricedText(brain.provider) : null;
+    const reasonCode = unpriced ? 'BUDGET_UNPRICED' : 'budget_exhausted';
     const route = {
       routeId, status: 'declined', sessionId, taskClass: request.taskClass, summary: request.summary, confidence: request.confidence,
-      target: null, decidedBy: 'budget', remembered: false, corrections: evaluation.corrections || [], mode, runIds: [], reasonCode: 'budget_exhausted', dry,
-      reason: dry.length ? `Budget: the ${dry.join(', ')} share${dry.length === 1 ? ' is' : 's are'} used up.` : "Budget: this session's budget is spent.",
+      target: null, decidedBy: 'budget', remembered: false, corrections: evaluation.corrections || [], mode, runIds: [], reasonCode, dry,
+      ...(unpriced ? { provider: brain.provider } : {}),
+      reason: unpriced || (dry.length ? `Budget: the ${dry.join(', ')} share${dry.length === 1 ? ' is' : 's are'} used up.` : "Budget: this session's budget is spent."),
     };
     call('routeEvent', sessionId, 'declined', routeView(route, { catalog: cat, brain, brainInfo }));
-    return {
-      ok: true, status: 'declined', reason: 'budget_exhausted', reasonCode: 'budget_exhausted', dry, routeId, mode, source: 'budget', target: null,
+    return reportSupersededRuns(request, {
+      ok: true, status: 'declined', reason: evaluation.unavailable, reasonCode, dry, routeId, mode, source: 'budget', target: null,
       remembered: false, continuation: false, corrections: evaluation.corrections || [], runIds: [], expiresAt: null,
-      budget: compactBudget(sessionId), next: budgetDeclinedText(sessionId, dry),
-    };
+      budget: compactBudget(sessionId), next: unpriced || budgetDeclinedText(sessionId, dry),
+    });
   }
   function liveAccounts(cat) { return accountUsage ? accountUsage.list() : listAccounts ? listAccounts() : cat?.accounts || {}; }
   function accountTarget(target, brain, cat, { check = true, fallback = null, select = true } = {}) {
@@ -1251,12 +1294,14 @@ export function createAssistantRouter({
     return {
       ...agentFields(source),
       routeId: source.routeId, runIds: [...(source.runIds || [])], taskClass: source.taskClass, taskClassLabel: TASK_CLASS_META[source.taskClass]?.label || source.taskClass,
+      ...(source.needsHost ? { needsHost: true } : {}),
       plannedSplit: source.plannedSplit || null, sessionId: source.sessionId || null, taskId: source.taskId || null, taskKey: source.taskKey || '',
       summary: source.summary || '', confidence: source.confidence ?? null, reason: source.reason || null,
       target, alternatives: (source.alternatives || []).slice(0, 4), decidedBy: source.decidedBy || null, remembered: !!source.remembered,
       optionId: source.optionId || null, corrections: source.corrections || [], mode: source.mode || null, status: source.status || null,
       // Why a route was declined without a card (no_capable_model), else null.
       reasonCode: source.reasonCode || null,
+      ...(source.reasonCode === 'BUDGET_UNPRICED' ? { provider: source.provider } : {}),
       // Design's no_capable_model: no model can see.
       ...(source.needs ? { needs: source.needs } : {}),
       // budget_exhausted: the providers whose share is used up (the panel names them).
@@ -1452,6 +1497,19 @@ export function createAssistantRouter({
     return !session || session.closing === true;
   }
 
+  // Read the old route's runs at delivery. A worker may finish while the Here card is open.
+  function reportSupersededRuns(request, result) {
+    if (!request?.needsHost || !request.taskId) return result;
+    const key = routeTaskIdentity(request);
+    const old = [...decided.values()].find(r => r.supersededByHost && r.status === 'approved' && routeTaskIdentity(r) === key);
+    const runs = old && call('activeRouteRuns', request.sessionId, old.routeId);
+    if (!runs?.length) return result;
+    const names = runs.map(r => `${r.runId} ("${r.title}", ${r.state})`).join(', ');
+    const text = `The previous dispatch still has active work (${names}). Use agent_stop with the run ID for any duplicate work.`;
+    const correction = { reason: 'superseded_run_active', routeId: old.routeId, runs, text };
+    return { ...result, corrections: [...(result.corrections || []), correction], next: `${text} ${result.next}` };
+  }
+
   function resultFor(status, { routeId, mode, source = null, target = null, card = null, runIds = [], corrections = [], cat = null, brain = {}, brainInfo = null, remembered = false, continuation = false, sessionId = null, switched = null, droppedRuns = [] } = {}) {
     const described = target ? { ...describeTarget(target, { catalog: cat, brain, brainInfo }), continuation } : null;
     // The user's pick was the other kind than the brain proposed; a "here" pick on another account runs on a worker.
@@ -1483,7 +1541,7 @@ export function createAssistantRouter({
         ? `Call agent_team action "plan" with task_class="${record.taskClass}" and these ${plannedSplit.workers} slice titles (${["research", "review"].includes(record.taskClass) ? "read-only: owned_paths []" : "disjoint owned_paths"}), then action "start" with route_id="${routeId}". One approval covers every slice; never route a slice. Wait on its workflow_id, then ${["research", "review"].includes(record.taskClass) ? "synthesize the results; worktrees are cleaned up automatically, no integration or landing" : "verify the integration result"}.`
         : `Call agent_dispatch with route_id="${routeId}" for one worker. Explain: ${plannedSplit.reason}`
       : null;
-    return {
+    return reportSupersededRuns(record, {
       ...agentFields(record),
       ok: true, status, routeId, mode, source: source || record?.decidedBy || (status === 'expired' ? 'timeout' : status === 'cancelled' ? 'system' : null), reasonCode: record?.reasonCode || (status === 'expired' ? 'expired' : status === 'cancelled' ? 'cancelled' : null), target: described, remembered, continuation,
       taskClass: record?.taskClass || null, sessionId: sessionId || record?.sessionId || null, taskId: record?.taskId || null, taskKey: record?.taskKey || '',
@@ -1491,7 +1549,7 @@ export function createAssistantRouter({
       corrections: record?.agentCorrection ? [...corrections, record.agentCorrection] : corrections, runIds, expiresAt: card?.expiresAt ? new Date(card.expiresAt).toISOString() : null,
       ...(shares ? { budget: shares } : {}),
       next: `${waitLead}${lead}${status === 'approved' ? kindLead : ''}${splitNext || nextText(record?.reasonCode === 'moved_on' ? 'moved_on' : status, described, { routeId, label: status === 'declined' ? record?.reasonCode : described?.label })}`,
-    };
+    });
   }
 
   /** What the brain tells the user when no model makes the medium, or can see for design (agent_route's `next`, the NO_CAPABLE_MODEL refusal). */
@@ -1547,7 +1605,7 @@ export function createAssistantRouter({
     for (const option of options) {
       const first = request.proposals[0];
       const fallback = origin === 'dispatch' && option.badge !== 'remembered' && option.provider === first?.provider ? first.accountId : null;
-      Object.assign(option, accountTarget(option, brain, cat, { check: false, fallback }));
+      Object.assign(option, accountTarget(option, brain, cat, { check: false, fallback, select: !request.needsHost }));
       Object.assign(option, workerRole(request, option, option.id));
       if (option.accountError) { option.disabled = true; option.disabledReason = option.accountError.message; }
       // A "here" whose account cannot take it (this conversation's is out of usage) runs on a worker
@@ -1561,16 +1619,17 @@ export function createAssistantRouter({
     // The sides and defaults as the options are sent (the account check can disable or move one).
     const { defaultOptionId, sides, defaults } = routeSides({ options, request, defaultOptionId: built.defaultOptionId });
     const computer = computerConsent({ session, request, options, defaultOptionId, brain, origin });
-    const expiresAt = now() + r.cardTimeoutMinutes * 60_000;
     const pref = r.preferences?.[request.taskClass];
     const card = {
       ...agentFields(options.find(o => o.id === (defaults.dispatch || defaultOptionId))),
       routeId, requestId, sessionId, origin, status: 'pending', mode, workflowId,
       plannedSplit: request.plannedSplit || null, taskId: request.taskId, taskKey: request.taskKey || '',
       taskClass: request.taskClass, summary: request.summary, confidence: request.confidence, needsVision: request.needsVision,
+      ...(request.needsHost ? { needsHost: true } : {}),
       needsOutput: request.needsOutput || null, dispatchOnly: request.dispatchOnly === true, visionOnly: request.visionOnly === true,
       reasons: evaluation.reasons, request, options, defaultOptionId, sides, defaults, runIds: new Set(runIds), waiters: new Set(),
-      createdAt: now(), expiresAt, timer: null, mailboxOnDecision: origin === 'dispatch', brain,
+      // No deadline: a card stays open until the user answers it, moves on, or its session ends.
+      createdAt: now(), expiresAt: null, mailboxOnDecision: origin === 'dispatch', brain,
       // The option whose approval is also the computer approval (computerConsent), as this card was sent.
       computer,
       alternatives: options.filter((o) => o.badge !== 'suggested').map((o) => ({ id: o.id, kind: o.kind, provider: o.provider, model: o.model, effort: o.effort, label: o.label, badge: o.badge })),
@@ -1583,6 +1642,7 @@ export function createAssistantRouter({
         reasons: evaluation.reasons, taskClass: request.taskClass, taskClassLabel: request.taskClassLabel, summary: request.summary,
         plannedSplit: request.plannedSplit || null, taskId: request.taskId || null, taskKey: request.taskKey || '',
         confidence: request.confidence, needsVision: request.needsVision,
+        ...(request.needsHost ? { needsHost: true } : {}),
         // Image / video creation: the medium the model must generate, and no "here" (always a worker).
         requires: request.needsOutput || null, dispatchOnly: request.dispatchOnly === true,
         // Design: only models that can see.
@@ -1591,16 +1651,14 @@ export function createAssistantRouter({
         options, defaultOptionId,
         // The card's Here / Dispatch switch: which side can run the task (and why not), and the option each side starts on.
         sides, defaults,
-        other: { allowed: true, providers: CATALOG_PROVIDERS, catalogPath: '/api/assistant/catalog' },
+        other: { allowed: true, providers: request.needsHost ? [brain.provider] : CATALOG_PROVIDERS, catalogPath: '/api/assistant/catalog' },
         remember: { available: request.taskClass !== 'chat', taskClass: request.taskClass, label: request.taskClassLabel, current: pref ? (pref.label || [pref.provider, pref.model].filter(Boolean).join('/')) : null },
         decline: { allowed: true, label: 'Cancel' },
         // Approving this option also lets the Assistant control the Mac for the task: every host says so in words.
         ...(computer ? { computer: { optionId: computer.optionId } } : {}),
-        createdAt: new Date(card.createdAt).toISOString(), expiresAt: new Date(expiresAt).toISOString(),
+        createdAt: new Date(card.createdAt).toISOString(), expiresAt: null,
       },
     };
-    card.timer = setTimeout(() => expire(routeId), Math.max(1000, expiresAt - now()));
-    card.timer.unref?.();
     cards.set(routeId, card);
     byRequest.set(requestId, routeId);
     return card;
@@ -1625,7 +1683,6 @@ export function createAssistantRouter({
     return routeError('ROUTE_CANCELLED', text, 409, { routeId: card?.routeId || null });
   }
   function closeCard(card) {
-    if (card.timer) { clearTimeout(card.timer); card.timer = null; }
     byRequest.delete(card.requestId);
     cards.delete(card.routeId);
     // Why it closed, for a producer that attaches a run a moment too late (bounded).
@@ -1718,9 +1775,28 @@ export function createAssistantRouter({
     const key = routeTaskIdentity(request);
     if (!key) return null;
     const card = [...cards.values()].find(c => routeTaskIdentity(c) === key);
-    const prior = card || [...decided.values()].find(c => routeTaskIdentity(c) === key);
+    const prior = card || [...decided.values()].find(c => !c.supersededByHost && !c.supersededBySplit && routeTaskIdentity(c) === key);
     if (!prior) return null;
     assertCurrentTask(sessionId, request.taskId);
+    if (request.needsHost && prior.status === 'approved' && prior.target?.kind === 'direct') {
+      prior.needsHost = true;
+    }
+    // A newly identified host requirement supersedes an earlier worker-capable choice.
+    if (request.needsHost && !prior.needsHost && ['pending', 'approved'].includes(prior.status)) {
+      if (card) expire(card.routeId, 'superseded');
+      const old = decided.get(prior.routeId);
+      if (old) Object.assign(old, { supersededByHost: true, needsHost: true });
+      return null;
+    }
+    // A changed planned_split before any team or worker used the route: the new plan is routed afresh
+    // (a new card, so Always ask asks again) instead of answering with the stale split.
+    if (splitChanged(request.requestedSplit, prior.plannedSplit) && ['pending', 'approved'].includes(prior.status)
+      && !prior.workflowId && !(prior.runIds?.size ?? prior.runIds?.length ?? 0)) {
+      if (card) expire(card.routeId, 'superseded');
+      const old = decided.get(prior.routeId);
+      if (old) Object.assign(old, { supersededBySplit: true, status: old.status === 'approved' ? 'expired' : old.status });
+      return null;
+    }
     let continuation = false;
     // A thinking switch that waited is decided again now (the background work may have reported since).
     let corrections = (prior.corrections || []).filter((c) => c?.reason !== 'thinking_waits');
@@ -1760,10 +1836,11 @@ export function createAssistantRouter({
     const brainInfo = brainInfoFor(brain);
     const request = normalizeRouteRequest(body, { brain });
     Object.assign(request, taskIdentity(sessionId, session, body));
+    request.requestedSplit = body.planned_split ?? body.plannedSplit ?? null;
     // The same task routed again (a later turn: a task notification, a mailbox event, the user's next words).
     const existing = existingTaskResult(request, sessionId, { cat, brain, brainInfo }, { deliver: origin === 'agent_route' });
     if (existing) return existing;
-    request.plannedSplit = await planRouteSplit(body, session, request.taskClass);
+    request.plannedSplit = request.needsHost ? null : await planRouteSplit(body, session, request.taskClass);
     request.projectPath = request.plannedSplit?.projectPath || null;
     request.roles = workerRoles(request, body.cwd || body.project);
     if (request.plannedSplit) {
@@ -1776,22 +1853,24 @@ export function createAssistantRouter({
     const raced = existingTaskResult(request, sessionId, { cat, brain, brainInfo }, { deliver: origin === 'agent_route' });
     if (raced) return raced;
     assertCurrentTask(sessionId, request.taskId);
-    if (evaluation.unavailable === 'budget_exhausted') return budgetDeclinedResult({ sessionId, request, mode, cat, brain, brainInfo, evaluation });
+    if (['budget_exhausted', 'budget_unpriced'].includes(evaluation.unavailable)) return budgetDeclinedResult({ sessionId, request, mode, cat, brain, brainInfo, evaluation });
     if (evaluation.unavailable) return unavailableResult({ sessionId, request, mode, cat, brain, brainInfo });
     if (!evaluation.ask) {
       const routeId = `route-${randomId()}`;
       let target = evaluation.auto;
-      const checked = accountTarget(target, brain, cat, { check: false, select: request.taskClass !== 'chat' });
+      const checked = accountTarget(target, brain, cat, { check: false, select: !request.needsHost && request.taskClass !== 'chat' });
+      if (request.needsHost && checked.kind !== 'direct') throw hostRouteError();
       if (checked.accountError) {
         const failed = { routeId, sessionId, taskClass: request.taskClass, summary: request.summary, target: checked, status: 'declined', decidedBy: 'account', reason: checked.accountError.message, reasonCode: checked.accountError.code, mode };
         call('routeEvent', sessionId, 'declined', routeView(failed, { catalog: cat, brain, brainInfo }));
-        return { ok: false, status: 'declined', routeId, mode, source: 'account', reasonCode: checked.accountError.code, code: checked.accountError.code, target: describeTarget(checked, { catalog: cat, brain }), next: checked.accountError.message };
+        return reportSupersededRuns(request, { ok: false, status: 'declined', routeId, mode, source: 'account', reasonCode: checked.accountError.code, code: checked.accountError.code, target: describeTarget(checked, { catalog: cat, brain }), next: checked.accountError.message });
       }
       target = checked;
       const decidedBy = evaluation.source === 'remembered' ? 'remembered' : evaluation.source === 'budget' ? 'budget' : 'brain';
       // Off to or from a level that waits for Claude Code's background work: in place, and the answer says so.
       const waits = origin === 'agent_route' && request.taskClass !== 'chat' ? thinkingWaits(sessionId, target, brain, turnBrain(sessionId, brain)) : null;
       const route = {
+        ...(request.needsHost ? { needsHost: true } : {}),
         taskId: request.taskId, taskKey: request.taskKey || '', plannedSplit: request.plannedSplit || null, workflowId: null,
         routeId, status: 'approved', sessionId, taskClass: request.taskClass, summary: request.summary, confidence: request.confidence,
         ...workerRole(request, target),
@@ -1876,7 +1955,10 @@ export function createAssistantRouter({
       return result;
     }
     const { optionId, remember } = parsed;
-    const target = checkedTarget(parsed.target, brain, cat, null, null, card.mode === 'always-ask');
+    const target = card.needsHost
+      ? accountTarget(parsed.target, brain, cat, { select: false })
+      : checkedTarget(parsed.target, brain, cat, null, null, card.mode === 'always-ask');
+    if (card.needsHost && target.kind !== 'direct') throw hostRouteError();
     const pickedRole = workerRole(card.request, target, optionId);
     const corrections = accountCorrections(target, parsed.corrections || []);
     // The session budget must be able to pay for the pick: a provider with no share left divides the
@@ -1937,6 +2019,7 @@ export function createAssistantRouter({
     const heldRuns = keptHere ? [] : [...card.runIds];
     const droppedRuns = keptHere ? [...card.runIds] : [];
     const route = {
+      ...(card.needsHost ? { needsHost: true } : {}),
       taskId: card.taskId, taskKey: card.taskKey || '', plannedSplit: card.plannedSplit || null, workflowId: null,
       routeId, status: 'approved', sessionId: card.sessionId, taskClass: card.taskClass, summary: card.summary, confidence: card.confidence,
       ...pickedRole,
@@ -2005,6 +2088,7 @@ export function createAssistantRouter({
       const approved = decided.get(routeId);
       const bound = approved || cards.get(routeId);
       if (bound?.sessionId === sessionId && !team) assertCurrentTask(sessionId, bound.taskId);
+      if (bound?.sessionId === sessionId && bound.needsHost) throw hostRouteError();
       if (bound?.taskId && ['expired', 'cancelled'].includes(bound.status)) throw routeClosedError(lastClosed.get(routeId) || bound);
       if (bound?.taskId && (bound.status !== 'approved' && bound.status !== 'pending' || bound.consumed)) throw routeError('ROUTE_NOT_APPROVED', 'This task route is closed or already used.', 409);
       // The user picked "here" on this route's card: it runs in this conversation, never on a worker
@@ -2233,7 +2317,7 @@ export function createAssistantRouter({
   function shutdown() {
     for (const entry of continuations.values()) closeContinuation(entry);
     continuations.clear();
-    for (const card of [...cards.values()]) { if (card.timer) clearTimeout(card.timer); settle(card, { status: 'cancelled' }); }
+    for (const card of [...cards.values()]) settle(card, { status: 'cancelled' });
     cards.clear();
     byRequest.clear();
   }

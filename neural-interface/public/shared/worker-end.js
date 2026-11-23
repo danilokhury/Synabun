@@ -27,6 +27,11 @@
 // must have the same keys (the test checks both). The page side is
 // ui-worker-end.js.
 
+/** A page credential identifies the page. The phone command also has an authenticated sender. */
+export function isPersonalStop(provenance) {
+  return provenance?.action === 'stop' && provenance.actor === 'whatsapp_user';
+}
+
 export const WORKER_END_COPY = Object.freeze({
   complete: 'Task complete',
   blocked: 'Blocked',
@@ -152,10 +157,10 @@ function elapsedOf(run, dispatch, untilLastTurn) {
   return Number.isFinite(ms) && ms > 0 ? ms : null;
 }
 
-function stopReason(reason, t) {
+function stopReason(reason, t, provenance) {
   const code = String(reason || '').trim();
   switch (code) {
-    case 'user': return t('reasonUser');
+    case 'user': return isPersonalStop(provenance) ? t('reasonUser') : '';
     case 'assistant': case 'complete': return t('reasonAssistant');
     case 'time_cap': return t('reasonTimeCap');
     case 'budget_cap': case 'session_budget_cap': case 'budget_unpriced': return t('reasonBudget');
@@ -165,7 +170,7 @@ function stopReason(reason, t) {
     case 'server_restart': case 'server_shutdown': case 'resume_failed': return t('reasonRestart');
     case 'kill_all': return t('reasonKillAll');
     case 'state_removed': case 'state_inactive': return t('reasonCleared');
-    case '': return '';
+    case '': case 'unknown': return '';
     default:
       // The Assistant's agent_stop reason is its own sentence; anything else is a code.
       return /\s/.test(code) || code.length > 40
@@ -228,7 +233,7 @@ export function workerEndView(run, dispatch = null, { t = fillWorkerEndCopy, bus
     kind = 'complete';
   } else {
     kind = endState === 'interrupted' ? 'interrupted' : 'stopped';
-    detail = stopReason(dispatch?.completionReason || run?.stoppedReason || '', t);
+    detail = stopReason(dispatch?.completionReason || run?.stoppedReason || '', t, dispatch?.stopProvenance || run?.stopProvenance);
     // A Claude Code worker the server could not resume after a restart says why (lib/worker-resume.js; a resume that
     // failed to start has the reason resume_failed and the error).
     const notResumed = dispatch?.resumeRefused || (dispatch?.completionReason === 'resume_failed' ? (dispatch?.error || run?.error || '') : '');

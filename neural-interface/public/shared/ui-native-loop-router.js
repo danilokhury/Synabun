@@ -1,3 +1,4 @@
+import { forgetWorkerEnd, mayAutoCloseWorkerTab } from './ui-worker-end.js';
 import { on } from './state.js';
 import { attachClaudeAutomation, detachClaudeAutomation, handleClaudeAutomationEvent } from './claude-panel-lazy.js';
 import { attachCodexAutomation, detachCodexAutomation, handleCodexAutomationEvent } from './ui-codex-panel.js';
@@ -291,6 +292,15 @@ async function routeLatest(runId) {
   await detachProviderRun(runId, run.provider);
   await release(run.runId);
   return false;
+}
+
+/** Tray timer: a missing descriptor, unfinished task or refused completion keeps its tab. */
+export async function autoCloseNativeLoopTab(runId) {
+  const run = getNativeLoopRun(runId);
+  if (!(await mayAutoCloseWorkerTab(run)) || _dismissed.has(runId)) return;
+  forgetWorkerEnd(runId);
+  window.dispatchEvent(new CustomEvent('native-loop:dismissed', { detail: { runId } }));
+  await detachProviderRun(runId, run.provider);
 }
 
 /** Latest known descriptor for a run this router has seen (null when unknown). */

@@ -1,5 +1,5 @@
 import { queueMemoryCapture } from './memory-session-capture.js';
-import { normalizeMemoryEvents, ingestMemoryEvents } from '../../mcp-server/dist/services/memory-sessions.js';
+import { normalizeMemoryEvents, ingestMemoryEvents, CAPTURE_TRANSACTION_MS, CAPTURE_PAUSE_MS } from '../../mcp-server/dist/services/memory-sessions.js';
 import { detectProject } from '../../mcp-server/dist/config.js';
 /**
  * Session Cache Builder — populates session_cache + session_fts for
@@ -40,13 +40,18 @@ function finishScan(scan) {
   return result.value;
 }
 
+const writeBatchCommitted = Symbol('write batch committed');
+
 async function finishBackgroundScan(scan) {
   let sliceStart = performance.now();
   for (;;) {
     const result = scan.next();
     if (result.done) return result.value;
-    if (performance.now() - sliceStart >= 12) {
-      await new Promise(resolve => setImmediate(resolve));
+    if (result.value === writeBatchCommitted || performance.now() - sliceStart >= 12) {
+      // SQLite's busy handler polls. Leave a lock-free interval longer than its early polling
+      // interval for foreground writers between committed batches (memory-sessions.ts CAPTURE_*).
+      if (result.value === writeBatchCommitted) await new Promise(done => setTimeout(done, CAPTURE_PAUSE_MS));
+      else await new Promise(done => setImmediate(done));
       sliceStart = performance.now();
     }
   }
@@ -209,7 +214,7 @@ function* scanClaudeCache({ project, onProgress }) {
       if (!parsed) continue;
 
       queueMemoryCapture({host:'claude-code',sessionId:parsed.sessionId,filePath,cwd:parsed.cwd,project:projDir.name});
-      upsertSessionCache({
+      const entry = {
         session_id: parsed.sessionId,
         provider: 'claude-code',
         project: projDir.name,
@@ -224,14 +229,8 @@ function* scanClaudeCache({ project, onProgress }) {
         file_mtime: stat.mtime.toISOString(),
         body_size: parsed.body.length,
         deleted: 0,
-      });
-      upsertSessionFts({
-        session_id: parsed.sessionId,
-        provider: 'claude-code',
-        project: projDir.name,
-        first_prompt: parsed.firstPrompt,
-        body: parsed.body,
-      });
+      };
+      upsertSessionFts({ ...entry, body: parsed.body }, entry);
       updated++;
       emit({ type: 'cache:session', provider: 'claude-code', sessionId: parsed.sessionId, done: updated, total });
     }
@@ -373,7 +372,7 @@ function* scanCodexCache({ project, projects, accounts, onProgress }) {
     if (!parsed) continue;
 
     queueMemoryCapture({host:'codex',sessionId:parsed.sessionId,filePath,cwd:parsed.cwd || session.cwd});
-    upsertSessionCache({
+    const entry = {
       session_id: parsed.sessionId,
       provider: 'codex',
       project: session.projectPath ? basename(session.projectPath) : (session.cwd ? basename(session.cwd) : null),
@@ -389,14 +388,8 @@ function* scanCodexCache({ project, projects, accounts, onProgress }) {
       body_size: parsed.body.length,
       deleted: 0,
       account_id: session.accountId,
-    });
-    upsertSessionFts({
-      session_id: parsed.sessionId,
-      provider: 'codex',
-      project: session.projectPath ? basename(session.projectPath) : (session.cwd ? basename(session.cwd) : null),
-      first_prompt: session.firstPrompt || parsed.firstPrompt,
-      body: parsed.body,
-    });
+    };
+    upsertSessionFts({ ...entry, body: parsed.body }, entry);
     updated++;
     emit({ type: 'cache:session', provider: 'codex', sessionId: parsed.sessionId, done: updated, total });
   }
@@ -499,10 +492,17 @@ function* scanOpencodeCache({ getOpencodeDb, onProgress }) {
       } catch { /* part table schema varies */ }
     }
 
-    ingestMemoryEvents(normalizeMemoryEvents('opencode',memoryRecords,{session_id:sessionId,project:projectPath ? detectProject(projectPath) : 'global',cwd:projectPath}));
+    const events = normalizeMemoryEvents('opencode', memoryRecords, {
+      session_id: sessionId, project: projectPath ? detectProject(projectPath) : 'global', cwd: projectPath,
+    });
+    for (let offset = 0; offset < events.length;) {
+      const batch = ingestMemoryEvents(events.slice(offset, offset + 25), { maxTransactionMs: CAPTURE_TRANSACTION_MS });
+      offset += Math.max(1, batch.consumed);
+      if (batch.indexed) yield writeBatchCommitted;
+    }
     const createdIso = row.time_created ? new Date(row.time_created).toISOString() : null;
 
-    upsertSessionCache({
+    const entry = {
       session_id: sessionId,
       provider: 'opencode',
       project: projectPath ? basename(projectPath) : null,
@@ -517,14 +517,8 @@ function* scanOpencodeCache({ getOpencodeDb, onProgress }) {
       file_mtime: modifiedIso,
       body_size: body.length,
       deleted: 0,
-    });
-    upsertSessionFts({
-      session_id: sessionId,
-      provider: 'opencode',
-      project: projectPath ? basename(projectPath) : null,
-      first_prompt: firstPrompt,
-      body,
-    });
+    };
+    upsertSessionFts({ ...entry, body }, entry);
     updated++;
     emit({ type: 'cache:session', provider: 'opencode', sessionId, done: updated, total });
   }
@@ -565,7 +559,7 @@ export function rebuildAntigravityCache({ stores = [], only = null, onProgress, 
     }
     const firstPrompt = c.title || parsed.firstPrompt;
     const project = c.cwd ? basename(c.cwd) : null;
-    upsertSessionCache({
+    const entry = {
       session_id: c.sessionId,
       provider: 'antigravity',
       project,
@@ -580,8 +574,8 @@ export function rebuildAntigravityCache({ stores = [], only = null, onProgress, 
       file_mtime: mtimeIso,
       body_size: body.length,
       deleted: 0,
-    });
-    upsertSessionFts({ session_id: c.sessionId, provider: 'antigravity', project, first_prompt: firstPrompt, body });
+    };
+    upsertSessionFts({ ...entry, body }, entry);
     updated++;
     emit({ type: 'cache:session', provider: 'antigravity', sessionId: c.sessionId, done: updated, total });
   }
@@ -604,7 +598,7 @@ export function updateSessionCacheEntry(provider, sessionId, opts = {}) {
     try { stat = statSync(filePath); } catch { return false; }
     const parsed = parseClaudeSession(filePath);
     if (!parsed) return false;
-    upsertSessionCache({
+    const entry = {
       session_id: parsed.sessionId,
       provider: 'claude-code',
       project: opts.project || null,
@@ -619,14 +613,8 @@ export function updateSessionCacheEntry(provider, sessionId, opts = {}) {
       file_mtime: stat.mtime.toISOString(),
       body_size: parsed.body.length,
       deleted: 0,
-    });
-    upsertSessionFts({
-      session_id: parsed.sessionId,
-      provider: 'claude-code',
-      project: opts.project || null,
-      first_prompt: parsed.firstPrompt,
-      body: parsed.body,
-    });
+    };
+    upsertSessionFts({ ...entry, body: parsed.body }, entry);
     return true;
   }
   return false;

@@ -8,6 +8,7 @@
 // and the skin are iface-config.js.
 
 import { on } from './state.js';
+import { t } from './i18n.js';
 import { registerAction } from './ui-keybinds.js';
 import { registerLaunchPrefetch } from './launch-prefetch.js';
 import { prefetchSettingsData, refreshSettingsData } from './settings/settings-data.js';
@@ -23,6 +24,13 @@ export const SETTINGS_REOPEN_KEY = 'synabun-settings-reopen';
 
 function reopenWanted() {
   try { return !!globalThis.sessionStorage?.getItem(SETTINGS_REOPEN_KEY); } catch { return false; }
+}
+
+/** settings-backup-encryption.js's RESTORE_OUTCOME_KEY: a restore that finished with problems, not yet read by the owner. */
+export const RESTORE_OUTCOME_KEY = 'synabun-restore-outcome';
+
+function restoreOutcomeWaiting() {
+  try { return !!globalThis.sessionStorage?.getItem(RESTORE_OUTCOME_KEY); } catch { return false; }
 }
 
 let _initialized = false;
@@ -42,6 +50,16 @@ export function initSettings() {
 
   // A language change reloaded the app: open Settings again where the user was, once the rest of the app has started.
   if (reopenWanted()) setTimeout(() => { settingsModule.call('reopenSettingsAfterReload', []); }, 0);
+
+  // A restore that finished with problems, and the reload or restart after it: its message is still owed. Its module
+  // loads only then.
+  if (restoreOutcomeWaiting()) {
+    setTimeout(() => {
+      import('./settings/settings-backup-encryption-pane.js')
+        .then(({ showWaitingRestoreOutcome }) => showWaitingRestoreOutcome({ tx: t }))
+        .catch((error) => console.warn('[settings] could not show the restore outcome:', error?.message));
+    }, 0);
+  }
 
   // Launch: what Settings is built from, and its search index (the English names too), read and made once the
   // page has painted, so the first open and the first search wait for nothing. The index needs the window's module:

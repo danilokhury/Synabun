@@ -4,7 +4,7 @@ import { buildServerInstructionsText } from './services/server-instructions.js';
 import { isBrowserV2Enabled, teamContext } from './services/neural-interface.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { ensureDatabase, closeDatabase, reopenDatabase } from './services/sqlite.js';
+import { ensureDatabase, closeDatabase, reopenDatabase, memoryStoreStatus, memoryStoreAvailable, memoryMigratingMessage } from './services/sqlite.js';
 
 import { rememberSchema, rememberDescription, handleRemember, buildRememberSchema } from './tools/remember.js';
 import { recallSchema, recallDescription, handleRecall, buildRecallSchema } from './tools/recall.js';
@@ -124,6 +124,25 @@ export function registeredGroupIds(): string[] {
   return Object.keys(GROUP_REGISTRARS);
 }
 
+/** How long a memory tool waits for a migration of the store before it answers that the store is migrating. */
+const MEMORY_TOOL_MIGRATION_WAIT_MS = 20_000;
+
+/**
+ * A memory tool while the store is being copied and migrated in the background (sqlite.ts ensureDatabase): it waits
+ * for the migration, and when that takes longer than a client should be kept waiting it answers with the state by
+ * name instead of an error from half-way through. The handler itself never runs against a store that is migrating,
+ * and never starts the copy on this thread: a store that is still closed because its migration could not be made is
+ * tried again on the worker (memoryStoreAvailable), and the handler's own getDb() then says why it cannot be opened.
+ */
+function whenStoreReady<T extends (...args: any[]) => any>(handler: T): T {
+  return (async (...args: Parameters<T>) => {
+    if (!(await memoryStoreAvailable(MEMORY_TOOL_MIGRATION_WAIT_MS))) {
+      return { content: [{ type: 'text' as const, text: memoryMigratingMessage() }], isError: true };
+    }
+    return handler(...args);
+  }) as T;
+}
+
 // Register ALL tools on a given McpServer instance.
 // All groups are always registered; the runtime enables or disables them.
 export function registerTools(server: McpServer, runtime: ToolRuntime = new ToolRuntime(readInitialTools())) {
@@ -131,16 +150,16 @@ export function registerTools(server: McpServer, runtime: ToolRuntime = new Tool
   // Core memory tools — always registered and always enabled
   // Use build*Schema() instead of module-level constants so HTTP transport
   // sessions always read current display-settings.json when constructed.
-  const rememberTool = server.tool('remember', rememberDescription, buildRememberSchema(), handleRemember);
-  const recallTool = server.tool('recall', recallDescription, buildRecallSchema(), handleRecall);
-  const forgetTool = server.tool('forget', forgetDescription, forgetSchema, handleForget);
-  const restoreTool = server.tool('restore', restoreDescription, restoreSchema, handleRestore);
-  const reflectTool = server.tool('reflect', reflectDescription, buildReflectSchema(), handleReflect);
-  const memoriesTool = server.tool('memories', memoriesDescription, buildMemoriesSchema(), handleMemories);
+  const rememberTool = server.tool('remember', rememberDescription, buildRememberSchema(), whenStoreReady(handleRemember));
+  const recallTool = server.tool('recall', recallDescription, buildRecallSchema(), whenStoreReady(handleRecall));
+  const forgetTool = server.tool('forget', forgetDescription, forgetSchema, whenStoreReady(handleForget));
+  const restoreTool = server.tool('restore', restoreDescription, restoreSchema, whenStoreReady(handleRestore));
+  const reflectTool = server.tool('reflect', reflectDescription, buildReflectSchema(), whenStoreReady(handleReflect));
+  const memoriesTool = server.tool('memories', memoriesDescription, buildMemoriesSchema(), whenStoreReady(handleMemories));
   const ungrouped = [
     rememberTool, recallTool, forgetTool, restoreTool, reflectTool, memoriesTool,
-    server.tool('category', categoryDescription, categorySchema, handleCategory),
-    server.tool('sync', syncDescription, syncSchema, handleSync),
+    server.tool('category', categoryDescription, categorySchema, whenStoreReady(handleCategory)),
+    server.tool('sync', syncDescription, syncSchema, whenStoreReady(handleSync)),
     server.tool('loop', loopDescription, loopSchema, handleLoop),
     server.tool('tool_groups', toolGroupsDescription, toolGroupsSchema, (args) => handleToolGroups(runtime, args)),
     server.tool('choice', choiceDescription, choiceSchema, (args) => handleChoice(server, args)),
@@ -412,18 +431,41 @@ async function main() {
     logCodexConfigNoticeOnce();
   }
 
-  try {
-    await ensureDatabase();
+  // Open the store. When this build has a migration for a populated store, its safety copy and the migration run on
+  // a worker thread (sqlite.ts ensureDatabase) and are NOT waited for here: on a large database the copy takes longer
+  // than MCP clients wait for `initialize`, and a client that gives up stops this process in the middle of it
+  // (2026-11-21: 12 of 13 servers, each leaving a partial copy). The transport below connects first; memory tools
+  // wait for the store (whenStoreReady) and maintenance starts when it is there.
+  const storeReady = ensureDatabase().then(() => {
     startMemoryMaintenance();
-  } catch (err) {
+    return true;
+  }).catch((err) => {
     console.error(
       'Warning: Could not initialize SQLite database on startup.',
       err instanceof Error ? err.message : err
     );
-  }
+    return false;
+  });
+  const migrating = memoryStoreStatus().state === 'migrating';
+  if (!migrating) await storeReady;
 
-  // Initialize category cache (loads from SQLite or starts empty)
-  await initCategoryCache();
+  // Initialize category cache (loads from SQLite or starts empty). Only a missing cache file is read from SQLite.
+  // During a migration that waits for the store too, together with the watcher below: the watcher writes an empty
+  // cache file when there is none, and that write goes through to SQLite as "there are no categories", so it must
+  // never run before the cache was seeded from the store. The schemas are refreshed once the categories are known.
+  const categoriesFromStore = migrating && !existsSync(join(config.dataDir, 'custom-categories.json'));
+  if (!categoriesFromStore) await initCategoryCache();
+  else void storeReady.then(async (opened) => {
+    if (!opened) return;
+    try {
+      await initCategoryCache();
+      startWatchingCategories();
+      refreshCategorySchemas();
+      await server.server.notification({ method: 'notifications/tools/list_changed' });
+    } catch (err) {
+      console.error('[SynaBun] categories were not loaded after the memory migration:', err instanceof Error ? err.message : err);
+    }
+  });
 
   // Set up file watcher for external category changes
   setOnExternalChange(() => {
@@ -436,7 +478,7 @@ async function main() {
       console.error('Failed to send tools/list_changed notification:', err);
     });
   });
-  startWatchingCategories();
+  if (!categoriesFromStore) startWatchingCategories();
 
   // Watch .env for SQLITE_DB_PATH changes (e.g. from onboarding or settings)
   const envPath = getEnvPath();

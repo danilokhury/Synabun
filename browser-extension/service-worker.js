@@ -1,4 +1,4 @@
-import { channel, command, CONTROL, equalMac, fail, hostPattern, localDeadline, mac, nonce, object, pairingKey, parse, payload, QUEUE_LIMIT, reserve, safeError } from './protocol.js';
+import { channel, command, CONTROL, equalMac, fail, hostPattern, localDeadline, longOp, mac, nonce, object, pairingKey, parse, payload, QUEUE_LIMIT, reserve, safeError } from './protocol.js';
 import { createEngine } from './engine.js';
 import { badgeFor } from './popup-view.js';
 import { popupLocale, translator } from './popup-strings.js';
@@ -31,7 +31,7 @@ const engine = createEngine(chrome, {
       credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(Math.ceil(timeout)),
     });
     if (!response.ok) fail(response.status === 400 ? await response.text() : 'CANCELLED');
-    return response.blob();
+    return response;
   },
   save: async value => {
     const { tabs, ...prefs } = value;
@@ -91,7 +91,12 @@ const commands = new Map();
 // and so is one whose turn comes later than `held.startBy` (one margin before its deadline). Once it starts, the timer
 // is re-armed for the earlier of the deadline and QUEUE_LIMIT, the watchdog for a browser call that never returns;
 // either way the queue moves on to the next command at once. The server's cancel calls the same `expire`.
+// A long operation (protocol.js longOp: evaluate, a load-state wait) may run for a minute, far past the deadline of
+// any command behind it, so it never takes a turn in the queue: it starts at once, beside the queue, under its own
+// deadline alone (no QUEUE_LIMIT; its own timeout is its watchdog). One agent's slow script or a page that never
+// goes idle therefore holds up nobody else's tab. The engine holds it to the same ticket and gates as any command.
 function enqueue(ws, message, held) {
+  const long = longOp(message.op, message.args);
   let timer, started = false, expire;
   const limit = new Promise((_resolve, reject) => { expire = () => { held.stopped = true; reject(coded('TIMEOUT')); }; });
   limit.catch(() => { if (!started) void answer(ws, message, limit).catch(() => {}); });
@@ -100,12 +105,15 @@ function enqueue(ws, message, held) {
   const done = () => { clearTimeout(timer); if (commands.get(message.id) === expire) commands.delete(message.id); };
   commands.set(message.id, expire);
   arm(held.expires - engine.now());
-  work = work.catch(() => {}).then(() => {
+  const run = () => {
     if (!held.stopped && engine.now() >= held.startBy) expire();
     if (held.stopped) { done(); return; }
-    started = true; arm(Math.min(QUEUE_LIMIT, held.expires - engine.now()));
+    started = true; arm(long ? held.expires - engine.now() : Math.min(QUEUE_LIMIT, held.expires - engine.now()));
     return answer(ws, message, Promise.race([engine.execute(message, held), limit]).finally(done));
-  }).catch(() => {}); // A command failure is an answer, never a transport revocation.
+  };
+  // A command failure is an answer, never a transport revocation.
+  if (long) void Promise.resolve().then(run).catch(() => {});
+  else work = work.catch(() => {}).then(run).catch(() => {});
 }
 function schedule() {
   clearTimeout(reconnectTimer);

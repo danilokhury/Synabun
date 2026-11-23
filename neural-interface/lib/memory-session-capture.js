@@ -1,7 +1,8 @@
+import { runSessionJob } from './session-cache-worker.js';
 import { open } from 'node:fs/promises';
 import { getDb } from '../../mcp-server/dist/services/sqlite.js';
 import { detectProject } from '../../mcp-server/dist/config.js';
-import { normalizeMemoryEvents, ingestMemoryEvents } from '../../mcp-server/dist/services/memory-sessions.js';
+import { normalizeMemoryEvents, ingestMemoryEvents, CAPTURE_TRANSACTION_MS, CAPTURE_PAUSE_MS } from '../../mcp-server/dist/services/memory-sessions.js';
 import { maintenancePaused } from './memory-timers.js';
 
 /** The hosts whose transcripts are captured from a file (OpenCode's rows are taken in session-cache-builder.js). */
@@ -27,16 +28,40 @@ export function queueMemoryCapture({host,sessionId,filePath,project,cwd,size=nul
 
 let running=false;
 let timer=null;
-export async function captureMemoryFileBatch(target) {
+export async function captureMemoryFileBatch(target, { reportProgress = false } = {}) {
   if(running)return {busy:true};
-  if(maintenancePaused())return {paused:true};
   running=true;
-  const d=getDb();
-  const job=target ? d.prepare("SELECT * FROM memory_capture_files WHERE host=? AND session_id=? AND status='pending'").get(target.host,target.sessionId)
-    : d.prepare("SELECT * FROM memory_capture_files WHERE status='pending' ORDER BY byte_offset LIMIT 1").get();
+  try {
+    return await runSessionJob('capture', { target, reportProgress });
+  } finally {
+    running=false;
+  }
+}
+
+export async function capturePendingFile(target, { reportProgress, warmLookup } = {}) {
+  const d = getDb();
+  if (maintenancePaused(d)) return { paused: true };
+  const select = target
+    ? d.prepare('SELECT * FROM memory_capture_files WHERE host=? AND session_id=?')
+    : d.prepare("SELECT * FROM memory_capture_files WHERE status='pending' ORDER BY byte_offset LIMIT 1");
+  const keys = target ? [target.host, target.sessionId] : [];
+  let job = select.get(...keys);
+  if (job?.status === 'pending' && warmLookup) {
+    // Backfill can yield to a pause or a newer checkpoint. Pick again before reading the file.
+    await warmLookup(d);
+    if (maintenancePaused(d)) return { paused: true };
+    job = select.get(...keys);
+  }
+  if (job?.status === 'pending') await readCaptureFile(d, job);
+  if (target && reportProgress) {
+    const after = select.get(...keys);
+    return { status: after?.status, error: after?.error, advanced: after?.byte_offset !== job?.byte_offset };
+  }
+}
+
+async function readCaptureFile(d, job) {
   let file;
   try {
-    if(!job)return;
     file=await open(job.file_path,'r');
     const stat=await file.stat();
     const offset=stat.size<job.byte_offset ? 0 : job.byte_offset;
@@ -67,12 +92,19 @@ export async function captureMemoryFileBatch(target) {
     const project=sourceCwd ? detectProject(sourceCwd) : job.project;
     const events=normalizeMemoryEvents(job.host,records,{session_id:job.session_id,project,cwd:sourceCwd});
     if(maintenancePaused())return;
-    ingestMemoryEvents(events);
+    // Short transactions with the write lock left free between them (memory-sessions.ts CAPTURE_*): the server's
+    // own writes wait for this lock on its event loop.
+    for (let offset = 0; offset < events.length;) {
+      if (maintenancePaused()) return; // replay from the previous checkpoint on resume
+      const batch = ingestMemoryEvents(events.slice(offset, offset + 25), { maxTransactionMs: CAPTURE_TRANSACTION_MS });
+      offset += Math.max(1, batch.consumed);
+      if (batch.indexed && offset < events.length) await new Promise(done => setTimeout(done, CAPTURE_PAUSE_MS));
+    }
     // Replaying after a crash between intake and checkpoint is idempotent.
     d.prepare("UPDATE memory_capture_files SET byte_offset=?,status=?,error=NULL WHERE host=? AND session_id=?")
       .run(offset+consumed,offset+consumed>=stat.size ? 'complete':'pending',job.host,job.session_id);
-  }catch(error){if(job)d.prepare("UPDATE memory_capture_files SET status='failed',error=? WHERE host=? AND session_id=?").run(error.message,job.host,job.session_id);}
-  finally{await file?.close();running=false;}
+  }catch(error){d.prepare("UPDATE memory_capture_files SET status='failed',error=? WHERE host=? AND session_id=?").run(error.message,job.host,job.session_id);}
+  finally{await file?.close();}
 }
 let startTimer=null;
 // offsetMs keeps this tick out of phase with the 2 s maintenance timer so the

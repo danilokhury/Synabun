@@ -1,6 +1,6 @@
 {
   "name": "neural-memory-interface",
-  "version": "2.4.1",
+  "version": "2.4.2",
   "private": true,
   "description": "Private local SynaBun interface for memory visualization and multi-agent workflows",
   "license": "Apache-2.0",

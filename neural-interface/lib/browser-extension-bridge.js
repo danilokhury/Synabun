@@ -5,7 +5,7 @@ import { compareVersions } from './browser-extension-folder.js';
 import { dirname } from 'node:path';
 import { lookup } from 'node:dns/promises';
 import { WebSocketServer } from 'ws';
-import { anyOrigin, channel, command, COMMAND_WAIT, CONTROL, controlSurface, equalMac, ERROR_TEXT, fail, handle, HISTORY, inventory, localHost, mac, MAX_MESSAGE, nonce, object, pairingKey, parse, payload, portOf, publicOrigin, safeError, string } from '../../browser-extension/protocol.js';
+import { anyOrigin, channel, command, COMMAND_WAIT, commandWait as operationWait, CONTROL, controlSurface, equalMac, ERROR_TEXT, fail, handle, HISTORY, inventory, localHost, LONG_OPS_SINCE, longOp, mac, MAX_MESSAGE, nonce, object, pairingKey, parse, payload, portOf, publicOrigin, safeError, string } from '../../browser-extension/protocol.js';
 
 const manifest = JSON.parse(readFileSync(new URL('../../browser-extension/manifest.json', import.meta.url), 'utf8'));
 export const EXTENSION_ID = createHash('sha256').update(Buffer.from(manifest.key, 'base64')).digest('hex').slice(0, 32).replace(/[0-9a-f]/g, c => String.fromCharCode(97 + parseInt(c, 16)));
@@ -52,6 +52,8 @@ export function createBridgeStore(path) {
 /** Isolated loopback transport. Constructing it neither listens nor reads/writes user data (restore() does). */
 // `commandWait` is how long a request waits for the extension's answer (COMMAND_WAIT; smaller only in tests), on the
 // monotonic `clock`. Each command carries what is left of that wait when it is sent, as its `deadline`.
+// A long operation (protocol.js longOp: `evaluate`, `wait` with `loadState`) waits its own time instead: its timeout
+// plus a margin, at most LONG_WAIT (protocol.js commandWait). A smaller `commandWait` (tests) bounds those too.
 // `fullControl` is the mode before the owner chose one (on: agents may use any http(s) site and any tab of the paired
 // browser; off: only what the owner shares). `store` keeps the pairing and the mode across restarts (createBridgeStore).
 // SynaBun's own addresses stay out of reach in both modes: `forbiddenOrigins` (its public aliases, any port),
@@ -61,6 +63,7 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
   commandWait = COMMAND_WAIT, clock = () => performance.now(), fullControl = true, store = null, blockedPorts = () => [], selfHosts = () => [],
   lookupAddresses = host => lookup(host, { all: true }) } = {}) {
   if (!Number.isSafeInteger(commandWait) || commandWait < 1 || commandWait > COMMAND_WAIT) fail('INVALID_MESSAGE');
+  const waitOf = (op, args) => commandWait < COMMAND_WAIT ? commandWait : operationWait(op, args);
   let server, wss, listening, pair = null, credential = null, peer = null, state = empty(), enabled = true;
   // The owner's mode and its version. The newer version wins on either side: the server's (Settings) or the
   // extension's (its popup, reported in an inventory). Only the owner changes it: setMode() behind the owner route,
@@ -188,8 +191,9 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
         }
         try {
           authorize('upload', p.tab, p.owner, p.args);
-          const bytes = p.upload.read(p.nextFile++);
-          res.writeHead(200, { 'Cache-Control': 'no-store', 'Content-Type': 'application/octet-stream', 'Content-Length': bytes.length }).end(bytes);
+          const { bytes, type, lastModified } = p.upload.read(p.nextFile++);
+          res.writeHead(200, { 'Cache-Control': 'no-store', 'Content-Type': type, 'Content-Length': bytes.length,
+            'X-Content-Type-Options': 'nosniff', 'X-SynaBun-Last-Modified': lastModified }).end(bytes);
         } catch (error) {
           res.writeHead(400, { 'Cache-Control': 'no-store' }).end(safeError(error).code);
         }
@@ -224,7 +228,8 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
       outbound = outbound.catch(() => {}).then(async () => {
         if (body.type === 'command') {
           check();
-          body = command({ ...body, deadline: Math.max(1, Math.min(commandWait, Math.floor(pending.get(body.id).expires - clock()))) });
+          const p = pending.get(body.id);
+          body = command({ ...body, deadline: Math.max(1, Math.min(p.wait, Math.floor(p.expires - clock()))) });
         }
         await wire.encode(body, raw => { check(); if (ws.readyState !== 1) fail('NOT_CONNECTED'); ws.send(raw); });
       }); return outbound;
@@ -295,6 +300,9 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
   function authorize(op, tab, owner, args = {}) {
     authorizeAccess(op, tab, owner, args);
     if (op === 'upload' && compareVersions(peer.version, '1.3.0') < 0) fail('UPLOAD_RELOAD_REQUIRED');
+    // An extension from before the long operations ends the connection on a command it does not know (its payload()
+    // throws while it authenticates the message): it is never sent one. The owner reloads the extension instead.
+    if (longOp(op, args) && compareVersions(peer.version, LONG_OPS_SINCE) < 0) fail('EXTENSION_RELOAD_REQUIRED');
   }
   function authorizeAccess(op, tab, owner, args) {
     if (!enabled || !peer || peer.ws.readyState !== 1) fail('EXTENSION_NOT_CONNECTED');
@@ -325,7 +333,10 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
     // The revocation generation this command was issued in; an owner revocation that begins later cancels it.
     const issued = revocations, stale = () => !CONTROL.includes(op) && issued !== revocations;
     if (pending.size >= 32) fail('TIMEOUT');
-    const msg = command({ type: 'command', id: nonce(), op, tab, owner, args, ...targets(), deadline: commandWait });
+    // This command's wait: an ordinary command's, or a long operation's own. The timer, `expires` and the deadline the
+    // command carries are all this one number.
+    const wait = waitOf(op, args);
+    const msg = command({ type: 'command', id: nonce(), op, tab, owner, args, ...targets(), deadline: wait });
     try {
       authorize(op, tab, owner, args);
       const version = revision, connection = peer, full = mode.fullControl;
@@ -347,8 +358,8 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
         const timer = setTimeout(() => {
           pending.delete(msg.id); reject(Object.assign(new Error('TIMEOUT'), { code: 'TIMEOUT' }));
           if (peer === via && via.ws.readyState === 1) void via.send({ type: 'cancel', id: msg.id }).catch(() => {});
-        }, commandWait);
-        pending.set(msg.id, { resolve, reject, timer, op, tab, owner, args, upload, nextFile: 0, issued, expires: clock() + commandWait });
+        }, wait);
+        pending.set(msg.id, { resolve, reject, timer, op, tab, owner, args, upload, nextFile: 0, issued, wait, expires: clock() + wait });
         via.send(msg).catch(error => { clearTimeout(timer); pending.delete(msg.id); reject(['CANCELLED', 'TIMEOUT'].includes(error?.code) ? coded(error.code)() : notConnected()); });
       });
       if (HISTORY.includes(op) && result.ok) {

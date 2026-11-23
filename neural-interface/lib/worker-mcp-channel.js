@@ -33,6 +33,7 @@ import express from 'express';
 import net from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { isAutomationBrowserRoute } from './browser-automation-routes.js';
+import { markActivity } from './loop-stall.js';
 
 // The only Neural-Interface API a sandboxed worker's stdio MCP child (OpenCode) may reach through the channel: the
 // browser routes its browser tools call over HTTP to NEURAL_INTERFACE_URL, exactly (lib/browser-automation-routes.js:
@@ -160,6 +161,7 @@ export function createWorkerMcpChannel({ createMcpRoutes, mainPort = null, fetch
   });
   // Everything the channel serves is under /w/:token/mcp; the run is pinned from the token and authority is stripped.
   app.use('/w/:token/mcp', (req, res, next) => {
+    markActivity('mcp:worker-request');
     const runId = tokenToRun.get(String(req.params.token || ''));
     if (!runId) return res.status(404).json({ jsonrpc: '2.0', error: { code: -32001, message: 'Unknown worker channel' }, id: null });
     req.headers['x-synabun-terminal'] = runId; // the worker's identity is its own run, never what it claims

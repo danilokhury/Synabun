@@ -1,10 +1,10 @@
-import { createReadStream, createWriteStream, mkdirSync, renameSync, rmSync } from 'node:fs';
-import { open } from 'node:fs/promises';
+import { createWriteStream, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { Readable, Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createInflateRaw, crc32 } from 'node:zlib';
 import { dirname } from 'node:path';
+import { openPlainBackupSource } from './backup-crypto-io.js';
 
 /**
  * Streaming ZIP reader for backup archives.
@@ -28,15 +28,9 @@ const EOCD_MAX_SCAN = EOCD_MIN + 0xffff;
 const MAX_CENTRAL_DIRECTORY_BYTES = 512 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 64 * 1024 * 1024;
 
-async function readAt(handle, position, length) {
-  const buffer = Buffer.alloc(length);
-  let offset = 0;
-  while (offset < length) {
-    const { bytesRead } = await handle.read(buffer, offset, length - offset, position + offset);
-    if (bytesRead === 0) throw new Error('Invalid ZIP: unexpected end of file');
-    offset += bytesRead;
-  }
-  return buffer;
+// `handle` is a source (backup-crypto-io.js): the file itself, or the plaintext of an encrypted backup by position.
+function readAt(handle, position, length) {
+  return handle.read(position, length);
 }
 
 function readUInt64(buffer, offset) {
@@ -157,10 +151,16 @@ function integrityCheck(entry) {
   });
 }
 
-export async function openZipArchive(path) {
-  const handle = await open(path, 'r');
+/**
+ * `source`: what the ZIP is read through, { size, read(position, length), stream(start, endInclusive), close() }
+ * (backup-crypto-io.js). Without one it is the file at `path`; an encrypted backup's source gives the ZIP inside it,
+ * decrypted and checked chunk by chunk as it is read, so no plaintext copy of the archive is ever written. Closing
+ * the archive closes its source.
+ */
+export async function openZipArchive(path, { source = null } = {}) {
+  const handle = source || await openPlainBackupSource(path);
   try {
-    const { size: fileSize } = await handle.stat();
+    const fileSize = handle.size;
     const directory = await locateCentralDirectory(handle, fileSize);
     const buffer = await readAt(handle, directory.offset, directory.size);
     const entries = parseCentralDirectory(buffer, directory.entryCount);
@@ -178,6 +178,9 @@ export async function openZipArchive(path) {
     return {
       path,
       size: fileSize,
+      /** True when the ZIP was read out of an encrypted backup. */
+      encrypted: handle.encrypted === true,
+      source: handle,
       entries,
       getEntry: name => byName.get(name) || null,
       /** Stream one entry's uncompressed bytes into `sink`, checking CRC and size. */
@@ -186,7 +189,7 @@ export async function openZipArchive(path) {
         if (entry.method !== 0 && entry.method !== 8) throw new Error(`Unsupported ZIP: ${entry.name} uses compression method ${entry.method}`);
         const { start, length } = await dataRange(entry);
         const stages = [length > 0
-          ? createReadStream(path, { start, end: start + length - 1, highWaterMark: 1024 * 1024 })
+          ? handle.stream(start, start + length - 1)
           : Readable.from([])];
         if (entry.method === 8) stages.push(createInflateRaw());
         stages.push(integrityCheck(entry), sink);
@@ -254,14 +257,23 @@ export function backupEntryName(prefix, archivePath) {
   return prefix ? `${prefix}/${archivePath}` : archivePath;
 }
 
-/** Stream every manifest-listed entry through sha256 and compare. `onBytes`: as for hashZipEntry. */
-export async function verifyBackupChecksums(zip, { prefix, manifest, label = 'Backup verification failed', onBytes = null }) {
+/**
+ * Stream every manifest-listed entry through sha256 and compare. `onBytes`: as for hashZipEntry. `signal`: an
+ * AbortSignal looked at between two entries; an aborted check throws an error whose code is BACKUP_CANCELLED.
+ */
+export async function verifyBackupChecksums(zip, { prefix, manifest, label = 'Backup verification failed', onBytes = null, signal = null }) {
   for (const [archivePath, expected] of Object.entries(manifest.checksums || {})) {
+    if (signal?.aborted) throw Object.assign(new Error('The backup was cancelled.'), { code: 'BACKUP_CANCELLED' });
     const entry = zip.getEntry(backupEntryName(prefix, archivePath));
     if (!entry) throw new Error(`${label}: ${archivePath} is missing`);
     let actual;
     try { actual = `sha256:${await hashZipEntry(zip, entry, { onBytes })}`; }
-    catch (error) { throw new Error(`${label}: ${archivePath} is unreadable (${error.message})`); }
+    catch (error) {
+      // A failure of the encrypted container under the ZIP keeps its code (BACKUP_ENC_DAMAGED): the caller tells a
+      // changed file from an unreadable entry by it.
+      const code = typeof error?.code === 'string' && error.code.startsWith('BACKUP_') ? { code: error.code } : {};
+      throw Object.assign(new Error(`${label}: ${archivePath} is unreadable (${error.message})`), code);
+    }
     if (actual !== expected) throw new Error(`${label}: checksum mismatch for ${archivePath}`);
   }
 }

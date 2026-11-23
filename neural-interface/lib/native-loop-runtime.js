@@ -1,3 +1,4 @@
+import { mayEndSuspendedRun, shutdownStopReason, stampStopProvenance } from './worker-stop.js';
 import { isolatedServeFailure } from './opencode-launch-error.js';
 import { retainExternalRefs } from './mcp-external-servers.js';
 import { storedToolList, toolListRecord, readStoredToolListRecord } from './tool-lists.js';
@@ -59,6 +60,7 @@ function rawDescriptor(record) {
     updatedAt: record.updatedAt,
     completedAt: record.completedAt || null,
     stoppedReason: record.stoppedReason || null,
+    ...(record.stopProvenance && { stopProvenance: record.stopProvenance }),
     browserSessionId: record.browserSessionId || null,
     browserTabId: record.browserTabId || null,
     scheduleId: record.scheduleId || null,
@@ -310,6 +312,7 @@ export class NativeLoopRuntime {
         record.stoppedReason = 'server_restart';
         record.completedAt = record.completedAt || iso(this.now());
         record.updatedAt = iso(this.now());
+        record.stopProvenance = stampStopProvenance('server_restart', record.stopProvenance, record.completedAt);
         const state = this._readState(record.runId);
         if (state) {
           this._writeState(record.runId, {
@@ -318,6 +321,7 @@ export class NativeLoopRuntime {
             pending: false,
             completedAt: record.completedAt,
             stoppedReason: 'server_restart',
+            stopProvenance: record.stopProvenance,
           });
         }
       }
@@ -398,7 +402,7 @@ export class NativeLoopRuntime {
   _writeTerminalState(record, patch) {
     try {
       const state = this._readState(record.runId);
-      if (state) this._writeState(record.runId, { ...state, ...patch });
+      if (state) this._writeState(record.runId, { ...state, ...patch, ...(record.stopProvenance && { stopProvenance: record.stopProvenance }) });
     } catch (error) {
       this.log(record.runId, 'native:state-write-error', error?.message || String(error));
     }
@@ -635,6 +639,7 @@ export class NativeLoopRuntime {
               setTurnState: (turnState) => this.setTurnState(runId, turnState),
               setPendingRequests: (requests) => this.setPendingRequests(runId, requests),
               setOutcome: (outcome) => this.setOutcome(runId, outcome),
+              noteTabClose: provenance => { if (!record.stopping) record.stopProvenance = provenance; },
               readState: () => this._readState(runId),
             })
           : adapter;
@@ -788,6 +793,7 @@ export class NativeLoopRuntime {
     record.status = 'interrupted';
     record.stoppedReason = reason || record.suspendReason || 'server_restart';
     record.completedAt = iso(this.now());
+    record.stopProvenance = stampStopProvenance(record.stoppedReason, { actor: 'server', action: 'resume_refused' }, record.completedAt);
     if (error) record.error = scrubTokenText(String(error));
     this._writeTerminalState(record, { active: false, pending: false, completedAt: record.completedAt, stoppedReason: record.stoppedReason, ...(error ? { error: record.error } : {}) });
     this._releaseRuntimeRefs(record);
@@ -815,8 +821,10 @@ export class NativeLoopRuntime {
     try { await record.adapter?.dispose?.({ preserveSession: true, terminate: true }); } catch {}
     // A suspended run has no process: nothing may act as it until its resume gives the new process a new token.
     try { this.terminalTokens?.revoke?.(runId); } catch { /* the suspension goes on */ }
-    this._releaseRuntimeRefs(record, { turnState: 'suspended' });
     record.stopping = false;
+    // A person stopped it while its CLI was ending: that stop already ended the record.
+    if (record.status !== 'suspended') return true;
+    this._releaseRuntimeRefs(record, { turnState: 'suspended' });
     this._emit('sidepanel:run-updated', record, { reason: 'suspended' });
     return true;
   }
@@ -963,6 +971,7 @@ export class NativeLoopRuntime {
     if (error?.code) { const safe = isolatedServeFailure(error); record.errorCode = safe.code; record.offenders = safe.offenders; }
     record.stoppedReason = reason;
     record.completedAt = iso(this.now());
+    if (record.status === 'interrupted') record.stopProvenance = stampStopProvenance(reason, null, record.completedAt);
     if (record._resolveIdentity) { record._resolveIdentity(null); record._resolveIdentity = null; }
     try { record.startupAbortController?.abort(reason); } catch {}
     if (record._cancelStartup) { record._cancelStartup(reason); record._cancelStartup = null; }
@@ -976,11 +985,22 @@ export class NativeLoopRuntime {
 
   /**
    * `terminate` (a server shutdown): the provider's process is ended at once (the Claude adapter's dispose), never
-   * left to finish its tool call after the server is gone. A suspended run (waiting for its resume) ends as stopped.
+   * left to finish its tool call after the server is gone. A suspended run (waiting for its resume) ends as stopped
+   * only for a caller that may end it (worker-stop.js mayEndSuspendedRun); for any other this returns false and it
+   * stays suspended. A caller that names no reason is recorded as unknown, never as the user.
    */
-  async stop(runId, reason = 'user', { terminate = false } = {}) {
+  async stop(runId, reason = 'unknown', { terminate = false, stopProvenance = null } = {}) {
     const record = this.records.get(runId);
-    if (record?.status === 'suspended' && !record.stopping) {
+    if (!record || !LIVE_STATUSES.has(record.status)) return false;
+    // `stopping` on a suspended record is its CLI still ending: a person's stop in that moment counts.
+    if (record.stopping && record.status !== 'suspended') return false;
+    const provenance = stampStopProvenance(reason, stopProvenance, iso(this.now()));
+    if (record.status === 'suspended' && !mayEndSuspendedRun(provenance)) {
+      this.log(runId, 'native:stop-refused', 'a suspended run stays suspended: this caller may not end it', { reason, stopProvenance: provenance });
+      return false;
+    }
+    record.stopProvenance = provenance;
+    if (record.status === 'suspended') {
       this._clearHold(record);
       record.status = 'stopped';
       record.stoppedReason = reason;
@@ -991,7 +1011,6 @@ export class NativeLoopRuntime {
       try { await this.onFinish(cleanDescriptor(record)); } catch {}
       return true;
     }
-    if (!record || !['starting', 'running'].includes(record.status) || record.stopping) return false;
     record.stopping = true;
     clearTimeout(record.timer);
     record.status = 'stopped';
@@ -1134,7 +1153,9 @@ export class NativeLoopRuntime {
     const kept = new Set((Array.isArray(keep) ? keep : []).map(String));
     await Promise.allSettled([...this.records.values()]
       .filter((record) => ['starting', 'running'].includes(record.status))
-      .map((record) => (kept.has(record.runId) ? this.suspend(record.runId, reason) : this.stop(record.runId, reason, { terminate: true }))));
+      .map((record) => (kept.has(record.runId)
+        ? this.suspend(record.runId, reason)
+        : this.stop(record.runId, shutdownStopReason(reason), { terminate: true, stopProvenance: { actor: 'server', action: 'shutdown', cause: String(reason) } }))));
     for (const timer of this._holdTimers.values()) clearTimeout(timer);
     this._holdTimers.clear();
     this._persistLedger({ force: true });

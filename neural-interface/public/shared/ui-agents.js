@@ -15,9 +15,8 @@
 
 import { on } from './state.js';
 import { isGuest } from './ui-sync.js';
-import { watchStudioAttention } from './studio-attention.js';
+import { badgeText, watchStudioAttention } from './studio-attention.js';
 import { t } from './i18n.js';
-import { badgeText } from './agents/studio/ax-library.js';
 
 let _studio = null;
 const studio = () => {

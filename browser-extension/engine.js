@@ -1,12 +1,41 @@
-import { anyOrigin, command, CONTROL, controlSurface, fail, HISTORY, inventory, hostPattern, localDeadline, MAX_FILE, MAX_TABS, nonce, publicOrigin, safeError } from './protocol.js';
+import { anyOrigin, command, CONTROL, controlSurface, ERROR_TEXT, EVALUATE_RESULT_MAX, fail, HISTORY, inventory, hostPattern, localDeadline, longBudget, MAX_FILE, MAX_TABS, NETWORK_IDLE_QUIET, nonce, publicOrigin, safeError } from './protocol.js';
+
+// The script handed to chrome.userScripts.execute for `evaluate`: the agent's code inside a wrapper that awaits it,
+// turns what it returns into JSON text (cut at `cap` characters) and reports what it throws, so the answer is always
+// this envelope and never a live object of the page. The arguments are parsed here and written back as JSON, so the
+// script holds nothing but that data and the agent's own code. No string is ever evaluated by the extension itself:
+// the browser compiles the script in the page (or in the user-script world), where the owner allowed user scripts.
+// An expression that evaluates to a function is called with the arguments (as Playwright does for a string); a body
+// is the body of an async function whose parameter `args` is the array of arguments.
+function pageScript(args, cap) {
+  const list = JSON.stringify(args.params === undefined ? [] : JSON.parse(args.params));
+  const call = args.body !== undefined
+    ? `(async function (args) {\n${args.body}\n}).call(undefined, __synabunArgs)`
+    : `(__synabunValue => typeof __synabunValue === 'function' ? __synabunValue.apply(undefined, __synabunArgs) : __synabunValue)((\n${args.expression.replace(/[\s;]+$/, '')}\n))`;
+  return `(async () => { const __synabunArgs = ${list}; try { const __synabunResult = await ${call}; `
+    + `let __synabunJson = JSON.stringify(__synabunResult); if (typeof __synabunJson !== 'string') __synabunJson = 'null'; `
+    + `return { synabun: 1, ok: true, json: __synabunJson.length > ${cap} ? __synabunJson.slice(0, ${cap}) : __synabunJson, length: __synabunJson.length }; } `
+    + `catch (__synabunError) { return { synabun: 1, ok: false, name: String(__synabunError && __synabunError.name || '').slice(0, 200), `
+    + `message: String(__synabunError && __synabunError.message !== undefined ? __synabunError.message : __synabunError).slice(0, 2000), `
+    + `stack: String(__synabunError && __synabunError.stack || '').slice(0, 6000) }; } })()`;
+}
+// The result's JSON text as it travels: at most `cap` characters, and few enough bytes for one bridge message.
+const RESULT_BYTES = 2500000;
+function clipped(text, cap) {
+  let out = text.length > cap ? text.slice(0, cap) : text;
+  for (let size = new TextEncoder().encode(out).length; size > RESULT_BYTES; size = new TextEncoder().encode(out).length) out = out.slice(0, Math.floor(out.length * RESULT_BYTES / size) - 1);
+  return out;
+}
 
 /** Pure controller over an injected chrome API; no socket or storage credential access. */
 // `now` is a monotonic clock (milliseconds) for command deadlines; `wallClock` the system clock the content script shares.
 // `fullControlDefault` is the mode before the owner ever chose one (full control: agents may use any http(s) site and
 // any tab of this browser with no sharing step). `activateMs` is how long a full-control screenshot lets a tab it
-// brought to the front settle before capturing it.
+// brought to the front settle before capturing it. `idleMs` is how long a tab must have had no request in flight to be
+// network-idle (a load-state wait).
 export function createEngine(chrome, { readUpload, save = async () => {}, changed = () => {}, settleMs = 10000, quietMs = 500, pollMs = 50,
-  now = () => performance.now(), wallClock = () => Date.now(), fullControlDefault = true, activateMs = 150, commitMs = 20000, visibleMs = 2000 } = {}) {
+  now = () => performance.now(), wallClock = () => Date.now(), fullControlDefault = true, activateMs = 150, commitMs = 20000, visibleMs = 2000,
+  idleMs = NETWORK_IDLE_QUIET } = {}) {
   // `epoch` moves only on the owner's revocations and pairing changes, and cancels every tab's work. A tab's own
   // navigation, update or close moves that tab's counter in `moves` (by Chrome tab id) and nothing else: one agent's
   // ordinary navigation never cancels another agent's work on another tab. `focus` moves when the active tab changes;
@@ -51,7 +80,38 @@ export function createEngine(chrome, { readUpload, save = async () => {}, change
     return inventory({ tabs: listed.map(t => ({ handle: t.handle, url: t.url, owner: t.owner, created: t.created === true, title: clip(t.title) })),
       sites: [...sites], versions: sites.map(s => versions.get(s) || 0), allowNewTabs, uploads: true, downloads, fullControl, modeVersion });
   };
-  const persist = async () => { await save({ tabs: [...tabs.values()], sites, versions: [...versions], allowNewTabs, uploads: true, downloads, fullControl, modeVersion }); changed(current()); };
+  // ── The network watch, for a wait with loadState 'networkidle' ──
+  // Only a tab an agent holds is watched: three non-blocking webRequest listeners, filtered to that tab, added when an
+  // agent takes it and removed when it gives it back, the tab closes or the owner takes it back (rewatch(), on every
+  // change of the tabs). Nothing of a request is kept but its id, and the owner's other tabs are never observed.
+  // `quietSince` is when the tab last had no request in flight (or when the watch began).
+  const web = chrome.webRequest, watchable = !!(web?.onBeforeRequest?.addListener && web.onCompleted?.addListener && web.onErrorOccurred?.addListener);
+  const watched = new Map();
+  function watch(id) {
+    const record = { inflight: new Set(), quietSince: now() };
+    const begin = details => {
+      // A new document: the requests of the one it replaces end with it (Playwright starts counting again, too).
+      if (details?.type === 'main_frame') record.inflight.clear();
+      record.inflight.add(String(details?.requestId));
+    };
+    const end = details => { if (record.inflight.delete(String(details?.requestId)) && !record.inflight.size) record.quietSince = now(); };
+    const entry = { record, begin, end }, filter = { urls: ['<all_urls>'], tabId: id };
+    watched.set(id, entry);
+    try { web.onBeforeRequest.addListener(begin, filter); web.onCompleted.addListener(end, filter); web.onErrorOccurred.addListener(end, filter); }
+    catch { unwatch(id); }
+  }
+  function unwatch(id) {
+    const entry = watched.get(id); if (!entry) return;
+    watched.delete(id);
+    for (const [event, listener] of [['onBeforeRequest', entry.begin], ['onCompleted', entry.end], ['onErrorOccurred', entry.end]]) { try { web[event].removeListener(listener); } catch {} }
+  }
+  function rewatch() {
+    if (!watchable) return;
+    const held = new Set([...tabs.values()].filter(t => t.owner).map(t => t.id));
+    for (const id of [...watched.keys()]) if (!held.has(id)) unwatch(id);
+    for (const id of held) if (!watched.has(id)) watch(id);
+  }
+  const persist = async () => { rewatch(); await save({ tabs: [...tabs.values()], sites, versions: [...versions], allowNewTabs, uploads: true, downloads, fullControl, modeVersion }); changed(current()); };
   async function live(t) {
     try { const tab = await chrome.tabs.get(t.id); t.url = shownUrl(tab); t.title = clip(tab.title); return tab; }
     catch { move(t.id); tabs.delete(t.handle); moves.delete(t.id); await persist(); fail('TAB_CLOSED'); }
@@ -376,6 +436,92 @@ export function createEngine(chrome, { readUpload, save = async () => {}, change
       const after = (await chrome.tabs.query({ active: true, windowId: opened.windowId }))[0];
       if (after?.id !== t.id || after.url !== opened.url) fail('ACTIVE_TAB_REQUIRED');
       await recheck(); result.base64 = data.split(',')[1]; result.mimeType = 'image/png';
+    } else if (op === 'wait' && args.loadState) {
+      // A load-state wait reads the tab (and, for 'networkidle', the requests the watch saw); nothing is done to the
+      // page. 'load': the tab is not loading and has no navigation pending. 'networkidle': also no request of the tab
+      // in flight for `idleMs` (already so for a page that has been quiet: it answers at once). Every page the tab
+      // shows meanwhile must be one the mode allows. The tab closing is TAB_CLOSED; the timeout (args.timeout, or
+      // the deadline) is TIMEOUT.
+      if (args.loadState === 'networkidle' && !watchable) fail('NETWORK_IDLE_UNAVAILABLE');
+      const until = Math.min(now() + longBudget(op, args), expires);
+      for (;;) {
+        const reading = await live(t); guard();
+        if (began !== epoch || tabs.get(tab) !== t || t.owner !== owner) fail('TAB_NOT_APPROVED');
+        for (const url of [reading.url, reading.pendingUrl]) if (url) { await landing(url); guard(); }
+        let idle = reading.status !== 'loading' && !reading.pendingUrl;
+        if (idle && args.loadState === 'networkidle') {
+          rewatch();
+          const seen = watched.get(t.id)?.record;
+          if (!seen) fail('NETWORK_IDLE_UNAVAILABLE');
+          idle = !seen.inflight.size && now() - seen.quietSince >= idleMs;
+        }
+        if (idle) break;
+        if (now() >= until) fail('TIMEOUT');
+        await new Promise(resolve => setTimeout(resolve, Math.max(1, Math.min(pollMs, until - now()))));
+      }
+      await authorized(op, tab, owner, {}, blocked); guard(); denyControlHost(t.url);
+      result = { ok: true, url: t.url, title: String(t.title || '').slice(0, 1000), loadState: args.loadState };
+    } else if (op === 'evaluate') {
+      // Page JavaScript, through chrome.userScripts.execute: the one way an MV3 extension may run code it did not ship,
+      // and only where the owner switched "Allow User Scripts" on for this extension (USER_SCRIPTS_DISABLED says how).
+      // Held to every gate of a page command (the agent's own tab, a page the mode allows, never SynaBun's own, the
+      // approval and connection generations, the deadline), and to one document: the frame's document is read first in
+      // the isolated world (its id and its address, which the page cannot forge), that address passes the same rule as
+      // the tab's, and the script runs in that document only (gone meanwhile: nothing runs).
+      if (t.url === 'about:blank') fail('BLANK_PAGE');
+      await recheck();
+      const scripts = chrome.userScripts;
+      const available = async () => { try { await scripts.getScripts(); return true; } catch { return false; } };
+      if (!scripts || !await available()) fail('USER_SCRIPTS_DISABLED');
+      if (typeof scripts.execute !== 'function') fail('USER_SCRIPTS_UNSUPPORTED');
+      guard();
+      const frame = args.frame ?? 0;
+      let probe;
+      try { probe = await act(() => chrome.scripting.executeScript({ target: { tabId: t.id, frameIds: [frame] }, world: 'ISOLATED', injectImmediately: true, func: () => location.href })); }
+      catch (error) { if (error?.code) throw error; guard(); await live(t); fail(frame ? 'FRAME_NOT_FOUND' : 'OPERATION_FAILED'); }
+      const page = probe?.[0];
+      if (typeof page?.documentId !== 'string' || typeof page.result !== 'string') fail(frame ? 'FRAME_NOT_FOUND' : 'TAB_NOT_APPROVED');
+      await recheck();
+      // A frame's document is an http(s) page of its own: a blank or srcdoc frame takes the origin of whoever made it.
+      if (!/^https?:/i.test(page.result)) fail('RESTRICTED_PAGE');
+      await landing(page.result); guard();
+      const cap = Math.max(1, Math.min(args.maxChars || EVALUATE_RESULT_MAX, EVALUATE_RESULT_MAX));
+      const EXPIRED = {}; let timer, running;
+      try {
+        running = Promise.resolve(act(() => scripts.execute({ target: { tabId: t.id, documentIds: [page.documentId] }, world: args.world || 'MAIN',
+          injectImmediately: true, js: [{ code: pageScript(args, cap) }] })));
+      } catch (error) { if (error?.code) throw error; running = Promise.reject(error); }
+      running.catch(() => {});
+      // The script's own timeout, never past the command's deadline. The page's script cannot be stopped: at the
+      // timeout the answer is TIMEOUT and whatever it returns later is dropped.
+      const expired = new Promise(resolve => { timer = setTimeout(resolve, Math.max(0, Math.min(longBudget(op, args), expires - now())), EXPIRED); });
+      let outcome;
+      try { outcome = await Promise.race([running, expired]); }
+      catch {
+        // The browser refused: the document is gone (the tab navigated or closed), or user scripts were switched off.
+        guard(); await live(t);
+        if (began !== epoch || moved(t.id) !== tabBegan || !frame && t.url !== page.result) fail('TAB_NOT_APPROVED');
+        if (!await available()) fail('USER_SCRIPTS_DISABLED');
+        fail('OPERATION_FAILED');
+      } finally { clearTimeout(timer); }
+      guard();
+      if (outcome === EXPIRED) fail('TIMEOUT');
+      // The script may itself have navigated the tab: that is its effect, not a reason to withhold what it returned
+      // from the document that was checked. An owner's revocation meanwhile is (guard(), the epoch).
+      if (began !== epoch) fail('TAB_NOT_APPROVED');
+      if (moved(t.id) !== tabBegan) t.nav = nonce();
+      const entry = Array.isArray(outcome) ? outcome[0] : null, reply = entry?.result;
+      if (reply?.synabun === 1 && reply.ok === true && typeof reply.json === 'string') {
+        const value = clipped(reply.json, cap), total = Number.isSafeInteger(reply.length) && reply.length > reply.json.length ? reply.length : reply.json.length;
+        result = { ok: true, value, ...(value.length < total ? { truncated: true, valueLength: total } : {}) };
+      } else {
+        // What the page's script threw (the wrapper's report), or what the browser said when it could not compile or
+        // run it. A page error is an answer about the page, with its own code: the bridge did what it was asked.
+        const threw = reply?.synabun === 1 && reply.ok === false, text = (value, max) => String(value ?? '').slice(0, max);
+        const message = threw ? [text(reply.name, 200), text(reply.message, 2000)].filter(Boolean).join(': ')
+          : typeof entry?.error === 'string' && entry.error ? text(entry.error, 2000) : 'The script returned no result: it did not compile, or the page stopped it.';
+        result = { ok: false, code: 'PAGE_ERROR', error: `PAGE_ERROR: ${ERROR_TEXT.PAGE_ERROR}`, errorMessage: message || 'The script threw.', errorStack: threw ? text(reply.stack, 6000) : '' };
+      }
     } else if (fullControl && t.url === 'about:blank') {
       // A blank tab (where a new agent tab starts) has no page an extension may script: it reads as empty, a plain
       // wait waits, and anything that needs an element finds none.
@@ -403,14 +549,18 @@ export function createEngine(chrome, { readUpload, save = async () => {}, change
         const documentId = injection?.[0]?.documentId;
         if (!documentId) fail('TAB_NOT_APPROVED');
         delivery = { documentId };
-        const sizes = [];
+        const metadata = [];
         let remaining = MAX_FILE;
         for (let index = 0; index < args.files.length; index++) {
           await recheck();
-          const blob = await readUpload(input.id, index, Math.max(1, expires - now()));
+          const response = await readUpload(input.id, index, Math.max(1, expires - now()));
+          const timestamp = response.headers.get('X-SynaBun-Last-Modified');
+          if (!timestamp || !Number.isSafeInteger(Number(timestamp))) fail('UPLOAD_METADATA_UNAVAILABLE');
+          const blob = await response.blob();
+          if (!blob.type) fail('UPLOAD_METADATA_UNAVAILABLE');
           if (blob.size > remaining) fail('UPLOAD_TOO_LARGE');
           remaining -= blob.size;
-          sizes.push(blob.size);
+          metadata.push({ size: blob.size, type: blob.type, lastModified: Number(timestamp) });
           // Chrome serializes tab messages as JSON. Keep even a 50 MB file below its IPC cap.
           const chunkSize = 1024 * 1024;
           for (let pos = 0; pos < blob.size; pos += chunkSize) {
@@ -427,7 +577,7 @@ export function createEngine(chrome, { readUpload, save = async () => {}, change
           }
         }
         await recheck();
-        pageArgs = { ...args, uploadId: input.id, sizes };
+        pageArgs = { ...args, uploadId: input.id, metadata };
       }
       result = await act(() => chrome.tabs.sendMessage(t.id, { kind: 'synabun-fixed-command', op, args: pageArgs,
         sites: fullControl ? null : sites.filter(site => !blockedHosts.includes(new URL(site).hostname)), blocked, downloads, nav: t.nav,

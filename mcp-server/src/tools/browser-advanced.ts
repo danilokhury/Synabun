@@ -2,6 +2,7 @@ import { z } from 'zod/v3';
 import * as ni from '../services/neural-interface.js';
 import { text } from './response.js';
 import { useAnswer } from './morelogin.js';
+import { extensionSetupMessage } from './browser-extension-setup.js';
 
 const tabIdField = z.string().optional().describe('Target a specific tab within the session. Auto-resolved from environment if omitted.');
 
@@ -15,7 +16,7 @@ export const browserEvaluateSchema = {
 };
 
 export const browserEvaluateDescription =
-  'Execute JavaScript in the browser page context and return the result. Useful for reading DOM state, extracting data, or performing actions not covered by other tools.';
+  'Execute JavaScript in the browser page context and return the result. Useful for reading DOM state, extracting data, or performing actions not covered by other tools. Write one expression; wrap statements in a function, (() => { …; return value; })(), which works in every SynaBun browser (the owner\'s everyday browser takes nothing else).';
 
 export async function handleBrowserEvaluate(args: { script?: string; expression?: string; sessionId?: string; tabId?: string }) {
   const code = args.script || args.expression;
@@ -25,7 +26,8 @@ export async function handleBrowserEvaluate(args: { script?: string; expression?
   if ('error' in resolved) return text(resolved.error);
 
   const result = await ni.evaluate(resolved.sessionId, code, resolved.tabId);
-  if (result.error) return text(`Evaluate failed: ${result.error}`);
+  // The owner's everyday browser needs a one-time setup before it runs page JavaScript: say that, not a bare code.
+  if (result.error) return text(`Evaluate failed: ${extensionSetupMessage(result) || result.error}`);
 
   let msg: string;
   try {
@@ -34,6 +36,11 @@ export async function handleBrowserEvaluate(args: { script?: string; expression?
     msg = typeof val === 'string' ? val : JSON.stringify(val, null, 2);
   } catch {
     msg = String(result.result ?? 'undefined');
+  }
+  // The extension backend cuts a result longer than its cap: what came back is the beginning of its JSON text.
+  if (result.truncated === true) {
+    const whole = typeof result.valueLength === 'number' ? ` of ${result.valueLength}` : '';
+    msg += `\n[truncated: the first ${msg.length}${whole} characters of the result's JSON text. Return less, or read it in parts.]`;
   }
 
   return text(msg);
@@ -72,7 +79,7 @@ export async function handleBrowserWait(args: {
     loadState: args.loadState,
     timeout: args.timeout,
   }, resolved.tabId);
-  if (result.error) return text(`Wait failed: ${result.error}`);
+  if (result.error) return text(`Wait failed: ${extensionSetupMessage(result) || result.error}`);
 
   if (args.loadState) {
     if (ni.isBrowserCompactMode()) return text(`Page reached "${args.loadState}"`);

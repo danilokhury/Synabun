@@ -43,6 +43,7 @@ export class VectorCache {
 
   /** Drop everything; next query reloads from the database. */
   invalidate(): void {
+    this.version++;
     this.loaded = false;
     this.ids = [];
     this.rowIndexById.clear();
@@ -87,6 +88,7 @@ export class VectorCache {
   }
 
   private reload(): void {
+    this.version++;
     this.reloadCount++;
     // Read the watermark BEFORE the rows. A concurrent commit will then be
     // replayed on the next call instead of accidentally marked as observed.
@@ -182,6 +184,7 @@ export class VectorCache {
     if (!this.loaded) return;
     const idx = this.rowIndexById.get(id);
     if (idx === undefined) return;
+    this.version++;
 
     const last = this.count - 1;
     if (idx !== last) {
@@ -203,17 +206,66 @@ export class VectorCache {
    */
   topK(query: number[] | Float32Array, k: number, threshold: number, allowedIds?: Set<string>): TopKResult[] {
     this.ensureFresh();
-    if (this.count === 0 || this.dim === 0) return [];
+    const scan = this.startScan(query, k, allowedIds, threshold);
+    if (!scan) return [];
+    this.scanRows(scan, 0, scan.total);
+    return this.finishScan(scan);
+  }
 
+  /**
+   * topK() in slices of ~8 ms that yield to the event loop (149k session
+   * chunks: ~60 ms of scoring in one piece). Brings the cache up to date first,
+   * as ready() does. A cache changed during a yield is scanned again from the
+   * start; after three such restarts the last scan runs without yielding.
+   */
+  async topKAsync(query: number[] | Float32Array, k: number, threshold: number, allowedIds?: Set<string>): Promise<TopKResult[]> {
+    await this.ready();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      this.ensureFresh();
+      const scan = this.startScan(query, k, allowedIds, threshold);
+      if (!scan) return [];
+      const version = this.version;
+      let from = 0;
+      let slice = performance.now();
+      while (from < scan.total) {
+        const to = Math.min(scan.total, from + 2048);
+        this.scanRows(scan, from, to);
+        from = to;
+        if (from < scan.total && performance.now() - slice >= 8) {
+          await new Promise<void>(done => setImmediate(done));
+          if (this.version !== version) break;
+          slice = performance.now();
+        }
+      }
+      if (from >= scan.total) return this.finishScan(scan);
+    }
+    return this.topK(query, k, threshold, allowedIds);
+  }
+
+  /** Bumped by every change to the rows, their order or the matrix. */
+  private version = 0;
+
+  private startScan(query: number[] | Float32Array, k: number, allowedIds: Set<string> | undefined, threshold: number) {
+    if (this.count === 0 || this.dim === 0) return null;
     const q = query instanceof Float32Array ? query : new Float32Array(query);
-    if (q.length !== this.dim || !q.every(Number.isFinite) || k < 1) return [];
-    const dim = this.dim;
-    const m = this.matrix;
-    const hits: TopKResult[] = [];
-
+    if (q.length !== this.dim || !q.every(Number.isFinite) || k < 1) return null;
     const selected = allowedIds && allowedIds.size < this.count / 2
       ? [...allowedIds].map(id=>this.rowIndexById.get(id)).filter((r): r is number=>r !== undefined) : undefined;
-    for (let index = 0; index < (selected?.length ?? this.count); index++) {
+    return { q, k, threshold, allowedIds, selected, total: selected?.length ?? this.count, hits: [] as TopKResult[] };
+  }
+
+  private finishScan(scan: { hits: TopKResult[]; k: number }): TopKResult[] {
+    const { hits, k } = scan;
+    hits.sort((a, b) => b.score - a.score);
+    return hits.length > k ? hits.slice(0, k) : hits;
+  }
+
+  private scanRows(scan: NonNullable<ReturnType<VectorCache['startScan']>>, from: number, to: number): void {
+    const { q, k, allowedIds, selected, hits } = scan;
+    const threshold = scan.threshold;
+    const dim = this.dim;
+    const m = this.matrix;
+    for (let index = from; index < to; index++) {
       const r = selected ? selected[index] : index;
       if (allowedIds && !allowedIds.has(this.ids[r])) continue;
       const base = r * dim;
@@ -243,9 +295,102 @@ export class VectorCache {
         }
       }
     }
+  }
 
-    hits.sort((a, b) => b.score - a.score);
-    return hits.length > k ? hits.slice(0, k) : hits;
+  /**
+   * Bring a journalled cache up to date without a synchronous full load, for
+   * async callers (recall). A cold cache, or one opened on another connection,
+   * is built in slices; a journal backlog of any size replays in slices. The
+   * topK() that follows in the same turn then has (almost) nothing to replay.
+   * A synchronous reload of 149k session chunks blocked the Neural Interface's
+   * event loop for 0.5-1.8 s per recall (docs/startup-freeze-and-agents-audit.md).
+   */
+  async ready(): Promise<void> {
+    if (!this.entity) return;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const db = this.getDb();
+      if (!this.loaded || this.connection !== db) { await this.warm(); continue; }
+      if (await this.replay(db)) return;
+    }
+  }
+
+  /** Replay the journal after lastSequence in pages, yielding every ~8 ms. false: the cache changed under it. */
+  private async replay(db: DatabaseSync): Promise<boolean> {
+    const page = db.prepare('SELECT seq,id FROM memory_changes WHERE entity=? AND seq>? ORDER BY seq LIMIT 512');
+    const generation = this.ids;
+    let slice = performance.now();
+    for (;;) {
+      const rows = page.all(this.entity!, this.lastSequence) as Array<{ seq: number; id: string }>;
+      if (!rows.length) return true;
+      for (const id of new Set(rows.map(r => r.id))) {
+        this.remove(id);
+        this.setFromDb(id);
+        if (performance.now() - slice >= 8) {
+          await new Promise<void>(done => setImmediate(done));
+          if (generation !== this.ids || !this.loaded || db !== this.getDb()) return false;
+          slice = performance.now();
+        }
+      }
+      if (generation !== this.ids || !this.loaded) return false;
+      // A synchronous topK() may have replayed further meanwhile: never move back.
+      this.lastSequence = Math.max(this.lastSequence, Number(rows[rows.length - 1].seq));
+    }
+  }
+
+  private warming: Promise<void> | null = null;
+
+  /**
+   * Page the journalled table by rowid and read each eligible vector by its
+   * indexed id. No cursor or WAL read transaction crosses a yield. Changes to
+   * earlier pages replay from the starting watermark before the first search.
+   * Concurrent callers share one build.
+   */
+  warm(): Promise<void> {
+    if (!this.warming) this.warming = this.warmOnce().finally(() => { this.warming = null; });
+    return this.warming;
+  }
+
+  private async warmOnce(): Promise<void> {
+    const db = this.getDb();
+    if (!this.entity || (this.loaded && this.connection === db)) return;
+    const generation = this.ids;
+    const watermark = db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM memory_changes WHERE entity=?').get(this.entity);
+    const table = '"' + this.entity.replaceAll('"', '""') + '"';
+    const first = db.prepare(`SELECT rowid,id FROM ${table} ORDER BY rowid LIMIT 64`);
+    const next = db.prepare(`SELECT rowid,id FROM ${table} WHERE rowid>? ORDER BY rowid LIMIT 64`);
+    first.setReadBigInts(true);
+    next.setReadBigInts(true);
+    const byId = db.prepare(this.getVectorSql);
+    const staged = new VectorCache(this.getDb, this.loadSql, this.getVectorSql);
+    staged.loaded = true;
+    staged.capacity = 64;
+    let slice = performance.now();
+    let rows = first.all();
+    while (rows.length) {
+      for (const row of rows) {
+        const vector = byId.get(row.id)?.vector as Uint8Array | undefined;
+        if (vector?.byteLength && !(vector.byteLength % 4) && (!staged.dim || vector.byteLength === staged.dim * 4)) {
+          staged.set(String(row.id), new Float32Array(vector.buffer, vector.byteOffset, vector.byteLength / 4));
+        }
+        if (performance.now() - slice >= 8) {
+          await new Promise<void>(done => setImmediate(done));
+          if (generation !== this.ids || db !== this.getDb()) return;
+          slice = performance.now();
+        }
+      }
+      rows = next.all(rows[rows.length - 1].rowid);
+    }
+    this.connection = db;
+    this.lastSequence = Number(watermark?.seq ?? 0);
+    this.ids = staged.ids;
+    this.rowIndexById = staged.rowIndexById;
+    this.matrix = staged.matrix;
+    this.capacity = staged.capacity;
+    this.count = staged.count;
+    this.dim = staged.dim;
+    this.loaded = true;
+    this.version++;
+    this.reloadCount++;
   }
 
   size(): number {

@@ -1348,7 +1348,7 @@ export async function sendClientLoopLog(terminalSessionId, tag, msg, meta) {
 export async function stopLoop(terminalSessionId) {
   return jsonFetch('/api/loop/stop', {
     method: 'POST',
-    ...jsonBody(terminalSessionId ? { terminalSessionId } : {}),
+    ...jsonBody({ terminalSessionId, action: 'stop' }),
   });
 }
 

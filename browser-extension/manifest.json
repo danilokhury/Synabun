@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SynaBun Browser Bridge",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "minimum_chrome_version": "120",
   "description": "Lets SynaBun agents use your everyday browser: every site and tab (full control), or only what you share.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsDPDDuBTQq9nQgulmTSvzujxyOMZ7A7ttMSXtbIwup/X3kOlbkqoJEqQRGGJeb7+cNBSiiDBA5lhS0oYc9YeFcwNCucNMvGawDGblbQzDWEmn9dDK1krFVXWqNHVPIrEWlzCD2swXmIE2FCjMd5zw6dSRmmxu7VgE6bzvuOgB/W/oeOAyCsEDhDRDLBkjmb+yCsuexiXRWoempPsvAVhxhE8zEQJ1e8ChlFMtpOXSobU+YDgKYfcFy9Fbmk/o6M6B9y5zSlzs/HYIu7xvcCwjZI457idVMRxxAT6J/kXytmfKe/zbi5IO5/i0x9SCA1HRvt8K3nJqoH03h4TOvFwOwIDAQAB",
@@ -9,6 +9,8 @@
     "storage",
     "alarms",
     "scripting",
+    "userScripts",
+    "webRequest",
     "tabs",
     "activeTab"
   ],

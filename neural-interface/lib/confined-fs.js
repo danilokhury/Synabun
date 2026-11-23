@@ -76,6 +76,12 @@ function openExisting(real, flags) {
  * @returns a Buffer, or a string when `encoding` is given
  */
 export function readConfinedFile(base, path, { maxBytes = MAX_FILE_BYTES, encoding = null } = {}) {
+  const { bytes } = readConfinedFileWithMetadata(base, path, { maxBytes });
+  return encoding ? bytes.toString(encoding) : bytes;
+}
+
+/** Bytes and modification time from the same verified, open regular file. */
+export function readConfinedFileWithMetadata(base, path, { maxBytes = MAX_FILE_BYTES } = {}) {
   const real = canonicalInside(base, path);
   const fd = openExisting(real, constants.O_RDONLY);
   try {
@@ -89,8 +95,7 @@ export function readConfinedFile(base, path, { maxBytes = MAX_FILE_BYTES, encodi
       if (n <= 0) break;
       got += n;
     }
-    const data = got === st.size ? buf : buf.subarray(0, got);
-    return encoding ? data.toString(encoding) : data;
+    return { bytes: got === st.size ? buf : buf.subarray(0, got), lastModified: Math.trunc(st.mtimeMs) };
   } finally { try { closeSync(fd); } catch {} }
 }
 

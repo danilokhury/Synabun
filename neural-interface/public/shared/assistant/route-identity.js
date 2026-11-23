@@ -7,7 +7,8 @@ export function routeTaskIdentity(route) {
 // Control packets and transcript events can arrive in either order on attach/reconnect.
 export function createRouteReplayGuard() {
   const seen = new Set();
-  const keys = route => [route?.routeId, routeTaskIdentity(route)].filter(Boolean);
+  // A host-only replacement can share a task with a retired worker card.
+  const keys = route => [route?.routeId, route?.needsHost ? null : routeTaskIdentity(route)].filter(Boolean);
   return {
     has: route => keys(route).some(key => seen.has(key)),
     record: route => { for (const key of keys(route)) seen.add(key); },

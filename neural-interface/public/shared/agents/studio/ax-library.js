@@ -154,9 +154,3 @@ export function reviewCountOf(answer) {
   if (!agents) return null;
   return agents.filter((agent) => agent?.draft?.status === 'in_review').length;
 }
-
-/** The count badge's text: nothing for none, the number, "99+" above it. */
-export function badgeText(count) {
-  if (!Number.isInteger(count) || count <= 0) return '';
-  return count > 99 ? '99+' : String(count);
-}

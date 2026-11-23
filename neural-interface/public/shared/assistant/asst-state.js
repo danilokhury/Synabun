@@ -9,6 +9,7 @@ import { KEYS } from '../constants.js';
 import { isNewerRunDescriptor } from '../ui-native-loop-router-state.js';
 import { modelEffortIds } from '../agent-runtime-options.js';
 import { getProviderMeta } from '../provider-icons.js';
+import { translatedEffortWord } from '../effort-i18n.js';
 import { usagePacketIsStale } from './asst-usage.js';
 
 // The providers the Assistant itself can run on (its brain): the brain picker, /model and /new.
@@ -744,6 +745,16 @@ export function brainEffortChoices(provider, levels) {
   const rest = list.filter((e) => e.id !== BRAIN_EFFORT_AUTO && str(e.id).toLowerCase() !== ROUTE_EFFORT_OFF);
   const auto = { id: BRAIN_EFFORT_AUTO, label: 'Auto', desc: 'Model default', key: 'auto' };
   return rest.length ? [auto, { id: ROUTE_EFFORT_OFF, label: 'Off', desc: 'No thinking', key: 'none' }, ...rest] : [auto];
+}
+
+/**
+ * A footer effort level's word in the user's language, for display only (the id that is stored and sent
+ * never changes). Reads `assistant.routes.effortWord.<id>`; a locale that only repeats the English word, a
+ * level with no such key (OpenCode variants, Auto / Default) and a missing translator keep `label`.
+ */
+export function brainEffortWord(id, label, t) {
+  // Auto / Default (`off`) rows have words of their own (assistant.brain.effortAuto), never an effort word.
+  return translatedEffortWord(str(id), t) ?? label;
 }
 
 /**

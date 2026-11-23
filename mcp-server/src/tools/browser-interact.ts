@@ -358,5 +358,9 @@ export async function handleBrowserUpload(args: { ref?: string; selector?: strin
   const result = await ni.upload(resolved.sessionId, args.selector, args.filePaths, args.nthMatch, resolved.tabId, args.ref, args.textHint, asked);
   if (result.error) return text(`Upload failed: ${result.error}${(await describeFailure(result, { action: 'upload', selector: args.selector, textHint: args.textHint, asked })).text}`);
 
-  return text(`Uploaded ${args.filePaths.length} file(s) via ${describeTarget(args.ref, args.selector)}${locationSuffix(result)}`);
+  const target = describeTarget(args.ref, args.selector) + locationSuffix(result);
+  const files = result.files as Array<{ name: string; type: string; size: number }> | undefined;
+  if (!files?.length) return text(`File selection completed via ${target}. Page file details are unavailable. Check the page before retrying.`);
+  const details = files.map(file => `- ${JSON.stringify(file.name)} (${file.type || 'unspecified MIME type'}, ${file.size} bytes)`);
+  return text(`File input ${target} reported ${files.length} file(s)\n${details.join('\n')}`);
 }

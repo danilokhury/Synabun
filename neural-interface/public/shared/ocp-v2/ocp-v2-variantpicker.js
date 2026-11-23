@@ -10,6 +10,8 @@
 // per-provider config (reasoningEffort / thinking / thinkingConfig / etc).
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { t } from '../i18n.js';
+import { translatedEffortWord } from '../effort-i18n.js';
 import { fetchProvidersFull } from './ocp-v2-providers.js';
 import { getDefaultStore } from './ocp-v2-state.js';
 
@@ -22,6 +24,15 @@ const STOR_VARIANTS = 'ocp-v2-model-variants';   // { "providerID/modelID": "var
 // The canonical effort order (lib/effort-levels.js): xhigh before max, then ultra.
 const PREFERRED_ORDER = ['none', 'thinking', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const ARROW_DOWN = '▾';
+
+// Display words (effortUi.variant.*, assistant.routes.effortWord.*). The variant NAME is what is stored and
+// sent; nothing reads these back. A name that is not a standard effort level shows as it is.
+function word(key, english) {
+  const path = `effortUi.variant.${key}`;
+  const value = t(path);
+  return typeof value === 'string' && value && value !== path ? value : english;
+}
+export function variantDisplayName(name) { return translatedEffortWord(name, t) ?? name; }
 
 let _root = null;
 let _dd = null;
@@ -44,8 +55,8 @@ export function mountVariantPicker(rootEl, store = getDefaultStore()) {
   _dd = document.createElement('div');
   _dd.id = 'ocpv2-variant-dd';
   _dd.className = 'ocpv2-dropdown ocpv2-variant-dropdown';
-  _dd.dataset.placeholder = 'effort';
-  _dd.setAttribute('data-tooltip', 'Reasoning effort');
+  _dd.dataset.placeholder = word('placeholder', 'effort');
+  _dd.setAttribute('data-tooltip', word('tooltip', 'Reasoning effort'));
   _dd.style.display = 'none';
   _dd.innerHTML =
     `<span class="ocpv2-variant-icon" aria-hidden="true">`
@@ -54,7 +65,7 @@ export function mountVariantPicker(rootEl, store = getDefaultStore()) {
     + `<path d="M9 9h6"/>`
     + `</svg>`
     + `</span>`
-    + `<span class="ocpv2-dd-label">effort</span>`
+    + `<span class="ocpv2-dd-label">${escHtml(word('placeholder', 'effort'))}</span>`
     + `<span class="ocpv2-dd-arrow">${ARROW_DOWN}</span>`
     + `<div class="ocpv2-dd-menu"></div>`;
   _root.appendChild(_dd);
@@ -224,7 +235,7 @@ function syncFromState() {
   _dd.style.display = '';
   const v = getState().variant;
   if (v && names.includes(v)) {
-    _label.textContent = v;
+    _label.textContent = variantDisplayName(v);
     _dd.classList.add('has-value');
   } else {
     _label.textContent = _dd.dataset.placeholder || 'effort';
@@ -264,7 +275,7 @@ function paintMenu() {
   // "Default" entry — clears the variant so the SDK uses its built-in default
   const defaultOpt = document.createElement('div');
   defaultOpt.className = 'ocpv2-dd-option' + (!current ? ' selected' : '');
-  defaultOpt.innerHTML = '<span class="ocpv2-dd-variant-name">default</span><span class="ocpv2-dd-hint">SDK</span>';
+  defaultOpt.innerHTML = `<span class="ocpv2-dd-variant-name">${escHtml(word('default', 'default'))}</span><span class="ocpv2-dd-hint">${escHtml(word('sdkHint', 'SDK'))}</span>`;
   defaultOpt.addEventListener('click', () => {
     selectVariant(null);
     closeMenu();
@@ -274,7 +285,7 @@ function paintMenu() {
   for (const name of ordered) {
     const opt = document.createElement('div');
     opt.className = 'ocpv2-dd-option' + (current === name ? ' selected' : '');
-    opt.innerHTML = `<span class="ocpv2-dd-variant-name">${escHtml(name)}</span>`;
+    opt.innerHTML = `<span class="ocpv2-dd-variant-name">${escHtml(variantDisplayName(name))}</span>`;
     opt.addEventListener('click', () => {
       selectVariant(name);
       closeMenu();

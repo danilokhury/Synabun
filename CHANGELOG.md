@@ -1,3 +1,33 @@
+# SynaBun v.2.4.2
+
+This release gives you control over your backups, with optional password protection and a choice of what each one contains. It also makes side panels easier to read and fixes problems with restarts, large memory databases and OpenCode.
+
+## ✨ New
+
+- **Password protection for backups.** Turn it on in Settings under Memory & backups. Manual, scheduled and pre-update backups are then encrypted, and scheduled backups keep running without asking for the password. It is off by default, and your existing backups still restore as before.
+- **Choose what a backup contains.** Each group of data has its own switch and shows its size, so you can leave out caches and working folders that made backups very large. Logs and browser profiles are no longer included. A running backup can now be cancelled.
+- **Save backups to a folder you choose.** Download full backup now writes directly to that folder and shows its progress, so large backups no longer have to fit in the browser tab first.
+- **Page scripts in your everyday browser.** Browser Bridge 1.4.0 lets agents run page scripts and wait for a page to finish loading. To use it, reload the extension, turn on Allow User Scripts in its details, and reload it once more.
+
+## 🛠 Fixed
+
+- **Workers survive a restart.** Workers paused for a server restart are no longer recorded as stopped by you, and they resume when the server is back.
+- **Safer database upgrades.** Only one process now makes the safety copy before a memory database upgrade. Large databases no longer fill the disk with duplicate copies or block SynaBun from starting.
+- **No more false "Server offline" screen.** A server that is only busy, for example during a large backup, no longer shows as offline.
+- **OpenCode recovers from a removed folder.** If a session's folder is gone, the panel starts a new session in the right project and puts your prompt back in the box. OpenCode updates now show the update badge too.
+- **Side panels stay at the bottom.** Transcripts keep following new output when the composer resizes, content collapses or the browser zoom changes.
+- **Planned team tasks start reliably.** A task approved with a long slice title no longer fails when its team starts.
+
+## ⚙️ Changed
+
+- **Side panel output is easier to read.** All six panels now share the same text, table and code styling. Wide tables scroll inside their frame and can be copied or expanded.
+- **Studio windows open at a consistent size.** Skills, Agents, Automation and Schedules all open at the same default size and keep their saved position.
+- **Model choices wait for you.** A route card now stays open until you answer it, instead of expiring after a set time.
+- **Updated model pricing.** Prices were refreshed across all worker providers, so usage costs are more accurate.
+- **More of the interface in Portuguese.** Backup messages, route cards and reasoning effort labels now appear in Brazilian Portuguese.
+
+---
+
 # SynaBun v.2.4.1
 
 The Assistant can now use a specialist for each type of task. This release also expands file uploads in the Chrome extension and makes desktop startup failures easier to recover from.

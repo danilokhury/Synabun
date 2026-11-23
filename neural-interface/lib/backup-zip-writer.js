@@ -26,6 +26,9 @@ const SIG_EOCD = 0x06054b50;
 const SIG_ZIP64_EOCD = 0x06064b50;
 const SIG_ZIP64_LOCATOR = 0x07064b50;
 const UTF8_NAMES = 0x0800;
+const SIG_DESCRIPTOR = 0x08074b50;
+/** General-purpose bit 3: the entry's CRC-32 follows its data, in a data descriptor. */
+const HAS_DESCRIPTOR = 0x0008;
 const MAX32 = 0xffffffff;
 const MAX16 = 0xffff;
 const CHUNK = 4 * 1024 * 1024;
@@ -57,9 +60,14 @@ function zip64Extra(fields) {
  *             sha256 }]): a manifest that lists the checksums of the entries before it
  *   onProgress({ bytes, totalBytes }) as data goes in, at most every 64 MB and at the end
  *   forceZip64  write ZIP64 records even when nothing needs them (tests)
+ *   sink        where the bytes go instead of a file at `path`: { write(buffer) → Promise, finish() → Promise,
+ *               abort() → Promise } (the encrypted backup writer of backup-crypto-io.js, which copies what it is
+ *               given). A sink only takes bytes in order, so nothing can be patched afterwards: a streamed entry's
+ *               CRC-32 then follows its data in a data descriptor (its sizes are known and stay in its header).
+ *               backup-zip-reader.js reads sizes and CRCs from the central directory, so it reads both shapes
  * Resolves { bytes, entries: [{ name, size, crc32, sha256 }] } (sha256 in hex).
  */
-export async function writeZipArchive(path, entries, { onProgress = null, now = () => new Date(), forceZip64 = false } = {}) {
+export async function writeZipArchive(path, entries, { onProgress = null, now = () => new Date(), forceZip64 = false, sink = null } = {}) {
   const report = typeof onProgress === 'function' ? onProgress : () => {};
   const stamp = dosDateTime(now());
   // Sizes first, so the progress has a total and a stored entry's headers carry its real size.
@@ -88,11 +96,13 @@ export async function writeZipArchive(path, entries, { onProgress = null, now = 
     }
   };
 
-  const handle = await open(path, 'wx');
+  const handle = sink ? null : await open(path, 'wx');
   const written = [];
   let offset = 0;
+  let finished = false;
   try {
     const write = async (buffer) => {
+      if (sink) { await sink.write(buffer); offset += buffer.length; return; }
       let at = 0;
       while (at < buffer.length) {
         const { bytesWritten } = await handle.write(buffer, at, buffer.length - at, offset + at);
@@ -125,13 +135,15 @@ export async function writeZipArchive(path, entries, { onProgress = null, now = 
         payload = deflateRawSync(data, { level: 6 });
       }
       const method = item.store ? 0 : 8;
+      // Streamed into a sink: the CRC is only known after the last byte and cannot be written back.
+      const flags = UTF8_NAMES | (sink && !payload ? HAS_DESCRIPTOR : 0);
       const compressedSize = payload ? payload.length : item.size;
       const zip64 = forceZip64 || item.size >= MAX32 || compressedSize >= MAX32 || localOffset >= MAX32;
       const localExtra = zip64 ? zip64Extra([item.size, compressedSize]) : Buffer.alloc(0);
       const header = Buffer.alloc(30);
       header.writeUInt32LE(SIG_LOCAL, 0);
       header.writeUInt16LE(zip64 ? 45 : method === 8 ? 20 : 10, 4);
-      header.writeUInt16LE(UTF8_NAMES, 6);
+      header.writeUInt16LE(flags, 6);
       header.writeUInt16LE(method, 8);
       header.writeUInt16LE(stamp.time, 10);
       header.writeUInt16LE(stamp.date, 12);
@@ -174,11 +186,20 @@ export async function writeZipArchive(path, entries, { onProgress = null, now = 
         } finally {
           await source.close();
         }
-        const crcBuffer = Buffer.alloc(4);
-        crcBuffer.writeUInt32LE(crc >>> 0, 0);
-        await handle.write(crcBuffer, 0, 4, localOffset + 14);
+        if (sink) {
+          const descriptor = Buffer.alloc(zip64 ? 24 : 16);
+          descriptor.writeUInt32LE(SIG_DESCRIPTOR, 0);
+          descriptor.writeUInt32LE(crc >>> 0, 4);
+          if (zip64) { descriptor.writeBigUInt64LE(BigInt(compressedSize), 8); descriptor.writeBigUInt64LE(BigInt(item.size), 16); }
+          else { descriptor.writeUInt32LE(compressedSize, 8); descriptor.writeUInt32LE(item.size, 12); }
+          await write(descriptor);
+        } else {
+          const crcBuffer = Buffer.alloc(4);
+          crcBuffer.writeUInt32LE(crc >>> 0, 0);
+          await handle.write(crcBuffer, 0, 4, localOffset + 14);
+        }
       }
-      written.push({ name: item.name, nameBytes, method, crc: crc >>> 0, size: item.size, compressedSize, localOffset, zip64, sha256: digest.digest('hex') });
+      written.push({ name: item.name, nameBytes, method, flags, crc: crc >>> 0, size: item.size, compressedSize, localOffset, zip64, sha256: digest.digest('hex') });
     }
 
     // The central directory: one record per entry, then the end records.
@@ -194,7 +215,7 @@ export async function writeZipArchive(path, entries, { onProgress = null, now = 
       record.writeUInt32LE(SIG_CENTRAL, 0);
       record.writeUInt16LE((3 << 8) | 45, 4);
       record.writeUInt16LE(entry.zip64 ? 45 : entry.method === 8 ? 20 : 10, 6);
-      record.writeUInt16LE(UTF8_NAMES, 8);
+      record.writeUInt16LE(entry.flags, 8);
       record.writeUInt16LE(entry.method, 10);
       record.writeUInt16LE(stamp.time, 12);
       record.writeUInt16LE(stamp.date, 14);
@@ -245,10 +266,13 @@ export async function writeZipArchive(path, entries, { onProgress = null, now = 
     end.writeUInt32LE(needs64 ? MAX32 : directoryOffset, 16);
     end.writeUInt16LE(0, 20);
     await write(end);
-    await handle.sync();
+    if (sink) await sink.finish();
+    else await handle.sync();
+    finished = true;
     progress(true);
   } finally {
-    await handle.close();
+    if (handle) await handle.close();
+    else if (!finished) await sink.abort().catch(() => {});
   }
   return {
     bytes: offset,

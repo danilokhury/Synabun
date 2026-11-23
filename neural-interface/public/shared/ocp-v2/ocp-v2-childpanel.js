@@ -16,6 +16,8 @@
 // shown: a session with many sub-agents costs a store and a pill each.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { getProviderMeta, isMaritacaModel } from '../provider-icons.js';
+
 import { state, emit } from '../state.js';
 import { injectStyles } from './ocp-v2-styles.js';
 import { getDefaultStore } from './ocp-v2-state.js';
@@ -547,6 +549,11 @@ export function createChildPanel({
   function renderPill() {
     if (!_trayPill || _destroyed) return;
     const s = store.getState();
+    const brand = isMaritacaModel(s.model || s.sessionInfo?.model) ? 'maritaca' : 'opencode';
+    if (_trayPill.dataset.modelBrand !== brand) {
+      _trayPill.querySelector('.term-minimized-pill-icon').innerHTML = brand === 'maritaca' ? getProviderMeta(brand).icon : OPENCODE_ICON;
+      _trayPill.dataset.modelBrand = brand;
+    }
     const said = pillState(s, { visible: _visible, started });
     const arrows = '↳'.repeat(Math.max(1, Math.min(3, (Number(depth) || 0) + 1)));
     _pillLabel.textContent = `${arrows} ${sessionTitleFor(store)}`;

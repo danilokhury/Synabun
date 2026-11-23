@@ -539,6 +539,8 @@ function usage(version) {
     '                             copy an older install\'s data into the data folder (a dry run without --apply)',
     '  synabun restore-backup --from <backup.zip> [--apply]',
     '                             check a backup; --apply restores it',
+    '                             (an encrypted backup asks for its password;',
+    '                             --password-stdin reads it from standard input)',
     '  synabun version            the installed version',
     '  synabun help               this list',
     '',
@@ -583,20 +585,32 @@ async function main() {
   }
   if (cmd === 'restore-backup') {
     const backupPath = readOption('--from') || readOption('--backup');
-    if (!backupPath) throw new Error('Usage: synabun restore-backup --from <backup.zip> [--apply]');
-    const { restoreDataHomeFromBackup } = await import('./scripts/restore-data-home-from-backup.mjs');
+    if (!backupPath) throw new Error('Usage: synabun restore-backup --from <backup.zip> [--apply] [--password-stdin]');
+    const { restoreDataHomeFromBackup, readBackupPassword } = await import('./scripts/restore-data-home-from-backup.mjs');
     const result = await restoreDataHomeFromBackup({
       backupPath,
       targetRoot: DATA_HOME,
       legacyRoot: PACKAGE_ROOT,
       apply: process.argv.includes('--apply'),
+      // An encrypted backup: its password is typed at a hidden prompt, or read from standard input with
+      // --password-stdin. Never an argument or an environment variable (both show in process lists and histories).
+      readPassword: () => readBackupPassword({ fromStdin: process.argv.includes('--password-stdin') }),
     });
+    if (result.encryption?.encrypted) info('This backup is encrypted; its password opened it.');
+    if (result.encryption?.key === 'adopted') info('Backup encryption was not set up here: this backup\'s key is kept, so new backups are encrypted with the same password.');
     for (const item of result.invalidJson || []) warn(`Restored as backed up, but not valid JSON: ${item.path} (${item.error})`);
+    // A backup that leaves groups out (Settings → Backups → What to back up) restores only what it holds: say what
+    // it holds, and what of the present data it therefore leaves in place.
+    const partial = result.contents?.recorded && result.contents.excluded.length;
+    if (partial) info(`This backup contains: ${result.contents.included.join(', ')}. It does not contain: ${result.contents.excluded.join(', ')}; that data stays as it is.`);
     if (!result.applied) {
-      info(`Verified backup: ${result.database.memories} memories, SQLite ${result.database.integrity}`);
+      info(result.database
+        ? `Verified backup: ${result.database.memories} memories, SQLite ${result.database.integrity}`
+        : 'Verified backup: it does not contain the memories; the present memory database stays.');
       info('Dry run only. Re-run with --apply after stopping SynaBun MCP/server processes.');
     } else {
-      ok(`Restored ${result.database.memories} memories to ${result.targetRoot}`);
+      ok(result.database ? `Restored ${result.database.memories} memories to ${result.targetRoot}` : `Restored to ${result.targetRoot}; the memories were not in this backup and were left as they are`);
+      for (const item of result.notKept || []) warn(`Could not be carried over and is still in ${result.displacedTarget}: ${item.path} (${item.error})`);
       if (result.displacedTarget) info(`Previous external state preserved at ${result.displacedTarget}`);
     }
     process.exit(0);

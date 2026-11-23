@@ -6,13 +6,17 @@
 
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
+import { Worker, MessageChannel, receiveMessageOnPort, type MessagePort } from 'node:worker_threads';
+import { fileURLToPath } from 'node:url';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { config } from '../config.js';
 import { getAllCategories } from './categories.js';
 import { VectorCache } from './vector-cache.js';
-import { migrateMemory } from './memory-schema.js';
+import { migrateMemory, pendingMemoryMigrations, memoryStorePopulated } from './memory-schema.js';
+import { LOCK_WAIT_MS, MemoryMigrationError, type MemoryMigrationErrorCode } from './memory-migration-copy.js';
+import { withMemoryWrite } from './sqlite-write.js';
 import { REGION_BY_CURRENCY, resolveClassification } from './fb-regions.js';
 import type { MemoryPayload, MemoryStats, SessionChunkPayload } from '../types.js';
 
@@ -70,21 +74,241 @@ function assertTestDbIsDisposable(dbPath: string): void {
   );
 }
 
+/** How every connection that may migrate the store is set up: getDb()'s own and the migration worker's. */
+const STORE_PRAGMAS = ['PRAGMA busy_timeout = 5000', 'PRAGMA journal_mode = WAL', 'PRAGMA foreign_keys = ON', 'PRAGMA recursive_triggers = ON'];
+
+// --- Migrating off the calling thread (memory-migration-worker.ts) ---
+
+type UpgradeOutcome = { ok: true; deferred?: { versions: number[]; reason: string } } | { ok: false; error: { message: string; code?: string } };
+interface StoreUpgrade {
+  path: string;
+  since: number;
+  /** Shared with the worker: [0] it is done, [1] it runs. */
+  flags: Int32Array;
+  /** Where the worker leaves its outcome: read by the event loop, or in place by a thread that waited without one. */
+  port: MessagePort;
+  settled: Promise<void>;
+  finished: boolean;
+  finish: (outcome: UpgradeOutcome | null, note?: string) => void;
+}
+let upgrade: StoreUpgrade | null = null;
+let upgradeNote: string | null = null;
+/**
+ * What the worker answered instead of migrating, for the store at `path`. getDb() goes by it for a while instead of
+ * doing the same work again on its own thread, which is the one that answers requests:
+ *   error     a migration this build needs could not be made (no room, the lock kept by another process, a copy that
+ *             failed). The store is as it was; getDb() throws this until the verdict is old.
+ *   deferred  only optional migrations were pending and they were put off. getDb() opens the store as it is.
+ */
+let upgradeVerdict: { path: string; at: number; error?: MemoryMigrationError; deferred?: true } | null = null;
+/** How long a verdict stands before the next open looks again (the disk was freed, the other process is done). */
+const VERDICT_STANDS_MS = 60_000;
+
+const standingVerdict = (dbPath: string) => {
+  if (upgradeVerdict && (upgradeVerdict.path !== dbPath || Date.now() - upgradeVerdict.at >= VERDICT_STANDS_MS)) upgradeVerdict = null;
+  return upgradeVerdict;
+};
+
+const upgradeRunning = (current: StoreUpgrade | null): current is StoreUpgrade => Boolean(current && !current.finished && Atomics.load(current.flags, 0) === 0);
+
+/**
+ * A server whose thread must never wait for a migration takes it over (the Neural Interface:
+ * neural-interface/lib/memory-store-gate.js, which runs it in a child process it can stop at once). With a host,
+ * getDb() asks it before every open and it refuses while the store is migrating or cannot be, no migration worker is
+ * started in this process, and this thread never makes a copy: an optional migration is put off, a needed one refused.
+ */
+export interface MemoryMigrationHost {
+  beforeOpen(dbPath: string): void;
+  status(): { state: string; since?: number; note?: string };
+  settled(timeoutMs: number): Promise<boolean>;
+}
+let migrationHost: MemoryMigrationHost | null = null;
+export function setMemoryMigrationHost(host: MemoryMigrationHost | null): void { migrationHost = host; }
+
+function migrationWorkerUrl(): URL {
+  // The test runner loads this module from src/: the worker is then the TypeScript file, which Node runs as it is.
+  return new URL(import.meta.url.endsWith('.ts') ? './memory-migration-worker.ts' : './memory-migration-worker.js', import.meta.url);
+}
+
+/** True when opening `dbPath` would copy it first: a populated store this build has a migration for. Never throws. */
+function storeNeedsCopiedMigration(dbPath: string): boolean {
+  if (dbPath === ':memory:') return false;
+  try {
+    if (!fs.statSync(dbPath).size) return false;
+    const probe = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      probe.exec('PRAGMA busy_timeout = 5000');
+      return pendingMemoryMigrations(probe).length > 0 && memoryStorePopulated(probe);
+    } finally { probe.close(); }
+  } catch { return false; } // a store that cannot be looked at is opened the ordinary way, which says what is wrong
+}
+
+/**
+ * Bring the store at `dbPath` up to date on the migration worker, when that takes a copy. Resolves when the worker is
+ * done, whatever its outcome, and at once when there is nothing to copy or no worker can run: getDb() is what opens
+ * the store afterwards, and what throws when it cannot be migrated.
+ */
+function upgradeOffThread(dbPath: string): Promise<void> {
+  if (migrationHost) return Promise.resolve();
+  if (upgradeRunning(upgrade) && upgrade.path === dbPath) return upgrade.settled;
+  // A verdict that still stands: the worker is not started again for it, getDb() answers with it.
+  if (standingVerdict(dbPath)) return Promise.resolve();
+  if (process.env.SYNABUN_MIGRATION_WORKER === 'off' || !storeNeedsCopiedMigration(dbPath)) return Promise.resolve();
+  let worker: Worker;
+  const flags = new Int32Array(new SharedArrayBuffer(8));
+  const { port1, port2 } = new MessageChannel();
+  try {
+    const url = migrationWorkerUrl();
+    // A worker whose file is missing fails after this call returns, where a thread that waits on `flags` without an
+    // event loop would never hear of it.
+    if (!fs.existsSync(fileURLToPath(url))) throw new Error(`${path.basename(url.pathname)} is missing`);
+    worker = new Worker(url, {
+      workerData: { dbPath, setup: [...STORE_PRAGMAS, SCHEMA_SQL, FB_SCHEMA_SQL, FTS_SQL], flags: flags.buffer, port: port2 },
+      transferList: [port2],
+      execArgv: process.execArgv.filter(arg => arg === '--experimental-sqlite'),
+    });
+  } catch (error) {
+    try { port1.close(); } catch { /* never opened */ }
+    try { port2.close(); } catch { /* handed over or never opened */ }
+    console.error(`[SynaBun] memory migration: no worker thread (${error instanceof Error ? error.message : error}); the store is upgraded on this thread instead`);
+    return Promise.resolve();
+  }
+  let settle = () => {};
+  const current: StoreUpgrade = {
+    path: dbPath, since: Date.now(), flags, port: port1, finished: false,
+    settled: new Promise<void>(resolve => { settle = resolve; }),
+    finish(outcome, note) {
+      if (current.finished) return;
+      current.finished = true;
+      Atomics.store(flags, 0, 1);
+      Atomics.notify(flags, 0);
+      try { port1.close(); } catch { /* closed already */ }
+      upgradeVerdict = null;
+      upgradeNote = note ?? null;
+      if (outcome?.ok) {
+        upgradeNote = outcome.deferred?.reason ?? null;
+        if (outcome.deferred) upgradeVerdict = { path: dbPath, at: Date.now(), deferred: true };
+      } else if (outcome) {
+        upgradeNote = outcome.error.message;
+        // A verdict of the migration itself: the store is as it was, and trying again on this thread would only wait
+        // or fail the same way. Anything else is the worker's own trouble, and getDb() then migrates in place.
+        if (outcome.error.code?.startsWith('MEMORY_MIGRATION_')) {
+          upgradeVerdict = { path: dbPath, at: Date.now(), error: new MemoryMigrationError(outcome.error.code as MemoryMigrationErrorCode, outcome.error.message) };
+        }
+      }
+      // What the worker logged itself (a migration put off, with its reason) is not said twice.
+      if (upgradeNote && !outcome?.ok) console.error(`[SynaBun] memory migration: ${upgradeNote}`);
+      settle();
+    },
+  };
+  port1.on('message', (outcome: UpgradeOutcome) => current.finish(outcome));
+  worker.once('error', error => current.finish(null, `the migration worker failed: ${error.message}`));
+  worker.once('exit', code => {
+    // The outcome is posted before the thread ends, and may still be in the port when its exit is heard.
+    const left = current.finished ? undefined : receiveMessageOnPort(port1);
+    if (left) current.finish(left.message as UpgradeOutcome);
+    else current.finish(null, code === 0 ? undefined : `the migration worker exited (${code})`);
+  });
+  upgrade = current;
+  console.error(`[SynaBun] memory migration: ${path.basename(dbPath)} is being upgraded in the background (one safety copy for every SynaBun process); memory tools answer once it is done`);
+  return current.settled;
+}
+
+/**
+ * A synchronous getDb() while this process's own migration worker is at work on `dbPath`: wait for it here, without an
+ * event loop, as this thread would have waited for its own copy before. It returns when the worker is done (its
+ * outcome is then read in place, so getDb() opens a current store or answers with the worker's verdict), when the
+ * worker never came up, or after the longest a migration may wait for the lock.
+ */
+function waitForOwnUpgrade(dbPath: string): void {
+  const current = upgrade;
+  // Not `upgradeRunning`: a worker that is done, and whose outcome this thread's event loop has not read yet, is
+  // read here, or getDb() would repeat on this thread what the worker just said cannot be done.
+  if (!current || current.finished || current.path !== dbPath) return;
+  const started = Date.now();
+  while (Atomics.load(current.flags, 0) === 0) {
+    const waited = Date.now() - started;
+    if (waited > LOCK_WAIT_MS + 60_000) return;
+    if (waited > 15_000 && Atomics.load(current.flags, 1) === 0) return; // the worker thread never ran
+    Atomics.wait(current.flags, 0, 0, 500);
+  }
+  const left = receiveMessageOnPort(current.port);
+  if (left) current.finish(left.message as UpgradeOutcome);
+}
+
+export interface MemoryStoreStatus {
+  /** `migrating`: a safety copy and schema upgrade are under way off this thread, and memory tools wait for it. */
+  state: 'ready' | 'migrating' | 'closed';
+  /** When the migration under way began (ms). */
+  since?: number;
+  /** What the last background migration reported instead of finishing (no room for the copy, a failure). */
+  note?: string;
+}
+
+export function memoryStoreStatus(): MemoryStoreStatus {
+  const hosted = migrationHost?.status();
+  if (hosted?.state === 'migrating') return { state: 'migrating', since: hosted.since };
+  if (upgradeRunning(upgrade)) return { state: 'migrating', since: upgrade.since };
+  const note = hosted?.note ?? upgradeNote;
+  return { state: db ? 'ready' : 'closed', ...(note ? { note } : {}) };
+}
+
+/** What a caller is told while the store is migrating: the state by name, and that nothing is wrong or lost. */
+export function memoryMigratingMessage(): string {
+  const status = memoryStoreStatus();
+  const since = status.state === 'migrating' && status.since ? ` (${Math.max(1, Math.round((Date.now() - status.since) / 1000))} s so far)` : '';
+  return `SynaBun's memory database is migrating${since}: a safety copy is being made and the schema upgraded, once, after an update. ` +
+    'Nothing is lost and nothing needs to be done. Memory tools answer again when it is done; on a large database that takes a minute or more. Try again shortly.';
+}
+
+/** True once no background migration is under way; false when `timeoutMs` passed first. Never rejects. */
+export async function memoryStoreSettled(timeoutMs: number): Promise<boolean> {
+  if (migrationHost) return migrationHost.settled(timeoutMs);
+  const current = upgrade;
+  if (!upgradeRunning(current)) return true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), Math.max(0, timeoutMs)); });
+  try { return await Promise.race([current.settled.then(() => true), timedOut]); }
+  finally { clearTimeout(timer); }
+}
+
+/**
+ * For a caller with an event loop that is about to use the store (a memory tool). When the store is not open and a
+ * migration that takes a copy is waiting (the one at start could not be made, and its verdict is old), the migration
+ * is started on the worker here, instead of being left to the synchronous getDb() that follows, which would copy on
+ * this thread. True once no migration is under way: getDb() then opens the store or says why it cannot. False when
+ * `timeoutMs` passed first. Never rejects.
+ */
+export async function memoryStoreAvailable(timeoutMs: number): Promise<boolean> {
+  if (!db && !upgradeRunning(upgrade)) {
+    try {
+      const dbPath = getDbPath();
+      assertTestDbIsDisposable(dbPath);
+      void upgradeOffThread(dbPath);
+    } catch { /* getDb() says what is wrong */ }
+  }
+  return memoryStoreSettled(timeoutMs);
+}
+
 export function getDb(): DatabaseSync {
   if (!db) {
     const dbPath = getDbPath();
     assertTestDbIsDisposable(dbPath);
+    migrationHost?.beforeOpen(dbPath);
+    waitForOwnUpgrade(dbPath);
+    // What this process's migration worker answered a moment ago is not worked out again here, on the thread that
+    // answers requests: a migration that could not be made is said as it was said, one that was put off stays put off.
+    const verdict = standingVerdict(dbPath);
+    if (verdict?.error) throw verdict.error;
     if (dbPath !== ':memory:') fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     db = new DatabaseSync(dbPath);
-    db.exec('PRAGMA busy_timeout = 5000');
-    db.exec('PRAGMA journal_mode = WAL');
-    db.exec('PRAGMA foreign_keys = ON');
-    db.exec('PRAGMA recursive_triggers = ON');
+    for (const pragma of STORE_PRAGMAS) db.exec(pragma);
     try {
       db.exec(SCHEMA_SQL);
       db.exec(FB_SCHEMA_SQL);
       db.exec(FTS_SQL);
-      migrateMemory(db, dbPath);
+      const result = migrateMemory(db, dbPath, { deferOptional: verdict?.deferred === true || migrationHost !== null, neverCopy: migrationHost !== null });
+      if (result.deferred && !verdict?.deferred) upgradeNote = result.deferred.reason;
     } catch (error) { db.close(); db = null; throw error; }
   }
   return db;
@@ -328,6 +552,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_fbpl_url_offer_day
 // --- Public API: Collection initialization ---
 
 export async function ensureCollection(): Promise<void> {
+  // A populated store this build has a migration for is copied and migrated on the migration worker first, so the
+  // thread that answers MCP requests is never held for the length of the copy. Anything else opens at once.
+  if (!db) {
+    const dbPath = getDbPath();
+    assertTestDbIsDisposable(dbPath);
+    await upgradeOffThread(dbPath);
+  }
   getDb();
 }
 
@@ -546,10 +777,12 @@ export async function touchMemories(ids: string[], accessedAt: string): Promise<
   if (ids.length === 0) return;
   const d = getDb();
   const placeholders = ids.map(() => '?').join(', ');
-  d.prepare(`
+  // Recall calls this on the Neural Interface's thread: a plain run() would sleep in SQLite's busy handler
+  // (up to busy_timeout) whenever the session-cache worker holds the write lock.
+  await withMemoryWrite(d, () => d.prepare(`
     UPDATE memories SET accessed_at = ?, access_count = access_count + 1
     WHERE id IN (${placeholders})
-  `).run(accessedAt, ...ids);
+  `).run(accessedAt, ...ids));
 }
 
 export async function restoreMemory(id: string): Promise<void> {
@@ -1444,7 +1677,12 @@ export function closeDatabase(): void {
   }
   memoryVectors.invalidate();
   chunkVectors.invalidate();
+  for (const hook of closeHooks) { try { hook(); } catch { /* a hook never stops a close */ } }
 }
+
+const closeHooks = new Set<() => void>();
+/** Run `hook` whenever closeDatabase() closes the store (the retrieval reader lets go of its own connection). */
+export function onDatabaseClose(hook: () => void): void { closeHooks.add(hook); }
 
 /**
  * Reopen the database at the current SQLITE_DB_PATH.

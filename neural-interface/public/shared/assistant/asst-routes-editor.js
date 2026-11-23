@@ -96,7 +96,7 @@ export async function openRoutesEditor(hooks = {}) {
   if (editor) { editor.focus(); return editor; }
   const tr = translator(hooks.t);
   const id = `asst-routes-${++uid}`;
-  const returnTo = document.activeElement;
+  const returnTo = hooks.returnTo ?? document.activeElement;
   const overlay = el('div', 'asst-modal-overlay asst-routes-overlay');
   overlay.setAttribute('role', 'dialog'); overlay.setAttribute('aria-modal', 'true'); overlay.setAttribute('aria-labelledby', `${id}-title`);
   const modal = el('div', 'asst-modal asst-routes-modal');

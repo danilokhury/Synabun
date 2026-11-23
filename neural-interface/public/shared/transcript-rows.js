@@ -135,7 +135,7 @@ export function isFarRowStyleRecord(record, container) {
  * @param {object} [options]
  * @param {Element} [options.container]  the element whose children are the rows (default: the scroller)
  * @param {(row: Element) => boolean} [options.skip]  rows to leave alone whatever else holds
- * @returns {{ refresh(): void, disconnect(): void, farCount(): number }}
+ * @returns {{ refresh(): void, reconsider(row: Element): void, disconnect(): void, farCount(): number }}
  */
 export function watchTranscriptRows(scroller, {
   container = scroller,
@@ -156,7 +156,7 @@ export function watchTranscriptRows(scroller, {
     } catch { return false; }
   },
 } = {}) {
-  const inert = { refresh() {}, disconnect() {}, farCount: () => 0 };
+  const inert = { refresh() {}, reconsider() {}, disconnect() {}, farCount: () => 0 };
   if (!scroller || !container) return inert;
   // An engine without the property, or without the observers this needs to be exact: every row stays plain.
   if (typeof IO !== 'function' || typeof RO !== 'function' || typeof MO !== 'function' || !computed) return inert;
@@ -167,6 +167,11 @@ export function watchTranscriptRows(scroller, {
   let disposed = false;
   let anchoring = null; // asked once, on the first height change that needs it
   let parentContains = null; // the rows are flex or grid items: asked once, with the first row that could be far
+  // Rows whose newest report came while the transcript had no box. The observer speaks only when a row's
+  // answer changes, and such a report was "not intersecting": a row that is far when the transcript is laid
+  // out again (a reopened panel shows its end, rows arrived while it was closed) would never be reported, and
+  // would stay plain until it crossed the near zone. They are asked about again then.
+  const unanswered = new Set();
 
   const isTail = (row) => {
     let el = container.lastElementChild;
@@ -217,18 +222,27 @@ export function watchTranscriptRows(scroller, {
 
   const intersections = new IO((entries) => {
     if (disposed) return;
+    let laidOut = false;
     for (const entry of entries) {
       const state = rows.get(entry.target);
       if (!state) continue;
       // No box to compare with: the transcript is not laid out (a closed panel, a tab that is not showing).
       // What was known stays; a row is not declared far because its panel was closed.
       const bounds = entry.rootBounds;
-      if (!bounds || !(bounds.height > 0) || !(bounds.width > 0)) continue;
+      if (!bounds || !(bounds.height > 0) || !(bounds.width > 0)) { unanswered.add(entry.target); continue; }
+      unanswered.delete(entry.target);
+      laidOut = true;
       state.near = !!entry.isIntersecting;
       // The bounds are the visible part with one height of it added above and below (NEAR_MARGIN): the
       // visible part starts a third of the way down.
       state.above = entry.boundingClientRect.bottom <= bounds.top + bounds.height / 3 + 1;
       apply(entry.target, state);
+    }
+    // The transcript has a box again (this report says so): watching a row anew makes the observer report it
+    // once, whatever it said last. No layout is read, and nothing is asked while the transcript has no box.
+    if (laidOut && unanswered.size) {
+      for (const row of unanswered) { intersections.unobserve(row); intersections.observe(row); }
+      unanswered.clear();
     }
   }, { root: scroller, rootMargin: NEAR_MARGIN, threshold: 0 });
 
@@ -281,6 +295,7 @@ export function watchTranscriptRows(scroller, {
     const state = rows.get(row);
     if (!state) return;
     rows.delete(row);
+    unanswered.delete(row);
     intersections.unobserve(row);
     sizes.unobserve(row);
     if (state.far) clearFarRow(row);
@@ -316,6 +331,15 @@ export function watchTranscriptRows(scroller, {
       parentContains = null;
       for (const [row, state] of rows) { state.safe = undefined; apply(row, state); }
     },
+    /**
+     * Decide again about one row, now: what `skip` answers for it changed. Nothing else calls `skip` again
+     * for a row that neither moved nor changed size. What is known of the row stays (where it is, its size,
+     * its formatting, asked once per row as always); a row this watcher does not hold is left alone.
+     */
+    reconsider(row) {
+      const state = disposed ? null : rows.get(row);
+      if (state) apply(row, state);
+    },
     disconnect() {
       if (disposed) return;
       disposed = true;
@@ -324,6 +348,7 @@ export function watchTranscriptRows(scroller, {
       sizes.disconnect();
       for (const [row, state] of rows) if (state.far) clearFarRow(row);
       rows.clear();
+      unanswered.clear();
     },
     farCount() {
       let n = 0;

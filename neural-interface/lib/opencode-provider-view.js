@@ -10,6 +10,8 @@
 // out what none of them reads (credentials and request options included).
 // Pure: no I/O, so the route, the catalog's in-process read and the tests share it.
 
+import { applyOpencodeCostOverride } from './assistant-pricing.js';
+
 const PROVIDER_FIELDS_LEFT_OUT = new Set(['env', 'options', 'key', 'npm', 'api']);
 const MODEL_FIELDS_LEFT_OUT = new Set(['options', 'headers', 'provider']);
 
@@ -24,20 +26,29 @@ function providersOf(data) {
   return data?.all && typeof data.all === 'object' ? Object.values(data.all) : [];
 }
 
-function slimModel(model) {
+function slimModel(model, providerId = null, modelId = null) {
   if (!model || typeof model !== 'object') return model;
   const out = {};
   for (const [key, value] of Object.entries(model)) if (!MODEL_FIELDS_LEFT_OUT.has(key)) out[key] = value;
+  const pid = providerId || model.providerID || null;
+  const mid = model.id || model.modelID || modelId || null;
+  // Like the catalog and the OpenCode 2 client: an overridden model gets its price even when the
+  // upstream row has no cost; a row with neither keeps no cost key.
+  if (pid && mid) {
+    const cost = applyOpencodeCostOverride(pid, mid, out.cost);
+    if (cost !== undefined) out.cost = cost;
+  }
   return out;
 }
 
 function slimProvider(provider) {
   const out = {};
+  const pid = provider?.id || provider?.providerID || null;
   for (const [key, value] of Object.entries(provider || {})) {
     if (PROVIDER_FIELDS_LEFT_OUT.has(key)) continue;
     if (key === 'models') {
-      if (Array.isArray(value)) out.models = value.map(slimModel);
-      else if (value && typeof value === 'object') out.models = Object.fromEntries(Object.entries(value).map(([id, model]) => [id, slimModel(model)]));
+      if (Array.isArray(value)) out.models = value.map((model) => slimModel(model, pid));
+      else if (value && typeof value === 'object') out.models = Object.fromEntries(Object.entries(value).map(([id, model]) => [id, slimModel(model, pid, id)]));
       else out.models = value;
       continue;
     }

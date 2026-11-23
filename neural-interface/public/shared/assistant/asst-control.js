@@ -38,6 +38,7 @@
 import { normalizeProvider } from './asst-state.js';
 import { sanitizeInto } from './asst-sanitize.js';
 import { decorateCodeBlocks } from '../ui-code-copy.js';
+import { decorateOutput } from '../ui-output.js';
 import { fill, maskEcho, redactInput } from './asst-tool-kinds.js';
 import { mascotSvg, paintMascot, stillFrame } from '../synabun-mascot.js';
 import { splitRecommended } from './asst-followups.js';
@@ -1071,6 +1072,7 @@ function renderPlanBody(body, n, hooks) {
   catch { planEl.textContent = n.plan; } // no DOM to parse into (a test DOM): the plain text
   // A block of the plan gets the shared Copy button (../ui-code-copy.js).
   try { decorateCodeBlocks(planEl); } catch { /* a test DOM without selectors */ }
+  try { decorateOutput(planEl); } catch { /* the same */ }
   body.appendChild(planEl);
 }
 

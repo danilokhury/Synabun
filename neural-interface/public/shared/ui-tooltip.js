@@ -18,6 +18,16 @@ export function scrollCanMove(scroller, control) {
 }
 
 /**
+ * Whether the control a tooltip is for can no longer be hovered: it left the document, or it (or a parent) was
+ * hidden, e.g. a side panel switched away by a shortcut. No mouseout or pointerdown comes for those.
+ */
+export function triggerGone(control) {
+  if (!control) return true;
+  if (control.isConnected === false) return true;
+  try { return typeof control.getClientRects === 'function' && control.getClientRects().length === 0; } catch { return false; }
+}
+
+/**
  * Initialize the tooltip system.
  * Creates a body-appended tooltip element and delegates
  * mouseover/mouseout on any [data-tooltip] elements.
@@ -42,6 +52,7 @@ export function initTooltip() {
   let repositionRunHandler = null;
   let repositionEndHandler = null;
   let repositionRafId = 0;
+  let goneTimer = null; // while a tooltip is up: is its control still there?
 
   // Dropdowns that keep their open menu inside the [data-tooltip] control
   // (the sidepanels' cp/cx/ocpv2 project-bar, model and mode controls). Hovering
@@ -177,6 +188,9 @@ export function initTooltip() {
     tip.style.display = 'block';
     const { rect: initialRect, width: initialWidth } = positionTip(el);
     tip.classList.add('visible');
+    clearInterval(goneTimer);
+    goneTimer = setInterval(() => { if (triggerGone(currentTarget)) hide(); }, 200);
+    goneTimer.unref?.(); // node tests only: never keeps a process alive
 
     // Follow targets that actually animate their geometry on hover (via transitionrun),
     // without polling static targets across multiple rAFs.
@@ -240,6 +254,8 @@ export function initTooltip() {
     clearTimeout(hideTimer);
     showTimer = null;
     pendingTarget = null;
+    clearInterval(goneTimer);
+    goneTimer = null;
     if (repositionRafId) {
       cancelAnimationFrame(repositionRafId);
       repositionRafId = 0;

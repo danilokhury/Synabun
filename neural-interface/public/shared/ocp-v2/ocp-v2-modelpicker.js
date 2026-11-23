@@ -5,6 +5,8 @@
 // as { providerID, modelID } so api.send() can pass it through to OpenCode.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { getProviderMeta, isMaritacaModel } from '../provider-icons.js';
+
 import { fetchProvidersFull } from './ocp-v2-providers.js';
 import { opencodeProviders } from '../opencode-providers.js';
 import { modelRowMeta } from './ocp-v2-status-logic.js';
@@ -219,6 +221,7 @@ function applyLabelFromState() {
   }
   const label = m.modelID || '';
   _label.textContent = label || _dd?.dataset.placeholder || 'model...';
+  if (isMaritacaModel(m)) _label.insertAdjacentHTML('afterbegin', maritacaMark());
   _dd?.classList.add('has-value');
 }
 
@@ -615,6 +618,10 @@ function connectProviderOption() {
   return opt;
 }
 
+function maritacaMark() {
+  return `<span class="ocpv2-model-mark" aria-hidden="true">${getProviderMeta('maritaca').icon}</span>`;
+}
+
 function makeOption(provId, entry, currentFull, favorites) {
   const fullId = `${provId}/${entry.id}`;
   const badges = capBadgesHtml(entry._obj);
@@ -631,7 +638,7 @@ function makeOption(provId, entry, currentFull, favorites) {
   // every row maps onto the same 4-column grid (name | meta | caps | star).
   const meta = modelRowMeta(entry._obj);
   opt.innerHTML =
-    `<span class="ocpv2-dd-model-name">${escHtml(entry.id)}</span>`
+    `<span class="ocpv2-dd-model-name">${isMaritacaModel(fullId) ? maritacaMark() : ''}${escHtml(entry.id)}</span>`
     + `<span class="ocpv2-dd-model-meta">${meta.status ? `<span class="ocpv2-dd-model-status">${escHtml(meta.status)}</span>` : ''}${escHtml(meta.price)}</span>`
     + `<span class="ocpv2-dd-caps">${badges}</span>`;
 

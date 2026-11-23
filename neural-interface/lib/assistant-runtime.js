@@ -97,6 +97,8 @@ export const BRAIN_CREDENTIAL_RE = /^sbb_[A-Za-z0-9_-]{43}$/;
 export function mintBrainCredential() { return `sbb_${randomBytes(32).toString('base64url')}`; }
 /** The brains whose SynaBun MCP names the session id as its pin (the Claude CLI's header, agy's environment). */
 const BRAIN_PIN_PROVIDERS = new Set(['claude-code', 'antigravity']);
+// Route cards raised by the brain's own turn: they close with that brain. A held dispatch's card outlives it.
+const BRAIN_CARD_ORIGINS = ['agent_route', 'vision_guard'];
 // An OpenCode brain of a remote session reaches the web through these on its own
 // (no SynaBun browser, no approval): the gate plugin refuses them.
 const REMOTE_OPENCODE_WEB_TOOLS = new Set(['webfetch', 'websearch', 'codesearch']);
@@ -1767,6 +1769,8 @@ export function createAssistantRuntime({
       // Pending background work re-arms this timer through the `done` of the turn
       // the CLI starts when that work reports back.
       if (live.sockets.size || sessionBusy(live) || live.brain?.hasPendingWork?.()) return;
+      // A model choice waits for the user with no time limit: disposing this brain would close its card.
+      if ((router?.pendingCards?.(live.record.id) || []).some((card) => BRAIN_CARD_ORIGINS.includes(card?.request?.origin))) { scheduleDispose(live); return; }
       disposeBrain(live, 'idle').catch(() => {});
     }, settings.idleDisposeMs);
     live.disposeTimer.unref?.();
@@ -2330,7 +2334,8 @@ export function createAssistantRuntime({
     live.brainComputerMode = null;
     // A "do it here" continuation goes with its brain; the plan's turn does not (it starts the next brain).
     dropWork(live, 'continuation');
-    try { router?.cancelForSession?.(live.record.id, reason === 'closed' ? 'session_closed' : 'brain_disposed', { origins: ['agent_route', 'vision_guard'] }); } catch {}
+    // Closing the session ends every card, a held dispatch's too: cards have no deadline, so nothing else would release its run.
+    try { router?.cancelForSession?.(live.record.id, reason === 'closed' ? 'session_closed' : 'brain_disposed', reason === 'closed' ? {} : { origins: BRAIN_CARD_ORIGINS }); } catch {}
     // Clarify cards outlive a brain (the answers reach the next one as a mailbox turn), not the session.
     if (reason === 'closed') { try { clarifier?.cancelForSession?.(live.record.id, 'session_closed'); } catch {} }
     live.record.status = reason === 'closed' ? 'ended' : 'idle';
@@ -2803,17 +2808,17 @@ export function createAssistantRuntime({
   //   at once when the session is free;
   //   everything else waits `mailboxDebounceMs` (150 ms at most) so results that arrive together go in one turn;
   //   while the brain is busy everything waits in the store, low-priority progress folded, and goes when it is free.
-  function mailboxCount(live, options) {
-    try { return coordination.mailbox.count(live.record.id, options); } catch { return 0; }
+  function mailboxCount(live) {
+    try { return coordination.mailbox.cachedCount(live.record.id); } catch { return 0; }
   }
   /** A look at what a session has open (the `live.mailbox` view): nothing is handed out or acknowledged. */
-  function mailboxPeek(sessionId) {
-    try { return coordination.mailbox.pending(sessionId, { limit: 1000, peek: true }).items; } catch { return []; }
+  async function mailboxPeek(sessionId) {
+    try { return (await coordination.mailbox.pending(sessionId, { limit: 1000, peek: true })).items; } catch { return []; }
   }
   /** Something the brain must hear that is not a run's own event (a memory reminder, a route's or a clarify card's outcome). */
-  function enqueueMailbox(live, item) {
-    try { coordination.mailbox.post(live.record.id, item); }
-    catch (error) { log('assistant:mailbox-error', `${live.record.id}: ${error?.message || error}`); }
+  async function enqueueMailbox(live, item) {
+    try { await coordination.mailbox.post(live.record.id, item); return true; }
+    catch (error) { log('assistant:mailbox-error', `${live.record.id}: ${error?.message || error}`); return false; }
     // The store's wake-up (onMailboxEvent) schedules the delivery.
   }
   /** An event was addressed to this session (the store's wake-up, after its append committed). */
@@ -2869,8 +2874,8 @@ export function createAssistantRuntime({
     return !!mark && Number(mark.turn) >= turn;
   }
   /** Events the brain read by itself meanwhile are settled without a turn. → how many. */
-  function settleRead(live) {
-    try { return coordination.mailbox.discard(live.record.id, (item) => alreadyRead(item)); } catch { return 0; }
+  async function settleRead(live) {
+    try { return await coordination.mailbox.discard(live.record.id, (item) => alreadyRead(item)); } catch { return 0; }
   }
   /**
    * Out of money: the events wait (a raise or No limit re-schedules them), said once. The brain's
@@ -2898,7 +2903,8 @@ export function createAssistantRuntime({
     return false;
   }
   /** The mailbox now, if the scheduler would start it (no debounce: it is asked for). */
-  function deliverMailbox(live) {
+  async function deliverMailbox(live) {
+    if (!await coordination.mailbox.count(live.record.id)) return null;
     if (shuttingDown || live.closing || !mailboxCount(live) || sessions.get(live.record.id) !== live || live.record.status === 'ended') return Promise.resolve(null);
     if (sessionBusy(live) || live.planCard || nextWork(live) || !mailboxAllowed(live)) { pumpSoon(live); return Promise.resolve(null); }
     return startWork(live, { kind: 'mailbox', gen: null });
@@ -2907,9 +2913,9 @@ export function createAssistantRuntime({
   async function runMailboxTurn(live) {
     // Read while it waited (inside the debounce, or while the brain was busy with the turn that waited for it):
     // not news any more.
-    settleRead(live);
+    await settleRead(live);
     let batch = null;
-    try { batch = coordination.mailbox.pending(live.record.id, { limit: settings.mailboxItems }); }
+    try { batch = await coordination.mailbox.pending(live.record.id, { limit: settings.mailboxItems }); }
     catch (error) { log('assistant:mailbox-error', `${live.record.id}: ${error?.message || error}`); return null; }
     let unread = batch.items;
     let more = batch.more;
@@ -2949,7 +2955,7 @@ export function createAssistantRuntime({
     if (result?.ok) {
       // The turn that carries them was started: only now are they acknowledged. A turn that was refused, failed
       // or found the brain busy leaves every one of them open, also across a restart.
-      try { coordination.mailbox.ack(live.record.id, items.map((item) => item.eventId).filter(Boolean)); }
+      try { await coordination.mailbox.ack(live.record.id, items.map((item) => item.eventId).filter(Boolean)); }
       catch (error) { log('assistant:mailbox-error', `${live.record.id}: ${error?.message || error}`); }
       live.mailboxAttempts = 0;
       return result;
@@ -2960,12 +2966,12 @@ export function createAssistantRuntime({
     if (result?.code !== 'ASSISTANT_BUSY' && result?.code !== 'TURN_CANCELLED') holdMailbox(live, result);
     return result;
   }
-  function onDispatchEvent(payload) {
+  async function onDispatchEvent(payload) {
     const run = payload?.run;
     if (!run?.assistantSessionId) return;
     const live = sessions.get(run.assistantSessionId);
     // A session that is gone hears nothing: what was addressed to it is settled, so it does not wait in the store for good.
-    if (!live) { dropMailbox(run.assistantSessionId); return; }
+    if (!live) { await dropMailbox(run.assistantSessionId); return; }
     // The conversation's thread record: its runs, their outcomes and follow-ups.
     try { userContext?.onDispatch(live.record, payload); } catch {}
     if (!live.record.dispatchRunIds?.includes(run.runId)) { live.record.dispatchRunIds = [...(live.record.dispatchRunIds || []), run.runId].slice(-100); touch(live); }
@@ -2979,14 +2985,14 @@ export function createAssistantRuntime({
     // Agents P2: the event is in the coordination log. The dispatcher appended it in the step that changed the run;
     // recording it here again stores nothing (same id), and is what a dispatcher without the service relies on.
     // Which reasons reach the brain, and how urgently, is the service's rule. The store's wake-up schedules the turn.
-    const recorded = coordination.recordDispatch(payload);
+    const recorded = await coordination.recordDispatch(payload);
     // Already read by the brain (agent_wait in the same turn that dispatched it): no second turn. Only this event is
     // looked at here; the whole mailbox is gone through once, when a turn is composed.
     if (recorded?.delivered && alreadyRead({ kind: payload.reason === 'turn_completed' ? 'result' : payload.reason, turn: payload.turn, run })) {
-      try { coordination.mailbox.ack(live.record.id, [recorded.id]); } catch {}
+      try { await coordination.mailbox.ack(live.record.id, [recorded.id]); } catch {}
     }
   }
-  function onRunRemoved(payload) {
+  async function onRunRemoved(payload) {
     const live = payload?.assistantSessionId ? sessions.get(payload.assistantSessionId) : null;
     if (!live) return;
     const removed = new Set((payload.runIds || []).map(String));
@@ -2998,7 +3004,7 @@ export function createAssistantRuntime({
     }
     // A result can be waiting in the mailbox while the user clears its run.
     // Do not let that stale result (or its memory reminder) start another turn.
-    try { coordination.mailbox.discard(live.record.id, (item) => removed.has(String(item?.run?.runId || item?.runId || ''))); } catch {}
+    try { await coordination.mailbox.discard(live.record.id, (item) => removed.has(String(item?.run?.runId || item?.runId || ''))); } catch {}
     if (!mailboxCount(live) && live.mailboxTimer) {
       clearTimeout(live.mailboxTimer);
       live.mailboxTimer = null;
@@ -3008,32 +3014,32 @@ export function createAssistantRuntime({
    * Everything open for a session that no longer exists is settled (nobody will ever read it). Never while the
    * sessions index could not be read: a session this start does not know yet may be there after the next one.
    */
-  function dropMailbox(sessionId) {
+  async function dropMailbox(sessionId) {
     if (!indexReady) return;
-    try { if (coordination.mailbox.count(sessionId)) coordination.mailbox.discard(sessionId, null); } catch {}
+    try { if (await coordination.mailbox.count(sessionId)) await coordination.mailbox.discard(sessionId, null); } catch {}
   }
   /**
    * After a restart: what a session's brain was not told before the server went down is still open in the store,
    * and is delivered now. A session that was removed gets nothing; one that is closed waits until it is opened again.
    */
-  function resumeMailboxes() {
+  async function resumeMailboxes() {
     if (shuttingDown) return;
     let open = [];
-    try { open = coordination.mailbox.sessions(); } catch { open = []; }
+    try { open = await coordination.mailbox.sessions(); } catch { open = []; }
     for (const { sessionId } of open) {
       const live = sessions.get(sessionId);
-      if (!live) { dropMailbox(sessionId); continue; }
+      if (!live) { await dropMailbox(sessionId); continue; }
       if (live.record.status === 'ended') continue;
       scheduleMailbox(live, 0);
     }
   }
-  function onPermissionBroadcast(message) {
+  async function onPermissionBroadcast(message) {
     const live = message?.assistantSessionId ? sessions.get(message.assistantSessionId) : null;
     if (!live) return;
     if (message.type === 'assistant:permission-request') {
       sendToSockets(live, { type: 'event', event: { type: 'synabun.dispatch_control_request', runId: message.runId, request_id: message.request?.requestId, provider: dispatcher?.get?.(message.runId)?.provider || null, request: message.request } });
     } else if (message.type === 'assistant:permission-resolved') {
-      try { coordination.mailbox.discard(live.record.id, (item) => item.run?.runId === message.runId && item.request?.requestId === message.requestId); } catch {}
+      try { await coordination.mailbox.discard(live.record.id, (item) => item.run?.runId === message.runId && item.request?.requestId === message.requestId); } catch {}
       sendToSockets(live, { type: 'event', event: { type: 'synabun.dispatch_control_resolved', runId: message.runId, request_id: message.requestId, resolvedBy: message.resolvedBy, behavior: message.behavior } });
     }
   }
@@ -3330,7 +3336,7 @@ export function createAssistantRuntime({
       sessions.delete(id);
       if (live.mailboxTimer) { clearTimeout(live.mailboxTimer); live.mailboxTimer = null; }
       if (live.mailboxRetryTimer) { clearTimeout(live.mailboxRetryTimer); live.mailboxRetryTimer = null; }
-      dropMailbox(id);
+      await dropMailbox(id);
       const usageTimer = usageTimers.get(id);
       if (usageTimer) clearTimeout(usageTimer);
       usageTimers.delete(id);
@@ -3461,7 +3467,7 @@ export function createAssistantRuntime({
     // A remote session: computer use stops with the turn, before the brain is even asked to (its
     // approval, its open request, the live grant; an action in progress is aborted).
     endComputerTurn(live, 'stopped');
-    try { router?.cancelForSession?.(live.record.id, 'aborted', { origins: ['agent_route', 'vision_guard'] }); } catch {}
+    try { router?.cancelForSession?.(live.record.id, 'aborted', { origins: BRAIN_CARD_ORIGINS }); } catch {}
     if (origin !== 'ui') log('assistant:stop', `${live.record.id}: turn stopped from ${origin}`);
     try { await live.brain?.abort?.(); } catch (error) { return { ok: false, code: 'STOP_FAILED', message: error?.message || String(error) }; }
     return { ok: true };
@@ -3885,7 +3891,7 @@ export function createAssistantRuntime({
     }
     if (phase !== 'card' && phase !== 'pending' && phase !== 'auto') publishPendingRoutes(live);
   }
-  function routerMailbox(id, item) { const live = sessions.get(id); if (live && item) enqueueMailbox(live, item); }
+  function routerMailbox(id, item) { const live = sessions.get(id); if (live && item) return enqueueMailbox(live, item); }
   /** agent_route answered (or failed) for this session: the route gate follows it (`meta.taskClass`: a chat route holds). */
   function routerRouted(id, result, meta = {}) { const live = sessions.get(id); if (live) ensureGate(live)?.onRouteResult(result, meta); }
   function routerRouteFailed(id, error) {
@@ -4389,7 +4395,7 @@ export function createAssistantRuntime({
     metered('flush', () => usage?.flush?.());
     // A coordination service this runtime made for itself goes with it (a shared one is closed by its owner).
     // What a brain was not told stays open in the store and is delivered by the next start.
-    if (ownsCoordination) coordination.close();
+    if (ownsCoordination) await coordination.close();
   }
 
   loadIndex();
@@ -4399,8 +4405,8 @@ export function createAssistantRuntime({
   }
   if (dispatcher?.subscribe) {
     unsubscribeDispatcher = dispatcher.subscribe((payload) => {
-      if (payload?.type === 'assistant:dispatch') onDispatchEvent(payload);
-      else if (payload?.type === 'assistant:run-removed') onRunRemoved(payload);
+      if (payload?.type === 'assistant:dispatch') return onDispatchEvent(payload);
+      else if (payload?.type === 'assistant:run-removed') return onRunRemoved(payload);
     });
   }
   // Agents P2: the store wakes the mailbox of the session an event was addressed to (after its append committed).

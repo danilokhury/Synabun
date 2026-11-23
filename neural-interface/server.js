@@ -1,3 +1,4 @@
+import { callerStopReason, mayEndSuspendedRun, pageStopProvenance, stampStopProvenance } from './lib/worker-stop.js';
 import { readStoredToolListRecord, toolListRecordForUpdate } from './lib/tool-lists.js';
 import { externalServerInventory, selectExternalServers, externalCatalogReport, mergeExternalAvailability, EXTERNAL_SERVER_LIMITATIONS, scopeOpenCodeServers, retainExternalRefs, writePrivateMcpConfig, redactMcpValues, mcpSecretValues } from './lib/mcp-external-servers.js';
 import { openCodeWorkerData } from './lib/opencode-worker-data.js';
@@ -28,6 +29,7 @@ import { createPageSession, PAGE_SECRET_PATHS, PAGE_SECRET_REFRESH_PATH, SERVICE
 import { normalizeViewUrl } from './public/shared/view-variant.js';
 import { createPeerIdentity, debugClientPolicy, PEER_VERDICT, peerAuthority } from './lib/peer-identity.js';
 import { createOwnerAuthority, isAgentCall } from './lib/owner-authority.js';
+import { useDefaultJsonParser, parseClientDiagnostics, createClientDiagnostics } from './lib/client-diagnostics.js';
 import { collectRelayListenerPorts, localProxyPorts } from './lib/worker-relay-ports.js';
 import { machineNames } from './lib/machine-names.js';
 import { draftConfinementSupport } from './lib/skills/draft-confinement.js';
@@ -55,7 +57,7 @@ import { describeLocatorMatches, healLocatorByText, validNthMatch, captureTarget
 import { getInteractiveHints, collectSemanticContext, buildAssist, describeTargetFacts, verifyHealTarget, createAssistContextStore } from './lib/browser-semantic-context.js';
 import { createBrowserAssistRouter } from './lib/browser-assist-api.js';
 import { handleReflect as reflectMemory } from '../mcp-server/dist/tools/reflect.js';
-import { startMemoryCapture } from './lib/memory-session-capture.js';
+import { startMemoryCapture, stopMemoryCapture } from './lib/memory-session-capture.js';
 import { createMemoryApi } from './lib/memory-api.js';
 import { createMemoryMapService, createMemoryMapApi } from './lib/memory-map-api.js';
 import { createAiSnapshotStore, settleBrowserPage } from './lib/browser-snapshots.js';
@@ -64,8 +66,9 @@ import { attachConsoleBuffer, readConsoleBuffer, parseConsoleSince } from './lib
 import { resolveBrowserLanguage, validateBrowserLanguageConfig } from './lib/browser-language.js';
 import { parseScreenshotOptions, captureScreenshot, screenshotPathRefusal, defaultScreenshotPath, writeScreenshotFile } from './lib/browser-screenshot.js';
 import { openBackgroundPageStrict, backgroundTabsEnabled, newContextWithId, selectedTabReading } from './lib/browser-background-tab.js';
+import { withMemoryWrite } from '../mcp-server/dist/services/sqlite-write.js';
 import { memoryRevision } from '../mcp-server/dist/services/memory-maintenance.js';
-import { startGatedMemoryMaintenance } from './lib/memory-timers.js';
+import { startGatedMemoryMaintenance, stopGatedMemoryMaintenance } from './lib/memory-timers.js';
 import { createEventLoopMonitor } from './lib/event-loop-monitor.js';
 import { createRulesetInstaller } from './lib/rulesets/installer.js';
 import { registerRulesetRoutes, registerLegacyRulesetRoutes } from './lib/rulesets/api.js';
@@ -112,6 +115,9 @@ function handleProcessFailure(label, failure) {
     console.warn(`[playwright] Ignoring stale lifecycle error (${label}):`, error.message);
     return;
   }
+  // A tick or background job that met the memory store while it is being upgraded (lib/memory-store-gate.js): that
+  // job is skipped and the server stays up.
+  if (isMemoryStoreRefusal(error)) { noteMemoryStoreRefusal(label, error); return; }
   console.error(`${label}:`, failure);
   process.exit(1);
 }
@@ -157,6 +163,7 @@ import * as pluginInstaller from './lib/plugin-installer.js';
 // loopLog here is the wrapper below browserCaller (it never names a log file after a whole MCP session id).
 import { loopLog as writeLoopLog, loopLogPath, flushLoopLogs } from './lib/loop-logger.js';
 import {
+  brewNeedsRefresh,
   buildInstallCommand,
   buildUpdateCommand,
   isBrewSource,
@@ -164,6 +171,7 @@ import {
   quoteCommandPath,
   resolveBrewToken,
   resolveLatest,
+  upstreamVersionSource,
 } from './lib/cli-update-planner.js';
 import { createCliResolver, spawnArgsFor } from './lib/cli-resolver.js';
 import { osPath } from './lib/os-path.js';
@@ -176,21 +184,31 @@ import { createCliPathManager } from './lib/cli-path.js';
 import { composeTerminalPath, terminalLaunchCommand, terminalArgument } from './lib/terminal-path.js';
 import {
   applyBackupRetention,
+  assertBackupGroups,
+  backupRoots,
   createVerifiedBackup,
+  sweepCrashedBackupArtifacts,
   getBackupHealth,
   listBackupSnapshots,
   loadBackupConfig as loadBackupConfigFile,
+  measureBackupContents,
   nextBackupDueMs,
   normalizeBackupConfig,
   saveBackupConfig as saveBackupConfigFile,
 } from './lib/backup-service.js';
+import { backupDownloadHandlers, createBackupDownloadService } from './lib/backup-download.js';
+import { backupContentsHandlers, createBackupContentsService } from './lib/backup-contents.js';
+import { readManifestGroups } from './lib/backup-groups.js';
+import { isEncryptedBackupFile } from './lib/backup-crypto.js';
+import { backupEncryptionHandlers, createBackupEncryptionService, createPasswordAttemptLimiter } from './lib/backup-encryption.js';
+import { createRestoreSessions, encryptedRestoreHandlers } from './lib/backup-restore-session.js';
 import {
   extractZipEntry,
   openZipArchive,
   readBackupManifest,
   verifyBackupChecksums,
 } from './lib/backup-zip-reader.js';
-import { planRestoreWrites, removeRestoreUpload, saveRestoreUpload } from './lib/system-restore.js';
+import { planRestoreWrites, removeRestoreUpload, restoreFailureCode, restoreFailureFields, restoreWarningCode, saveRestoreUpload } from './lib/system-restore.js';
 import * as opencodeV2Client from './lib/opencode-v2-client.js';
 import { OPENCODE_MIN_VERSION, basicAuthHeader, checkPrivateOpencodeServer as checkOpencodeServer, createServeLogRedactor, opencodeInstallCommands, opencodeProblemText, opencodeSupportFor, redactServeOutput, servePasswordReader, serveSpecFor, serveUnsetCommand, withServeEnv } from './lib/opencode-protocol.js';
 import { SERVE_TOKEN_ENV } from './lib/process-identity.js';
@@ -208,9 +226,10 @@ import {
 } from './lib/opencode-config.js';
 import {
   handleOpencodeV2Request, opencodeV2WsCapabilities,
-  buildSessionListQuery, mapSessionListRow, OPENCODE_V2_WS_MUTATION_TYPES, guardOpencodeV2Request,
+  buildSessionListQuery, mapSessionListRow, OPENCODE_V2_WS_MUTATION_TYPES, guardOpencodeV2Request, folderIsGone,
 } from './lib/opencode-v2-ws-requests.js';
 import { NativeLoopRuntime, isNativeLoopProfile } from './lib/native-loop-runtime.js';
+import { scheduleScratchRetention } from './lib/scratch-retention.js';
 import { migrateAutomationContextFiles, normalizeAutomationRecord } from './lib/automation-storage-migration.js';
 import { createLoopGoalJudge } from './lib/native-loop-goal.js';
 import { McpToolsRefreshCoordinator } from './lib/mcp-tools-refresh-coordinator.js';
@@ -231,7 +250,7 @@ import { createOpenCodeActivityRelay } from './lib/opencode-worker-activity.js';
 import { browserServePortDenial, browserSessionLossRule } from './lib/browser-tool-policy.js';
 import { createNativeServeBoundary, createVerdictFile, nativeContextRevocation, nativeServeCapability, nativeServeReason, nativeServeVersionPolicy, narrowOffenders } from './lib/opencode-native-boundary.js';
 import { isolatedServeFailure } from './lib/opencode-launch-error.js';
-import { reconcilePreflightProfiles, preflightExcludedPorts, runOpencodeBuildPreflight } from './lib/opencode-build-preflight.js';
+import { reconcilePreflightProfiles, preflightExcludedPorts, runOpencodeBuildPreflight, startOpencodeAtBoot } from './lib/opencode-build-preflight.js';
 import { binaryIdentity as opencodeBinaryIdentity, binaryKey as opencodeBinaryKey } from './lib/opencode-serve-probe.js';
 // Every OpenCode serve SynaBun starts is probed once it answers (lib/opencode-serve-probe.js: loopback only, every
 // sensitive /api request and WebSocket upgrade refused without its password, SynaBun's password accepted); what is
@@ -319,7 +338,7 @@ import { registerMaritacaRoutes } from './lib/maritaca/api.js';
 import { createMaritacaOpencodeSync, maritacaWorkerChannelProvider } from './lib/maritaca/opencode.js';
 import { createMaritacaOpencodeProxy, maritacaOpencodeProxyBaseUrl } from './lib/maritaca/opencode-proxy.js';
 import { antigravityHomeDir, antigravityHomesRoot, pruneAntigravityHomes } from './lib/antigravity/home.js';
-import { antigravityStores, findUserConversation, parseAntigravityTranscript, readTranscriptText } from './lib/antigravity/transcripts.js';
+import { findUserConversation, parseAntigravityTranscript, readTranscriptText } from './lib/antigravity/transcripts.js';
 import {
   buildAgentDisallowedTools,
   agentAccessFrom,
@@ -460,14 +479,24 @@ import {
   getMemoriesByCategory, updateMemoriesCategory,
   getCategories as dbGetCategories, saveCategories as dbSaveCategories,
   countSessionChunks, searchSessionChunks as dbSearchSessionChunks,
-  getKvConfig, setKvConfig, EMBEDDING_MODEL,
+  getKvConfig, setKvConfig, saveEmbeddingMetadata, EMBEDDING_MODEL,
   searchSessionFts, listSessionCache, getSessionCacheEntry, clearSessionCacheProvider,
   memoryVectors, getRecentXEngagements, getXActionBudget, getXEngagementTier, X_ACTION_TYPES,
   getFbActionBudget, getFbEngagementTier, FB_ACTION_TYPES,
 } from './lib/db.js';
-import {
-  rebuildClaudeCache, rebuildCodexCache, rebuildOpencodeCache, rebuildAntigravityCache,
-} from './lib/session-cache-builder.js';
+import { drainSessionJobs, runSessionJob, setSessionJobStoreGate } from './lib/session-cache-worker.js';
+import { beginActivity, instrumentSqlite, markActivity, startLoopStallMonitor } from './lib/loop-stall.js';
+import { createHealthCount } from './lib/health-count.js';
+import { createRecallImpact } from './lib/recall-impact.js';
+import { installMemoryStoreGate, isMemoryStoreRefusal, noteMemoryStoreRefusal } from './lib/memory-store-gate.js';
+
+// Before anything opens the memory store: a migration it needs runs in a child process, never on this thread.
+const memoryStoreGate = installMemoryStoreGate();
+setSessionJobStoreGate(() => (memoryStoreGate.open() ? null : memoryStoreGate.forJobs()));
+
+startLoopStallMonitor();
+// A stall line names the slowest synchronous SQLite statement it held (off: SYNABUN_LOOP_STALL_SQL=off).
+instrumentSqlite();
 import {
   clearOpenCodeHistory,
   getOpenCodeHistoryStats,
@@ -569,7 +598,7 @@ const requestGates = createRequestGates({
   settingsHint: () => ENV_PATH,
 });
 app.use(requestGates.host);
-app.use(express.json({ limit: '25mb' }));
+app.use(express.json({ limit: '25mb', type: useDefaultJsonParser }));
 
 // Clean body-parser error handler: ui-state / whiteboard persist base64 images and can
 // exceed the JSON limit. Default Express handler dumps a 10-line raw-body stack with no
@@ -651,13 +680,15 @@ _peerIdentity.probe();
 const _ownerAuthority = createOwnerAuthority({ pageSession: () => _pageSession, isRemote: (req) => requestGates.isRemote(req), peer: _peerIdentity, log: (line) => console.warn(line), automationBrowserAllowed: () => _automationBrowserOwnerAccess.enabled() });
 app.use(_peerIdentity.middleware({ needs: peerLookupWanted }));
 app.use(_ownerAuthority.restGate);
+// While the memory store is being upgraded, a route that needed it answers 503 "migrating", never an empty result.
+app.use(memoryStoreGate.requestGuard);
 
 import { registerCodexPlanRoutes } from './lib/codex-plan-store.js';
 import { createOpencodeHiddenModelsRouter, createOpencodeHiddenModelsStore } from './lib/opencode-hidden-models.js';
 import { createEditorFilesRouter, EDITOR_BACKUP_CAPABILITIES, EDITOR_BACKUP_NAMESPACE } from './lib/editor-files-api.js';
 import { createEditorGitRouter, EDITOR_GIT_CAPABILITIES } from './lib/editor-git-api.js';
 import { confinedFolder, createFileExplorerRouter, EXPLORER_CAPABILITIES } from './lib/file-explorer-api.js';
-import { folderPickerCommand } from './lib/file-explorer-system.js';
+import { createRevealer, folderPickerCommand } from './lib/file-explorer-system.js';
 import { createEditorConfigRouter, createEditorConfigStore, createEndpointKeyStore, EDITOR_CONFIG_CAPABILITIES } from './lib/editor-config.js';
 import {
   COMPLETION_SYSTEM, EDITOR_COMPLETION_CAPABILITIES, createEditorCompletionRouter, createEditorCompletionService, createUsageStore,
@@ -1089,6 +1120,7 @@ function peerLookupWanted(req) {
 app.use(_pageSession.serviceWorker); // GET /sw.js: a worker that takes itself away, for a browser refused the secret
 app.use(_pageSession.pages);
 app.get('/api/page-session', (req, res) => _pageSession.refresh(req, res)); // PAGE_SECRET_REFRESH_PATH
+app.post('/api/client-diagnostics', parseClientDiagnostics, createClientDiagnostics({ ownerPage: ownerPageApprovalCall, refuseOwner: refuseNotOwnerPage }));
 // The extension's "Connect your browser" page, opened by the one-button setup in the owner's everyday browser. One of
 // the app's pages (PAGE_SECRET_PATHS): it gets this boot's page secret like any of them, so its reads of the setup's
 // status and its one ticket are the owner's, under the same owner guard; an automation browser and an agent's process
@@ -1722,32 +1754,13 @@ app.get('/api/stats', async (req, res) => {
   }
 });
 
-// GET /api/recall-impact — Memory counts by importance threshold for recall settings UI
-app.get('/api/recall-impact', (req, res) => {
+// GET /api/recall-impact — Memory counts by importance threshold for recall settings UI.
+// The two aggregates behind it read every memory and every session chunk whole; they run off this thread, in
+// slices, and the answer is kept for a minute (lib/recall-impact.js).
+const recallImpact = createRecallImpact();
+app.get('/api/recall-impact', async (req, res) => {
   try {
-    const d = getDb();
-    const rows = d.prepare(`
-      SELECT importance, COUNT(*) as cnt, CAST(AVG(LENGTH(content)) AS INTEGER) as avg_len,
-             CAST(AVG(CASE WHEN tags IS NOT NULL AND tags != '[]' THEN LENGTH(tags) ELSE 0 END) AS INTEGER) as avg_tags_len,
-             CAST(AVG(CASE WHEN related_files IS NOT NULL AND related_files != '[]' THEN LENGTH(related_files) ELSE 0 END) AS INTEGER) as avg_files_len
-      FROM memories WHERE trashed_at IS NULL GROUP BY importance ORDER BY importance
-    `).all();
-    // Session chunk stats for token estimation
-    let sessionStats = { count: 0, avg_summary_len: 0, avg_details_len: 0 };
-    try {
-      const sc = d.prepare(`
-        SELECT COUNT(*) as count,
-               CAST(AVG(LENGTH(summary)) AS INTEGER) as avg_summary_len,
-               CAST(AVG(
-                 COALESCE(LENGTH(tools_used), 0) +
-                 COALESCE(LENGTH(files_modified), 0) +
-                 COALESCE(LENGTH(related_memory_ids), 0)
-               ) AS INTEGER) as avg_details_len
-        FROM session_chunks
-      `).get();
-      if (sc) sessionStats = sc;
-    } catch { /* session_chunks table may not exist */ }
-    res.json({ rows, sessionStats });
+    res.json(await recallImpact.get());
   } catch (err) {
     console.error('GET /api/recall-impact error:', err.message);
     res.status(500).json({ error: err.message });
@@ -2612,7 +2625,8 @@ async function runGracefulShutdown(reason) {
   // The coordination store (agent events, the Assistant's mailbox, the follow-up outbox): closed once the workers
   // are stopped or suspended and what that changed is recorded. Every open wait is answered, the write-ahead log is
   // folded into the file. Signals and the restart/update/shutdown routes all use this teardown.
-  try { _assistantCoordination?.close(); } catch (err) { console.warn('  coordination close err:', err?.message); }
+  try { await _assistantDispatcher?.drainFinalizations?.(); } catch (err) { console.warn('  terminal run events:', err?.message); }
+  try { await _assistantCoordination?.close(); } catch (err) { console.warn('  coordination close err:', err?.message); }
   try { closeDb(); } catch {}
   try { closeBlobStore(); } catch {}
 
@@ -3158,6 +3172,9 @@ app.post('/api/system/run-update', async (req, res) => {
   }
 });
 
+// Session indexing holds its own SQLite connection while a pass runs. A file replacement must wait for it.
+app.post(['/api/settings/move-db', '/api/settings/move-db/cleanup', '/api/system/restore', '/api/system/restore/apply-staged'], drainSessionJobs);
+
 // POST /api/settings/move-db — Move SQLite database to a new directory
 app.post('/api/settings/move-db', (req, res) => {
   try {
@@ -3269,7 +3286,7 @@ async function runReindex(job) {
       const updateStmt = d.prepare('UPDATE memories SET vector = ? WHERE id = ?');
       for (let i = 0; i < rows.length; i++) {
         try {
-          updateStmt.run(encodeVector(vectors[i]), rows[i].id);
+          await withMemoryWrite(d, () => updateStmt.run(encodeVector(vectors[i]), rows[i].id));
           job.completed++;
         } catch {
           job.errors++;
@@ -3297,7 +3314,7 @@ async function runReindex(job) {
       const updateStmt = d.prepare('UPDATE session_chunks SET vector = ? WHERE id = ?');
       for (let i = 0; i < rows.length; i++) {
         try {
-          updateStmt.run(encodeVector(vectors[i]), rows[i].id);
+          await withMemoryWrite(d, () => updateStmt.run(encodeVector(vectors[i]), rows[i].id));
           job.chunks++;
         } catch {
           job.errors++;
@@ -3312,8 +3329,7 @@ async function runReindex(job) {
 
   // Update stored model metadata
   try {
-    setKvConfig('embedding_model', EMBEDDING_MODEL);
-    setKvConfig('embedding_dims', String(EMBEDDING_DIMS));
+    await saveEmbeddingMetadata();
   } catch {}
 
   job.running = false;
@@ -8388,6 +8404,7 @@ let _ocpVersion = null;
 // says why OpenCode cannot be used (shown by the panel, Settings and the tray).
 let _ocpPassword = null;
 let _ocpProblem = null;
+let _ocpStartRefusal = null; // The MoreLogin check that refused the last start (startOpencodeAtBoot reads it).
 let _ocpHistoryClearInProgress = false;
 let _ocpSessionCacheWarmup = null;
 
@@ -9516,6 +9533,9 @@ function handleOpencodeV2Ws(ws) {
         nativeMutationTypes: OPENCODE_NATIVE_MUTATION_TYPES,
         protectedRunFor: activeNativeOpenCodeRunForSession,
         ownsRun: (run) => opencodeV2ClientOwnsRun(ws, run),
+        // A session or a turn in a folder that no longer exists (a removed worktree) is refused before OpenCode
+        // makes a session that can never run: the panel moves to the project the folder was in.
+        folderGone: folderIsGone,
       });
       if (refused) {
         send({ type: `${type}:result`, id, ...refused });
@@ -9913,6 +9933,7 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
     return false;
   }
   _ocpProblem = null;
+  _ocpStartRefusal = null;
   // A serve already running is adopted when it answers SynaBun: only to the password SynaBun gave it, and only
   // as a version SynaBun drives (checkOpencodeServer). A serve an earlier SynaBun left running (on this port or any other it used) goes before anything here is
   // adopted, and its port with it.
@@ -9991,6 +10012,11 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
         });
       } catch (err) {
         console.error(`[opencode] Failed to spawn: ${err.message}`);
+        // A MoreLogin check that refused this start: the panel says why instead of staying silently offline.
+        if (err?.sharedPreflight) {
+          _ocpStartRefusal = err;
+          reportOpencodeProblem(err.message);
+        }
         return 'not-spawned';
       }
       for (let i = 0; i < 30; i++) {
@@ -15229,9 +15255,23 @@ app.post('/api/loop/stop', async (req, res) => {
     // No agent header at all: the owner's page, with its page secret (or an invite guest, whom the guest rules decide).
     if (!who.automation && !browserPageOwner(req)) return refuseNotOwnerPage(req, res, 'Loops are stopped from SynaBun\'s own page (its page secret, which the page\'s browser sends by itself), or by a run itself (X-Synabun-Terminal with its terminal token). This request is neither: reload SynaBun\'s page and stop it there.');
     const targetTerminalId = who.automation ? who.id : named;
+    // Accepted legacy/grace pins authorize their existing operation but do not prove identity.
+    const stopProvenance = stampStopProvenance(null, who.automation
+      ? (who.status === 'verified' ? { actor: 'automation', action: 'self_stop', runId: who.id } : { actor: 'unknown', action: 'stop' })
+      : pageStopProvenance(req.body?.action, true), new Date().toISOString());
+    if (!targetTerminalId) stopProvenance.scope = 'all';
+    // 'user' only for a control a person operated; a run stopping itself and an unnamed caller say so.
+    const stopReason = callerStopReason(stopProvenance);
+    // A run suspended for a restart outlives its old process, a closing page and the tray's timer: only a deliberate
+    // stop ends it (lib/worker-stop.js). It keeps its loop file, which is what its resume reads.
+    const staysSuspended = (id) => _nativeLoopRuntime?.isSuspended?.(id) && !mayEndSuspendedRun(stopProvenance);
+    if (targetTerminalId && staysSuspended(targetTerminalId)) {
+      loopLog(targetTerminalId, 'loop:stop-refused', 'A suspended run stays suspended: this caller may not end it', { stopProvenance });
+      return res.status(409).json({ ok: false, code: 'RUN_SUSPENDED', stopped: 0, error: 'This run is suspended for a server restart and resumes by itself. Only a deliberate stop ends it.' });
+    }
     let directlyStopped = false;
     if (targetTerminalId && _nativeLoopRuntime?.isAlive(targetTerminalId)) {
-      directlyStopped = await _nativeLoopRuntime.stop(targetTerminalId, 'user');
+      directlyStopped = await _nativeLoopRuntime.stop(targetTerminalId, stopReason, { stopProvenance });
     }
     if (!existsSync(LOOP_DIR)) return res.json({ ok: true, stopped: directlyStopped ? 1 : 0 });
     const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && f !== '.gitkeep');
@@ -15248,17 +15288,22 @@ app.post('/api/loop/stop', async (req, res) => {
         if (data.active || data.pending) {
           // Per-loop stop: skip loops that don't match the target
           if (targetTerminalId && data.runId !== targetTerminalId && data.terminalSessionId !== targetTerminalId) continue;
+          // "Stop every loop" from a caller that may not end a suspended run passes over it.
+          if (staysSuspended(data.runId || data.terminalSessionId)) continue;
           if (!directlyStopped && (data.runtimeType === 'native' || data.driverType === 'native')) {
-            await _nativeLoopRuntime?.stop(data.runId || data.terminalSessionId, 'user');
+            await _nativeLoopRuntime?.stop(data.runId || data.terminalSessionId, stopReason, { stopProvenance });
           }
           if (data.driverType === 'exec' && data.scheduledBy) {
             data.active = false;
             data.pending = false;
             data.completedAt = new Date().toISOString();
-            data.stoppedReason = 'user';
+            data.stoppedReason = stopReason;
+            data.stopProvenance = stopProvenance;
             try { writeFileSync(filePath, JSON.stringify(data, null, 2)); } catch {}
-            persistExecScheduleOutcome(data, 'stopped', 'user');
+            persistExecScheduleOutcome(data, 'stopped', stopReason);
           }
+          // Classic loop files are removed below; keep the action in their per-run log.
+          loopLog(data.runId || data.terminalSessionId, 'loop:stop', 'Loop stopped', { stopProvenance });
           // Kill PTY session if still alive
           if (data.terminalSessionId && terminalSessions.has(data.terminalSessionId)) {
             const session = terminalSessions.get(data.terminalSessionId);
@@ -16324,7 +16369,8 @@ async function launchScheduledLoop(schedule) {
     if (isXAutomation) {
       try {
         const xAccount = (template.account || (/^cp_/.test(schedule.templateId || '') ? 'Crit_Pix' : '')).trim();
-        const { handles, statusIds, blocked, error: ledgerErr } = getRecentXEngagements({ account: xAccount || null, days: 7, limit: 200 });
+        // The ledger's reads scan memories by tag: they run off this thread and are awaited (lib/db.js ledgerRows).
+        const { handles, statusIds, blocked, error: ledgerErr } = await getRecentXEngagements({ account: xAccount || null, days: 7, limit: 200 });
         if (ledgerErr) {
           loopLog(terminalSessionId, 'launch:dedup', 'engagement ledger read failed (continuing)', { err: ledgerErr });
         } else if (handles.length || statusIds.length || blocked.length) {
@@ -16351,8 +16397,8 @@ async function launchScheduledLoop(schedule) {
         const tz = schedule.timezone || 'America/Sao_Paulo';
         const nowLocal = getNowInTimezone(tz);
         const msIntoDay = ((nowLocal.getHours() * 60 + nowLocal.getMinutes()) * 60 + nowLocal.getSeconds()) * 1000 + nowLocal.getMilliseconds();
-        const spent = getXActionBudget({ account: xAccount || null, sinceIso: new Date(Date.now() - msIntoDay).toISOString() });
-        const { tier, caps, source: tierSource } = getXEngagementTier({ account: xAccount || null });
+        const spent = await getXActionBudget({ account: xAccount || null, sinceIso: new Date(Date.now() - msIntoDay).toISOString() });
+        const { tier, caps, source: tierSource } = await getXEngagementTier({ account: xAccount || null });
         if (spent.error) {
           loopLog(terminalSessionId, 'launch:budget', 'action budget read failed (continuing)', { err: spent.error });
         } else {
@@ -16392,8 +16438,8 @@ async function launchScheduledLoop(schedule) {
         const tz = schedule.timezone || 'America/Sao_Paulo';
         const nowLocal = getNowInTimezone(tz);
         const msIntoDay = ((nowLocal.getHours() * 60 + nowLocal.getMinutes()) * 60 + nowLocal.getSeconds()) * 1000 + nowLocal.getMilliseconds();
-        const spent = getFbActionBudget({ sinceIso: new Date(Date.now() - msIntoDay).toISOString() });
-        const { tier, caps, source: tierSource } = getFbEngagementTier();
+        const spent = await getFbActionBudget({ sinceIso: new Date(Date.now() - msIntoDay).toISOString() });
+        const { tier, caps, source: tierSource } = await getFbEngagementTier();
         if (spent.error) {
           loopLog(terminalSessionId, 'launch:budget', 'FB action budget read failed (continuing)', { err: spent.error });
         } else {
@@ -16896,6 +16942,7 @@ function reconcileKeepAwake() {
 }
 
 function evaluateSchedules() {
+  markActivity('scheduler:schedules');
   // P5 deterministic health shares the scheduler's tick; disabled until enabled in Skills Studio.
   skillsService?.health.tick().catch((error) => console.error('[skills-health]', error?.code || 'check_failed'));
   _scheduleEvalCount++;
@@ -18833,8 +18880,9 @@ const TOOL_DEFS = [
   // Google's Antigravity CLI has no npm package: a Homebrew cask's newer version is what `brew outdated` says, and
   // the CLI updates itself (`agy update`).
   { key: 'antigravity', cmd: 'agy',      versionArg: '--version' },
-  // npm's opencode-ai is OpenCode 1: OpenCode 2's newer version is what Homebrew says (a brew install) or what OpenCode
-  // itself announces in its own interface.
+  // npm's opencode-ai is OpenCode 1: OpenCode 2's newer version is read where its install channel publishes it
+  // (upstreamVersionSource in lib/cli-update-planner.js: OpenCode's own update API, or the formula of its Homebrew
+  // tap, whose local clone `brew outdated` reads stale).
   { key: 'opencode',    cmd: 'opencode', versionArg: '--version' },
 ];
 
@@ -18937,6 +18985,7 @@ function pruneBundledCliTools() {
 }
 
 async function checkToolVersions({ force = false } = {}) {
+  markActivity('cli:versions');
   const generation = ++_toolVersionGeneration;
   // Every CLI exactly as the panels and launchers find it (lib/cli-resolver.js):
   // the path in Settings first, then PATH with the OS PATH read afresh, then the
@@ -18960,6 +19009,12 @@ async function checkToolVersions({ force = false } = {}) {
     // Homebrew routinely trails npm by a few releases, so comparing against it
     // produced a badge that lit up while `brew upgrade` answered "already
     // installed". Reported as upstreamLatest purely for diagnostics.
+    const installSource = status.installSource;
+    const brewToken = isBrewSource(installSource) ? resolveBrewToken(tool.key, status.realPath || status.path) : null;
+    // A tool without an npm package (OpenCode 2) says where its newest version is published for the way it was
+    // installed: its vendor's update API, or the formula of its Homebrew tap (lib/cli-update-planner.js).
+    const published = tool.npm || tool.github ? null : upstreamVersionSource(tool.key, installSource, brewToken);
+
     let upstreamLatest = null;
     try {
       const controller = new AbortController();
@@ -18972,22 +19027,31 @@ async function checkToolVersions({ force = false } = {}) {
         const res = await fetch(`https://api.github.com/repos/${tool.github}/releases/latest`, { signal: controller.signal });
         clearTimeout(timeout);
         if (res.ok) { const d = await res.json(); upstreamLatest = parseVersion(d.tag_name || ''); }
+      } else if (published) {
+        const res = await fetch(published.url, { signal: controller.signal });
+        clearTimeout(timeout);
+        if (res.ok) upstreamLatest = published.read(await res.text());
+      } else {
+        clearTimeout(timeout);
       }
     } catch { /* network error */ }
 
-    const installSource = status.installSource;
-    const brewToken = isBrewSource(installSource) ? resolveBrewToken(tool.key, status.realPath || status.path) : null;
+    // The tap's formula as published: what Homebrew installs once it is refreshed. `brew outdated` reads the
+    // local clone of a tap, which nothing refreshes between the user's own brew runs.
+    const brewUpstream = published?.channel === 'brew-formula' ? upstreamLatest : null;
     const latest = resolveLatest({
       installSource,
       brewToken,
       brewOutdated,
       npmLatest: upstreamLatest,
+      brewUpstream,
       installed,
     });
+    const refreshBrew = brewNeedsRefresh({ installSource, brewToken, brewOutdated, brewUpstream, installed });
     // A self-updater is started by the path found, so the update reaches this
     // very installation even where a terminal's PATH does not name its folder.
     const updateCommand = installed
-      ? buildUpdateCommand(tool.key, installSource, { brewToken, binPath: status.path, platform: process.platform })
+      ? buildUpdateCommand(tool.key, installSource, { brewToken, binPath: status.path, platform: process.platform, refreshBrew })
       : null;
 
     return [tool.key, {
@@ -19144,6 +19208,56 @@ app.use('/api/cli/opencode-serves', createOpencodeServeVerifyApi({ boundary: nat
 // FULL SYSTEM BACKUP & RESTORE
 // ═══════════════════════════════════════════
 
+// ── Download backup into a folder the owner chose (lib/backup-download.js) ──
+// Settings → Backups. The server builds the verified archive directly in a folder of this computer (remembered in
+// data/backup-download.json, ~/Downloads until one is chosen) as one job the page starts and then asks about: no
+// response a browser tab has to hold in memory. One backup at a time, through serializeBackupOperation, like the
+// scheduled ones. The owner's routes (editorOwnerGuard, as /api/browse-folder, whose dialog picks the folder), and the
+// three that write are the owner's page's alone, as restore is: they put a copy of everything, the .env included,
+// where the request says. Reveal takes no path: it shows the last finished backup, or the folder.
+const backupDownload = createBackupDownloadService({
+  configPath: resolve(DATA_HOME, 'data', 'backup-download.json'),
+  dataHome: DATA_HOME,
+  sourceRoots: () => backupRoots(DATA_HOME, getBackupAdditionalEntries()),
+  serialize: (operation) => serializeBackupOperation(operation),
+  isBusy: () => _backupOperationActive,
+  createBackup: ({ folderPath, onProgress, signal }) => createVerifiedBackup({
+    dataHome: DATA_HOME,
+    databasePath: getDbPath(),
+    folderPath,
+    kind: 'manual',
+    appVersion: JSON.parse(readFileSync(resolve(PACKAGE_ROOT, 'package.json'), 'utf-8')).version || null,
+    additionalEntries: getBackupAdditionalEntries(),
+    groups: backupContents.groups(),
+    onProgress,
+    signal,
+  }),
+  log: (line) => console.log(line),
+});
+const backupDownloadRoutes = backupDownloadHandlers(backupDownload, { revealer: createRevealer() });
+// ── What a backup holds (lib/backup-groups.js, lib/backup-contents.js) ──
+// Settings → Backups → What to back up. One choice, kept in data/backup-selection.json, for every backup made on
+// request or on schedule (the pre-update snapshot keeps its own rules). The sizes are measured on a worker thread
+// and only read here. Reading is the owner's; changing the choice is the owner's page's alone, as choosing the
+// folder is.
+const backupContents = createBackupContentsService({
+  configPath: resolve(DATA_HOME, 'data', 'backup-selection.json'),
+  measure: () => measureBackupContents({ dataHome: DATA_HOME, databasePath: getDbPath(), additionalEntries: getBackupAdditionalEntries() }),
+  log: (line) => console.log(line),
+});
+const backupContentsRoutes = backupContentsHandlers(backupContents);
+function backupDownloadOwnerPage(req, res, next) {
+  if (restoreOwnerPageCall(req)) return next();
+  return refuseNotOwnerPage(req, res, 'Choosing where a backup is saved, and saving one there, is done from SynaBun\'s own page (Settings → Backups), never by an agent, a run or another program.');
+}
+app.get('/api/system/backup/job', editorOwnerGuard, backupDownloadRoutes.status);
+app.put('/api/system/backup/destination', editorOwnerGuard, backupDownloadOwnerPage, backupDownloadRoutes.setDestination);
+app.post('/api/system/backup/job', editorOwnerGuard, backupDownloadOwnerPage, backupDownloadRoutes.start);
+app.post('/api/system/backup/job/cancel', editorOwnerGuard, backupDownloadOwnerPage, backupDownloadRoutes.cancel);
+app.post('/api/system/backup/reveal', editorOwnerGuard, backupDownloadOwnerPage, backupDownloadRoutes.reveal);
+app.get('/api/system/backup/contents', editorOwnerGuard, backupContentsRoutes.status);
+app.put('/api/system/backup/contents', editorOwnerGuard, backupDownloadOwnerPage, backupContentsRoutes.update);
+
 // GET /api/system/backup — Download full system backup as ZIP
 app.get('/api/system/backup', async (req, res) => {
   try {
@@ -19156,6 +19270,7 @@ app.get('/api/system/backup', async (req, res) => {
       kind: 'manual',
       appVersion: pkg.version || null,
       additionalEntries: getBackupAdditionalEntries(),
+      groups: backupContents.groups(),
     }));
     res.download(backup.path, backup.name, error => {
       try { if (existsSync(backup.path)) unlinkSync(backup.path); } catch {}
@@ -19172,6 +19287,46 @@ app.get('/api/system/backup', async (req, res) => {
 // Restore uploads stream to disk: a data home can pass the old 1 GB body cap,
 // and a ZIP over 2 GiB cannot be read into a Buffer at all.
 const RESTORE_STAGING_DIR = resolve(DATA_HOME, 'backups', 'restore-staging');
+
+// ── Password protection of backups (lib/backup-encryption.js, docs/backup-encryption.md) ──
+// Settings → Backups → Password protection. Off until the owner sets a password; while it is on, every backup this
+// server or the updater makes is encrypted or fails (lib/backup-service.js asks the data home's key file itself, so
+// no caller here passes anything). Reading the state is the owner's; turning it on, changing the password and
+// turning it off are the owner's page's alone, each with the password in its JSON body, never in the address. Wrong
+// passwords are slowed by one limiter, shared with the restore's unlock below.
+const backupPasswordAttempts = createPasswordAttemptLimiter();
+const backupEncryption = createBackupEncryptionService({ dataHome: DATA_HOME, limiter: backupPasswordAttempts, log: (line) => console.log(line) });
+const backupEncryptionRoutes = backupEncryptionHandlers(backupEncryption);
+function backupEncryptionOwnerPage(req, res, next) {
+  if (restoreOwnerPageCall(req)) return next();
+  return refuseNotOwnerPage(req, res, 'The backup password is set, changed and removed from SynaBun\'s own page (Settings → Backups), never by an agent, a run or another program.');
+}
+app.get('/api/system/backup/encryption', editorOwnerGuard, backupEncryptionRoutes.status);
+app.post('/api/system/backup/encryption/enable', editorOwnerGuard, backupEncryptionOwnerPage, backupEncryptionRoutes.enable);
+app.post('/api/system/backup/encryption/change', editorOwnerGuard, backupEncryptionOwnerPage, backupEncryptionRoutes.change);
+app.post('/api/system/backup/encryption/disable', editorOwnerGuard, backupEncryptionOwnerPage, backupEncryptionRoutes.disable);
+// The latest backups in the folders SynaBun writes them to, and whether each is encrypted (told by the file's first
+// bytes, never by its name). Names, dates and sizes only: no path leaves the server and no archive is opened.
+app.get('/api/system/backup/history', editorOwnerGuard, async (req, res) => {
+  try {
+    const folders = [resolve(DATA_HOME, 'backups', 'updates')];
+    try { folders.push(loadAutoBackupConfig().folderPath); } catch { /* no schedule */ }
+    try { folders.push(backupDownload.destination().folderPath); } catch { /* no folder chosen */ }
+    const listed = [];
+    for (const folder of new Set(folders.filter(Boolean).map(item => resolve(item)))) {
+      try { listed.push(...await listBackupSnapshots(folder)); } catch { /* a drive that is not there */ }
+    }
+    listed.sort((a, b) => b.createdMs - a.createdMs);
+    const backups = [];
+    for (const item of listed.slice(0, 12)) {
+      backups.push({ name: item.name, kind: item.kind, createdAt: item.createdAt, sizeBytes: item.sizeBytes, encrypted: await isEncryptedBackupFile(item.path) });
+    }
+    res.json({ ok: true, backups, total: listed.length });
+  } catch (err) {
+    console.error('GET /api/system/backup/history error:', err.message);
+    res.status(500).json({ ok: false, error: 'The list of backups could not be read.' });
+  }
+});
 
 // POST /api/system/restore/preview — Read manifest from uploaded ZIP without applying
 /** One sentence for a failed MCP server build (lib/mcp-build.js result), with what the compiler said when it said anything. */
@@ -19232,6 +19387,22 @@ function markRestoredAutomationRecords(targets) {
   return marked;
 }
 
+/**
+ * What the page shows before it asks for a restore: when the backup was made, how many files, and which groups it
+ * holds (lib/backup-groups.js). The file list and the checksums stay here: for a full backup they are tens of MB.
+ * The same answer for a plain backup and for an encrypted one after its password opened it.
+ */
+async function restorePreviewOf(zip) {
+  const found = await readBackupManifest(zip);
+  if (!found) throw Object.assign(new Error('Invalid backup: manifest.json not found'), { status: 400, code: 'RESTORE_MANIFEST_MISSING' });
+  const { files, checksums, inputs, ...head } = found.manifest;
+  return {
+    ok: true,
+    manifest: { ...head, fileCount: Array.isArray(files) ? files.length : 0 },
+    contents: readManifestGroups(found.manifest),
+  };
+}
+
 app.post('/api/system/restore/preview', async (req, res) => {
   if (!restoreOwnerPageCall(req)) return refuseRestoreCaller(req, res);
   let upload = null;
@@ -19239,17 +19410,20 @@ app.post('/api/system/restore/preview', async (req, res) => {
   try {
     upload = await saveRestoreUpload(req, RESTORE_STAGING_DIR);
     if (upload.sizeBytes === 0) {
-      return res.status(400).json({ error: 'No data received' });
+      return res.status(400).json({ error: 'No data received', code: 'RESTORE_EMPTY_UPLOAD' });
+    }
+    // An encrypted backup says nothing of what it holds before its password. It stays staged, still encrypted, and
+    // the page sends the password in a JSON body (POST /api/system/restore/unlock, lib/backup-restore-session.js).
+    if (await isEncryptedBackupFile(upload.path)) {
+      const staged = await restoreSessions.keep(upload);
+      upload = null;
+      return res.json({ ok: true, encrypted: true, locked: true, ...staged });
     }
     zip = await openZipArchive(upload.path);
-    const found = await readBackupManifest(zip);
-    if (!found) {
-      return res.status(400).json({ error: 'Invalid backup: manifest.json not found' });
-    }
-    res.json({ ok: true, manifest: found.manifest });
+    res.json(await restorePreviewOf(zip));
   } catch (err) {
     console.error('POST /api/system/restore/preview error:', err.message);
-    if (!res.headersSent) res.status(500).json({ error: err.message });
+    if (!res.headersSent) res.status(Number(err.status) || 500).json({ error: err.message, code: restoreFailureCode(err) });
   } finally {
     await zip?.close().catch(() => {});
     removeRestoreUpload(upload);
@@ -19265,32 +19439,64 @@ app.post('/api/system/restore', async (req, res) => {
   try {
     upload = await saveRestoreUpload(req, RESTORE_STAGING_DIR);
     if (upload.sizeBytes === 0) {
-      return res.status(400).json({ error: 'No backup data received' });
+      return res.status(400).json({ error: 'No backup data received', code: 'RESTORE_EMPTY_UPLOAD' });
+    }
+    // An encrypted backup is restored in steps (preview, unlock, apply-staged): this route has no way to be given
+    // its password, and must not be given one in the address.
+    if (await isEncryptedBackupFile(upload.path)) {
+      return res.status(400).json({ ok: false, code: 'BACKUP_ENCRYPTED', error: 'This backup is encrypted. Restore it from Settings → Memory & backups → Backups → Restore, which asks for its password.' });
     }
 
-    const mode = req.query.mode || 'full';
-
     zip = await openZipArchive(upload.path);
+    await applyRestoreArchive(zip, req.query.mode || 'full', res);
+  } catch (err) {
+    console.error('POST /api/system/restore error:', err.message);
+    if (!res.headersSent) res.status(500).json({ error: err.message, ...restoreFailureFields(err, res) });
+  } finally {
+    await zip?.close().catch(() => {});
+    removeRestoreUpload(upload);
+  }
+});
 
+/**
+ * The restore itself, from an opened archive: the uploaded ZIP, or the ZIP inside an encrypted backup whose password
+ * opened it (lib/backup-restore-session.js). Verifies before it writes, writes only what the archive holds, and
+ * answers `res`. The caller closes the archive and removes the upload.
+ */
+async function applyRestoreArchive(zip, mode, res) {
     // Find and validate manifest
     const found = await readBackupManifest(zip);
     if (!found) {
-      return res.status(400).json({ error: 'Invalid backup: manifest.json not found' });
+      return res.status(400).json({ error: 'Invalid backup: manifest.json not found', code: 'RESTORE_MANIFEST_MISSING' });
     }
     const { manifest, prefix } = found;
     if (![1, 2, 3].includes(manifest.version)) {
-      return res.status(400).json({ error: `Unsupported backup version: ${manifest.version}` });
+      return res.status(400).json({ error: `Unsupported backup version: ${manifest.version}`, code: 'RESTORE_UNSUPPORTED_VERSION' });
     }
 
     // v3 archives are published only after checksum verification. Recheck on
     // restore so a damaged or edited snapshot cannot partially replace state.
     if (manifest.version >= 3) {
-      try { await verifyBackupChecksums(zip, { prefix, manifest, label: 'Invalid backup' }); }
-      catch (error) { return res.status(400).json({ error: error.message }); }
+      // An archive that records its groups holds exactly those, or it is refused before anything is written.
+      try {
+        assertBackupGroups(zip, manifest, prefix, 'Invalid backup');
+        await verifyBackupChecksums(zip, { prefix, manifest, label: 'Invalid backup' });
+      }
+      catch (error) { return res.status(400).json({ error: error.message, code: restoreFailureCode(error) }); }
     }
+    // An encrypted backup: every part of the file passes its check before anything is written, the parts no entry
+    // reaches too (a file cut short, added to or reordered fails here).
+    if (zip.encrypted) {
+      try { await zip.source.authenticateRest(); }
+      catch (error) { return res.status(400).json({ error: error.message, code: restoreFailureCode(error) }); }
+    }
+    // What this restore brings and what it leaves as it is: only files the archive holds are written, nothing is
+    // deleted, so the groups a backup does not contain keep whatever is here now.
+    const contents = readManifestGroups(manifest);
 
     const entryAt = rel => zip.getEntry(`${prefix}/${rel}`);
-    const results = { files: [], snapshots: [], errors: [] };
+    // `errorCodes`: one stable code per sentence of `errors`, read when the answer is written.
+    const results = { files: [], snapshots: [], errors: [], get errorCodes() { return this.errors.map((sentence) => restoreWarningCode(sentence)); } };
 
     // Restore config files
     if (mode === 'full' || mode === 'config-only') {
@@ -19307,8 +19513,11 @@ app.post('/api/system/restore', async (req, res) => {
         claudeSettings: home ? join(home, '.claude', 'settings.json') : null,
       });
       if (unsafe.length) {
-        return res.status(400).json({ error: `Invalid backup: unsafe path ${unsafe[0]}` });
+        return res.status(400).json({ error: `Invalid backup: unsafe path ${unsafe[0]}`, code: 'RESTORE_UNSAFE_PATH' });
       }
+
+      // From here on a failure may leave some files replaced, and its answer says so (restoreFailureFields).
+      (res.locals ||= {}).restoreWriting = true;
 
       // .env
       const envEntry = entryAt('env.bak');
@@ -19358,6 +19567,7 @@ app.post('/api/system/restore', async (req, res) => {
     if (mode === 'full' || mode === 'snapshots-only') {
       const dbEntry = entryAt('database/memory.db');
       if (dbEntry) {
+        (res.locals ||= {}).restoreWriting = true;
         try {
           // Close existing database connection before replacing
           closeDb();
@@ -19384,6 +19594,20 @@ app.post('/api/system/restore', async (req, res) => {
       }
     }
 
+    // What the archive held, by group, goes with the answer; the sizes next to Settings → Backups → What to back
+    // up were measured before this restore.
+    results.contents = contents;
+    backupContents.invalidate();
+    // Backup encryption is this installation's own (its key file is in no archive and no restore writes it). Where
+    // there is none and this backup was encrypted, its key is kept, so the backups made from here on are encrypted
+    // as the restored one was, with the password that just opened it: a restore on a new computer never ends in
+    // scheduled backups written in plain.
+    if (zip.encrypted) {
+      results.encrypted = true;
+      try { if (backupEncryption.adopt(zip.source.recipientForAdoption())) results.encryptionKept = true; }
+      catch (err) { results.errors.push(`Backup encryption could not be kept: ${err.message}. Turn it on in Settings → Backups.`); }
+    }
+
     // Post-restore: ensure MCP server is built (critical for fresh installs + restore). Built means dist/index.js
     // and every module it imports (lib/mcp-dist.js), stamped with this version and source (lib/mcp-build.js): the
     // builder compiles into a temp folder and swaps it in only on success, so a failure keeps whatever dist there was.
@@ -19408,14 +19632,23 @@ app.post('/api/system/restore', async (req, res) => {
     res.json({ ok: true, message: 'Backup restored successfully', results, ...(results.restart ? { restart: true, bootId: SERVER_BOOT_ID } : {}) });
     // The new build loads only in a new server: the same restart as Apps → Restart Server, once the answer is out.
     if (results.restart) setTimeout(() => { try { requestServerRestart(); } catch (err) { console.error('[restore] restart after the MCP build failed:', err?.message); } }, 500);
-  } catch (err) {
-    console.error('POST /api/system/restore error:', err.message);
-    if (!res.headersSent) res.status(500).json({ error: err.message });
-  } finally {
-    await zip?.close().catch(() => {});
-    removeRestoreUpload(upload);
-  }
-});
+}
+
+// ── An encrypted backup: upload once, then the password, then the restore (lib/backup-restore-session.js) ──
+// The preview route above keeps an encrypted upload instead of answering with its contents. These three are the
+// rest: unlock ({ uploadId, password }: the same preview a plain backup gets, or 401 WRONG_PASSWORD with nothing
+// changed), apply-staged ({ uploadId, mode }: applyRestoreArchive over the decrypting reader) and discard. The
+// owner's page's alone, as restore is. The password is in the JSON body of unlock only; what stays afterwards is
+// that one file's keys, in memory, until the restore, a discard or 30 minutes. A right password clears the count of
+// wrong ones only for this installation's own key: anybody can upload a file whose password they know.
+const restoreSessions = createRestoreSessions({ limiter: backupPasswordAttempts, currentKeyId: () => backupEncryption.status().keyId || null });
+const encryptedRestoreRoutes = encryptedRestoreHandlers({ sessions: restoreSessions, preview: restorePreviewOf, apply: applyRestoreArchive });
+function restoreOwnerPageOnly(req, res, next) {
+  return restoreOwnerPageCall(req) ? next() : refuseRestoreCaller(req, res);
+}
+app.post('/api/system/restore/unlock', editorOwnerGuard, restoreOwnerPageOnly, encryptedRestoreRoutes.unlock);
+app.post('/api/system/restore/apply-staged', editorOwnerGuard, restoreOwnerPageOnly, encryptedRestoreRoutes.apply);
+app.post('/api/system/restore/discard', editorOwnerGuard, restoreOwnerPageOnly, encryptedRestoreRoutes.discard);
 
 // ═══════════════════════════════════════════
 // AUTO-BACKUP SYSTEM
@@ -19473,8 +19706,8 @@ function getBackupAdditionalEntries() {
   return entries;
 }
 
-function backupConfigResponse(cfg = loadAutoBackupConfig()) {
-  const snapshots = cfg.folderPath ? listBackupSnapshots(cfg.folderPath) : [];
+async function backupConfigResponse(cfg = loadAutoBackupConfig()) {
+  const snapshots = cfg.folderPath ? await listBackupSnapshots(cfg.folderPath) : [];
   const health = getBackupHealth(cfg, { snapshots });
   if (_backupOperationActive || _autoBackupPromise) {
     health.status = 'running';
@@ -19504,15 +19737,15 @@ async function runAutoBackup({ force = false, kind = 'scheduled', folderPath = n
     try {
       const pkg = JSON.parse(readFileSync(resolve(PACKAGE_ROOT, 'package.json'), 'utf-8'));
       let preRetention = null;
-      const backup = await serializeBackupOperation(async () => {
+      const { backup, retention } = await serializeBackupOperation(async () => {
         if (kind === 'scheduled') {
-          preRetention = applyBackupRetention({
+          preRetention = await applyBackupRetention({
             folderPath: destination,
             retention: cfg.retention,
             incomingBytes: cfg.lastBackupSize,
           });
         }
-        return createVerifiedBackup({
+        const backup = await createVerifiedBackup({
           dataHome: DATA_HOME,
           databasePath: getDbPath(),
           folderPath: destination,
@@ -19520,9 +19753,13 @@ async function runAutoBackup({ force = false, kind = 'scheduled', folderPath = n
           appVersion: pkg.version || null,
           additionalEntries: getBackupAdditionalEntries(),
           expectedArchiveBytes: cfg.lastBackupSize,
+          // The same choice as a manual backup (Settings → Backups → What to back up).
+          groups: backupContents.groups(),
         });
+        // Keep both async sweeps in the backup queue so another operation cannot publish between them.
+        const retention = await applyBackupRetention({ folderPath: destination, retention: cfg.retention });
+        return { backup, retention };
       });
-      const retention = applyBackupRetention({ folderPath: destination, retention: cfg.retention });
       cfg.lastVerifiedBackup = backup.createdAt;
       cfg.lastBackup = backup.createdAt; // backward compatibility
       cfg.lastBackupPath = backup.path;
@@ -19553,6 +19790,7 @@ function startAutoBackupScheduler() {
   const nextDue = nextBackupDueMs(cfg, { lastAttemptMs: _autoBackupLastAttemptMs });
   const delay = Math.max(0, Math.min(2_147_000_000, nextDue - Date.now()));
   _autoBackupTimer = setTimeout(async () => {
+    if (typeof markActivity === 'function') markActivity('scheduler:backup');
     try { await runAutoBackup(); }
     catch (error) { console.error(`[auto-backup] Scheduler failed safely: ${error.message}`); }
     finally { startAutoBackupScheduler(); }
@@ -19562,7 +19800,7 @@ function startAutoBackupScheduler() {
 
 function stopAutoBackupScheduler() {
   if (_autoBackupTimer) {
-    clearInterval(_autoBackupTimer);
+    clearTimeout(_autoBackupTimer);
     _autoBackupTimer = null;
   }
 }
@@ -19570,13 +19808,27 @@ function stopAutoBackupScheduler() {
 // Boot: start scheduler if enabled
 startAutoBackupScheduler();
 
+// Boot: what a backup or a restore that never finished left behind (a crash, a kill, a power cut). The partial
+// archives and the staged copies of a process that is gone, in every folder a backup works in, and whatever is in
+// the two folders that only ever hold this server's own working files (restore uploads, the browser download's
+// staging). The staged copies of an encrypted backup are plaintext: they do not wait for the next backup to be
+// removed. On a worker thread: a backup folder can be a drive that answers slowly.
+setTimeout(() => {
+  let folders = [];
+  try { folders = [loadAutoBackupConfig().folderPath, backupDownload.destination().folderPath]; } catch { /* the data home's own folders are swept all the same */ }
+  sweepCrashedBackupArtifacts({ dataHome: DATA_HOME, folders, scratchFolders: [RESTORE_STAGING_DIR, resolve(DATA_HOME, 'backups', 'manual-staging')] }).then((removed) => {
+    for (const [folder, names] of Object.entries(removed || {})) console.log(`[backup] Removed ${names.length} leftover working file(s) of an unfinished backup or restore in ${folder}`);
+  }, (error) => console.warn(`[backup] Leftovers of unfinished backups could not be swept: ${error?.message || error}`));
+}, 1500).unref?.();
+
 // GET /api/system/auto-backup — Get auto-backup config
-app.get('/api/system/auto-backup', (req, res) => {
-  res.json(backupConfigResponse());
+app.get('/api/system/auto-backup', async (req, res) => {
+  try { res.json(await backupConfigResponse()); }
+  catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // PUT /api/system/auto-backup — Update auto-backup config
-app.put('/api/system/auto-backup', (req, res) => {
+app.put('/api/system/auto-backup', async (req, res) => {
   try {
     const current = loadAutoBackupConfig();
     const { enabled, intervalMinutes, folderPath, retention } = req.body;
@@ -19595,7 +19847,7 @@ app.put('/api/system/auto-backup', (req, res) => {
       stopAutoBackupScheduler();
     }
 
-    res.json({ ok: true, config: backupConfigResponse(current) });
+    res.json({ ok: true, config: await backupConfigResponse(current) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -19607,18 +19859,18 @@ app.post('/api/system/auto-backup/trigger', async (req, res) => {
     const cfg = loadAutoBackupConfig();
     if (!cfg.folderPath) return res.status(400).json({ error: 'No backup folder configured' });
     const result = await runAutoBackup({ force: true });
-    if (result?.error) return res.status(500).json({ error: result.error, ...backupConfigResponse() });
-    res.json(backupConfigResponse());
+    if (result?.error) return res.status(500).json({ error: result.error, ...await backupConfigResponse() });
+    res.json(await backupConfigResponse());
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // GET /api/system/backups — verified/runtime backup history for Settings.
-app.get('/api/system/backups', (req, res) => {
+app.get('/api/system/backups', async (req, res) => {
   try {
     const cfg = loadAutoBackupConfig();
-    const snapshots = cfg.folderPath ? listBackupSnapshots(cfg.folderPath) : [];
+    const snapshots = cfg.folderPath ? await listBackupSnapshots(cfg.folderPath) : [];
     res.json({ ok: true, snapshots, health: getBackupHealth(cfg, { snapshots }), retention: cfg.retention });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -22601,8 +22853,7 @@ async function getSessionEntriesForRequest(projDir, { forceRefresh = false } = {
 let _codexSessionCatalogRefresh = null;
 function getCodexSessionCatalogRefresh() {
   if (!_codexSessionCatalogRefresh) {
-    _codexSessionCatalogRefresh = memoCache(() => rebuildCodexCache({
-      background: true,
+    _codexSessionCatalogRefresh = memoCache(() => runSessionJob('codex', {
       accounts: loadCodexAccounts().accounts,
       projects: loadHookProjects(),
     }), { ttlMs: 15000 });
@@ -23029,15 +23280,16 @@ function antigravityHomeFor(kind, id) { return antigravityHomeDir(antigravityHom
 // included, into memory capture (lib/memory-session-capture.js). A pass at start, one after a panel turn ends (that
 // conversation only, a moment later so agy has written its last step), one every five minutes, and a fresh one
 // before Resume or Skills Studio searches them (at most every 15 s).
-function antigravitySessionStores({ userOnly = false } = {}) {
-  return antigravityStores({ homesRoot: userOnly ? null : antigravityHomesRoot(DATA_HOME) });
-}
 let _antigravityCacheAt = 0;
+let _antigravityPass = null;
 function refreshAntigravityCatalog({ force = false } = {}) {
+  if (_antigravityPass) return _antigravityPass;
   if (!force && Date.now() - _antigravityCacheAt < 15_000) return null;
-  _antigravityCacheAt = Date.now();
-  try { return rebuildAntigravityCache({ stores: antigravitySessionStores() }); }
-  catch (err) { console.warn('  Session cache (antigravity) error:', err.message); return null; }
+  _antigravityPass = runSessionJob('antigravity', { homesRoot: antigravityHomesRoot(DATA_HOME) })
+    .then(result => { _antigravityCacheAt = Date.now(); return result; })
+    .catch(err => { console.warn('  Session cache (antigravity) error:', err.message); return null; })
+    .finally(() => { _antigravityPass = null; });
+  return _antigravityPass;
 }
 const _antigravityRefreshTimers = new Map();
 function refreshAntigravitySession(sessionId) {
@@ -23045,8 +23297,9 @@ function refreshAntigravitySession(sessionId) {
   clearTimeout(_antigravityRefreshTimers.get(sessionId));
   _antigravityRefreshTimers.set(sessionId, setTimeout(() => {
     _antigravityRefreshTimers.delete(sessionId);
-    try { rebuildAntigravityCache({ stores: antigravitySessionStores({ userOnly: true }), only: sessionId }); }
-    catch (err) { console.warn('  Session cache (antigravity) error:', err.message); }
+    markActivity('session-cache:antigravity-turn');
+    runSessionJob('antigravity', { only: sessionId })
+      .catch(err => console.warn('  Session cache (antigravity) error:', err.message));
   }, 1500));
   _antigravityRefreshTimers.get(sessionId).unref?.();
 }
@@ -23103,7 +23356,7 @@ app.get('/api/session-search', async (req, res) => {
     }
 
     // Antigravity's index follows its transcripts (refreshAntigravityCatalog: at most every 15 s).
-    if (provider === 'antigravity') refreshAntigravityCatalog();
+    if (provider === 'antigravity') await refreshAntigravityCatalog();
 
     // 1. FTS5 substring hits
     const ftsRows = searchSessionFts(q, { provider, project: projectFilter, limit: limit * 2 });
@@ -24558,8 +24811,7 @@ skillsService = createSkillsService({
   operationsOptions: { notify: (item) => {
     const session = _assistantRuntime?.listSessions?.().find((s) => s.status !== 'ended');
     if (!session) return false;
-    _assistantRuntime.routerMailbox(session.id, item);
-    return true;
+    return _assistantRuntime.routerMailbox(session.id, item);
   } },
 });
 registerSkillsV2Routes(app, {
@@ -24936,7 +25188,7 @@ async function skillSourceSessions({ provider, project = null, q = '', limit = 4
   } else if (provider === 'antigravity') {
     // The user's own Antigravity conversations (the panel's and a terminal agy's), as Resume's index keeps them,
     // titled as Antigravity titles them (refreshAntigravityCatalog).
-    refreshAntigravityCatalog();
+    await refreshAntigravityCatalog();
     for (const entry of listSessionCache('antigravity', { limit: 100000 })) {
       if (entry.deleted || !entry.project_path) continue;
       const dir = resolve(entry.project_path);
@@ -26862,13 +27114,17 @@ app.delete('/api/skills-studio/import/stage/:stagingId', (req, res) => {
 });
 
 // GET /api/health — Check if SQLite database is accessible
+// The page asks this every 3 s to tell a running server from a stopped one (public/shared/server-presence.js), so
+// it must answer whatever else the database is doing: the count is read at most once per HEALTH_COUNT_TTL_MS, never
+// per request. On 2026-11-21 each probe ran its own synchronous COUNT(*) behind statements that took seconds while a
+// backup kept the disk busy, two probes in a row timed out, and a live server was shown as offline.
+const healthMemoryCount = createHealthCount({ read: () => { getDb(); return countMemories(); }, store: memoryStoreGate });
 app.get('/api/health', (req, res) => {
   try {
-    // getDb() auto-creates the directory, file, and schema if missing
-    getDb();
-    const count = countMemories();
+    // getDb() auto-creates the directory, file, and schema if missing (inside the count's read)
+    const count = healthMemoryCount();
     res.json({
-      ok: true, storage: 'sqlite', memories: count, projectDir: PACKAGE_ROOT, install: INSTALL_KIND, startLauncher: getStartLauncherState(), entry: START_ENTRY,
+      ok: true, storage: 'sqlite', memories: count, ...healthMemoryCount.storeState?.(), projectDir: PACKAGE_ROOT, install: INSTALL_KIND, startLauncher: getStartLauncherState(), entry: START_ENTRY,
       version: SERVER_VERSION, dataHomeId: DATA_HOME_ID, installEntry: INSTALL_ENTRY,
       // Which server this is, and whether it is on its way out for a restart: a
       // page showing the restart tells this one from the one that replaces it.
@@ -28121,11 +28377,14 @@ try {
   const { createMcpRoutes, ensureInit: mcpEnsureInit } = await import(mcpPath);
 
   // Eagerly init: DB, categories, embedding model — runs in background, doesn't block server start
-  mcpEnsureInit().then(() => {
+  const warmMcp = () => mcpEnsureInit().then(() => {
     console.log('  MCP HTTP: DB + embeddings warm');
   }).catch(err => {
+    if (isMemoryStoreRefusal(err)) return; // warmed below, once the store is back
     console.error('  MCP HTTP eager init failed:', err.message);
   });
+  warmMcp();
+  memoryStoreGate.subscribe((state) => { if (state === 'ready' || state === 'deferred') warmMcp(); });
 
   // A request that names a run (X-Synabun-Terminal) without that run's terminal token is not that run here either
   // (lib/terminal-tokens.js): the MCP server routes it as its own MCP session, so it never shares the run's identity
@@ -28136,6 +28395,13 @@ try {
   // `eligible` is this server's own answer to "is this initialize a program on this computer talking to the plain
   // /mcp mount directly" (mcpSessionProofEligible, finding 5); the MCP's own loopback check stays in front of it.
   const mcpRouter = createMcpRoutes({ terminalAuth, sessionProof: { eligible: (req) => mcpSessionProofEligible(req), issue: (sid) => _terminalTokens.issueSession(sid), revoke: (sid) => { endMcpSessionProof(sid); } } });
+
+  // The in-process MCP runs its tools on this thread (an Assistant brain's recall among them): name it for the stall log.
+  // Answers nothing. No mount path of its own: a '/mcp' mount here would be mirrored by the route-table tests.
+  app.use(function markMcpActivity(req, res, next) {
+    if (req.path === '/mcp' || req.path.startsWith('/mcp/')) { const end = beginActivity('mcp:request'); res.once('close', end); }
+    next();
+  });
 
   // Keyed path: /mcp/<key> — validates key, then forwards to MCP router
   app.use('/mcp/:key', (req, res, next) => {
@@ -29108,6 +29374,7 @@ function persistNativeScheduleOutcome(run, runningInfo = null) {
 
   const schedule = schedules[index];
   schedule.lastRunResult = nativeScheduleResult(run);
+  schedule.lastStopProvenance = run.stopProvenance || null;
   schedule.updatedAt = new Date().toISOString();
   saveSchedules(schedules);
   broadcastSync({ type: 'schedule:updated', schedule });
@@ -29131,6 +29398,7 @@ function persistExecScheduleOutcome(loopState, status, reason = '') {
     const index = schedules.findIndex((schedule) => schedule.id === loopState.scheduledBy);
     if (index === -1) return;
     const schedule = schedules[index];
+    schedule.lastStopProvenance = loopState.stopProvenance || null;
     schedule.lastRunResult = status === 'completed'
       ? 'completed'
       : status === 'stopped'
@@ -29872,6 +30140,7 @@ function noteMoreLoginContextClose(session, sessionId, context = session?.contex
         // Asked before a card's pick is approved: a held run that would refuse it keeps the card open.
         checkHeld: (runId, target, role) => _assistantDispatcher?.heldRouteRefusal?.(runId, target, role) || null,
         declineHeld: (runId, reason) => _assistantDispatcher?.declineRoute?.(runId, { reason }),
+        activeRouteRuns: (sessionId, routeId) => _assistantDispatcher?.activeRouteRuns(sessionId, routeId),
       },
       log: (tag, message) => assistantLog(tag, message),
       clarifier: assistantClarifier,
@@ -29946,6 +30215,7 @@ function noteMoreLoginContextClose(session, sessionId, context = session?.contex
       // The one instance of this server (never a second createCoordinationService in this file): a stop that is not
       // a signal (Restart Server, /api/server/shutdown, an update) closes it at the end of runGracefulShutdown.
       _assistantCoordination = assistantCoordination;
+      await assistantCoordination.ready;
       if (assistantCoordination.degraded) console.warn(`[assistant] coordination store unavailable (${assistantCoordination.degraded.message}): agent events are kept in memory until the next start`);
     }
     // ══ end Agents P2 ══════════════════════════════════════════════════════════════════════════════════════════
@@ -30105,6 +30375,7 @@ function noteMoreLoginContextClose(session, sessionId, context = session?.contex
         .then((m) => m.setTeamContextResolver((runId) => !!teamScheduler.member(runId)))
         .catch((err) => console.warn('[assistant] team tool unavailable (mcp-server needs a build):', err?.message || err));
       // After a restart: the library's own recovery, then every team under way is taken up again. Never awaited here.
+      markActivity('startup:team-recovery');
       teamScheduler.recover().catch((err) => console.warn('[assistant] team recovery failed:', err?.message || err))
         .finally(() => broadcastSync({ type: 'assistant:team-changed', event: 'recovered' }));
       _assistantTeamScheduler = teamScheduler;
@@ -30117,6 +30388,7 @@ function noteMoreLoginContextClose(session, sessionId, context = session?.contex
     // then repair saved routes whose effort their model does not run (idempotent;
     // a provider whose list is not available yet is retried a few times).
     const repairRouteEfforts = async (attempt = 0) => {
+      markActivity('startup:route-efforts');
       const { repairPreferenceEfforts } = await import('./lib/effort-levels.js');
       const cat = await assistantCatalog.full({ force: attempt > 0 });
       const { fixes, unverified } = repairPreferenceEfforts(assistantConfigStore.routing().preferences, cat);
@@ -30347,25 +30619,24 @@ function cleanupClaudeLoopMcpConfig(terminalSessionId) {
  * Each opencode-<sid> dir carries a ~61 MB node_modules; the per-loop cleanup
  * runs on graceful stop and PTY exit, but a server crash/restart (or a PTY that
  * never fired its exit) leaves dirs stranded forever. At boot no loop is live,
- * so anything older than the cutoff is safe to remove. Mirrors the mtime-cutoff
- * rmSync pattern used by cleanupOldUpdaterStages().
+ * so anything older than the cutoff is safe to remove. Removal runs off the main thread even for an entire dependency tree.
  */
-function cleanupStaleLoopConfigs(maxAgeMs = 6 * 60 * 60 * 1000) {
+async function cleanupStaleLoopConfigs(maxAgeMs = 6 * 60 * 60 * 1000) {
   const dir = resolve(DATA_HOME, 'data', 'loop-configs');
   let removedDirs = 0, removedFiles = 0;
   try {
     if (!existsSync(dir)) return { removedDirs, removedFiles };
     const cutoff = Date.now() - maxAgeMs;
-    for (const name of readdirSync(dir)) {
+    for (const name of await fsp.readdir(dir)) {
       const isOpencodeDir = name.startsWith('opencode-');
       const isClaudeCfg = name.startsWith('claude-mcp-') && name.endsWith('.json');
       if (!isOpencodeDir && !isClaudeCfg) continue;
       const full = resolve(dir, name);
       try {
-        const st = statSync(full);
+        const st = await fsp.stat(full);
         if (st.mtimeMs >= cutoff) continue;
-        if (st.isDirectory()) { rmSync(full, { recursive: true, force: true }); removedDirs++; }
-        else { unlinkSync(full); removedFiles++; }
+        if (st.isDirectory()) { await fsp.rm(full, { recursive: true, force: true }); removedDirs++; }
+        else { await fsp.unlink(full); removedFiles++; }
       } catch { /* skip unreadable/racing entries */ }
     }
     if (removedDirs || removedFiles) {
@@ -30951,6 +31222,7 @@ function scanForLeaks() {
 
 let _lastLeakHash = '';
 setInterval(() => {
+  markActivity('timer:session-leaks');
   syncRegistryFromTerminals();
   const leaks = scanForLeaks();
   // Strip ageMs AND description (which embeds age as "Xm old") to prevent
@@ -31012,6 +31284,7 @@ function scanLoopInventory() {
 
 let _lastLoopHash = '';
 setInterval(() => {
+  markActivity('timer:loop-inventory');
   const inventory = scanLoopInventory();
   // Hash on stable fields only (drop minute counters that tick every poll)
   const hash = JSON.stringify({
@@ -32804,9 +33077,27 @@ const extensionBridge = createExtensionBridge({
   log: record => console.log('[extension-bridge]', JSON.stringify(record)),
   onInventory: state => extensionAdapter.sync(state),
 });
+// Page JavaScript in the owner's everyday browser (browser_evaluate through the extension) is held to what the
+// Playwright evaluate route holds a loop's tab to, so an extension session is no way around either: the X publish gate
+// (xGateBypassRefusal: no scripted click on a publish / like / repost / follow control) and the spacing of social
+// writes (`pace` in the body, socialWritePacer). The same functions with the same scoping: a loop-owned tab only.
+// One paired browser is one signed-in account, whatever the session object is called: one queue per platform.
+const extensionEvaluateGate = {
+  refusal: ({ session, req, tabId, script }) => xGateBypassRefusal(session, req, { page: session.tabs.get(tabId)?.page, tabId }, 'evaluate', script),
+  async run({ session, req, execute }) {
+    const pace = socialPaceRequest(req?.body);
+    if (!pace || !isLoopPaced(session, req)) return { result: await execute() };
+    const outcome = await socialWritePacer.run(`${pace.platform}:extension`, {
+      platform: pace.platform, maxWaitMs: socialPaceWaitBudget(req, pace.maxWaitMs), signal: req,
+    }, execute);
+    const gap = SOCIAL_WRITE_GAPS[pace.platform];
+    if (outcome.status === 'paced') return { paced: { pending: true, retryAfterMs: outcome.retryAfterMs, waitedMs: outcome.waitedMs, gapMinMs: gap.minMs, gapMaxMs: gap.maxMs } };
+    return { result: outcome.result, paced: { pending: false, waitedMs: outcome.waitedMs, gapMinMs: gap.minMs, gapMaxMs: gap.maxMs } };
+  },
+};
 const extensionAdapter = createExtensionAdapter({
   bridge: extensionBridge, sessions: browserSessions, uploadRoot: extensionUploadRoot, dataHome: DATA_HOME,
-  caller: browserCaller, ownerPage: browserOwnerPageOnly,
+  caller: browserCaller, ownerPage: browserOwnerPageOnly, evaluateGate: extensionEvaluateGate,
   selected: req => loadBrowserConfig().connectMode === 'extension' && !runMoreLoginPin(browserCaller(req).id),
 });
 // The extension folder the owner loads (DATA_HOME/browser-extension/unpacked): refreshed at start when the bundled
@@ -39219,9 +39510,16 @@ app.post('/api/browser/sessions/:id/upload', async (req, res) => {
     }
     markBrowserActionStarted(req);
     await target.setInputFiles(filePaths, { timeout: browserActionTimeout(req, 10000) });
+    // Native pickers supply the MIME. The handler may consume or remove the input synchronously.
+    const files = await target.evaluateAll(elements => {
+      if (elements.length !== 1) return [];
+      const el = elements[0], input = el.localName === 'label' ? el.control : el;
+      if (!input?.matches('input[type=file]')) return [];
+      return Array.from(input.files, ({ name, type, size }) => ({ name, type, size }));
+    }).catch(() => []);
     if (!browserV2Enabled()) await cancellableBrowserDelay(500, req);
     const state = await getBrowserActionState(session, routed, compact);
-    res.json({ ok: true, url: state.url, title: state.title });
+    res.json({ ok: true, url: state.url, title: state.title, files });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -39502,8 +39800,10 @@ function runLaunchStep(name) {
   const task = LAUNCH_TASKS[name];
   if (!task) return Promise.resolve();
   return _launchQueue(async () => {
+    const endActivity = beginActivity(`launch:${name}`);
     const started = Date.now();
     try { await task(); } catch (error) { console.warn(`[launch-cache] ${name}: ${error?.message || error}`); }
+    finally { endActivity(); }
     const took = Date.now() - started;
     if (took > 2000) console.log(`[launch-cache] ${name} warmed in ${(took / 1000).toFixed(1)} s`);
     await new Promise((done) => { const timer = setTimeout(done, LAUNCH_STEP_GAP_MS); timer.unref?.(); });
@@ -39530,6 +39830,10 @@ function startLaunchWarmup() {
 reloadConfig();
 
 const httpServer = app.listen(PORT, async () => {
+  markActivity('startup:listen');
+  scheduleScratchRetention(DATA_HOME, () => ({
+    dispatcher: _assistantDispatcher, runtime: _nativeLoopRuntime, scheduled: _runningScheduledLoops, closing: _shutdownInProgress,
+  }));
   // Before anything else: the sessions that saved a MoreLogin profile choice (POST /api/morelogin/use) must prove
   // who they are again before that choice is used (retireSavedProfileChoiceOwners).
   try { retireSavedProfileChoiceOwners(); } catch (err) { console.warn(`[morelogin] the owners of the saved profile choices were not retired: ${err.message}`); }
@@ -39547,8 +39851,7 @@ const httpServer = app.listen(PORT, async () => {
 
   // Write embedding model metadata so mismatch can be detected later
   try {
-    setKvConfig('embedding_model', EMBEDDING_MODEL);
-    setKvConfig('embedding_dims', String(EMBEDDING_DIMS));
+    await saveEmbeddingMetadata();
   } catch {}
 
   // Keep the Start Server launcher (synabun://) pointing at this install even
@@ -39583,20 +39886,32 @@ const httpServer = app.listen(PORT, async () => {
 
   // Gated: an idle tick reads one kv row + one index probe instead of the
   // ~9-query maintenanceStatus() and a BEGIN IMMEDIATE (see lib/memory-timers.js).
-  startGatedMemoryMaintenance();
   // The TypeSafe judge backfill runs only here: one runner per store, never in
   // the stdio MCP servers. It is inert until the Judgments tab starts it.
-  startJudgeBackfill();
-  startMemoryCapture();
+  // None of the three ticks while the memory store is being upgraded.
+  const startMemoryTimers = () => { startGatedMemoryMaintenance(); startJudgeBackfill(); startMemoryCapture(); };
+  const stopMemoryTimers = () => { stopGatedMemoryMaintenance(); try { stopJudgeBackfill(); } catch {} stopMemoryCapture(); };
+  if (memoryStoreGate.open()) startMemoryTimers();
+  memoryStoreGate.subscribe((state) => { if (state === 'ready' || state === 'deferred') startMemoryTimers(); else stopMemoryTimers(); });
 
   // Warm the embedding model + vector caches in the background so the first
   // recall/search doesn't pay the 2-5s Transformers.js model load or the
   // initial vector-matrix build.
   setTimeout(() => {
+    markActivity('startup:embeddings');
     warmupEmbeddings()
       .then(() => console.log('  Embeddings: model warmed up'))
       .catch((err) => console.warn('  Embeddings warmup failed:', err.message));
-    try { memoryVectors.size(); } catch { /* cache builds lazily on failure */ }
+    // Memory vectors, then the passage vectors every hybrid recall reads, both in slices (warmRetrievalCaches).
+    // Session-chunk vectors load on the first recall that searches sessions, in slices as well (VectorCache.ready).
+    const warmMemoryCaches = () => {
+      markActivity('startup:memory-vectors');
+      import('../mcp-server/dist/services/memory-retrieval.js')
+        .then(({ warmRetrievalCaches }) => (warmRetrievalCaches ? warmRetrievalCaches() : memoryVectors.warm()))
+        .catch(err => { if (!isMemoryStoreRefusal(err)) console.warn('  Vector cache warmup failed:', err.message); });
+    };
+    if (memoryStoreGate.open()) warmMemoryCaches();
+    memoryStoreGate.subscribe((state) => { if (state === 'ready' || state === 'deferred') warmMemoryCaches(); });
   }, 500);
 
   // Local profiles still running from before this start (their Chrome outlives the server, as a MoreLogin profile
@@ -39604,6 +39919,7 @@ const httpServer = app.listen(PORT, async () => {
   // was taken meanwhile, that profile's pages fail (never a direct connection); its next start starts it again.
   setTimeout(async () => {
     try {
+      markActivity('startup:local-profiles');
       const adopted = await moreLogin.adoptLocalProfiles();
       if (!adopted.length) return;
       const stuck = adopted.filter((p) => p.relay === 'restart-needed');
@@ -39615,6 +39931,7 @@ const httpServer = app.listen(PORT, async () => {
   // Activation is an explicit user choice in the MoreLogin tab (Default AI browser).
   setTimeout(async () => {
     try {
+      markActivity('startup:morelogin-detection');
       const mlBootCfg = loadBrowserConfig();
       const cfg = mlBootCfg;
       const port = moreLogin.getMoreLoginPort(cfg);
@@ -39628,19 +39945,28 @@ const httpServer = app.listen(PORT, async () => {
   // Reclaim orphaned per-loop config dirs left by crashed/killed loops. At boot
   // no loop is live, so this is the safe choke point to drop multi-GB of stale
   // opencode-<sid> node_modules that never got their per-loop cleanup.
-  setTimeout(() => { try { cleanupStaleLoopConfigs(); } catch {} }, 1500);
+  setTimeout(() => {
+    markActivity('startup:loop-config-cleanup');
+    void cleanupStaleLoopConfigs();
+  }, 1500);
 
   // OpenCode serves an earlier SynaBun left running (it crashed, or was killed): found by their records alone and
   // stopped only when they are provably its own and nothing uses them (lib/opencode-serve-records.js). An
   // OpenCode start that comes earlier makes the same look first (and this one then finds nothing left).
-  setTimeout(() => { sweepLeftoverOpencodeServes(); }, 1000);
+  setTimeout(() => {
+    markActivity('startup:opencode-sweep');
+    sweepLeftoverOpencodeServes();
+  }, 1000);
   // The cloudflared a crashed server left running (lib/cloudflared/tunnel.js): at once, its old address points here.
   sweepLeftoverTunnels();
 
   // Compare the installed Claude CLI with the release the Agent SDK was built
   // against, once, so an older installation is named in the log before the
   // first session runs on it (checkClaudeCliSkew in lib/claude-model-catalog.js).
-  setTimeout(() => { checkClaudeCliSkew(getClaudeBin()).catch(() => {}); }, 1000);
+  setTimeout(() => {
+    markActivity('startup:claude-cli-skew');
+    checkClaudeCliSkew(getClaudeBin()).catch(() => {});
+  }, 1000);
 
   // The lists windows, menus and Settings wait for, read once in the background (see LAUNCH_TASKS above).
   startLaunchWarmup();
@@ -39649,6 +39975,7 @@ const httpServer = app.listen(PORT, async () => {
   // claude follow it); a PC with none, and an app that carries none, gets SynaBun's copy, fetched in the background.
   setTimeout(() => {
     try {
+      markActivity('startup:git-bash');
       gitBash.refresh();
       if (gitBash.status().state === 'missing') gitBash.ensure({ reason: 'first run' });
       // What an earlier run left in the data home (a stopped attempt's work folder, an older version), off the event loop.
@@ -39657,35 +39984,42 @@ const httpServer = app.listen(PORT, async () => {
   }, 2500);
 
   // Warm the session_cache + session_fts tables so the hybrid search has data
-  // on first keystroke. The large history scans yield between sessions, and
+  // on first keystroke. A worker indexes Claude, Codex and OpenCode, and
   // a Codex catalog request shares the same refresh with this startup pass.
   setTimeout(async () => {
     const passes = [
       async () => {
         try {
-          const claude = await rebuildClaudeCache({ background: true });
+          markActivity('session-cache:claude');
+          const claude = await runSessionJob('claude');
           if (claude.updated > 0) console.log(`  Session cache (claude): indexed ${claude.updated}/${claude.sessions}`);
         } catch (err) { console.warn('  Session cache (claude) error:', err.message); }
       },
       async () => {
         try {
+          markActivity('session-cache:codex');
           const codex = await refreshCodexSessionCatalog();
           if (codex.updated > 0) console.log(`  Session cache (codex): indexed ${codex.updated}/${codex.sessions}`);
         } catch (err) { console.warn('  Session cache (codex) error:', err.message); }
       },
       async () => {
         try {
-          _ocpSessionCacheWarmup = rebuildOpencodeCache({ getOpencodeDb, background: true });
+          markActivity('session-cache:opencode');
+          _ocpSessionCacheWarmup = runSessionJob('opencode', { path: getOpencodeDbPath() });
           const oc = await _ocpSessionCacheWarmup;
           if (oc.updated > 0) console.log(`  Session cache (opencode): indexed ${oc.updated}/${oc.sessions}`);
         } catch (err) { console.warn('  Session cache (opencode) error:', err.message); }
         finally { _ocpSessionCacheWarmup = null; }
       },
-      () => {
-        const agy = refreshAntigravityCatalog({ force: true });
+      async () => {
+        markActivity('session-cache:antigravity');
+        const agy = await refreshAntigravityCatalog({ force: true });
         if (agy?.updated > 0) console.log(`  Session cache (antigravity): indexed ${agy.updated}/${agy.sessions}`);
         // Runs and brains end on their own: their conversations are picked up by this pass, every five minutes.
-        setInterval(() => refreshAntigravityCatalog({ force: true }), 5 * 60 * 1000).unref?.();
+        setInterval(() => {
+          markActivity('session-cache:antigravity');
+          refreshAntigravityCatalog({ force: true });
+        }, 5 * 60 * 1000).unref?.();
       },
     ];
     for (const pass of passes) {
@@ -39711,6 +40045,7 @@ const httpServer = app.listen(PORT, async () => {
   // already self-healing via addHookToSettings; this catches damage from
   // previous versions of the install flow.
   try {
+    markActivity('startup:hooks');
     const dedupStats = dedupeAllSettingsHooks();
     if (dedupStats.removed > 0 || dedupStats.repaired > 0 || dedupStats.matchers > 0) {
       const bits = [];
@@ -39743,6 +40078,7 @@ const httpServer = app.listen(PORT, async () => {
   // wait is for the rules lock another SynaBun process on this data home may
   // hold (2 s at most: then the installer logs one line and this boot skips it).
   try {
+    markActivity('startup:rules');
     const rules = rulesetInstaller.reconcile();
     if (rules.updated.length) console.log(`  Rules:     updated to ${rules.notice?.to || 'the current version'} for ${rules.updated.join(', ')}`);
     if (rules.optedOut.length) console.log(`  Rules:     no longer managed for ${rules.optedOut.join(', ')} (the installed copy was removed)`);
@@ -39842,7 +40178,8 @@ const httpServer = app.listen(PORT, async () => {
   // OpenCode panel, Settings) see providers/models immediately without the
   // user having to click Start each time.
   try {
-    const ready = await ensureOpencodeServer();
+    markActivity('startup:opencode-serve');
+    const ready = await startOpencodeAtBoot(() => ensureOpencodeServer(), () => _ocpStartRefusal);
     if (ready) console.log(`  OpenCode:  auto-started on :${_ocpPort}`);
     else console.log('  OpenCode:  auto-start skipped (binary missing or failed to launch)');
   } catch (err) {
@@ -40556,6 +40893,7 @@ const SERVER_START_TIME = Date.now();
 const RESUME_GRACE_PERIOD_MS = 120_000; // 2 min — don't delete snapshot before client can check
 
 function saveSessionSnapshot() {
+  markActivity('timer:session-snapshot');
   const sessions = [];
   const seen = new Set(); // dedup — avoid resuming same Claude session twice
 

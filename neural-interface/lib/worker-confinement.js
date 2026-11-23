@@ -1453,9 +1453,54 @@ export function confinementEvent(decision, { tool, confinement, provider = null 
   };
 }
 
-/** One line for a transcript tail. */
+// A denial in a failed command's output. The bare word "sandbox" is not one (a test file can be named that).
+const CODEX_DENIAL = /operation not permitted|permission denied|read-only file system|EPERM|EACCES|EROFS|sandbox[^\n]{0,60}\b(?:den(?:y|ied)|refus\w*|block\w*|not allowed)|\b(?:den(?:y|ied)|refus\w*|block\w*|not allowed)\b[^\n]{0,60}sandbox/i;
+
+/**
+ * What a guarded Codex run records about a command that already finished (item.completed command_execution), or
+ * null. SynaBun has no check before a Codex command runs, so this never reuses a decision's reason, which is written
+ * for a real pre-execution refusal ("so it did not run"). Actions: `noted` (enforce: it ran, the heuristic objected,
+ * the sandbox is the boundary), `warned` (warn: the same), `refused` (the sandbox denied an operation; the process
+ * did start).
+ */
+export function codexCommandEvent(item, confinement) {
+  const command = typeof item?.command === 'string' ? item.command : Array.isArray(item?.command) ? item.command.join(' ') : '';
+  if (!command) return null;
+  const decision = workerShellDecision(command, confinement);
+  const denied = Number(item.exit_code) !== 0 && CODEX_DENIAL.test(String(item.aggregated_output || item.output || ''));
+  if (!decision && !denied) return null;
+  const exit = Number.isInteger(item.exit_code) ? item.exit_code : null;
+  const shown = `Command: ${command.slice(0, 160)}`;
+  let action;
+  let reason;
+  if (denied) {
+    action = 'refused';
+    const scope = !confinement.enforced ? 'Warn mode does not change Codex\'s own sandbox.'
+      : confinement.capability === 'read-only' ? 'This run (capability read-only) writes nothing, the temp folder included.'
+        : `This run (capability ${confinement.capability}) writes inside ${confinement.writable.join(', ')} only.`;
+    reason = `Codex's sandbox refused an operation${exit === null ? '' : `; the command started and exited ${exit}`}. ${scope} ${shown}`;
+  } else {
+    const ran = exit === null ? 'Codex finished the command without an exit code.' : `The command ran (exit ${exit}).`;
+    action = confinement.enforced ? 'noted' : 'warned';
+    reason = confinement.enforced
+      ? `${ran} SynaBun's shell check flagged it afterwards and could not stop it: on Codex the sandbox is the boundary. ${shown}`
+      : `${ran} Warn mode: SynaBun's shell check flagged it afterwards and stopped nothing. ${shown}`;
+  }
+  return {
+    type: 'synabun.confinement',
+    action,
+    capability: confinement.capability,
+    tool: 'shell',
+    rule: decision?.rule || 'sandbox',
+    reason,
+    ...(decision?.target ? { target: decision.target } : {}),
+    provider: 'codex',
+  };
+}
+
+/** One line for a transcript tail. `noted` is a command that already ran: never "refused". */
 export function describeConfinementEvent(event) {
-  const verb = event?.action === 'warned' ? 'guard warning' : 'refused';
+  const verb = event?.action === 'warned' ? 'guard warning' : event?.action === 'noted' ? 'guard note' : 'refused';
   return `${verb}: ${event?.tool || 'tool'}${event?.target ? ` → ${event.target}` : ''} (${event?.rule || 'rule'}) ${String(event?.reason || '').slice(0, 200)}`;
 }
 

@@ -7,7 +7,7 @@ import { configureToolPickerTranslation, toolPickerHTML, readToolPicker, updateT
 
 import { emit, on } from './state.js';
 import { storage } from './storage.js';
-import { frameRect, clampBox } from './app-frame.js';
+import { frameRect } from './app-frame.js';
 import { t, tp, getLocale } from './i18n.js';
 import { KEYS } from './constants.js';
 import { isGuest, hasPermission, showGuestToast } from './ui-sync.js';
@@ -105,12 +105,21 @@ const $ = (id) => document.getElementById(id);
 const PANEL_ID = 'schedules-studio-panel';
 const POLL_INTERVAL = 1000;
 const LAYOUT_KEY = KEYS.PANEL_PREFIX + 'schedules-window';
+const DOCK_KEY = 'sched-window-docked';
+const DIM_KEY = 'sched-window-dim';
+const RAIL_KEY = 'sched-window-rail-collapsed';
 const SCOPE_KEY = 'sched-view-scope';
 const SORT_KEY = 'sched-view-sort';
 const COLLAPSED_KEY = 'sched-collapsed-groups';
 const REOPEN_KEY = 'synabun-schedules-reopen'; // sessionStorage, for one reload
 const DEFAULT_GROUP_COLOR = '#4fc3f7';
 
+// The Studios' icons and window geometry load on the first open: this module is loaded before the page is shown and
+// the boot budget (tests/boot-critical-path.test.mjs) has no room for them. A close during that load cancels the open.
+let studioIcons = null;
+let studioOpenRect = null;
+let _shellLoads = 0;
+let _closeCount = 0;
 let _panel = null;
 let _backdrop = null;
 let _abort = null;            // the window's document/window listeners
@@ -338,7 +347,7 @@ export function initSchedulesStudio() {
   registerLaunchPrefetch('schedules', () => (isGuest() && !hasPermission('automations') ? undefined : loadData()), { order: 74 });
   on('automations:open-schedules', (opts) => openPanel(opts || {}));
   on('schedules:open', (opts) => openPanel(opts || {}));
-  on('schedules:toggle', () => (_panel ? closePanel() : openPanel({})));
+  on('schedules:toggle', () => (_panel || _shellLoads ? closePanel() : openPanel({})));
   setupSync();
   // A language change reloads the app (i18n.js): an open window opens again, in the new language,
   // on the view it showed (Settings does the same for itself).
@@ -364,6 +373,20 @@ async function openPanel(opts = {}) {
     showGuestToast(t('schedules.window.guestDisabled'));
     return;
   }
+  if (!studioIcons) {
+    const closesBefore = _closeCount;
+    _shellLoads++;
+    try {
+      const [{ ICONS }, { openRect }] = await Promise.all([
+        import('./skills/studio/sx-dom.js'), import('./skills/studio/sx-geometry.js'),
+      ]);
+      studioIcons = ICONS;
+      studioOpenRect = openRect;
+    } finally {
+      _shellLoads--;
+    }
+    if (_closeCount !== closesBefore) return;
+  }
   if (_panel) {
     // Rebuilt only when the request changes what shows: an open editor keeps what is typed in it.
     if (applyOpenOptions(opts)) render({ frame: true });
@@ -382,7 +405,7 @@ async function openPanel(opts = {}) {
   document.body.appendChild(_backdrop);
 
   _panel = document.createElement('section');
-  _panel.className = 'schedules-studio-panel glass resizable';
+  _panel.className = 'skills-studio-panel sx schedules-studio-panel glass resizable';
   _panel.id = PANEL_ID;
   _panel.setAttribute('role', 'region');
   _panel.setAttribute('aria-labelledby', 'sched-title');
@@ -390,6 +413,7 @@ async function openPanel(opts = {}) {
   document.body.appendChild(_panel);
   document.body.classList.add('schedules-window-open');
   placePanel();
+  syncWindowControls();
 
   wirePanel();
   // Before the options: an editor asked for waits for the data (applyOpenOptions). Lists that arrived once (an
@@ -436,32 +460,46 @@ function applyOpenOptions(opts = {}) {
 
 function placePanel() {
   const saved = readJson(LAYOUT_KEY, null);
-  if (saved && saved.w > 0 && saved.h > 0) {
-    _panel.style.width = saved.w + 'px';
-    _panel.style.height = saved.h + 'px';
-  }
-  const width = _panel.offsetWidth;
-  const height = _panel.offsetHeight;
-  // Inside the app frame (8px from the window and the bar, as before, and clear of an open explorer)
-  const f = frameRect();
-  const left = saved && Number.isFinite(saved.x) ? saved.x : f.left + (f.width - width) / 2;
-  const top = saved && Number.isFinite(saved.y) ? saved.y : f.top + Math.max(0, (f.height - height) / 2);
-  const at = clampBox(left, top, width, height, f);
-  _panel.style.left = Math.round(at.x) + 'px';
-  _panel.style.top = Math.round(at.y) + 'px';
+  const rect = studioOpenRect({
+    vw: window.innerWidth, vh: window.innerHeight, frame: frameRect(),
+    saved: saved && { left: saved.x, top: saved.y },
+  });
+  for (const [key, value] of Object.entries(rect)) _panel.style[key] = value + 'px';
+}
+
+function syncWindowControls() {
+  const docked = storage.getItem(DOCK_KEY) === 'true';
+  const dimmed = !docked && storage.getItem(DIM_KEY) !== 'false';
+  const collapsed = storage.getItem(RAIL_KEY) === 'true';
+  _panel.classList.toggle('sx-docked', docked);
+  _panel.classList.toggle('sx-rail-collapsed', collapsed);
+  _panel.querySelector('.sx-head').classList.toggle('drag-handle', !docked);
+  document.body.classList.toggle('sched-studio-docked', docked);
+  _backdrop.classList.toggle('backdrop-hidden', !dimmed);
+  const dock = $('sched-dock-toggle');
+  dock.innerHTML = String(docked ? studioIcons.undock : studioIcons.dock);
+  dock.setAttribute('aria-pressed', String(docked));
+  $('sched-rail-toggle').setAttribute('aria-pressed', String(collapsed));
+  const dim = $('sched-backdrop-toggle');
+  dim.disabled = docked;
+  dim.title = t(dimmed ? 'schedules.window.hideBackdrop' : 'schedules.window.showBackdrop');
+  dim.setAttribute('aria-pressed', String(dimmed));
 }
 
 function saveLayout() {
-  if (!_panel) return;
+  if (!_panel || _panel.classList.contains('sx-docked')) return;
   const rect = _panel.getBoundingClientRect();
+  // Only the position is used on open; a size saved earlier is left as it was.
+  const before = readJson(LAYOUT_KEY, null);
   try {
     storage.setItem(LAYOUT_KEY, JSON.stringify({
-      x: Math.round(rect.left), y: Math.round(rect.top), w: Math.round(rect.width), h: Math.round(rect.height),
+      ...(before && typeof before === 'object' ? before : {}), x: Math.round(rect.left), y: Math.round(rect.top),
     }));
   } catch { /* the default layout is used next time */ }
 }
 
 function closePanel() {
+  _closeCount++;
   if (!_panel) return;
   saveLayout();
   stopPolling();
@@ -481,7 +519,7 @@ function closePanel() {
   _groupEditorId = null;
   _groupEditorDraft = null;
   _draggingScheduleId = null;
-  document.body.classList.remove('schedules-window-open');
+  document.body.classList.remove('schedules-window-open', 'sched-studio-docked');
   emit('schedules:window', { open: false });
   const opener = _opener;
   _opener = null;
@@ -499,29 +537,30 @@ function focusInitial() {
 function buildPanelHTML() {
   return `
     ${['t', 'r', 'b', 'l', 'tl', 'tr', 'bl', 'br'].map(edge => `<div aria-hidden="true" class="resize-handle resize-handle-${edge}" data-resize="${edge}"></div>`).join('')}
-    <header class="sched-header drag-handle" data-drag="${PANEL_ID}">
-      <div class="sched-header-left">
-        <span class="sched-header-icon">${ICONS.clock}</span>
-        <h3 id="sched-title">${te('schedules.window.title')}</h3>
-        <span class="sched-count" id="sched-total-count"></span>
-      </div>
-      <button type="button" class="backdrop-toggle-btn" id="sched-backdrop-toggle" aria-pressed="false" aria-label="${te('schedules.window.hideBackdrop')}" data-tooltip="${te('schedules.window.hideBackdrop')}">${ICONS.eye}</button>
-      <button type="button" class="sched-close" id="sched-close" aria-label="${te('schedules.window.close')}" data-tooltip="${te('schedules.window.closeTip')}">${ICONS.close}</button>
+    <header class="sx-head drag-handle" data-drag="${PANEL_ID}">
+      <span class="sx-head-mark" aria-hidden="true">${ICONS.clock}</span>
+      <h3 class="sx-title" id="sched-title">${te('schedules.window.title')}</h3>
+      <span class="sx-head-note" id="sched-total-count"></span>
+      <span class="sx-spacer"></span>
+      <button type="button" class="sx-icon-btn" id="sched-rail-toggle" aria-controls="sched-rail" aria-label="${te('skillsStudio.shell.collapseRail')}" title="${te('skillsStudio.shell.collapseRail')}">${studioIcons.library}</button>
+      <button type="button" class="sx-icon-btn" id="sched-dock-toggle" aria-label="${te('skillsStudio.shell.dock')}" title="${te('skillsStudio.shell.dockHelp')}"></button>
+      <button type="button" class="sx-icon-btn" id="sched-backdrop-toggle" aria-label="${te('skillsStudio.shell.dim')}" title="${te('skillsStudio.shell.dim')}">${studioIcons.dim}</button>
+      <button type="button" class="sx-icon-btn sx-close" id="sched-close" aria-label="${te('schedules.window.close')}" title="${te('schedules.window.closeTip')}">${studioIcons.close}</button>
     </header>
-    <div class="sched-body">
-      <nav class="sched-rail" id="sched-rail" aria-label="${te('schedules.window.railLabel')}"></nav>
-      <section class="sched-main" aria-labelledby="sched-view-title">
+    <div class="sx-body sched-body">
+      <nav class="sx-rail sched-rail" id="sched-rail" aria-label="${te('schedules.window.railLabel')}"></nav>
+      <section class="sx-main sched-main" aria-labelledby="sched-view-title">
         <!-- A window too narrow for the rail: its views and groups as a popup, and New group. Outside
              the frame below, which each view and editor replaces, so it is there in every one. -->
         <div class="sched-narrow-nav" id="sched-narrow-nav">
           <span class="sched-sr" id="sched-scope-label">${te('schedules.window.viewLabel')}</span>
           ${dropdownHTML('sched-scope-select', [], { classes: 'sched-scope-select', labelledBy: 'sched-scope-label', inputAttrs: 'data-change="scope"' })}
-          <button type="button" class="sched-btn" data-action="group-new" id="sched-narrow-new-group">${ICONS.plus}<span>${te('schedules.rail.newGroup')}</span></button>
+          <button type="button" class="sx-btn sched-btn" data-action="group-new" id="sched-narrow-new-group">${ICONS.plus}<span>${te('schedules.rail.newGroup')}</span></button>
         </div>
         <div class="sched-frame" id="sched-main"></div>
       </section>
     </div>
-    <div class="sched-dialog-layer" id="sched-dialog-layer" hidden></div>
+    <div class="ss-file-dialog-overlay sched-dialog-layer" id="sched-dialog-layer" hidden></div>
   `;
 }
 
@@ -529,16 +568,14 @@ function wirePanel() {
   _abort = new AbortController();
   const { signal } = _abort;
   $('sched-close')?.addEventListener('click', closePanel, { signal });
-  $('sched-backdrop-toggle')?.addEventListener('click', () => {
-    const hidden = !!_backdrop?.classList.toggle('backdrop-hidden');
-    const btn = $('sched-backdrop-toggle');
-    if (!btn) return;
-    btn.classList.toggle('active', hidden);
-    btn.setAttribute('aria-pressed', String(hidden));
-    const label = t(hidden ? 'schedules.window.showBackdrop' : 'schedules.window.hideBackdrop');
-    btn.setAttribute('aria-label', label);
-    btn.dataset.tooltip = label;
-  }, { signal });
+  for (const [id, key] of [['sched-rail-toggle', RAIL_KEY], ['sched-dock-toggle', DOCK_KEY], ['sched-backdrop-toggle', DIM_KEY]]) {
+    const button = $(id);
+    button.addEventListener('click', () => {
+      if (key === DOCK_KEY) saveLayout(); // Save the floating rectangle before docking.
+      storage.setItem(key, String(button.getAttribute('aria-pressed') !== 'true'));
+      syncWindowControls();
+    }, { signal });
+  }
 
   _panel.addEventListener('click', handleClick, { signal });
   _panel.addEventListener('change', handleChange, { signal });
@@ -725,8 +762,8 @@ function renderRail() {
   const view = (scope, count, { alert = false } = {}) => {
     const { icon } = VIEWS[scope];
     const current = _scope === scope;
-    const countHTML = count == null || !countsKnown() ? '' : `<span class="sched-nav-count${alert && count ? ' sched-nav-count--alert' : ''}">${count}</span>`;
-    return `<button type="button" class="sched-nav-item" data-action="set-scope" data-scope="${scope}"${current ? ' aria-current="page"' : ''}>
+    const countHTML = count == null || !countsKnown() ? '' : `<span class="sx-rail-count sched-nav-count${alert && count ? ' sched-nav-count--alert' : ''}">${count}</span>`;
+    return `<button type="button" class="sx-rail-item sched-nav-item" data-action="set-scope" data-scope="${scope}"${current ? ' aria-current="page"' : ''}>
       <span class="sched-nav-icon">${icon}</span><span class="sched-nav-label">${esc(viewLabel(scope))}</span>${countHTML}</button>`;
   };
   const groupRows = orderedGroups().map(group => {
@@ -739,12 +776,12 @@ function renderRail() {
       group.mutualExclusion ? t('schedules.rail.oneAtATimeFact') : '',
     ].filter(Boolean).join(', ');
     const name = t('schedules.rail.groupLabel', { name: group.name, facts });
-    return `<button type="button" class="sched-nav-item" data-action="set-scope" data-scope="${esc(scope)}" data-drop-group="${esc(group.id)}" aria-label="${esc(name)}"${_scope === scope ? ' aria-current="page"' : ''}>
+    return `<button type="button" class="sx-rail-item sched-nav-item" data-action="set-scope" data-scope="${esc(scope)}" data-drop-group="${esc(group.id)}" aria-label="${esc(name)}"${_scope === scope ? ' aria-current="page"' : ''}>
       <span class="sched-nav-icon"><span class="sched-dot" style="--dot:${esc(cssColor(group.color))}"></span></span>
       <span class="sched-nav-label">${esc(group.name)}</span>
       ${group.mutualExclusion ? `<span class="sched-nav-flag" data-tooltip="${te('schedules.oneAtATime')}">${ICONS.lock}</span>` : ''}
       ${summary.attention ? `<span class="sched-nav-flag sched-nav-flag--alert" data-tooltip="${tpe('schedules.rail.attentionTip', summary.attention)}">${ICONS.alert}${summary.attention}</span>` : ''}
-      <span class="sched-nav-count">${summary.total}</span>
+      <span class="sx-rail-count sched-nav-count">${summary.total}</span>
     </button>`;
   }).join('');
   const ungrouped = _schedules.filter(s => !s.groupId || !ids.has(s.groupId)).length;
@@ -763,11 +800,11 @@ function renderRail() {
     <div class="sched-rail-sep" role="presentation"></div>
     ${view('timers', timers || null)}
     ${view('activity', null)}
-    <div class="sched-rail-head"><span id="sched-rail-groups">${te('schedules.rail.groups')}</span><button type="button" class="sched-icon-btn" data-action="group-new" aria-label="${te('schedules.rail.newGroup')}" data-tooltip="${te('schedules.rail.newGroup')}"${editorsWait() ? ' disabled' : ''}>${ICONS.plus}</button></div>
+    <div class="sched-rail-head"><span id="sched-rail-groups">${te('schedules.rail.groups')}</span><button type="button" class="sx-icon-btn sched-icon-btn" data-action="group-new" aria-label="${te('schedules.rail.newGroup')}" data-tooltip="${te('schedules.rail.newGroup')}"${editorsWait() ? ' disabled' : ''}>${ICONS.plus}</button></div>
     <div role="group" aria-labelledby="sched-rail-groups">
       ${groupRows || (countsKnown() ? `<div class="sched-rail-empty">${te('schedules.rail.noGroups')}</div>` : '')}
-      <button type="button" class="sched-nav-item" data-action="set-scope" data-scope="ungrouped" data-drop-group="" aria-label="${countsKnown() ? te('schedules.rail.groupLabel', { name: viewLabel('ungrouped'), facts: tp('schedules.count.schedules', ungrouped) }) : esc(viewLabel('ungrouped'))}"${_scope === 'ungrouped' ? ' aria-current="page"' : ''}>
-        <span class="sched-nav-icon">${ICONS.folder}</span><span class="sched-nav-label">${esc(viewLabel('ungrouped'))}</span><span class="sched-nav-count">${countsKnown() ? ungrouped : ''}</span>
+      <button type="button" class="sx-rail-item sched-nav-item" data-action="set-scope" data-scope="ungrouped" data-drop-group="" aria-label="${countsKnown() ? te('schedules.rail.groupLabel', { name: viewLabel('ungrouped'), facts: tp('schedules.count.schedules', ungrouped) }) : esc(viewLabel('ungrouped'))}"${_scope === 'ungrouped' ? ' aria-current="page"' : ''}>
+        <span class="sched-nav-icon">${ICONS.folder}</span><span class="sched-nav-label">${esc(viewLabel('ungrouped'))}</span><span class="sx-rail-count sched-nav-count">${countsKnown() ? ungrouped : ''}</span>
       </button>
     </div>
   `;
@@ -814,14 +851,14 @@ function buildListFrame(frame) {
   const search = document.activeElement?.id === 'sched-search' ? document.activeElement : null;
   const caret = search ? [search.selectionStart, search.selectionEnd] : null;
   main.innerHTML = `
-    <div class="sched-view-head" id="sched-view-head"></div>
+    <div class="sx-place-head sched-view-head" id="sched-view-head"></div>
     <div class="sched-toolbar">
       <div class="sched-search">
         ${ICONS.search}
         <label class="sched-sr" for="sched-search">${activity ? te('schedules.list.searchRuns') : te('schedules.list.searchSchedules')}</label>
         <input id="sched-search" type="search" autocomplete="off" spellcheck="false"
           placeholder="${activity ? te('schedules.list.searchRunsPlaceholder') : te('schedules.list.searchPlaceholder')}" value="${esc(_query)}">
-        <button type="button" class="sched-icon-btn" data-action="clear-search" aria-label="${te('schedules.list.clearSearch')}"${_query ? '' : ' hidden'}>${ICONS.close}</button>
+        <button type="button" class="sx-icon-btn sched-icon-btn" data-action="clear-search" aria-label="${te('schedules.list.clearSearch')}"${_query ? '' : ' hidden'}>${ICONS.close}</button>
         <kbd aria-hidden="true">/</kbd>
       </div>
       ${activity ? '' : `<span class="sched-sort" id="sched-sort-wrap"><span class="sched-sr" id="sched-sort-label">${te('schedules.list.order')}</span>
@@ -849,9 +886,9 @@ function headActions({ group = null } = {}) {
   // An editor needs the automations and groups: nothing opens one before they have loaded.
   const wait = editorsWait() ? ' disabled' : '';
   return `<div class="sched-view-actions">
-    ${group ? `<button type="button" class="sched-btn" data-action="group-edit" data-id="${esc(group.id)}"${wait}>${ICONS.edit}<span>${te('schedules.head.editGroup')}</span></button>` : ''}
-    <button type="button" class="sched-btn sched-btn--text" data-action="schedule-prompt" data-tooltip="${te('schedules.head.promptTip')}">${ICONS.sparkle}<span>${te('schedules.head.prompt')}</span></button>
-    <button type="button" class="sched-btn sched-btn--primary" data-action="schedule-new"${wait}>${ICONS.plus}<span>${te('schedules.head.newSchedule')}</span></button>
+    ${group ? `<button type="button" class="sx-btn sched-btn" data-action="group-edit" data-id="${esc(group.id)}"${wait}>${ICONS.edit}<span>${te('schedules.head.editGroup')}</span></button>` : ''}
+    <button type="button" class="sx-btn sched-btn sx-btn--ghost" data-action="schedule-prompt" data-tooltip="${te('schedules.head.promptTip')}">${ICONS.sparkle}<span>${te('schedules.head.prompt')}</span></button>
+    <button type="button" class="sx-btn sched-btn sx-btn--primary" data-action="schedule-new"${wait}>${ICONS.plus}<span>${te('schedules.head.newSchedule')}</span></button>
   </div>`;
 }
 
@@ -925,7 +962,7 @@ function renderViewHead() {
     head.dataset.key = key;
     head.innerHTML = `
       <div class="sched-view-titles">
-        <h2 id="sched-view-title">${dot}${esc(title)}</h2>
+        <h2 class="sx-place-title" id="sched-view-title">${dot}${esc(title)}</h2>
         <p class="sched-view-sub">${esc(sub)}</p>
         ${meta}
       </div>
@@ -980,8 +1017,8 @@ function renderNote() {
   note.classList.toggle('sched-load-note--ok', kind === 'ok');
   note.classList.toggle('sched-load-note--busy', kind === 'busy');
   const icon = kind === 'ok' ? ICONS.ok : kind === 'busy' ? ICONS.clock : ICONS.alert;
-  const action = kind === 'load' ? `<button type="button" class="sched-btn" data-action="retry-load">${te('schedules.note.tryAgain')}</button>`
-    : kind === 'busy' ? '' : `<button type="button" class="sched-btn" data-action="dismiss-report">${te('schedules.note.dismiss')}</button>`;
+  const action = kind === 'load' ? `<button type="button" class="sx-btn sched-btn" data-action="retry-load">${te('schedules.note.tryAgain')}</button>`
+    : kind === 'busy' ? '' : `<button type="button" class="sx-btn sched-btn" data-action="dismiss-report">${te('schedules.note.dismiss')}</button>`;
   note.innerHTML = text ? `${icon}<span>${esc(text)}</span>${action}` : '';
 }
 
@@ -1005,7 +1042,7 @@ function cliReportNote() {
 function loadFailedHTML() {
   const waiting = _pendingAction ? t(_pendingAction === 'new-group' ? 'schedules.loadFailed.waitingGroup' : 'schedules.loadFailed.waitingSchedule') : '';
   return emptyState(ICONS.alert, t('schedules.loadFailed.title'), [_loadError || t('schedules.loadFailed.notEverything'), waiting].filter(Boolean).join(' '),
-    `<button type="button" class="sched-btn" data-action="retry-load">${te('schedules.note.tryAgain')}</button>`);
+    `<button type="button" class="sx-btn sched-btn" data-action="retry-load">${te('schedules.note.tryAgain')}</button>`);
 }
 
 /** Keep the place: scroll position and the focused control survive a re-render of the list. */
@@ -1077,14 +1114,14 @@ function renderList() {
   const query = _query.trim();
   if (!_schedules.length) {
     list.innerHTML = emptyState(ICONS.clock, t('schedules.empty.none'), t('schedules.empty.noneText'),
-      `<button type="button" class="sched-btn sched-btn--primary" data-action="schedule-new">${ICONS.plus}<span>${te('schedules.head.newSchedule')}</span></button>
-       <button type="button" class="sched-btn" data-action="schedule-prompt">${ICONS.sparkle}<span>${te('schedules.head.prompt')}</span></button>`);
+      `<button type="button" class="sx-btn sched-btn sx-btn--primary" data-action="schedule-new">${ICONS.plus}<span>${te('schedules.head.newSchedule')}</span></button>
+       <button type="button" class="sx-btn sched-btn" data-action="schedule-prompt">${ICONS.sparkle}<span>${te('schedules.head.prompt')}</span></button>`);
   } else if (!shown.length && query) {
     const elsewhere = _scope !== 'all' && _schedules.some(s => matchesQuery(s, _query, scheduleExtras(s)));
     list.innerHTML = emptyState(ICONS.search, t('schedules.empty.noMatch', { query }),
       elsewhere ? t('schedules.empty.elsewhere') : t('schedules.empty.tryAnother'),
-      `<button type="button" class="sched-btn" data-action="clear-search">${te('schedules.list.clearSearch')}</button>
-       ${elsewhere ? `<button type="button" class="sched-btn" data-action="search-all">${te('schedules.empty.searchAll')}</button>` : ''}`);
+      `<button type="button" class="sx-btn sched-btn" data-action="clear-search">${te('schedules.list.clearSearch')}</button>
+       ${elsewhere ? `<button type="button" class="sx-btn sched-btn" data-action="search-all">${te('schedules.empty.searchAll')}</button>` : ''}`);
   } else if (!shown.length) {
     list.innerHTML = scopeEmptyState();
   } else if (_scope === 'all') {
@@ -1100,9 +1137,9 @@ function renderList() {
 }
 
 function emptyState(icon, title, text, actions = '') {
-  return `<div class="sched-empty">
-    <div class="sched-empty-icon">${icon}</div>
-    <h3>${esc(title)}</h3>
+  return `<div class="sx-empty sched-empty">
+    <div class="sx-placeholder-icon sched-empty-icon">${icon}</div>
+    <h3 class="sx-empty-title">${esc(title)}</h3>
     ${text ? `<p>${esc(text)}</p>` : ''}
     ${actions ? `<div class="sched-empty-actions">${actions}</div>` : ''}
   </div>`;
@@ -1114,7 +1151,7 @@ function scopeEmptyState() {
   if (_scope === 'upcoming') return emptyState(ICONS.next, t('schedules.empty.upcoming'), t('schedules.empty.upcomingText'));
   if (_scope === 'ungrouped') return emptyState(ICONS.folder, t('schedules.empty.ungrouped'), '');
   return emptyState(ICONS.folder, t('schedules.empty.group'), t('schedules.empty.groupText'),
-    `<button type="button" class="sched-btn sched-btn--primary" data-action="schedule-new">${ICONS.plus}<span>${te('schedules.head.newSchedule')}</span></button>`);
+    `<button type="button" class="sx-btn sched-btn sx-btn--primary" data-action="schedule-new">${ICONS.plus}<span>${te('schedules.head.newSchedule')}</span></button>`);
 }
 
 /** All schedules: one box per group, in the groups' order, then the ungrouped ones. */
@@ -1143,7 +1180,7 @@ function renderGroupedList(shown, now) {
           <span class="sched-group-count">${items.length === all.length ? items.length : te('schedules.list.shownOf', { shown: items.length, total: all.length })}</span>
         </button>
         ${meta ? `<span class="sched-group-meta">${meta}</span>` : ''}
-        ${group ? `<button type="button" class="sched-icon-btn" data-action="group-edit" data-id="${esc(group.id)}" aria-label="${te('schedules.list.editGroupNamed', { name })}" data-tooltip="${te('schedules.head.editGroup')}">${ICONS.edit}</button>` : ''}
+        ${group ? `<button type="button" class="sx-icon-btn sched-icon-btn" data-action="group-edit" data-id="${esc(group.id)}" aria-label="${te('schedules.list.editGroupNamed', { name })}" data-tooltip="${te('schedules.head.editGroup')}">${ICONS.edit}</button>` : ''}
       </div>
       <ul class="sched-rows" id="${listId}" aria-label="${esc(name)}"${collapsed ? ' hidden' : ''}>
         ${sortSchedules(items, _sort).map(s => rowHTML(s, { now, showGroup: false })).join('')}
@@ -1279,10 +1316,10 @@ function detailHTML(s, now, run) {
         ${dropdownHTML(`sched-move-${domId(s.id)}`, groupOptions, { label: t('schedules.detail.groupOf', { name: s.name }), inputAttrs: `data-change="move-group" data-id="${esc(s.id)}"` })}
       </div>
       <span class="sched-detail-spacer"></span>
-      <button type="button" class="sched-btn" data-action="schedule-test" data-id="${esc(s.id)}" data-tooltip="${te('schedules.detail.runNowTip')}">${ICONS.bolt}<span>${te('schedules.detail.runNow')}</span></button>
-      <button type="button" class="sched-btn" data-action="schedule-edit-prompt" data-id="${esc(s.id)}" data-template-id="${esc(s.templateId || '')}" data-tooltip="${te('schedules.detail.editPromptTip')}">${ICONS.script}<span>${te('schedules.detail.editPrompt')}</span></button>
-      <button type="button" class="sched-btn" data-action="schedule-edit" data-id="${esc(s.id)}">${ICONS.edit}<span>${te('schedules.detail.editSchedule')}</span></button>
-      <button type="button" class="sched-btn sched-btn--danger" data-action="schedule-delete" data-id="${esc(s.id)}">${ICONS.trash}<span>${te('schedules.detail.delete')}</span></button>
+      <button type="button" class="sx-btn sched-btn" data-action="schedule-test" data-id="${esc(s.id)}" data-tooltip="${te('schedules.detail.runNowTip')}">${ICONS.bolt}<span>${te('schedules.detail.runNow')}</span></button>
+      <button type="button" class="sx-btn sched-btn" data-action="schedule-edit-prompt" data-id="${esc(s.id)}" data-template-id="${esc(s.templateId || '')}" data-tooltip="${te('schedules.detail.editPromptTip')}">${ICONS.script}<span>${te('schedules.detail.editPrompt')}</span></button>
+      <button type="button" class="sx-btn sched-btn" data-action="schedule-edit" data-id="${esc(s.id)}">${ICONS.edit}<span>${te('schedules.detail.editSchedule')}</span></button>
+      <button type="button" class="sx-btn sched-btn sx-btn--danger" data-action="schedule-delete" data-id="${esc(s.id)}">${ICONS.trash}<span>${te('schedules.detail.delete')}</span></button>
     </div>`;
 }
 
@@ -1303,7 +1340,7 @@ function renderActivityList() {
   const query = _query.trim();
   if (!shown.length) {
     list.innerHTML = query
-      ? emptyState(ICONS.search, t('schedules.empty.noRunMatch', { query }), t('schedules.empty.tryAnother'), `<button type="button" class="sched-btn" data-action="clear-search">${te('schedules.list.clearSearch')}</button>`)
+      ? emptyState(ICONS.search, t('schedules.empty.noRunMatch', { query }), t('schedules.empty.tryAnother'), `<button type="button" class="sx-btn sched-btn" data-action="clear-search">${te('schedules.list.clearSearch')}</button>`)
       : emptyState(ICONS.activity, t('schedules.empty.noRuns'), t('schedules.empty.noRunsText'));
     setStatus(query ? t('schedules.list.statusNoMatches') : t('schedules.empty.noRuns'));
     restoreListState(list, saved);
@@ -1374,7 +1411,7 @@ function renderTimersView() {
   _qtMoreLogin = readMoreLoginField('sched-qt-mlprofile') || _qtMoreLogin;
   ensureMoreLoginProfiles();
   const qtPresetButtons = [5, 15, 30, 60, 120, 240]
-    .map(min => `<button type="button" class="sched-chip" data-action="qt-select" data-minutes="${min}" aria-pressed="${_selectedQtMinutes === min}">${min >= 60 ? te('schedules.timers.presetHours', { n: min / 60 }) : te('schedules.timers.presetMinutes', { n: min })}</button>`)
+    .map(min => `<button type="button" class="sx-btn sx-btn--sm sched-chip" data-action="qt-select" data-minutes="${min}" aria-pressed="${_selectedQtMinutes === min}">${min >= 60 ? te('schedules.timers.presetHours', { n: min / 60 }) : te('schedules.timers.presetMinutes', { n: min })}</button>`)
     .join('');
 
   const modelLoadKey = `${_launchProfile}:${_launchAccount}`;
@@ -1388,9 +1425,9 @@ function renderTimersView() {
   }
 
   main.innerHTML = `
-    <div class="sched-view-head">
+    <div class="sx-place-head sched-view-head">
       <div class="sched-view-titles">
-        <h2 id="sched-view-title">${esc(viewLabel('timers'))}</h2>
+        <h2 class="sx-place-title" id="sched-view-title">${esc(viewLabel('timers'))}</h2>
         <p class="sched-view-sub">${te('schedules.timers.sub')}</p>
       </div>
     </div>
@@ -1398,11 +1435,11 @@ function renderTimersView() {
     <div class="sched-editor-body">
       <div class="sched-form">
         <section class="sched-form-section" aria-labelledby="sched-timers-active-title">
-          <h3 class="sched-form-title" id="sched-timers-active-title">${te('schedules.timers.waiting')}</h3>
+          <h3 class="sx-section-title sched-form-title" id="sched-timers-active-title">${te('schedules.timers.waiting')}</h3>
           <div id="sched-active-timers"></div>
         </section>
         <section class="sched-form-section" aria-labelledby="sched-qt-title">
-          <h3 class="sched-form-title" id="sched-qt-title">${te('schedules.timers.runOnce')}</h3>
+          <h3 class="sx-section-title sched-form-title" id="sched-qt-title">${te('schedules.timers.runOnce')}</h3>
           <div class="sched-form-group">
             ${dropdownRow('sched-qt-template', t('schedules.form.automation'), templateOptions)}
             ${dropdownRow('sched-qt-profile', t('schedules.form.cli'), profileOptions)}
@@ -1414,22 +1451,22 @@ function renderTimersView() {
             ${formRow('sched-qt-browser', t('schedules.timers.usesBrowser'), toggleHTML('sched-qt-browser', usesBrowser), { toggle: true })}
             ${moreLoginFieldHTML({ id: 'sched-qt-mlprofile', value: _qtMoreLogin.moreloginEnvId || '', savedName: _qtMoreLogin.moreloginEnvName || null, context: 'run' })}
             ${formRow('sched-qt-custom-min', t('schedules.timers.startIn'), `<span class="sched-chip-list" role="group" aria-label="${te('schedules.timers.delay')}">${qtPresetButtons}</span>
-              <input class="sched-input" id="sched-qt-custom-min" type="number" min="1" max="1440" value="${esc(customMinutes)}" placeholder="${te('schedules.timers.minutesPlaceholder')}" aria-label="${te('schedules.timers.minutesFromNow')}">`, { top: true })}
+              <input class="sx-input sched-input" id="sched-qt-custom-min" type="number" min="1" max="1440" value="${esc(customMinutes)}" placeholder="${te('schedules.timers.minutesPlaceholder')}" aria-label="${te('schedules.timers.minutesFromNow')}">`, { top: true })}
           </div>
           <div class="sched-form-actions">
-            <button type="button" class="sched-btn" data-action="qt-now">${ICONS.bolt}<span>${te('schedules.detail.runNow')}</span></button>
-            <button type="button" class="sched-btn sched-btn--primary" data-action="qt-go">${ICONS.timer}<span>${te('schedules.timers.start')}</span></button>
+            <button type="button" class="sx-btn sched-btn" data-action="qt-now">${ICONS.bolt}<span>${te('schedules.detail.runNow')}</span></button>
+            <button type="button" class="sx-btn sched-btn sx-btn--primary" data-action="qt-go">${ICONS.timer}<span>${te('schedules.timers.start')}</span></button>
           </div>
         </section>
         <section class="sched-form-section" aria-labelledby="sched-st-title">
-          <h3 class="sched-form-title" id="sched-st-title">${te('schedules.timers.fireSaved')}</h3>
+          <h3 class="sx-section-title sched-form-title" id="sched-st-title">${te('schedules.timers.fireSaved')}</h3>
           <p class="sched-form-intro">${te('schedules.timers.fireSavedIntro')}</p>
           <div class="sched-form-group">
             ${dropdownRow('sched-existing-timer-schedule', t('schedules.timers.schedule'), scheduleOptions)}
-            ${formRow('sched-existing-timer-min', t('schedules.timers.minutesFromNow'), `<input class="sched-input" id="sched-existing-timer-min" type="number" min="1" max="1440" value="${esc(scheduleMinutes)}" placeholder="15">`)}
+            ${formRow('sched-existing-timer-min', t('schedules.timers.minutesFromNow'), `<input class="sx-input sched-input" id="sched-existing-timer-min" type="number" min="1" max="1440" value="${esc(scheduleMinutes)}" placeholder="15">`)}
           </div>
           <div class="sched-form-actions">
-            <button type="button" class="sched-btn sched-btn--primary" data-action="schedule-timer-create">${te('schedules.timers.set')}</button>
+            <button type="button" class="sx-btn sched-btn sx-btn--primary" data-action="schedule-timer-create">${te('schedules.timers.set')}</button>
           </div>
         </section>
       </div>
@@ -1631,7 +1668,7 @@ function renderActiveTimersInto() {
       <div class="sched-timer-row" data-timer-id="${esc(scheduleId)}" data-timer-kind="schedule">
         <span class="sched-timer-name">${esc(name)}<span class="sched-timer-meta">${te('schedules.timers.savedOnce')}</span></span>
         <strong class="sched-timer-count" data-fires-at="${esc(timer.firesAt)}">${esc(formatTimerCountdown(timer.firesAt))}</strong>
-        <button type="button" class="sched-btn" data-action="schedule-timer-cancel" data-id="${esc(scheduleId)}" aria-label="${te('schedules.timers.cancelFor', { name })}">${te('schedules.timers.cancel')}</button>
+        <button type="button" class="sx-btn sched-btn" data-action="schedule-timer-cancel" data-id="${esc(scheduleId)}" aria-label="${te('schedules.timers.cancelFor', { name })}">${te('schedules.timers.cancel')}</button>
       </div>`;
   }).join('');
 
@@ -1648,13 +1685,13 @@ function renderActiveTimersInto() {
       <div class="sched-timer-row" data-timer-id="${esc(timer.id)}" data-timer-kind="quick">
         <span class="sched-timer-name">${esc(timer.templateName)}<span class="sched-timer-meta">${esc(meta || t('schedules.timers.automationOnce'))}</span></span>
         <strong class="sched-timer-count" data-fires-at="${esc(timer.firesAt)}">${esc(formatTimerCountdown(timer.firesAt))}</strong>
-        <button type="button" class="sched-btn" data-action="qt-cancel" data-id="${esc(timer.id)}" aria-label="${te('schedules.timers.cancelFor', { name: timer.templateName })}">${te('schedules.timers.cancel')}</button>
+        <button type="button" class="sx-btn sched-btn" data-action="qt-cancel" data-id="${esc(timer.id)}" aria-label="${te('schedules.timers.cancelFor', { name: timer.templateName })}">${te('schedules.timers.cancel')}</button>
       </div>`;
   }).join('');
 
   // The timers load on their own: until they answer (or when they could not), say so here.
   const note = _timersError
-    ? `<div class="sched-load-note">${ICONS.alert}<span>${esc(_timersError)}</span><button type="button" class="sched-btn" data-action="retry-timers">${te('schedules.note.tryAgain')}</button></div>`
+    ? `<div class="sched-load-note">${ICONS.alert}<span>${esc(_timersError)}</span><button type="button" class="sx-btn sched-btn" data-action="retry-timers">${te('schedules.note.tryAgain')}</button></div>`
     : '';
   const empty = _timersError ? '' : `<p class="sched-form-intro">${_timersLoaded ? te('schedules.timers.none') : te('schedules.timers.loading')}</p>`;
   box.innerHTML = note + (scheduleTimers || quickTimers ? `<div class="sched-form-group">${quickTimers}${scheduleTimers}</div>` : empty);
@@ -1715,9 +1752,9 @@ function redrawEditor(main, html) {
 }
 
 function editorHead({ back, title, sub, titleId }) {
-  return `<header class="sched-editor-head">
-    <button type="button" class="sched-icon-btn" data-action="${back}" aria-label="${te('schedules.editor.back')}" data-tooltip="${te('schedules.editor.backTip')}">${ICONS.back}</button>
-    <div class="sched-editor-titles"><h2 id="${titleId}">${esc(title)}</h2>${sub ? `<p>${esc(sub)}</p>` : ''}</div>
+  return `<header class="sx-place-head sched-editor-head">
+    <button type="button" class="sx-icon-btn sched-icon-btn" data-action="${back}" aria-label="${te('schedules.editor.back')}" data-tooltip="${te('schedules.editor.backTip')}">${ICONS.back}</button>
+    <div class="sched-editor-titles"><h2 class="sx-place-title" id="${titleId}">${esc(title)}</h2>${sub ? `<p>${esc(sub)}</p>` : ''}</div>
   </header>`;
 }
 
@@ -1795,16 +1832,16 @@ function renderGroupEditor(group) {
       <div class="sched-editor-body">
         <div class="sched-form">
           <section class="sched-form-section" aria-labelledby="sched-ge-sec-group">
-            <h3 class="sched-form-title" id="sched-ge-sec-group">${te('schedules.form.group')}</h3>
+            <h3 class="sx-section-title sched-form-title" id="sched-ge-sec-group">${te('schedules.form.group')}</h3>
             <div class="sched-form-group">
-              ${formRow('sched-ge-name', t('schedules.form.name'), `<input class="sched-input" id="sched-ge-name" type="text" value="${esc(d.name || '')}" placeholder="${te('schedules.groupEditor.namePlaceholder')}" autocomplete="off">`)}
-              ${formRow('sched-ge-color', t('schedules.groupEditor.colour'), `<input class="sched-input" id="sched-ge-color" type="color" value="${esc(/^#[0-9a-f]{6}$/i.test(d.color || '') ? d.color : DEFAULT_GROUP_COLOR)}">`)}
+              ${formRow('sched-ge-name', t('schedules.form.name'), `<input class="sx-input sched-input" id="sched-ge-name" type="text" value="${esc(d.name || '')}" placeholder="${te('schedules.groupEditor.namePlaceholder')}" autocomplete="off">`)}
+              ${formRow('sched-ge-color', t('schedules.groupEditor.colour'), `<input class="sx-input sched-input" id="sched-ge-color" type="color" value="${esc(/^#[0-9a-f]{6}$/i.test(d.color || '') ? d.color : DEFAULT_GROUP_COLOR)}">`)}
               ${formRow('sched-ge-mutex', t('schedules.oneAtATime'), toggleHTML('sched-ge-mutex', !!d.mutualExclusion, 'sched-ge-mutex-help'),
                 { help: te('schedules.groupEditor.oneAtATimeHelp'), toggle: true })}
             </div>
           </section>
           <section class="sched-form-section" aria-labelledby="sched-ge-sec-launch">
-            <h3 class="sched-form-title" id="sched-ge-sec-launch">${te('schedules.form.launchOverrides')}</h3>
+            <h3 class="sx-section-title sched-form-title" id="sched-ge-sec-launch">${te('schedules.form.launchOverrides')}</h3>
             <p class="sched-form-intro">${te('schedules.groupEditor.launchIntro')}</p>
             <div class="sched-form-group">
               ${dropdownRow('sched-ge-profile', t('schedules.form.cli'), profileOptions)}
@@ -1823,24 +1860,24 @@ function renderGroupEditor(group) {
           </section>
           ${!group ? '' : `
           <section class="sched-form-section" aria-labelledby="sched-ge-sec-order">
-            <h3 class="sched-form-title" id="sched-ge-sec-order">${te('schedules.groupEditor.order')}</h3>
+            <h3 class="sx-section-title sched-form-title" id="sched-ge-sec-order">${te('schedules.groupEditor.order')}</h3>
             <div class="sched-form-group">
               <div class="sched-form-row">
                 <span class="sched-form-label">${te('schedules.groupEditor.position', { position: position + 1, count: ordered.length })}</span>
                 <div class="sched-form-control">
-                  <button type="button" class="sched-btn" data-action="group-up" data-id="${esc(group.id)}"${position <= 0 ? ' disabled' : ''}>${ICONS.up}<span>${te('schedules.groupEditor.moveUp')}</span></button>
-                  <button type="button" class="sched-btn" data-action="group-down" data-id="${esc(group.id)}"${position >= ordered.length - 1 ? ' disabled' : ''}>${ICONS.down}<span>${te('schedules.groupEditor.moveDown')}</span></button>
+                  <button type="button" class="sx-btn sched-btn" data-action="group-up" data-id="${esc(group.id)}"${position <= 0 ? ' disabled' : ''}>${ICONS.up}<span>${te('schedules.groupEditor.moveUp')}</span></button>
+                  <button type="button" class="sx-btn sched-btn" data-action="group-down" data-id="${esc(group.id)}"${position >= ordered.length - 1 ? ' disabled' : ''}>${ICONS.down}<span>${te('schedules.groupEditor.moveDown')}</span></button>
                 </div>
               </div>
             </div>
           </section>
           <section class="sched-form-section" aria-labelledby="sched-ge-sec-delete">
-            <h3 class="sched-form-title" id="sched-ge-sec-delete">${te('schedules.groupEditor.delete')}</h3>
+            <h3 class="sx-section-title sched-form-title" id="sched-ge-sec-delete">${te('schedules.groupEditor.delete')}</h3>
             <div class="sched-form-group">
               <div class="sched-form-row">
                 <span class="sched-form-label">${members ? tpe('schedules.groupEditor.membersStay', members) : te('schedules.groupEditor.empty')}</span>
                 <div class="sched-form-control">
-                  <button type="button" class="sched-btn sched-btn--danger" data-action="group-delete" data-id="${esc(group.id)}">${ICONS.trash}<span>${te('schedules.groupEditor.deleteGroup')}</span></button>
+                  <button type="button" class="sx-btn sched-btn sx-btn--danger" data-action="group-delete" data-id="${esc(group.id)}">${ICONS.trash}<span>${te('schedules.groupEditor.deleteGroup')}</span></button>
                 </div>
               </div>
             </div>
@@ -1848,8 +1885,8 @@ function renderGroupEditor(group) {
         </div>
       </div>
       <footer class="sched-editor-actions">
-        <button type="button" class="sched-btn" data-action="group-editor-cancel">${te('schedules.editor.cancel')}</button>
-        <button type="button" class="sched-btn sched-btn--primary" data-action="group-editor-save" data-id="${esc(_groupEditorId || '')}">${creating ? te('schedules.groupEditor.create') : te('schedules.editor.save')}</button>
+        <button type="button" class="sx-btn sched-btn" data-action="group-editor-cancel">${te('schedules.editor.cancel')}</button>
+        <button type="button" class="sx-btn sched-btn sx-btn--primary" data-action="group-editor-save" data-id="${esc(_groupEditorId || '')}">${creating ? te('schedules.groupEditor.create') : te('schedules.editor.save')}</button>
       </footer>
     </div>`);
   wireGroupEditor();
@@ -1937,7 +1974,7 @@ function renderScheduleEditor() {
     return `
     <div class="sched-preset-group" role="group" aria-label="${te('schedules.scheduleEditor.presetGroup', { group: name })}">
       <span>${esc(name)}</span>
-      <div class="sched-chip-list">${group.presets.map(p => `<button type="button" class="sched-chip" data-action="cron-preset" data-cron="${esc(p.cron)}" aria-pressed="${p.cron === cron}" data-tooltip="${esc(describeCron(p.cron))}">${esc(presetLabel(p))}</button>`).join('')}</div>
+      <div class="sched-chip-list">${group.presets.map(p => `<button type="button" class="sx-btn sx-btn--sm sched-chip" data-action="cron-preset" data-cron="${esc(p.cron)}" aria-pressed="${p.cron === cron}" data-tooltip="${esc(describeCron(p.cron))}">${esc(presetLabel(p))}</button>`).join('')}</div>
     </div>`;
   }).join('');
   const dayOrder = [1, 2, 3, 4, 5, 6, 0];
@@ -1951,10 +1988,10 @@ function renderScheduleEditor() {
     const help = entry?.label ? te('schedules.scheduleEditor.themeLabel', { label: entry.label }) : '';
     // A day without an entry keeps the button's room, so the fields line up.
     const remove = entry
-      ? `<button type="button" class="sched-icon-btn sched-icon-btn--danger sched-day-remove" data-action="day-theme-remove" data-day="${idx}" aria-label="${te('schedules.scheduleEditor.removeTheme', { day })}" data-tooltip="${te('schedules.scheduleEditor.removeThemeTip')}">${ICONS.trash}</button>`
-      : '<span class="sched-icon-btn sched-day-remove sched-day-remove--room" aria-hidden="true"></span>';
+      ? `<button type="button" class="sx-icon-btn sched-icon-btn sched-icon-btn--danger sched-day-remove" data-action="day-theme-remove" data-day="${idx}" aria-label="${te('schedules.scheduleEditor.removeTheme', { day })}" data-tooltip="${te('schedules.scheduleEditor.removeThemeTip')}">${ICONS.trash}</button>`
+      : '<span class="sx-icon-btn sched-icon-btn sched-day-remove sched-day-remove--room" aria-hidden="true"></span>';
     return formRow(`sched-ed-day-${idx}`, day,
-      `<textarea class="sched-input sched-textarea" id="sched-ed-day-${idx}" data-day="${idx}" rows="2" spellcheck="false" placeholder="${te('schedules.scheduleEditor.themePlaceholder', { day })}"${help ? ` aria-describedby="sched-ed-day-${idx}-help"` : ''}>${esc(entry?.contextOverride || '')}</textarea>${remove}`,
+      `<textarea class="sx-input sched-input sched-textarea" id="sched-ed-day-${idx}" data-day="${idx}" rows="2" spellcheck="false" placeholder="${te('schedules.scheduleEditor.themePlaceholder', { day })}"${help ? ` aria-describedby="sched-ed-day-${idx}-help"` : ''}>${esc(entry?.contextOverride || '')}</textarea>${remove}`,
       { help });
   }).join('');
 
@@ -1983,9 +2020,9 @@ function renderScheduleEditor() {
         ${isEdit ? approvalNoteHTML(_schedules.find(x => x.id === s.id) || s) : ''}
         <div class="sched-form">
           <section class="sched-form-section" aria-labelledby="sched-ed-sec-basics">
-            <h3 class="sched-form-title" id="sched-ed-sec-basics">${te('schedules.timers.schedule')}</h3>
+            <h3 class="sx-section-title sched-form-title" id="sched-ed-sec-basics">${te('schedules.timers.schedule')}</h3>
             <div class="sched-form-group">
-              ${formRow('sched-ed-name', t('schedules.form.name'), `<input class="sched-input" id="sched-ed-name" type="text" value="${esc(s.name || '')}" placeholder="${te('schedules.scheduleEditor.namePlaceholder')}" autocomplete="off">`)}
+              ${formRow('sched-ed-name', t('schedules.form.name'), `<input class="sx-input sched-input" id="sched-ed-name" type="text" value="${esc(s.name || '')}" placeholder="${te('schedules.scheduleEditor.namePlaceholder')}" autocomplete="off">`)}
               ${dropdownRow('sched-ed-template', t('schedules.form.automation'), templateOptions)}
               ${dropdownRow('sched-ed-group', t('schedules.form.group'), groupOptions)}
               ${formRow('sched-ed-enabled', t('schedules.scheduleEditor.active'), toggleHTML('sched-ed-enabled', s.enabled !== false, 'sched-ed-enabled-help'),
@@ -1994,12 +2031,12 @@ function renderScheduleEditor() {
           </section>
 
           <section class="sched-form-section" aria-labelledby="sched-ed-sec-when">
-            <h3 class="sched-form-title" id="sched-ed-sec-when">${te('schedules.scheduleEditor.when')}</h3>
+            <h3 class="sx-section-title sched-form-title" id="sched-ed-sec-when">${te('schedules.scheduleEditor.when')}</h3>
             <div class="sched-form-group">
               <div class="sched-form-row sched-form-row--top">
                 <label class="sched-form-label" for="sched-ed-cron">${te('schedules.scheduleEditor.cron')}</label>
                 <div class="sched-form-stack">
-                  <div class="sched-form-control"><input class="sched-input sched-mono" id="sched-ed-cron" type="text" value="${esc(cron)}" placeholder="0 9 * * *" spellcheck="false" autocomplete="off" aria-describedby="sched-ed-cron-desc"></div>
+                  <div class="sched-form-control"><input class="sx-input sched-input sched-mono" id="sched-ed-cron" type="text" value="${esc(cron)}" placeholder="0 9 * * *" spellcheck="false" autocomplete="off" aria-describedby="sched-ed-cron-desc"></div>
                   <p class="sched-help" id="sched-ed-cron-desc" aria-live="polite">${esc(describeCron(cron))}</p>
                 </div>
               </div>
@@ -2007,12 +2044,12 @@ function renderScheduleEditor() {
                 <span class="sched-form-label">${te('schedules.scheduleEditor.presets')}</span>
                 <div class="sched-presets">${presetsHTML}</div>
               </div>
-              ${formRow('sched-ed-tz', t('schedules.detail.timeZone'), `<input class="sched-input" id="sched-ed-tz" type="text" value="${esc(tz)}" spellcheck="false" autocomplete="off">`)}
+              ${formRow('sched-ed-tz', t('schedules.detail.timeZone'), `<input class="sx-input sched-input" id="sched-ed-tz" type="text" value="${esc(tz)}" spellcheck="false" autocomplete="off">`)}
             </div>
           </section>
 
           <section class="sched-form-section" aria-labelledby="sched-ed-sec-launch">
-            <h3 class="sched-form-title" id="sched-ed-sec-launch">${te('schedules.form.launchOverrides')}</h3>
+            <h3 class="sx-section-title sched-form-title" id="sched-ed-sec-launch">${te('schedules.form.launchOverrides')}</h3>
             <p class="sched-form-intro">${te('schedules.scheduleEditor.launchIntro')}</p>
             <div class="sched-form-group">
               ${dropdownRow('sched-ed-profile', t('schedules.form.cli'), profileOptions)}
@@ -2032,15 +2069,15 @@ function renderScheduleEditor() {
           </section>
 
           <details class="sched-form-section"${hasThemes ? ' open' : ''}>
-            <summary class="sched-form-title">${te('schedules.detail.dayThemes')} <small>${te('schedules.scheduleEditor.optional')}</small></summary>
+            <summary class="sx-section-title sched-form-title">${te('schedules.detail.dayThemes')} <small>${te('schedules.scheduleEditor.optional')}</small></summary>
             <p class="sched-form-intro">${te('schedules.scheduleEditor.dayThemesIntro')}</p>
             <div class="sched-form-group" id="sched-ed-daythemes">${dayThemes}</div>
           </details>
         </div>
       </div>
       <footer class="sched-editor-actions">
-        <button type="button" class="sched-btn" data-action="schedule-editor-close">${te('schedules.editor.cancel')}</button>
-        <button type="button" class="sched-btn sched-btn--primary" data-action="schedule-editor-save">${isEdit ? te('schedules.editor.save') : te('schedules.scheduleEditor.create')}</button>
+        <button type="button" class="sx-btn sched-btn" data-action="schedule-editor-close">${te('schedules.editor.cancel')}</button>
+        <button type="button" class="sx-btn sched-btn sx-btn--primary" data-action="schedule-editor-save">${isEdit ? te('schedules.editor.save') : te('schedules.scheduleEditor.create')}</button>
       </footer>
     </div>
   `);
@@ -2727,26 +2764,26 @@ function openConfirm({ kind, id, opener }) {
     accept = t('schedules.confirm.groupAccept');
   }
   _confirm = { kind, id, opener };
-  layer.innerHTML = `<div class="sched-dialog" role="alertdialog" aria-modal="true" aria-labelledby="sched-dialog-title" aria-describedby="sched-dialog-text">
-    <h4 id="sched-dialog-title">${esc(title)}</h4>
-    <div class="sched-dialog-body">
+  layer.innerHTML = `<div class="ss-fd-backdrop" aria-hidden="true"></div><div class="ss-file-dialog ss-dlg sched-dialog" role="alertdialog" aria-modal="true" aria-labelledby="sched-dialog-title" aria-describedby="sched-dialog-text">
+    <h4 class="ss-dlg-title" id="sched-dialog-title">${esc(title)}</h4>
+    <div class="ss-dlg-body">
       <p class="sched-dialog-name">${esc(name)}</p>
       <p class="sched-help" id="sched-dialog-text">${esc(text)}</p>
     </div>
-    <div class="sched-dialog-actions">
-      <button type="button" class="sched-btn" data-action="confirm-cancel">${te('schedules.editor.cancel')}</button>
-      <button type="button" class="sched-btn sched-btn--danger" data-action="confirm-accept">${ICONS.trash}<span>${esc(accept)}</span></button>
+    <div class="ss-dlg-actions sched-dialog-actions">
+      <button type="button" class="sx-btn sched-btn" data-action="confirm-cancel">${te('schedules.editor.cancel')}</button>
+      <button type="button" class="sx-btn sched-btn sx-btn--danger" data-action="confirm-accept">${ICONS.trash}<span>${esc(accept)}</span></button>
     </div>
   </div>`;
   layer.hidden = false;
-  for (const part of _panel.querySelectorAll(':scope > .sched-header, :scope > .sched-body')) part.inert = true;
+  for (const part of _panel.querySelectorAll(':scope > .sx-head, :scope > .sched-body')) part.inert = true;
   layer.querySelector('[data-action="confirm-cancel"]')?.focus();
 }
 
 function closeConfirm() {
   const layer = $('sched-dialog-layer');
   if (layer) { layer.hidden = true; layer.innerHTML = ''; }
-  for (const part of _panel?.querySelectorAll(':scope > .sched-header, :scope > .sched-body') || []) part.inert = false;
+  for (const part of _panel?.querySelectorAll(':scope > .sx-head, :scope > .sched-body') || []) part.inert = false;
   const opener = _confirm?.opener;
   _confirm = null;
   if (opener?.isConnected) opener.focus();
@@ -2986,12 +3023,12 @@ function openPromptScheduleModal() {
   const opencodeMeta = getProviderMeta('opencode');
   const codexMeta = getProviderMeta('codex');
   _promptModal = document.createElement('div');
-  _promptModal.className = 'sched-prompt-modal glass';
+  _promptModal.className = 'sched-prompt-modal sx glass';
   _promptModal.setAttribute('role', 'dialog');
   _promptModal.setAttribute('aria-modal', 'true');
   _promptModal.setAttribute('aria-labelledby', 'sched-prompt-title');
   _promptModal.innerHTML = `
-    <header class="sched-prompt-head">
+    <header class="sx-head sched-prompt-head">
       <div class="sched-prompt-head-text">
         <span class="sched-prompt-icon">${ICONS.sparkle}</span>
         <div>
@@ -2999,10 +3036,10 @@ function openPromptScheduleModal() {
           <p>${te('schedules.prompt.sub')}</p>
         </div>
       </div>
-      <button class="sched-prompt-close" data-action="prompt-modal-close" aria-label="${te('schedules.prompt.close')}">${ICONS.close}</button>
+      <button class="sx-icon-btn sx-close sched-prompt-close" data-action="prompt-modal-close" aria-label="${te('schedules.prompt.close')}">${ICONS.close}</button>
     </header>
     <div class="sched-prompt-tiles">
-      <button class="sched-prompt-tile" style="--provider-color:${claudeMeta.color};" data-action="prompt-modal-pick" data-runtime="claude-code">
+      <button class="sx-card sched-prompt-tile" style="--provider-color:${claudeMeta.color};" data-action="prompt-modal-pick" data-runtime="claude-code">
         <span class="sched-prompt-tile-logo" aria-hidden="true">${claudeMeta.icon}</span>
         <span class="sched-prompt-tile-body">
           <span class="sched-prompt-tile-title">${claudeMeta.label}</span>
@@ -3010,7 +3047,7 @@ function openPromptScheduleModal() {
         </span>
         <span class="sched-prompt-pill sched-prompt-pill--active">${te('schedules.prompt.ready')}</span>
       </button>
-      <button class="sched-prompt-tile" style="--provider-color:${antigravityMeta.color};" data-action="prompt-modal-pick" data-runtime="antigravity">
+      <button class="sx-card sched-prompt-tile" style="--provider-color:${antigravityMeta.color};" data-action="prompt-modal-pick" data-runtime="antigravity">
         <span class="sched-prompt-tile-logo" aria-hidden="true">${antigravityMeta.icon}</span>
         <span class="sched-prompt-tile-body">
           <span class="sched-prompt-tile-title">${antigravityMeta.label}</span>
@@ -3018,7 +3055,7 @@ function openPromptScheduleModal() {
         </span>
         <span class="sched-prompt-pill sched-prompt-pill--active">${te('schedules.prompt.ready')}</span>
       </button>
-      <button class="sched-prompt-tile disabled" style="--provider-color:${opencodeMeta.color};" disabled aria-disabled="true">
+      <button class="sx-card sched-prompt-tile disabled" style="--provider-color:${opencodeMeta.color};" disabled aria-disabled="true">
         <span class="sched-prompt-tile-logo" aria-hidden="true">${opencodeMeta.icon}</span>
         <span class="sched-prompt-tile-body">
           <span class="sched-prompt-tile-title">${opencodeMeta.label}</span>
@@ -3026,7 +3063,7 @@ function openPromptScheduleModal() {
         </span>
         <span class="sched-prompt-pill">${te('schedules.prompt.planned')}</span>
       </button>
-      <button class="sched-prompt-tile disabled" style="--provider-color:${codexMeta.color};" disabled aria-disabled="true">
+      <button class="sx-card sched-prompt-tile disabled" style="--provider-color:${codexMeta.color};" disabled aria-disabled="true">
         <span class="sched-prompt-tile-logo" aria-hidden="true">${codexMeta.icon}</span>
         <span class="sched-prompt-tile-body">
           <span class="sched-prompt-tile-title">Codex CLI</span>

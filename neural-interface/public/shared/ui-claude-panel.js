@@ -1,5 +1,6 @@
 import { sessionProjectItems } from './session-project-items.js';
 import { t } from './i18n.js';
+import { thinkToggleText } from './effort-i18n.js';
 import { answerWorkerQuestion, syncWorkerQuestionQueue } from './worker-questions.js';
 import { providerAuthSnapshot } from './ui-provider-auth.js';
 import { mountProviderTerminalAuth, providerApiKeyRequest, startProviderTerminalLogin } from './ui-provider-terminal-auth.js';
@@ -29,6 +30,7 @@ import { isFarRowStyleRecord, watchTranscriptRows } from './transcript-rows.js';
 import { requestGeneratedSessionTitle } from './session-title.js';
 import { wireFileLinks } from './ui-file-links.js';
 import { decorateCodeBlocks, installCodeCopy } from './ui-code-copy.js';
+import { decorateOutput, installOutput } from './ui-output.js';
 import { WORKER_END_CLASS, buildWorkerEndCard, endWorkerRunOnClose, forgetWorkerEnd, leaveWorkerTab, trackWorkerEnd, updateWorkerEndBusy } from './ui-worker-end.js';
 import { isDispatchedRun, isEndOfRunAbort, workerEndView } from './worker-end.js';
 import { runAwaitsAnswer, runTurnLive } from './sidepanel-session-status.js';
@@ -673,67 +675,9 @@ function injectStyles() {
     }
     .cp-messages .msg-avatar svg { width: 14px; height: 14px; }
     .cp-messages .msg-content { flex: 1; min-width: 0; }
-    .cp-messages .msg-body {
-      font-size: 12px; color: var(--t-primary);
-      line-height: 1.65; word-break: break-word;
-      font-family: 'Inter', -apple-system, sans-serif;
-    }
-    .cp-messages .msg-body p { margin: 0 0 0.5em; }
-    .cp-messages .msg-body p:last-child { margin-bottom: 0; }
-    .cp-messages .msg-body h1,.cp-messages .msg-body h2,.cp-messages .msg-body h3 {
-      color: var(--t-bright); margin: 0.7em 0 0.25em; font-weight: 600;
-    }
-    .cp-messages .msg-body h1 { font-size: 14px; }
-    .cp-messages .msg-body h2 { font-size: 13px; }
-    .cp-messages .msg-body h3 { font-size: 12px; }
-    .cp-messages .msg-body code:not(pre code) {
-      background: var(--s-subtle); border: 1px solid var(--b-subtle);
-      border-radius: 4px; padding: 1px 5px; font-family: 'JetBrains Mono', monospace;
-      font-size: 0.88em; color: var(--t-bright);
-    }
-    .cp-messages .msg-body pre {
-      background: rgba(0,0,0,0.3); border: 1px solid var(--b-subtle);
-      border-radius: 8px; padding: 10px; overflow-x: auto; margin: 0.5em 0;
-      position: relative;
-    }
-    .cp-messages .msg-body pre code {
-      font-family: 'JetBrains Mono', monospace; font-size: 11px;
-      color: var(--t-primary); background: none; border: none; padding: 0;
-    }
-    /* A block's Copy button is the shared one (../code-copy.js, ui-code-copy.js): its styles come with it. */
-    .cp-messages .msg-body a { color: var(--t-bright); text-decoration: none; }
-    .cp-messages .msg-body a:hover { text-decoration: underline; }
-    .cp-messages .msg-body strong { color: var(--t-bright); }
-    .cp-messages .msg-body ul, .cp-messages .msg-body ol { padding-left: 1.3em; margin: 0.3em 0; }
-    .cp-messages .msg-body ul { list-style: none; }
-    .cp-messages .msg-body ul li { position: relative; }
-    .cp-messages .msg-body ul li::before {
-      content: ''; position: absolute; left: -1em; top: 0.6em;
-      width: 4px; height: 4px; border-radius: 50%;
-      background: rgba(255,255,255,0.2);
-    }
-    .cp-messages .msg-body ol li { color: var(--t-primary); }
-    .cp-messages .msg-body ol li::marker { color: var(--t-faint); font-size: 11px; }
-    .cp-messages .msg-body blockquote {
-      margin: 0.5em 0; padding: 4px 0 4px 12px;
-      border-left: 2px solid rgba(200,160,80,0.3);
-      color: var(--t-secondary); font-style: italic;
-    }
-    .cp-messages .msg-body hr {
-      border: none; height: 1px; margin: 0.8em 0;
-      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08) 20%, rgba(255,255,255,0.08) 80%, transparent);
-    }
-    .cp-messages .msg-body table {
-      width: 100%; border-collapse: collapse; margin: 0.5em 0; font-size: 11px;
-    }
-    .cp-messages .msg-body th {
-      text-align: left; padding: 4px 8px; font-weight: 600; color: var(--t-bright);
-      background: rgba(255,255,255,0.04); border-bottom: 1px solid rgba(255,255,255,0.08);
-    }
-    .cp-messages .msg-body td {
-      padding: 3px 8px; border-bottom: 1px solid rgba(255,255,255,0.04); color: var(--t-primary);
-    }
-    .cp-messages .msg-body tr:hover td { background: rgba(255,255,255,0.02); }
+    /* An answer's prose, tables and code are the shared reading layer (./ui-output.js): one system for the six
+       side panels. A tag is never styled here again; this panel's own voice is its font. */
+    .cp-messages .msg-body { font-family: 'Inter', -apple-system, sans-serif; }
 
     /* ── Tool cards ── */
     .cp-messages .tool-card {
@@ -2664,10 +2608,39 @@ function injectStyles() {
     /* Queue send icon */
     .cp-send.queue-mode { }
     .cp-send.queue-mode svg { opacity: 0.9; }
+
+    /* ── Reading pass (2026-11-21): what the agent did is legible and quiet, what it answered leads ──
+       An answer's prose, tables and code are ./ui-output.js. This block is the rest of the transcript: tool rows,
+       thinking, notices and the turn's footer were 8.5–10.5px at 20–30% white. They keep their mono voice, their
+       place and every control; the sizes are 11px (9.5px for the small-caps label) and the faint text is the
+       secondary token. Nothing moved and nothing was removed. */
+    .cp-messages .msg-bubble { font-size: 13px; }
+    .cp-messages .tool-name { font-size: 11px; }
+    .cp-messages .tool-detail { font-size: 11px; color: var(--t-secondary); }
+    .cp-messages .tool-section-label { font-size: 9.5px; color: var(--t-secondary); letter-spacing: 0.08em; }
+    .cp-messages .tool-section { font-size: 11px; color: var(--t-primary); word-break: normal; overflow-wrap: anywhere; }
+    .cp-messages .cp-bash-cmd, .cp-messages .cp-bash-out, .cp-messages .cp-result-text { font-size: 11px; word-break: normal; overflow-wrap: anywhere; }
+    .msg-thinking-content { font-size: 11px; color: var(--t-secondary); line-height: 1.6; }
+    .cp-messages .msg-status { font-size: 11px; color: var(--t-secondary); }
+    .cp-messages .msg-error, .cp-messages .msg-warn { font-size: 11px; }
+    .cp-messages .msg-tools-summary { font-size: 10.5px; color: var(--t-secondary); }
+    .cp-messages .cp-turn-footer { font-size: 10.5px; color: var(--t-secondary); }
+    .cp-messages .cp-msg-note { font-size: 11px; color: var(--t-secondary); }
+    .cp-messages .cp-tool-group-text { color: var(--t-primary); }
+    /* What the agent says while it works (a reply with tool calls under it) is secondary text; its answer is
+       primary. Colour only: nothing moves when a tool call joins a reply. */
+    .cp-messages .msg-content:has(> .tool-card, > .cp-tool-group) > .msg-body { --sbo-text: var(--t-primary); --sbo-strong: var(--t-bright); }
+    /* The answer after the work: a hairline at the top of its row, drawn when the turn's footer lands. It is a
+       background, so it takes no room and nothing moves when it appears. */
+    .cp-messages .msg-assistant:has(.tool-card, .cp-tool-group) + .msg-assistant:has(+ .cp-turn-footer) {
+      background: linear-gradient(var(--b-light), var(--b-light)) no-repeat 48px 0 / calc(100% - 62px) 1px;
+    }
   `;
   document.head.appendChild(style);
   // The Copy button of every code block: its stylesheet and its one click listener, in this document.
   installCodeCopy(document);
+  // The reading layer of an agent's answer (prose, tables, code): one stylesheet for the six panels.
+  installOutput(document);
 }
 
 // ── Custom dropdown helpers ──
@@ -2807,10 +2780,10 @@ function _setEffort(btn, level) {
   if (!btn) return;
   btn.dataset.effort = level;
   const label = btn.querySelector('.cp-think-label');
-  if (label) label.textContent = EFFORT_LABELS[level] || 'Think';
+  if (label) label.textContent = thinkToggleText('label', level, t);
   // On a model that always thinks the first stop is the model's default, never "Thinking off".
   const view = thinkToggleView(level, _getSelectedModel());
-  btn.setAttribute('data-tooltip', view.corrected ? view.title : (EFFORT_TITLES[level] || ''));
+  btn.setAttribute('data-tooltip', view.corrected ? view.title : thinkToggleText('title', level, t));
   // Light up dots based on level
   const dots = btn.querySelectorAll('.cp-think-dots i');
   const count = { off: 0, low: 1, medium: 2, high: 3, xhigh: 4, max: 5 }[level] || 0;
@@ -3213,7 +3186,7 @@ function closeTab(idx, { detachAutomation = false } = {}) {
     endWorkerRunOnClose(runId, () => fetch('/api/loop/stop', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ runId }),
+      body: JSON.stringify({ runId, action: 'tab_close' }),
     }).catch(() => {}), { busy: hasLiveBackgroundWork(tab) });
   }
   if (tab.automationRunId) forgetWorkerEnd(tab.automationRunId);
@@ -3276,6 +3249,7 @@ function _createTrayPill(tab) {
   const pill = document.createElement('div');
   pill.className = 'term-minimized-pill cp-session-pill';
   pill.dataset.tabId = tab.id;
+  pill.getAutomationRunId = () => tab.automationRunId;
   pill.innerHTML = `
     <span class="cp-pill-ring" aria-hidden="true"><i></i></span>
     <span class="term-minimized-pill-icon">${_CP_ICON_SVG}</span>
@@ -5311,6 +5285,9 @@ async function _loadSessionHistoryNow(sid, $msgs, ownerTab, stale, ticket) {
 // from a snapshot works as it is.
 function addCopyButtons(el) {
   decorateCodeBlocks(el);
+  // An answer put back from a snapshot saved before the reading layer gets its tables framed (ui-output.js).
+  // Markdown bodies only; a diff's lines are coloured just below.
+  (el.matches?.('.msg-body') ? [el] : el.querySelectorAll?.('.msg-body') || []).forEach((body) => decorateOutput(body, { diff: false }));
   el.querySelectorAll('pre').forEach(pre => {
     // Colorize diff lines inline when the code block is a diff
     const code = pre.querySelector('code');
@@ -9785,7 +9762,7 @@ function send({ shift = false } = {}) {
     fetch('/api/loop/stop', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ runId: tab.automationRunId }),
+      body: JSON.stringify({ runId: tab.automationRunId, action: 'stop' }),
     }).then(async (res) => {
       if (res.ok) { setRunning(tab, false); return; }
       let reason = '';

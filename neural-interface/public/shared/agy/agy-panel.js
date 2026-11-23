@@ -26,7 +26,7 @@ import {
 } from './agy-events.js';
 import {
   dropdownEntries, elicitationContent, elicitationFields, modeEntries, optionByCategory, permissionCard, quickOption,
-  secondaryOptions, toggledValue, withValue,
+  localizeThinkingEntries, secondaryOptions, toggledValue, withValue,
 } from './agy-options.js';
 import {
   attachmentProblem, attachmentType, automationEvent, MAX_TABS, newTab, openSessionRequest, promptRequest, restoreTabs, runGeminiDir, serializeTabs, sessionLoadNotice, stagedPicture, tabLabel,
@@ -47,6 +47,7 @@ import { dropdownHTML, setDropdownDisabled, setDropdownItems, wireDropdowns, clo
 import { renderMarkdown } from '../cp/cp-markdown.js';
 import { createKeyedHtmlList } from '../dom-morph.js';
 import { watchTranscriptRows } from '../transcript-rows.js';
+import { createStickyScrollController } from '../ui-scroll-follow.js';
 import { fetchProjects } from '../api.js';
 import { createCliInstallController } from '../cli-install-controller.js';
 import { setCliInstallTranslator } from '../cli-install-view.js';
@@ -1023,7 +1024,7 @@ function closeTab(idx, { closeSession = true } = {}) {
   if (tab.automationRunId) {
     const runId = tab.automationRunId;
     window.dispatchEvent(new CustomEvent('native-loop:dismissed', { detail: { runId } }));
-    endWorkerRunOnClose(runId, () => fetch('/api/loop/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId }) }).catch(() => {}), { busy: !!tab.running });
+    endWorkerRunOnClose(runId, () => fetch('/api/loop/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ runId, action: 'tab_close' }) }).catch(() => {}), { busy: !!tab.running });
     forgetWorkerEnd(runId);
   }
   tab.pillEl?.remove();
@@ -1042,7 +1043,7 @@ function closeTab(idx, { closeSession = true } = {}) {
 // ── Rendering ──
 function scheduleRender(tab = null, { follow = false } = {}) {
   if (tab && tab !== activeTab()) { renderPills(); return; }
-  if (follow) { const rt = runtimeOf(activeTab()); if (rt) rt.scrolledUp = false; }
+  if (follow) { const rt = runtimeOf(activeTab()); if (rt) rt.scrolledUp = false; _scroll?.setFollowing(true); }
   // A closed panel draws nothing: a pass rebuilds the whole transcript and reads its layout, once per frame
   // for as long as a session streams there. Its pill says what the session does; showing the panel draws
   // everything (setVisible → renderAll), from the same state.
@@ -1185,7 +1186,7 @@ function renderPickers() {
     modelInput.dataset.configId = model?.id || '';
   }
   if (thinkingInput) {
-    const entries = thinking ? dropdownEntries(thinking) : [{ value: '', label: T('thinking'), selected: true }];
+    const entries = thinking ? localizeThinkingEntries(dropdownEntries(thinking), t) : [{ value: '', label: T('thinking'), selected: true }];
     setDropdownItems(thinkingInput, entries);
     setDropdownDisabled(thinkingInput, locked || !thinking);
     thinkingInput.dataset.configId = thinking?.id || '';
@@ -1278,6 +1279,12 @@ function renderQueue() {
 // its whole transcript replaced on every frame; now it is the row being written.
 let _transcriptList = null;
 let _transcriptListBox = null;
+// The transcript's bottom follow (ui-scroll-follow.js): one controller over the one transcript element,
+// the panel's per-tab scrolledUp intent restored into it before a tab's rows are drawn (as Maritaca does).
+// It follows late layout and a message area whose height changes, which a write inside renderTranscript
+// alone never saw; its own scroll events never detach it.
+let _scroll = null;
+let _followTabId = null;
 function transcriptList(box) {
   if (_transcriptListBox !== box) { _transcriptList = createKeyedHtmlList(box); _transcriptListBox = box; }
   return _transcriptList;
@@ -1316,8 +1323,10 @@ function renderTranscript() {
   if (!box) return;
   const tab = activeTab();
   const rt = runtimeOf(tab);
-  if (!tab || !rt) { box.innerHTML = ''; transcriptList(box).forget(); return; }
-  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  if (!tab || !rt) { box.innerHTML = ''; transcriptList(box).forget(); _followTabId = null; return; }
+  // Another tab's rows are about to be drawn: restore this tab's follow intent into the shared controller
+  // first (it cancels the preceding tab's queued scroll), as Maritaca's renderTranscript does.
+  if (_followTabId !== tab.id) { _scroll?.setFollowing(!rt.scrolledUp); _followTabId = tab.id; }
   const setup = currentSetup();
   const rows = rt.transcript.rows;
   const ctx = {
@@ -1353,11 +1362,20 @@ function renderTranscript() {
   }
   box._agyEmpty = null;
   if (setupBlock) parts.unshift({ key: `${tab.id}:setup`, html: setupBlock });
+  // Save the reader's scroll position before patching: replacing the streaming row in WebKit
+  // briefly empties the flex scroller and resets scrollTop to 0 unless restored when not following.
+  const prevScrollTop = box.scrollTop;
   replaceKeepingFocus(box, parts, rt);
   placeWorkerEnd(box, tab);
   // A kept setup block keeps its classes: the nudge is set to what it is now, not only added.
   box.querySelector('.agy-setup')?.classList.toggle('agy-nudge', !!_setup.nudge);
-  if (nearBottom || !rt.scrolledUp) box.scrollTop = box.scrollHeight;
+  // The follow write is the controller's (instant, generation-checked): it also answers late layout and a
+  // message-area height change between renders. force re-asserts the intent the tab was drawn with, so a
+  // scroll event from the rows being replaced cannot detach it; a reader who scrolled up is left alone.
+  const stick = _scroll?.isFollowing() ?? !rt.scrolledUp;
+  rt.scrolledUp = !stick;
+  if (stick) _scroll?.scrollToBottom({ force: true, immediate: true });
+  else box.scrollTop = prevScrollTop;
   const jump = $('.agy-jump');
   if (jump) jump.hidden = !rt.scrolledUp;
 }
@@ -1572,6 +1590,7 @@ function renderPills() {
       const pill = document.createElement('div');
       pill.className = 'term-minimized-pill agy-session-pill';
       pill.dataset.tabId = tab.id;
+      pill.getAutomationRunId = () => tab.automationRunId;
       pill.tabIndex = 0;
       pill.innerHTML = `<span class="term-minimized-pill-icon agy-mark">${ICON}</span><span class="term-minimized-pill-label"></span><button class="term-minimized-pill-close" data-tooltip="${esc(T('closeTab'))}" data-tooltip-pos="top">&times;</button>`;
       const openIt = () => {
@@ -2263,8 +2282,7 @@ function wire() {
   $('.agy-jump').addEventListener('click', () => {
     const rt = runtimeOf(activeTab());
     if (rt) rt.scrolledUp = false;
-    const box = $('.agy-transcript');
-    if (box) box.scrollTop = box.scrollHeight;
+    _scroll?.scrollToBottom({ force: true, immediate: true });
     $('.agy-jump').hidden = true;
   });
   const transcript = $('.agy-transcript');
@@ -2272,10 +2290,11 @@ function wire() {
   // Rows far from the screen are skipped by the engine, at their exact size (transcript-rows.js). The rows
   // stay the same nodes from one pass to the next now (transcriptList), so what is known of them holds.
   watchTranscriptRows(transcript);
+  _scroll = createStickyScrollController(transcript);
   transcript.addEventListener('scroll', () => {
     const rt = runtimeOf(activeTab());
     if (!rt) return;
-    rt.scrolledUp = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight > 60;
+    rt.scrolledUp = !_scroll.isFollowing();
     const jump = $('.agy-jump');
     if (jump) jump.hidden = !rt.scrolledUp;
   });

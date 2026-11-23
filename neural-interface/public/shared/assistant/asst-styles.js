@@ -16,10 +16,13 @@
 // prefers-reduced-motion.
 
 import { installCodeCopy } from '../ui-code-copy.js';
+import { installOutput } from '../ui-output.js';
 
 export function injectAssistantStyles() {
   // The Copy button of every code block: its stylesheet and its one click listener, in this document.
   installCodeCopy(document);
+  // The reading layer of an agent's answer (prose, tables, code): one stylesheet for the six panels.
+  installOutput(document);
   if (document.getElementById('assistant-panel-styles')) return;
   const style = document.createElement('style');
   style.id = 'assistant-panel-styles';
@@ -431,27 +434,9 @@ export function injectAssistantStyles() {
     /* A prompt written outside the panel (WhatsApp Link). */
     .asst-msg-origin { margin-top: 3px; padding: 0 4px; color: var(--asst-text-3, var(--asst-text-2)); font-size: 11px; line-height: 1.3; }
 
-    .asst-md { color: var(--asst-text); font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
-    .asst-md > :first-child { margin-top: 0; }
-    .asst-md > :last-child { margin-bottom: 0; }
-    .asst-md p { margin: 0 0 10px; }
-    .asst-md :is(h1, h2, h3, h4) { margin: 16px 0 8px; color: var(--asst-text); font-weight: 600; line-height: 1.3; }
-    .asst-md h1 { font-size: 18px; }
-    .asst-md h2 { font-size: 16px; }
-    .asst-md :is(h3, h4) { font-size: 14px; }
-    .asst-md :is(ul, ol) { margin: 0 0 10px; padding-left: 22px; }
-    .asst-md li { margin: 3px 0; }
-    .asst-md li::marker { color: var(--asst-text-3); }
-    .asst-md code { padding: 1px 5px; border-radius: 5px; background: var(--asst-fill-2); font-family: var(--asst-mono); font-size: .86em; }
-    .asst-md pre { margin: 8px 0 12px; padding: 10px 12px; overflow-x: auto; border: 1px solid var(--asst-line); border-radius: 8px; background: var(--asst-field); }
-    .asst-md pre code { padding: 0; background: transparent; font-size: 12.5px; line-height: 1.55; }
-    .asst-md blockquote { margin: 8px 0; padding: 2px 12px; border-left: 2px solid var(--asst-line-2); color: var(--asst-text-2); }
-    .asst-md :is(a, .file-link) { color: var(--asst-focus); text-decoration: none; cursor: pointer; }
-    .asst-md a:hover { text-decoration: underline; }
-    .asst-md table { display: block; max-width: 100%; overflow-x: auto; margin: 8px 0 12px; border-collapse: collapse; font-size: 12.5px; }
-    .asst-md :is(th, td) { padding: 5px 10px; border: 1px solid var(--asst-line); text-align: left; }
-    .asst-md th { color: var(--asst-text-2); font-weight: 600; background: var(--asst-field); }
-    .asst-md hr { margin: 12px 0; border: 0; border-top: 1px solid var(--asst-line); }
+    /* An answer's prose, tables and code are the shared reading layer (../ui-output.js): one system for the six
+       side panels. A tag is never styled here again; this panel's voice is the --sbo-* values that sheet gives .asst-md. */
+    .asst-md .file-link { cursor: pointer; }
 
     .asst-thinking { color: var(--asst-text-3); font-size: 12.5px; }
     .asst-thinking summary {
@@ -1970,7 +1955,9 @@ export function injectAssistantStyles() {
     .asst-routes-overlay .asst-routes-list { display: block; background: var(--asst-field); border: 1px solid var(--asst-line-2); border-radius: var(--asst-r-field); padding: 0; }
     .asst-routes-group { display: grid; grid-template-columns: 96px minmax(0, 1fr); min-width: 0; padding: 4px 8px; column-gap: 8px; }
     .asst-routes-group + .asst-routes-group { border-top: 1px solid var(--asst-line-2); }
-    .asst-routes-group > h3 { grid-area: 1 / 1; margin: 0; padding: 7px 4px; font-size: 12px; line-height: 1.45; font-weight: 600; color: var(--asst-text-2); overflow-wrap: anywhere; }
+    /* The label stands beside its group, over the first three rows: one that wraps in its narrow column
+       ("Web & desktop") takes that height from them, never from the first row alone (it was stretched to 48.78px). */
+    .asst-routes-group > h3 { grid-area: 1 / 1 / span 3; margin: 0; padding: 7px 4px; font-size: 12px; line-height: 1.45; font-weight: 600; color: var(--asst-text-2); overflow-wrap: anywhere; }
     .asst-routes-overlay .asst-routes-row { display: block; padding: 0; grid-column: 2; border: 0; }
     .asst-routes-overlay .asst-routes-row + .asst-routes-row { border-top: 1px solid var(--asst-line); }
     .asst-routes-toggle { display: grid; grid-template-columns: minmax(0, 37%) minmax(0, 1fr) auto 12px; align-items: center; gap: 6px; width: 100%; min-height: 30px; padding: 4px 6px; border: 0; border-radius: var(--asst-pill-r-xs); background: transparent; color: var(--asst-text); text-align: start; font: inherit; cursor: pointer; }
@@ -2083,7 +2070,7 @@ export function injectAssistantStyles() {
     .asst-status.warn { color: var(--asst-warn); }
     .asst-msg.asst-msg-error .asst-msg-content { padding: 6px 10px; border-radius: var(--asst-r-field); box-shadow: inset 2px 0 0 var(--asst-live), inset 0 0 0 1px color-mix(in srgb, var(--asst-live) 28%, transparent); }
     .asst-local-output { padding-left: 12px; border-left: 2px solid var(--asst-line-2); }
-    .asst-local-output .asst-md { color: var(--asst-text-2); font-size: 13px; }
+    .asst-local-output .asst-md { --sbo-text: var(--asst-text-2); --sbo-size: 13px; }
 
     /* The panel's one status line for screen readers (the transcript is not a live region). */
     .asst-announce { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }

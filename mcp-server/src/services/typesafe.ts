@@ -31,7 +31,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { getEnvPath } from '../config.js';
 import { callerMemoryContext } from './identity.js';
 import {
-  typesafeConfig, surfaceConfig, writeTypeSafeLog, statePreview, cleanSessionId,
+  typesafeConfig, surfaceConfig, writeTypeSafeLogAsync, statePreview, cleanSessionId,
   DEFAULT_BASE_URL, DEFAULT_MODEL, type JudgeOrigin,
 } from './typesafe-config.js';
 
@@ -295,8 +295,10 @@ export async function judge(
   const sessionId = cleanSessionId(options.sessionId === undefined ? caller.session : options.sessionId);
   const project = (options.project === undefined ? caller.project : options.project) || null;
   const riders = options.riders?.filter(r => r && r !== surface) ?? [];
-  const log = (fields: { answers?: Answers | null; latencyMs: number; inputTokens: number; outputTokens: number; cached: boolean; error: string | null; model?: string | null }) => {
-    const id = writeTypeSafeLog({
+  // Awaited, so onLogged still runs before the judgment returns; the row waits for SQLite's writer without
+  // blocking the event loop (a capture in the session-cache worker can hold it for a while).
+  const log = async (fields: { answers?: Answers | null; latencyMs: number; inputTokens: number; outputTokens: number; cached: boolean; error: string | null; model?: string | null }) => {
+    const id = await writeTypeSafeLogAsync({
       surface, origin, entity_id: options.entityId ?? null, model: fields.model ?? model,
       question_count: questionCount, state_preview: preview, answers: fields.answers ?? null,
       latency_ms: fields.latencyMs, input_tokens: fields.inputTokens, output_tokens: fields.outputTokens,
@@ -312,7 +314,7 @@ export async function judge(
     if (cached) {
       typesafeMetrics.cached++; metrics.cached++;
       options.onUsage?.({ inputTokens: 0, outputTokens: 0, latencyMs: 0, cached: true });
-      log({ answers: cached, latencyMs: 0, inputTokens: 0, outputTokens: 0, cached: true, error: null });
+      await log({ answers: cached, latencyMs: 0, inputTokens: 0, outputTokens: 0, cached: true, error: null });
       return cached;
     }
   }
@@ -321,11 +323,11 @@ export async function judge(
   const timeoutMs = options.timeoutMs ?? settings.timeoutMs ?? cfg.defaultTimeoutMs;
   const started = Date.now();
   typesafeMetrics.calls++; metrics.calls++;
-  const fail = (message: string) => {
+  const fail = async (message: string) => {
     typesafeMetrics.failures++; metrics.failures++;
     typesafeMetrics.lastError = message;
     typesafeMetrics.lastErrorAt = new Date().toISOString();
-    log({ latencyMs: Date.now() - started, inputTokens: 0, outputTokens: 0, cached: false, error: message });
+    await log({ latencyMs: Date.now() - started, inputTokens: 0, outputTokens: 0, cached: false, error: message });
     return null;
   };
   try {
@@ -366,7 +368,7 @@ export async function judge(
     }
     const answeredBy = typeof body.model === 'string' ? body.model : null;
     options.onUsage?.({ inputTokens, outputTokens, latencyMs, cached: false, model: answeredBy });
-    log({ answers: body.answers, latencyMs, inputTokens, outputTokens, cached: false, error: null, model: answeredBy ?? model });
+    await log({ answers: body.answers, latencyMs, inputTokens, outputTokens, cached: false, error: null, model: answeredBy ?? model });
     return body.answers;
   } catch (error) {
     return fail((error as Error).name === 'TimeoutError' ? 'timeout' : (error as Error).message);

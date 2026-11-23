@@ -12,11 +12,11 @@ export function canAutoClose(pill, tray) {
   if (!agents.some(name => classes.contains(name)) || excluded.some(name => classes.contains(name))) return false;
   if (pill.querySelector('.cli-status-badge') || unfinishedOrFailed.test(pill.dataset.status) ||
       /\S+-pill-(?:error|errored|failed)(?:\s|$)/.test(pill.className)) return false;
-  // The producer may have started another turn before the tray's next animation frame.
-  return trayColumnOf(pill) === 'done';
+  // The producer may have started another turn or queued a prompt before the next frame.
+  return trayColumnOf(pill) === 'done' && !pill.hasQueuedWorkerPrompts?.();
 }
 
-export function initTrayAutoClose(tray, button, storage, t) {
+export function initTrayAutoClose(tray, button, storage, t, closeAutomationTab) {
   if (!button) return;
   // The standalone glass buttons have ID-scoped surfaces in styles.css.
   const style = button.ownerDocument.createElement('style');
@@ -42,13 +42,18 @@ export function initTrayAutoClose(tray, button, storage, t) {
     pending.delete(pill);
   }
 
-  function close(pill) {
+  async function close(pill) {
     pending.delete(pill);
     if (!enabled || !canAutoClose(pill, tray) || requested.has(pill)) return;
     const x = pill.querySelector(':scope > .term-minimized-pill-close');
     if (x) {
       requested.add(pill); // Some close handlers remove the pill asynchronously.
-      x.click();
+      const runId = pill.getAutomationRunId?.();
+      if (!runId) { x.click(); return; }
+      // An idle automation also appears in Done. Its X is a deliberate stop.
+      // Only the conditional completion path may dismiss it automatically.
+      try { await closeAutomationTab?.(runId); }
+      finally { requested.delete(pill); }
     }
   }
 
@@ -61,6 +66,14 @@ export function initTrayAutoClose(tray, button, storage, t) {
       else pending.set(pill, setTimeout(() => close(pill), 1500));
     }
   }
+
+  // The dispatcher can settle the result after the pill already entered Done.
+  tray.addEventListener('worker-end-changed', ({ detail }) => {
+    if (!enabled) return;
+    for (const pill of tray.children) {
+      if (pill.getAutomationRunId?.() === detail.runId) reconcile(pill);
+    }
+  });
 
   const observer = new MutationObserver(records => {
     const changed = new Set();

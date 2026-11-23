@@ -76,7 +76,7 @@ import {
   cancelQuickTimer,
   triggerQuickTimerNow,
 } from './api.js';
-import { centeredInFrame, placementArea } from './app-frame.js';
+import { frameRect, placementArea } from './app-frame.js';
 import { noAccessHTML, refusalOfError } from './ui-owner-access.js';
 import { openApprovalDialog } from './ui-automation-approval.js';
 import { templateFlag } from './automation-approval-view.js';
@@ -146,6 +146,20 @@ let _qtUsesBrowser = null;     // null = use template default, true/false = user
 
 // ── Constants ──
 const PANEL_KEY = 'neural-panel-automation-studio';
+// The window's chrome is Skills / Agents Studio's: these are the same three choices, kept for this window.
+const DOCK_KEY = 'automation-studio-docked';
+const DIM_KEY = 'automation-studio-dim';
+const RAIL_KEY = 'automation-studio-rail-collapsed';
+// The Studios' icons and window geometry, read when the window first opens: this module is loaded before the page is
+// shown and the boot budget (tests/boot-critical-path.test.mjs) has no room for them.
+let SX_ICONS = null;
+let initialRect = null, _floatingRect = null; // _floatingRect: the floating rectangle while docked, for this open only.
+async function loadStudioShell() {
+  if (SX_ICONS) return;
+  const [dom, geometry] = await Promise.all([import('./skills/studio/sx-dom.js'), import('./skills/studio/sx-geometry.js')]);
+  SX_ICONS = dom.ICONS;
+  initialRect = geometry.initialRect;
+}
 const POLL_INTERVAL = 5000;
 
 const CATEGORY_LABELS = {
@@ -1049,8 +1063,8 @@ function showLaunchInline(params) {
         </div>
       </div>
       <div class="as-launch-inline-footer">
-        <button class="as-launch-cancel" data-action="launch-inline-close">Cancel</button>
-        <button class="as-launch-go" data-action="launch-inline-confirm" id="as-launch-confirm-btn">
+        <button class="sx-btn sx-btn--ghost as-launch-cancel" data-action="launch-inline-close">Cancel</button>
+        <button class="sx-btn sx-btn--primary as-launch-go" data-action="launch-inline-confirm" id="as-launch-confirm-btn">
           ${_launchMode === 'agent' ? 'Launch Agent' : 'Launch'}
         </button>
       </div>
@@ -1722,6 +1736,7 @@ export function initAutomationStudio() {
 
 async function openPanel(opts = {}) {
   if (!i18nReady()) await initI18n();
+  await loadStudioShell();
   if (isGuest() && !hasPermission('automations')) {
     showGuestToast('Automation Studio is disabled by the host');
     return;
@@ -1737,7 +1752,9 @@ async function openPanel(opts = {}) {
 
   // Backdrop
   _backdrop = document.createElement('div');
-  _backdrop.className = 'studio-backdrop';
+  const docked = storage.getItem(DOCK_KEY) === 'true';
+  const dimmed = storage.getItem(DIM_KEY) === 'true' && !docked;
+  _backdrop.className = `studio-backdrop sx-backdrop${dimmed ? '' : ' backdrop-hidden'}`;
   // Backdrop click disabled — close only via ESC or close button
   document.body.appendChild(_backdrop);
 
@@ -1759,15 +1776,19 @@ async function openPanel(opts = {}) {
     });
   }, { signal: _dropdownAbort.signal });
   void fetchToolCatalog();
-  _panel.className = 'automation-studio-panel glass resizable';
+  // Skills Studio's window classes carry the chrome, docking and narrow layouts, as they do for Agents Studio.
+  _panel.className = `skills-studio-panel sx automation-studio-panel asx glass resizable${docked ? ' sx-docked' : ''}`;
   _panel.id = 'automation-studio-panel';
-  _panel.innerHTML = buildPanelHTML();
+  _panel.tabIndex = -1;
+  _panel.setAttribute('role', 'dialog');
+  _panel.setAttribute('aria-labelledby', 'as-title');
+  _panel.setAttribute('aria-modal', dimmed ? 'true' : 'false');
+  if (storage.getItem(RAIL_KEY) === 'true') _panel.classList.add('sx-rail-collapsed');
+  _panel.innerHTML = buildPanelHTML(docked, dimmed);
   document.body.appendChild(_panel);
+  document.body.classList.toggle('as-studio-docked', docked);
 
-  // Always open centered at default size, in the app frame
-  const at = centeredInFrame(900, 520);
-  _panel.style.left = at.left + 'px';
-  _panel.style.top = at.top + 'px';
+  placeStudioWindow();
 
   wirePanel();
   const kept = _keptData;
@@ -1818,6 +1839,7 @@ function closePanel() {
   _docListeners = [];
   if (_backdrop) { _backdrop.remove(); _backdrop = null; }
   _dropdownAbort?.abort();
+  document.body.classList.remove('as-studio-docked'); _floatingRect = null;
   _panel.remove(); _panel = null;
   _templates = []; _activeLoop = null;
   _view = 'welcome'; _selected = null;
@@ -1827,7 +1849,57 @@ function closePanel() {
   _prevLoopActive = false; _fetchSeq = 0;
 }
 
-function buildPanelHTML() {
+// Opens centered at the Studios' default size, inside the app frame; docked, the stylesheet places it.
+function placeStudioWindow() {
+  if (!_panel) return;
+  if (_panel.classList.contains('sx-docked')) {
+    const { left, top, width, height } = _panel.style; if (width) _floatingRect = { left, top, width, height };
+    Object.assign(_panel.style, { left: '', top: '', width: '', height: '' });
+    return;
+  }
+  const r = initialRect({ vw: window.innerWidth, vh: window.innerHeight, frame: frameRect(), saved: _floatingRect }); _floatingRect = null;
+  Object.assign(_panel.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+}
+
+function toggleStudioDock() {
+  const docked = !_panel.classList.contains('sx-docked');
+  storage.setItem(DOCK_KEY, docked ? 'true' : 'false');
+  if (docked && _backdrop && !_backdrop.classList.contains('backdrop-hidden')) toggleStudioDim(false);
+  _panel.classList.toggle('sx-docked', docked);
+  document.body.classList.toggle('as-studio-docked', docked);
+  _panel.querySelector('.sx-head')?.classList.toggle('drag-handle', !docked);
+  const btn = $('as-dock-toggle');
+  if (btn) { btn.setAttribute('aria-pressed', docked ? 'true' : 'false'); btn.innerHTML = `${docked ? SX_ICONS.undock : SX_ICONS.dock}`; }
+  const dim = $('as-backdrop-toggle');
+  if (dim) dim.disabled = docked;
+  placeStudioWindow();
+}
+
+function toggleStudioDim(force) {
+  if (!_backdrop) return;
+  const dimmed = typeof force === 'boolean' ? force : _backdrop.classList.contains('backdrop-hidden');
+  storage.setItem(DIM_KEY, dimmed ? 'true' : 'false');
+  _backdrop.classList.toggle('backdrop-hidden', !dimmed);
+  _panel.setAttribute('aria-modal', dimmed ? 'true' : 'false');
+  $('as-backdrop-toggle')?.setAttribute('aria-pressed', dimmed ? 'true' : 'false');
+}
+
+// A window too narrow to show the sidebar opens it over the content; otherwise the sidebar folds to icons.
+function toggleStudioRail() {
+  const sidebar = $('as-sidebar');
+  const btn = $('as-sidebar-toggle');
+  if (!sidebar || !btn) return;
+  if (sidebar.classList.contains('as-sidebar--force-show') || getComputedStyle(sidebar).display === 'none') {
+    const shown = sidebar.classList.toggle('as-sidebar--force-show');
+    btn.setAttribute('aria-pressed', shown ? 'true' : 'false');
+    return;
+  }
+  const collapsed = _panel.classList.toggle('sx-rail-collapsed');
+  storage.setItem(RAIL_KEY, collapsed ? 'true' : 'false');
+  btn.setAttribute('aria-pressed', collapsed ? 'true' : 'false');
+}
+
+function buildPanelHTML(docked = false, dimmed = false) {
   return `
     <div class="resize-handle resize-handle-t" data-resize="t"></div>
     <div class="resize-handle resize-handle-r" data-resize="r"></div>
@@ -1838,37 +1910,32 @@ function buildPanelHTML() {
     <div class="resize-handle resize-handle-bl" data-resize="bl"></div>
     <div class="resize-handle resize-handle-br" data-resize="br"></div>
 
-    <div class="as-header drag-handle" data-drag="automation-studio-panel">
-      <div class="as-header-left">
-        <button class="as-sidebar-toggle" id="as-sidebar-toggle" data-tooltip="Toggle sidebar">
-          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
-        </button>
-        <h3>Automation Studio</h3>
-        <span class="as-count" id="as-total-count"></span>
-      </div>
+    <header class="sx-head as-header${docked ? '' : ' drag-handle'}" data-drag="automation-studio-panel">
+      <span class="sx-head-mark" aria-hidden="true">${AS_ICONS.clock}</span>
+      <h2 class="sx-title" id="as-title">Automation Studio</h2>
+      <span class="sx-head-note" id="as-total-count"></span>
+      <span class="sx-spacer"></span>
       <div class="as-header-actions">
-        <button class="as-header-btn" id="as-new-btn">+ New</button>
-        <button class="as-header-btn" id="as-new-folder-btn" data-tooltip="New folder">+ Folder</button>
-        <button class="as-header-btn" id="as-schedules-btn">${AS_ICONS.clock} Schedules</button>
-        <button class="as-header-btn" id="as-import-btn">Import</button>
+        <button type="button" class="sx-btn sx-btn--primary as-header-btn" id="as-new-btn">${SX_ICONS.plus}New</button>
+        <button type="button" class="sx-btn as-header-btn" id="as-new-folder-btn" data-tooltip="New folder">+ Folder</button>
+        <button type="button" class="sx-btn as-header-btn" id="as-schedules-btn">${AS_ICONS.clock} Schedules</button>
+        <button type="button" class="sx-btn as-header-btn" id="as-import-btn">Import</button>
       </div>
-      <button class="backdrop-toggle-btn" id="as-backdrop-toggle" data-tooltip="Toggle backdrop">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-      </button>
-      <button class="as-close" id="as-close">&times;</button>
-    </div>
+      <button type="button" class="sx-icon-btn as-sidebar-toggle" id="as-sidebar-toggle" aria-pressed="false" aria-label="Toggle sidebar" title="Toggle sidebar">${SX_ICONS.library}</button>
+      <button type="button" class="sx-icon-btn" id="as-dock-toggle" aria-pressed="${docked ? 'true' : 'false'}" aria-label="Dock" title="Dock beside the side panels">${docked ? SX_ICONS.undock : SX_ICONS.dock}</button>
+      <button type="button" class="sx-icon-btn" id="as-backdrop-toggle" aria-pressed="${dimmed ? 'true' : 'false'}" aria-label="Dim the background" title="Dim the background"${docked ? ' disabled' : ''}>${SX_ICONS.dim}</button>
+      <button type="button" class="sx-icon-btn sx-close" id="as-close" aria-label="Close" title="Close">${SX_ICONS.close}</button>
+    </header>
 
-    <div class="as-body">
+    <div class="sx-body as-body">
       <aside class="as-sidebar" id="as-sidebar">
-        <div class="as-search-wrap">
-          <input type="text" class="as-search" id="as-search" placeholder="Filter..." autocomplete="off" spellcheck="false">
-        </div>
+        <div class="sx-search as-search-wrap">${SX_ICONS.search}<input type="text" class="as-search" id="as-search" placeholder="Filter..." aria-label="Filter templates" autocomplete="off" spellcheck="false"></div>
         <div class="as-filters">
-          <button class="as-filter active" data-cat="all">All</button>
-          <button class="as-filter" data-cat="social">Social</button>
-          <button class="as-filter" data-cat="productivity">Productivity</button>
-          <button class="as-filter" data-cat="monitoring">Monitoring</button>
-          <button class="as-filter" data-cat="custom">Custom</button>
+          <button type="button" class="sx-rail-view as-filter active" aria-current="true" data-cat="all">All</button>
+          <button type="button" class="sx-rail-view as-filter" data-cat="social">Social</button>
+          <button type="button" class="sx-rail-view as-filter" data-cat="productivity">Productivity</button>
+          <button type="button" class="sx-rail-view as-filter" data-cat="monitoring">Monitoring</button>
+          <button type="button" class="sx-rail-view as-filter" data-cat="custom">Custom</button>
         </div>
         <div class="as-template-list" id="as-template-list"></div>
         <div class="as-sidebar-footer" id="as-sidebar-footer" style="display:none">
@@ -1882,7 +1949,7 @@ function buildPanelHTML() {
           </div>
         </div>
       </aside>
-      <main class="as-main" id="as-main"></main>
+      <main class="sx-main as-main" id="as-main" aria-labelledby="as-title"></main>
     </div>
   `;
 }
@@ -1894,20 +1961,9 @@ function wirePanel() {
   $('as-schedules-btn')?.addEventListener('click', () => emit('automations:open-schedules'));
   $('as-import-btn')?.addEventListener('click', () => triggerImport());
 
-  $('as-sidebar-toggle')?.addEventListener('click', () => {
-    const sidebar = $('as-sidebar');
-    if (sidebar) {
-      sidebar.classList.toggle('as-sidebar--force-show');
-      $('as-sidebar-toggle')?.classList.toggle('active', sidebar.classList.contains('as-sidebar--force-show'));
-    }
-  });
-
-  $('as-backdrop-toggle')?.addEventListener('click', () => {
-    if (_backdrop) {
-      _backdrop.classList.toggle('backdrop-hidden');
-      $('as-backdrop-toggle')?.classList.toggle('active', _backdrop.classList.contains('backdrop-hidden'));
-    }
-  });
+  $('as-sidebar-toggle')?.addEventListener('click', toggleStudioRail);
+  $('as-dock-toggle')?.addEventListener('click', toggleStudioDock);
+  $('as-backdrop-toggle')?.addEventListener('click', () => toggleStudioDim());
 
   $('as-search')?.addEventListener('input', (e) => {
     _searchQuery = e.target.value.toLowerCase();
@@ -1917,7 +1973,10 @@ function wirePanel() {
   _panel.querySelectorAll('.as-filter[data-cat]').forEach(btn => {
     btn.addEventListener('click', () => {
       _filterCategory = btn.dataset.cat;
-      _panel.querySelectorAll('.as-filter[data-cat]').forEach(b => b.classList.toggle('active', b === btn));
+      _panel.querySelectorAll('.as-filter[data-cat]').forEach(b => {
+        b.classList.toggle('active', b === btn);
+        if (b === btn) b.setAttribute('aria-current', 'true'); else b.removeAttribute('aria-current');
+      });
       renderSidebar();
     });
   });
@@ -2586,24 +2645,22 @@ function renderWelcomeMain() {
   const customCount = _templates.length;
 
   main.innerHTML = `
-    <div class="as-welcome">
-      <div class="as-welcome-hero">
-        <img src="synabun.png?v=2" alt="SynaBun" class="as-welcome-logo">
-        <h2>Automation Studio</h2>
-      </div>
-      <p class="as-welcome-sub">Launch, edit, and track loop automations.</p>
-      <div class="as-stats-row">
-        <div class="as-stat">
-          <span class="as-stat-num">${presetCount}</span>
-          <span class="as-stat-label">Presets</span>
+    <section class="sx-place" aria-labelledby="as-welcome-title">
+      <header class="sx-place-head">
+        <h3 class="sx-place-title" id="as-welcome-title">Templates</h3>
+        <p class="sx-place-sub">Launch, edit, and track loop automations.</p>
+        <span class="sx-spacer"></span>
+        <span class="sx-chip as-stat-chip">${presetCount} presets</span>
+        <span class="sx-chip as-stat-chip">${customCount} custom</span>
+      </header>
+      <div class="sx-place-scroll as-welcome-scroll">
+        <div class="sx-empty">
+          <h4 class="sx-empty-title">Choose a template</h4>
+          <p>Select a template from the sidebar, or create a new one.</p>
+          <button type="button" class="sx-btn sx-btn--primary" data-action="open-picker">${SX_ICONS.plus}New automation</button>
         </div>
-        <div class="as-stat">
-          <span class="as-stat-num">${customCount}</span>
-          <span class="as-stat-label">Custom</span>
-        </div>
       </div>
-      <p class="as-welcome-hint">Select a template from the sidebar, or click + New to create one.</p>
-    </div>
+    </section>
   `;
 }
 
@@ -2619,20 +2676,20 @@ function renderPickerMain() {
       <div class="as-picker-name">${esc(t.name)}</div>
       <div class="as-picker-desc">${esc(t.description)}</div>
       <div class="as-picker-meta">
-        <span class="as-badge">${t.iterations}x</span>
-        <span class="as-badge">${t.maxMinutes}m</span>
-        ${t.usesBrowser ? '<span class="as-badge as-badge--browser">Browser</span>' : ''}
+        <span class="sx-chip as-badge">${t.iterations}x</span>
+        <span class="sx-chip as-badge">${t.maxMinutes}m</span>
+        ${t.usesBrowser ? '<span class="sx-chip as-badge as-badge--browser">Browser</span>' : ''}
       </div>
     </div>
   `).join('');
 
   main.innerHTML = `
-    <div class="as-picker">
-      <div class="as-picker-header">
-        <button class="as-back-btn" data-action="go-welcome">\u2190 Back</button>
-        <h3>Choose a Starting Point</h3>
+    <div class="sx-place as-picker">
+      <div class="sx-place-head as-picker-header">
+        <button class="sx-btn sx-btn--ghost sx-btn--sm as-back-btn" data-action="go-welcome">\u2190 Back</button>
+        <h3 class="sx-place-title">Choose a Starting Point</h3>
       </div>
-      <p class="as-picker-sub">Pick a preset to configure with a guided wizard, or start from scratch.</p>
+      <p class="sx-place-sub as-picker-sub">Pick a preset to configure with a guided wizard, or start from scratch.</p>
       <div class="as-picker-grid">
         ${cards}
         <div class="as-picker-card as-picker-card--blank" data-action="pick-blank">
@@ -2670,18 +2727,18 @@ function renderDetailMain() {
 
   main.innerHTML = `
     <div class="as-detail-header">
-      <button class="as-back-btn" data-action="go-welcome">\u2190 Templates</button>
+      <button class="sx-btn sx-btn--ghost sx-btn--sm as-back-btn" data-action="go-welcome">\u2190 Templates</button>
       <span class="as-detail-icon">${icon(t.icon)}</span>
       <span class="as-detail-name">${esc(t.name)}</span>
-      <span class="as-badge as-badge--cat" style="--cat-color:${CATEGORY_COLORS[t.category] || 'var(--t-muted)'}">${esc(CATEGORY_LABELS[t.category] || t.category)}</span>
-      ${isPreset ? '<span class="as-badge as-badge--preset">Preset</span>' : ''}
+      <span class="sx-chip as-badge as-badge--cat" style="--cat-color:${CATEGORY_COLORS[t.category] || 'var(--t-muted)'}">${esc(CATEGORY_LABELS[t.category] || t.category)}</span>
+      ${isPreset ? '<span class="sx-chip as-badge as-badge--preset">Preset</span>' : ''}
       <span class="as-detail-spacer"></span>
-      ${isPreset ? `<button class="as-header-btn as-customize-btn" data-action="customize">Customize</button>` : ''}
+      ${isPreset ? `<button class="sx-btn as-header-btn as-customize-btn" data-action="customize">Customize</button>` : ''}
       ${!isPreset ? `
-        <button class="as-header-btn" data-action="export-one" data-id="${t.id}">\u2193 Export</button>
-        <button class="as-header-btn as-discard-btn" id="as-discard" disabled>Discard</button>
-        <button class="as-header-btn as-save-btn" id="as-save" disabled>Save</button>
-        <button class="as-header-btn as-delete-btn" data-action="delete-template" data-id="${t.id}">\u2715</button>
+        <button class="sx-btn as-header-btn" data-action="export-one" data-id="${t.id}">\u2193 Export</button>
+        <button class="sx-btn as-header-btn as-discard-btn" id="as-discard" disabled>Discard</button>
+        <button class="sx-btn sx-btn--primary as-header-btn as-save-btn" id="as-save" disabled>Save</button>
+        <button class="sx-btn sx-btn--danger as-header-btn as-delete-btn" data-action="delete-template" data-id="${t.id}">\u2715</button>
       ` : ''}
     </div>
 
@@ -2715,14 +2772,14 @@ function renderDetailMain() {
           ${isPreset ? 'readonly' : ''}>${esc(_editorContent)}</textarea>
         <div class="as-cmd-preview${_previewMode ? ' visible' : ''}" id="as-cmd-preview"></div>
         <div class="as-detail-actions">
-          <button class="as-action-btn" data-action="copy-cmd">
+          <button class="sx-btn as-action-btn" data-action="copy-cmd">
             <svg viewBox="0 0 24 24" width="14" height="14"><rect x="9" y="9" width="13" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" fill="none" stroke="currentColor" stroke-width="2"/></svg>
             Copy
           </button>
-          ${isPreset ? `<button class="as-action-btn" data-action="reconfigure">Wizard</button>` : ''}
+          ${isPreset ? `<button class="sx-btn as-action-btn" data-action="reconfigure">Wizard</button>` : ''}
           <div class="as-action-spacer"></div>
-          <button class="as-action-btn as-action-btn--test" data-action="test-run">Test (1 iter)</button>
-          <button class="as-action-btn as-action-btn--launch" data-action="launch-loop">
+          <button class="sx-btn as-action-btn as-action-btn--test" data-action="test-run">Test (1 iter)</button>
+          <button class="sx-btn sx-btn--primary as-action-btn as-action-btn--launch" data-action="launch-loop">
             <svg viewBox="0 0 24 24" width="14" height="14"><polyline points="4 17 10 11 4 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><line x1="12" y1="19" x2="20" y2="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
             Launch
           </button>
@@ -2756,7 +2813,7 @@ function buildDetailMeta(t, isPreset) {
     <div class="as-meta-section">
       <div class="as-field">
         <label>Name</label>
-        <input type="text" class="as-input" id="as-f-name" value="${esc(t.name)}" ${disabled} />
+        <input type="text" class="sx-input as-input" id="as-f-name" value="${esc(t.name)}" ${disabled} />
       </div>
       <div class="as-field-row">
         <div class="as-field">
@@ -2806,7 +2863,7 @@ function buildDetailMeta(t, isPreset) {
       `}
       <div class="as-field">
         <label>Description</label>
-        <textarea class="as-textarea" id="as-f-desc" rows="3" ${disabled}>${esc(t.description || '')}</textarea>
+        <textarea class="sx-input sx-textarea as-textarea" id="as-f-desc" rows="3" ${disabled}>${esc(t.description || '')}</textarea>
       </div>
       <div class="as-field">
         <label>Iterations <span class="as-range-val" id="as-f-iter-val">${t.iterations}</span></label>
@@ -3373,8 +3430,8 @@ function showUnsavedLaunchModal() {
           <p class="as-unsaved-dialog-msg">You have unsaved changes to this automation. Save before launching?</p>
         </div>
         <div class="as-unsaved-dialog-footer">
-          <button class="as-launch-cancel" data-action="unsaved-dialog-close">Cancel</button>
-          <button class="as-launch-go" data-action="unsaved-save-launch">Save &amp; Continue</button>
+          <button class="sx-btn sx-btn--ghost as-launch-cancel" data-action="unsaved-dialog-close">Cancel</button>
+          <button class="sx-btn sx-btn--primary as-launch-go" data-action="unsaved-save-launch">Save &amp; Continue</button>
         </div>
       </div>
     </div>
@@ -3425,7 +3482,7 @@ function renderWizardMain() {
   main.innerHTML = `
     <div class="as-wizard">
       <div class="as-wizard-header">
-        <button class="as-back-btn" data-action="cancel-wizard">\u2190 Cancel</button>
+        <button class="sx-btn sx-btn--ghost sx-btn--sm as-back-btn" data-action="cancel-wizard">\u2190 Cancel</button>
         <span class="as-wizard-icon">${icon(_wizardPreset.icon)}</span>
         <span class="as-wizard-title">${esc(_wizardPreset.name)}</span>
       </div>
@@ -3439,8 +3496,8 @@ function renderWizardMain() {
       </div>
       <div class="as-wizard-body" id="as-wizard-body"></div>
       <div class="as-wizard-nav">
-        <button class="as-header-btn" data-action="wizard-back" style="visibility:${_wizardStep === 0 ? 'hidden' : 'visible'}">\u2190 Back</button>
-        <button class="as-header-btn as-save-btn" data-action="wizard-next">${_wizardStep === totalSteps - 2 ? 'Review' : _wizardStep >= totalSteps - 1 ? '' : 'Next \u2192'}</button>
+        <button class="sx-btn as-header-btn" data-action="wizard-back" style="visibility:${_wizardStep === 0 ? 'hidden' : 'visible'}">\u2190 Back</button>
+        <button class="sx-btn sx-btn--primary as-header-btn as-save-btn" data-action="wizard-next">${_wizardStep === totalSteps - 2 ? 'Review' : _wizardStep >= totalSteps - 1 ? '' : 'Next \u2192'}</button>
       </div>
     </div>
   `;
@@ -3652,7 +3709,7 @@ function renderRunningMain() {
   if (!hasLoop && !hasAgents) {
     main.innerHTML = `
       <div class="as-detail-header">
-        <button class="as-back-btn" data-action="go-welcome">\u2190 Back</button>
+        <button class="sx-btn sx-btn--ghost sx-btn--sm as-back-btn" data-action="go-welcome">\u2190 Back</button>
         <h3 style="font-size:14px;font-weight:600;color:var(--t-bright)">Running</h3>
       </div>
       <div class="as-empty">
@@ -3665,7 +3722,7 @@ function renderRunningMain() {
 
   let html = `
     <div class="as-detail-header">
-      <button class="as-back-btn" data-action="go-welcome">\u2190 Back</button>
+      <button class="sx-btn sx-btn--ghost sx-btn--sm as-back-btn" data-action="go-welcome">\u2190 Back</button>
       <h3 style="font-size:14px;font-weight:600;color:var(--t-bright)">Running</h3>
     </div>
     <div style="padding:16px;display:flex;flex-direction:column;gap:12px;overflow-y:auto;max-height:calc(100% - 52px)">`;
@@ -3688,8 +3745,8 @@ function renderRunningMain() {
           <span>${loop.elapsedMinutes ?? '?'}min elapsed</span>
         </div>
         <div class="as-running-controls">
-          <button class="as-btn-stop" data-action="force-stop" data-id="${loop.terminalSessionId || ''}">Stop</button>
-          ${loop.terminalSessionId ? `<a class="as-btn-stop" style="margin-left:8px;text-decoration:none;display:inline-flex;align-items:center;" href="/api/loop/log/${encodeURIComponent(loop.terminalSessionId)}" target="_blank" rel="noopener">View Loop Log</a>` : ''}
+          <button class="sx-btn sx-btn--danger as-btn-stop" data-action="force-stop" data-id="${loop.terminalSessionId || ''}">Stop</button>
+          ${loop.terminalSessionId ? `<a class="sx-btn sx-btn--danger as-btn-stop" style="margin-left:8px;text-decoration:none;display:inline-flex;align-items:center;" href="/api/loop/log/${encodeURIComponent(loop.terminalSessionId)}" target="_blank" rel="noopener">View Loop Log</a>` : ''}
         </div>
       </div>`;
   }
@@ -3717,8 +3774,8 @@ function renderRunningMain() {
             ${agent.withSynabun ? '<span class="as-agent-synabun-badge">SB</span>' : ''}
           </div>
           <div class="as-agent-actions">
-            ${agent.status === 'running' ? `<button class="as-agent-stop-btn" data-action="agent-stop" data-id="${agent.id}" data-tooltip="Stop">&#9632;</button>` : ''}
-            <button class="as-agent-remove-btn" data-action="agent-remove" data-id="${agent.id}" data-tooltip="Remove">&times;</button>
+            ${agent.status === 'running' ? `<button class="sx-icon-btn sx-icon-btn--sm sx-close as-agent-stop-btn" data-action="agent-stop" data-id="${agent.id}" data-tooltip="Stop">&#9632;</button>` : ''}
+            <button class="sx-icon-btn sx-icon-btn--sm as-agent-remove-btn" data-action="agent-remove" data-id="${agent.id}" data-tooltip="Remove">&times;</button>
           </div>
         </div>
         <div class="as-agent-task">${esc(agent.task.slice(0, 150))}${agent.task.length > 150 ? '\u2026' : ''}</div>
@@ -3989,6 +4046,9 @@ async function handlePanelClick(e) {
   const id = btn.dataset.id;
 
   switch (action) {
+    case 'open-picker':
+      _view = 'picker'; _selected = null; renderView();
+      break;
     case 'go-welcome':
       if (_detailDirty && !confirm('Discard unsaved changes?')) return;
       _view = 'welcome'; _selected = null; resetDirty();
@@ -4871,8 +4931,8 @@ function renderSchedulesMain() {
         </div>
       </div>
       <div class="as-qt-actions">
-        <button class="as-launch-go" data-action="qt-go">${_s('<path d="M5 3l8 5-8 5V3z"/>')} Go</button>
-        <button class="as-launch-cancel" data-action="qt-now" data-tooltip="Fire immediately">Run Now</button>
+        <button class="sx-btn sx-btn--primary as-launch-go" data-action="qt-go">${_s('<path d="M5 3l8 5-8 5V3z"/>')} Go</button>
+        <button class="sx-btn sx-btn--ghost as-launch-cancel" data-action="qt-now" data-tooltip="Fire immediately">Run Now</button>
       </div>
     </div>`;
 
@@ -4939,7 +4999,7 @@ function renderSchedulesMain() {
   main.innerHTML = `
     <div class="as-schedules">
       <div class="as-sched-header">
-        <button class="as-back-btn" data-action="go-welcome">${AS_ICONS.back}</button>
+        <button class="sx-btn sx-btn--ghost sx-btn--sm as-back-btn" data-action="go-welcome">${AS_ICONS.back}</button>
         <h3>Schedules</h3>
       </div>
       ${timersHTML}
@@ -5018,7 +5078,7 @@ function renderScheduleEditorMain() {
   main.innerHTML = `
     <div class="as-sched-editor">
       <div class="as-sched-header">
-        <button class="as-back-btn" data-action="schedule-back">${AS_ICONS.back}</button>
+        <button class="sx-btn sx-btn--ghost sx-btn--sm as-back-btn" data-action="schedule-back">${AS_ICONS.back}</button>
         <h3>${isEdit ? 'Edit Schedule' : 'New Schedule'}</h3>
       </div>
 
@@ -5063,8 +5123,8 @@ function renderScheduleEditorMain() {
         </div>
 
         <div class="as-sched-actions">
-          <button class="as-header-btn" data-action="schedule-save">${isEdit ? 'Save Changes' : 'Create Schedule'}</button>
-          <button class="as-header-btn as-header-btn--secondary" data-action="schedule-cancel">Cancel</button>
+          <button class="sx-btn as-header-btn" data-action="schedule-save">${isEdit ? 'Save Changes' : 'Create Schedule'}</button>
+          <button class="sx-btn as-header-btn as-header-btn--secondary" data-action="schedule-cancel">Cancel</button>
         </div>
       </div>
     </div>

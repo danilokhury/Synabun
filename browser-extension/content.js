@@ -15,7 +15,22 @@
   };
   const observer = new MutationObserver(removed);
   observer.observe(document, { childList: true, subtree: true });
-  function target(args, active = false) {
+  // Uploads stay in the approved origin. Open shadow roots and same-origin frames can own hidden inputs.
+  function uploadMatches(selector) {
+    const matches = [], roots = [document];
+    for (const root of roots) {
+      for (const match of root.querySelectorAll(selector)) matches.push(match);
+      for (const node of root.querySelectorAll('*')) {
+        if (node.shadowRoot) roots.push(node.shadowRoot);
+        if (node.localName === 'iframe') {
+          const doc = node.contentDocument;
+          if (doc && doc.defaultView?.origin === location.origin) roots.push(doc);
+        }
+      }
+    }
+    return matches;
+  }
+  function target(args, active = false, query = selector => document.querySelectorAll(selector)) {
     removed(observer.takeRecords());
     if (args.ref) {
       const el = refs.get(args.ref);
@@ -23,7 +38,7 @@
       return el;
     }
     if (!args.selector && active) return document.activeElement;
-    const found = [...document.querySelectorAll(args.selector || 'body')];
+    const found = query(args.selector || 'body');
     if (!found.length) error('NO_MATCH');
     if (found.length > 1 && args.nthMatch === undefined) error('AMBIGUOUS_TARGET');
     const el = found[args.nthMatch || 0]; if (!el) error('NO_MATCH'); return el;
@@ -60,6 +75,41 @@
     else if (!sites.includes(location.origin)) error('SITE_NOT_APPROVED');
   }
   const event = (el, name) => el.dispatchEvent(new Event(name, { bubbles: true }));
+  function acceptsFile(file, spec) {
+    const tokens = (spec || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
+    return !tokens.length || tokens.some(token => token === '*/*' || token === file.type ||
+      (token.startsWith('.') && file.name.toLowerCase().endsWith(token)) ||
+      (token.endsWith('/*') && file.type.startsWith(token.slice(0, -1))));
+  }
+  function uploadFiles(args, due) {
+    const parts = uploadParts.get(args.uploadId);
+    uploadParts.delete(args.uploadId);
+    if (!args.metadata || args.metadata.length !== args.files.length) error('UPLOAD_METADATA_UNAVAILABLE');
+    // Resolve the current input after the last async transfer. Keep selection and dispatch in its realm.
+    const el = target(args, false, uploadMatches);
+    if (args.ref && el.ownerDocument !== document) error('STALE_REF');
+    safeNode(el);
+    if (!el.matches('input[type=file]')) error('NO_MATCH');
+    if (el.matches(':disabled')) error('UPLOAD_DISABLED');
+    if (!el.multiple && args.files.length > 1) error('UPLOAD_MULTIPLE');
+    const view = el.ownerDocument.defaultView;
+    const transfer = new view.DataTransfer();
+    args.files.forEach((name, index) => {
+      const { size, type, lastModified } = args.metadata[index];
+      const file = new view.File(parts?.[index] || [], name, { type, lastModified });
+      if (file.size !== size) error('OPERATION_FAILED');
+      if (!acceptsFile(file, el.accept)) error('UPLOAD_ACCEPT_MISMATCH');
+      transfer.items.add(file);
+    });
+    due();
+    el.files = transfer.files;
+    // Take the receipt before a synchronous change listener consumes the selection or clears the control.
+    const files = Array.from(el.files, ({ name, type, size }) => ({ name, type, size }));
+    if (files.length !== args.files.length || files.some((file, i) =>
+      file.name !== args.files[i] || file.type !== args.metadata[i].type || file.size !== args.metadata[i].size)) error('UPLOAD_ASSIGNMENT_FAILED');
+    for (const name of ['input', 'change']) el.dispatchEvent(new view.Event(name, { bubbles: true, composed: true }));
+    return files;
+  }
   function setValue(el, value) {
     safeNode(el);
     if (el.isContentEditable) el.textContent = value;
@@ -129,6 +179,10 @@
       due(); el.scrollBy({ top: ['up', 'down'].includes(args.direction) ? amount * (args.direction === 'up' ? -1 : 1) : 0,
         left: ['left', 'right'].includes(args.direction) ? amount * (args.direction === 'left' ? -1 : 1) : 0, behavior: 'instant' }); return state();
     }
+    if (op === 'upload') {
+      const files = uploadFiles(args, due);
+      return { ...state(), files };
+    }
     const el = target(args, ['type', 'press'].includes(op)); safeNode(el);
     if (op === 'click') {
       const link = el.closest('a[href]'); if (link) {
@@ -151,18 +205,6 @@
       if (!['Enter', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'Backspace', 'Delete'].includes(args.key)) error('UNSUPPORTED_IN_EXTENSION_MODE');
       due(); el.dispatchEvent(new KeyboardEvent('keydown', { key: args.key, bubbles: true }));
       el.dispatchEvent(new KeyboardEvent('keyup', { key: args.key, bubbles: true }));
-    } else if (op === 'upload') {
-      if (!el.matches('input[type=file]')) error('NO_MATCH');
-      const transfer = new DataTransfer();
-      if (!el.multiple && args.files.length > 1) error('UPLOAD_MULTIPLE');
-      const parts = uploadParts.get(args.uploadId);
-      uploadParts.delete(args.uploadId);
-      args.files.forEach((name, index) => {
-        const file = new File(parts?.[index] || [], name, { type: 'application/octet-stream' });
-        if (file.size !== args.sizes[index]) error('OPERATION_FAILED');
-        transfer.items.add(file);
-      });
-      due(); el.files = transfer.files; event(el, 'input'); event(el, 'change');
     } else error('UNSUPPORTED_IN_EXTENSION_MODE');
     return state();
   }

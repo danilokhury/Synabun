@@ -1,17 +1,31 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { basename, isAbsolute, resolve } from 'node:path';
-import { readConfinedFile } from './confined-fs.js';
+import { basename, extname, isAbsolute, resolve } from 'node:path';
+import express from 'express';
+import { readConfinedFileWithMetadata } from './confined-fs.js';
 import { fileURLToPath } from 'node:url';
-import { fail, handle, HISTORY, MAX_FILE, safeError } from '../../browser-extension/protocol.js';
+import { EVALUATE_SCRIPT_MAX, EVALUATE_TIMEOUT_MAX, EVALUATE_WORLDS, fail, handle, HISTORY, LOAD_STATES, MAX_FILE, NETWORK_IDLE_TIMEOUT_MAX, safeError } from '../../browser-extension/protocol.js';
 import sharp from 'sharp';
 import { parseScreenshotOptions, screenshotPathRefusal, defaultScreenshotPath, writeScreenshotFile } from './browser-screenshot.js';
 import { ownerOnlyCreateFields } from './browser-automation-routes.js';
 
 export const EXTENSION_FOLDER = fileURLToPath(new URL('../../browser-extension/', import.meta.url));
+// Use the server's static-file MIME table. Its bundled table predates these image formats.
+export function uploadMimeType(name) {
+  const ext = extname(name).toLowerCase();
+  if (['.heic', '.heif', '.avif'].includes(ext)) return 'image/' + ext.slice(1);
+  return express.static.mime.lookup(ext);
+}
 const aliases = { 'screenshot-base64': 'screenshot' };
-const supported = new Set(['navigate', 'back', 'forward', 'reload', 'snapshot', 'click', 'hover', 'fill', 'type', 'press', 'select', 'scroll', 'wait', 'content', 'screenshot', 'upload']);
+const supported = new Set(['navigate', 'back', 'forward', 'reload', 'snapshot', 'click', 'hover', 'fill', 'type', 'press', 'select', 'scroll', 'wait', 'content', 'screenshot', 'upload', 'evaluate']);
 const argumentKeys = ['url', 'ref', 'selector', 'nthMatch', 'value', 'text', 'key', 'direction', 'distance', 'maxChars', 'offset', 'timeout', 'state'];
 const unsupported = reason => Object.assign(new Error(reason), { code: 'UNSUPPORTED_IN_EXTENSION_MODE' });
+// A whole number of milliseconds from a request body, 1 to `most`; undefined when none (or nothing usable) was given.
+const milliseconds = (value, most) => { const n = Number(value); return Number.isFinite(n) && n >= 1 ? Math.min(most, Math.floor(n)) : undefined; };
+// A refusal always says what its code means, also when the extension answered the code alone.
+const worded = result => (result && result.ok === false && result.code && typeof result.error !== 'string' ? { ...result, error: safeError(result).error } : result);
+// evaluate refusals after which the page's script certainly did not run (a paced write then takes no slot).
+const NOTHING_RAN = ['USER_SCRIPTS_DISABLED', 'USER_SCRIPTS_UNSUPPORTED', 'EXTENSION_RELOAD_REQUIRED', 'EXTENSION_NOT_CONNECTED', 'BLANK_PAGE', 'FRAME_NOT_FOUND',
+  'RESTRICTED_PAGE', 'SYNABUN_PAGE_BLOCKED', 'SITE_NOT_APPROVED', 'NOT_OWNED', 'AUTH_FAILED', 'INVALID_MESSAGE'];
 // What an agent may see of its tab's address. Full control: the address. Restricted mode: an approved site's URL, or
 // the blank start page; a page that history (or a redirect) took the tab to on an unapproved site stays the owner's:
 // the session listing shows no URL for it.
@@ -32,7 +46,11 @@ export function listedUrl(url) {
 const HISTORY_DESTINATION = 'The page this history step reached is not on an approved site (or an approval was revoked meanwhile). No page content was returned. The tab stays there and refuses commands until the owner shares that site in the extension popup (or switches to full control); release the session to stop using it.';
 
 /** Owns routing only; extension sessions intentionally expose no Playwright/CDP surface. */
-export function createExtensionAdapter({ bridge, sessions, uploadRoot, caller, ownerPage, selected, dataHome, log = () => {} }) {
+// `evaluateGate` holds page JavaScript to the rules the Playwright evaluate route holds a loop's tab to (server.js):
+// `refusal({ session, req, tabId, script })` answers the X publish gate's refusal (or null), `run({ session, req, execute })`
+// spaces a social write (`pace` in the body) and answers { result } or { paced } with it. Without one, nothing is gated
+// (tests of the adapter alone).
+export function createExtensionAdapter({ bridge, sessions, uploadRoot, caller, ownerPage, selected, dataHome, log = () => {}, evaluateGate = null }) {
   const salt = randomBytes(32).toString('hex');
   const agent = owner => createHash('sha256').update(`${salt}:${owner}`).digest('hex');
   let sessionId = null, chain = Promise.resolve();
@@ -130,9 +148,9 @@ export function createExtensionAdapter({ bridge, sessions, uploadRoot, caller, o
       names: paths.map(path => basename(path)),
       read(index) {
         try {
-          const bytes = readConfinedFile(uploadRoot, resolve(paths[index]), { maxBytes: remaining });
-          remaining -= bytes.length;
-          return bytes;
+          const file = readConfinedFileWithMetadata(uploadRoot, resolve(paths[index]), { maxBytes: remaining });
+          remaining -= file.bytes.length;
+          return { ...file, type: uploadMimeType(paths[index]) };
         } catch (error) {
           if (error.status === 404) fail('UPLOAD_FILE_MISSING');
           if (error.status === 413) fail('UPLOAD_TOO_LARGE');
@@ -141,19 +159,72 @@ export function createExtensionAdapter({ bridge, sessions, uploadRoot, caller, o
       },
     };
   }
-  async function operation(s, owner, tab, action, body = {}) {
+  // Page JavaScript (extension 1.4.0 and later): the script of the Playwright route's body, as one expression, through
+  // chrome.userScripts.execute in the agent's own tab. The answer has that route's shape: { ok, result } with the
+  // script's value, or { ok: false, error }. Before anything is sent: the bridge's own rules for the tab (and its
+  // version gate), then the publish gate; a paced write then waits its gap and runs only if the agent still holds the tab.
+  async function evaluate(s, owner, tab, body, req) {
+    const script = body.script;
+    if (typeof script !== 'string' || !script.trim()) return { ok: false, error: 'script required' };
+    if (script.length > EVALUATE_SCRIPT_MAX) return { ok: false, error: `script exceeds ${EVALUATE_SCRIPT_MAX} characters` };
+    const args = { expression: script };
+    const timeout = milliseconds(body.timeout, EVALUATE_TIMEOUT_MAX), maxChars = milliseconds(body.maxChars, 1000000);
+    if (timeout) args.timeout = timeout;
+    if (maxChars) args.maxChars = maxChars;
+    if (body.world !== undefined && body.world !== null) { if (!EVALUATE_WORLDS.includes(body.world)) return { ok: false, error: `Invalid world. Use: ${EVALUATE_WORLDS.join(', ')}` }; args.world = body.world; }
+    if (body.frame !== undefined && body.frame !== null) { if (!Number.isSafeInteger(Number(body.frame)) || Number(body.frame) < 0) return { ok: false, error: 'Invalid frame id' }; args.frame = Number(body.frame); }
+    bridge.authorize('evaluate', tab, agent(owner), args);
+    const refusal = evaluateGate?.refusal?.({ session: s, req, tabId: tab, script }) || null;
+    if (refusal) return { ok: false, ...refusal };
+    let cut = null;
+    const execute = async () => {
+      // A paced write may have waited a minute: it runs only in the tab this request named, if the agent still holds it.
+      if (sessions.get(s.id) !== s || !ownsTab(s, owner, tab)) throw Object.assign(new Error('TAB_CLOSED'), { code: 'TAB_CLOSED', writeStarted: false });
+      let result;
+      try { result = finish(s, tab, await bridge.request('evaluate', tab, agent(owner), args)); }
+      catch (error) { if (NOTHING_RAN.includes(error?.code)) error.writeStarted = false; throw error; }
+      if (result.ok) {
+        // `value` is the JSON text of what the script returned. One that was cut is the beginning of that text (not
+        // valid JSON): it is answered as that text, flagged.
+        if (result.truncated) { cut = { truncated: true, valueLength: result.valueLength }; return result.value; }
+        try { return JSON.parse(result.value); } catch { fail('OPERATION_FAILED'); }
+      }
+      let answer = worded(result);
+      if (result.code === 'PAGE_ERROR') {
+        // What the page's script threw, in the words of a Playwright failure. No stack: the script did not compile.
+        const message = result.errorMessage || 'The script threw.';
+        answer = { ok: false, code: 'PAGE_ERROR', error: `page.evaluate: ${message}${result.errorStack ? '' : ' browser_evaluate takes one JavaScript expression: wrap statements in a function, (() => { …; return value; })().'}`,
+          ...(result.errorStack ? { errorStack: result.errorStack } : {}) };
+      }
+      throw Object.assign(new Error(result.code || 'OPERATION_FAILED'), { answer, ...(NOTHING_RAN.includes(result.code) ? { writeStarted: false } : {}) });
+    };
+    let outcome;
+    try { outcome = evaluateGate?.run ? await evaluateGate.run({ session: s, req, execute }) : { result: await execute() }; }
+    catch (error) { if (error?.answer) return error.answer; throw error; }
+    if (outcome.paced?.pending) return { ok: true, paced: outcome.paced };
+    return { ok: true, result: outcome.result === undefined ? null : outcome.result, ...(cut || {}), ...(outcome.paced ? { paced: outcome.paced } : {}) };
+  }
+  async function operation(s, owner, tab, action, body = {}, req = null) {
     if (!bridge.status().connected) fail('EXTENSION_NOT_CONNECTED');
     if (!s || !tab || !s.tabs.has(tab)) fail('TAB_CLOSED');
     if (!ownsTab(s, owner, tab)) fail('NOT_OWNED');
     const op = aliases[action] || action;
-    if (!supported.has(op)) throw unsupported('This operation is not supported by the extension backend. No debugger or arbitrary JavaScript is enabled.');
+    if (!supported.has(op)) throw unsupported('This operation is not supported by the extension backend. No debugger is attached; page JavaScript runs through browser_evaluate only.');
+    if (op === 'evaluate') return evaluate(s, owner, tab, body, req);
     let shot;
     if (op === 'screenshot') {
       shot = parseScreenshotOptions(body);
       if (shot.fullPage || shot.width || shot.height || ['selector', 'ref', 'clip', 'region'].some(k => body[k])) throw unsupported('Only the visible viewport can be captured: the extension has no debugger for viewport emulation, element crops or full-page capture. Use maxWidth to downscale the captured image.');
       if (shot.path && screenshotPathRefusal(shot.path, { dataHome })) fail('SCREENSHOT_PATH_REFUSED');
     }
-    if (op === 'wait' && body.loadState) throw unsupported('Extension waits support selectors and fixed delays, not browser network/load states.');
+    if (op === 'wait' && body.loadState) {
+      // A load-state wait (extension 1.4.0 and later): 'load' and 'networkidle', for the tab, not for an element (as in
+      // the Playwright route, a selector sent with it is not used). The extension has no DOMContentLoaded signal.
+      if (body.loadState === 'domcontentloaded') throw unsupported('Extension waits support loadState "load" and "networkidle" (and selectors and fixed delays), not "domcontentloaded".');
+      if (!LOAD_STATES.includes(body.loadState)) return { ok: false, error: 'Invalid loadState. Use: load, domcontentloaded, networkidle' };
+      const timeout = milliseconds(body.timeout, NETWORK_IDLE_TIMEOUT_MAX);
+      return worded(finish(s, tab, await bridge.request('wait', tab, agent(owner), { loadState: body.loadState, ...(timeout ? { timeout } : {}) })));
+    }
     if (op === 'snapshot' && body.mode && body.mode !== 'ai') throw unsupported('Extension snapshots support mode="ai" (DOM refs) only.');
     if (HISTORY.includes(op)) {
       // Back and forward take no arguments on the wire; the server and the extension check the landing page.
@@ -170,6 +241,10 @@ export function createExtensionAdapter({ bridge, sessions, uploadRoot, caller, o
       args.files = upload.names;
     }
     const result = finish(s, tab, await bridge.request(op, tab, agent(owner), args, upload));
+    if (op === 'upload' && result.ok && !result.files) {
+      // A still-loaded 1.3.0 extension may already have dispatched events. Do not replay it.
+      return { ok: false, error: 'The extension returned no file details. Check the page before retrying and reload SynaBun Browser Bridge.' };
+    }
     if (op === 'wait' && result.ok) result.state = body.state || 'visible';
     if (op === 'screenshot' && result.ok) {
       const raw = Buffer.from(result.base64, 'base64'), meta = await sharp(raw).metadata();
@@ -256,8 +331,9 @@ export function createExtensionAdapter({ bridge, sessions, uploadRoot, caller, o
       const tab = body.tabId || s._tabOwners.get(owner);
       if (!['GET', 'POST'].includes(req.method)) throw unsupported('Tab management is through the extension popup.');
       // Every extension session endpoint is intercepted, including CDP, raw screenshot and UI routes.
-      const result = await operation(s, owner, tab, match[2], body);
-      return res.status(result.ok ? 200 : result.code === 'TAB_CLOSED' ? 410 : 400).json(result);
+      const result = await operation(s, owner, tab, match[2], body, req);
+      // 409: the publish gate's refusal, as the Playwright routes answer it.
+      return res.status(result.ok ? 200 : result.code === 'TAB_CLOSED' ? 410 : result.quoteGuard ? 409 : 400).json(result);
     } catch (error) { try { log({ command: supported.has(match?.[2]) ? match[2] : 'session', tab: null, code: safeError(error).code }); } catch {} return denied(res, error); }
   }
   return { acquire, release, destroy, sync, operation, middleware, agent, session, ownerTabs, ownsTab };

@@ -9,6 +9,7 @@
 
 import { sanitizeHtmlString } from '../assistant/asst-sanitize.js';
 import { withCodeCopyButtons } from '../code-copy.js';
+import { withOutputFrames } from '../output-format.js';
 
 // ── The panel's one escaper ──
 // Every value the panel puts into markup it builds itself (a session's title or
@@ -38,14 +39,18 @@ const plain = (text) => escapeHtml(text).replace(/\n/g, '<br>');
  * Every code block carries the shared Copy button (../code-copy.js), written in
  * after the sanitiser: a stream, a re-render and a string-keyed transcript keep
  * it, and a model cannot write one. `codeCopy: false` leaves it out.
+ * The same way, and for the same reason, a table gets its frame and a task item,
+ * a code block's language and a diff's lines their marks (../output-format.js):
+ * the reading layer all six panels share. `frames: false` leaves them out.
  */
-export function renderMarkdown(text, { parse = null, sanitize = sanitizeHtmlString, doc = globalThis.document, codeCopy = true } = {}) {
+export function renderMarkdown(text, { parse = null, sanitize = sanitizeHtmlString, doc = globalThis.document, codeCopy = true, frames = true } = {}) {
   const src = String(text ?? '');
   if (typeof parse !== 'function') return plain(src);
   try {
     const html = sanitize(parse(src), doc);
     if (typeof html !== 'string') return plain(src);
-    return codeCopy ? withCodeCopyButtons(html) : html;
+    const shown = codeCopy ? withCodeCopyButtons(html) : html;
+    return frames ? withOutputFrames(shown) : shown;
   } catch {
     return plain(src);
   }

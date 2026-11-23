@@ -94,8 +94,9 @@ import {
 const APP_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 const STATUS_PAGE = join(APP_DIR, 'src', 'pages', 'status.html');
 const SPLASH_PAGE = join(APP_DIR, 'src', 'pages', 'splash.html');
-/** The longest the main window waits behind the splash for the interface to say it is ready, once its page loaded. */
-const INTERFACE_READY_WAIT_MS = 12000;
+const INTERFACE_NAVIGATION_WAIT_MS = 24000;
+// After load, the renderer may still be importing the app and reading the map before its overlay clears.
+const INTERFACE_READY_WAIT_MS = 60000;
 /** A start or an update that cannot go on: how long the mascot says so on the splash on screen before the details take over. */
 const FAILED_BEAT_MS = 1600;
 const PRELOAD = join(APP_DIR, 'src', 'preload.cjs');
@@ -487,21 +488,29 @@ function startApp() {
     for (const name of ['maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen', 'enter-html-full-screen', 'leave-html-full-screen', 'focus', 'blur', 'restore']) {
       mainWindow.on(name, sendWindowState);
     }
-    const interfaceFailed = (detail) => {
+    let interfacePhase;
+    let phaseStartedAt;
+    const interfaceFailed = (event, detail) => {
       if (quitting || !interfaceTimer) return;
       clearTimeout(interfaceTimer);
       interfaceTimer = null;
+      log(`startup failed: phase=${interfacePhase} event=${event} elapsed=${Date.now() - phaseStartedAt} ms: ${detail}`);
       // A pending navigation may still report the previous status URL.
       mainWindow.webContents.stop();
       showStatus({ state: 'failed', heading: t('headingFailed'), line: t('failedHint'), detail,
         actions: [{ id: 'retry', label: t('retry'), primary: true }, { id: 'logs', label: t('openLogs') }] }, { reload: true });
+    };
+    const interfaceDeadline = (phase, ms) => {
+      interfacePhase = phase;
+      phaseStartedAt = Date.now();
+      return setTimeout(() => interfaceFailed(`${phase}-timeout`, `Interface ${phase} timed out`), ms);
     };
     mainWindow.webContents.on('did-start-navigation', (event, legacyUrl, legacyInPlace, legacyMainFrame) => {
       const { url = legacyUrl, isSameDocument = legacyInPlace, isMainFrame = legacyMainFrame } = typeof legacyUrl === 'object' && legacyUrl ? legacyUrl : event;
       if (!isMainFrame || isSameDocument) return;
       clearTimeout(interfaceTimer);
       interfaceTimer = backend && isBackendUrl(url, backend.port)
-        ? setTimeout(() => interfaceFailed('Interface navigation timed out'), INTERFACE_READY_WAIT_MS * 2) : null;
+        ? interfaceDeadline('navigation', INTERFACE_NAVIGATION_WAIT_MS) : null;
     });
     mainWindow.webContents.on('did-finish-load', () => {
       const url = mainWindow.webContents.getURL();
@@ -513,7 +522,7 @@ function startApp() {
         applyBackground(APP_BACKGROUND);
         if (interfaceTimer) {
           clearTimeout(interfaceTimer);
-          interfaceTimer = setTimeout(() => interfaceFailed('Interface initialization timed out'), INTERFACE_READY_WAIT_MS);
+          interfaceTimer = interfaceDeadline('initialization', INTERFACE_READY_WAIT_MS);
         }
         capture('backend');
         if (updater) mainWindow.webContents.send('synabun:updates:changed', updater.state);
@@ -523,7 +532,7 @@ function startApp() {
       }
     });
     mainWindow.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
-      if (isMainFrame && code !== -3 && backend && isBackendUrl(url, backend.port)) interfaceFailed(description);
+      if (isMainFrame && code !== -3 && backend && isBackendUrl(url, backend.port)) interfaceFailed(`did-fail-load(${code})`, description);
       if (isMainFrame && code !== -3) log(`the window could not load ${String(url).slice(0, 160)}: ${description} (${code})`);
     });
     mainWindow.webContents.on('unresponsive', () => log('the window\'s page stopped responding'));
@@ -583,7 +592,7 @@ function startApp() {
   const splashSay = (next) => { splash?.update(next); };
 
   /**
-   * The interface says it is ready (its loading overlay went away: preload.cjs), or it has had long enough: the
+   * The interface says it is ready (its loading overlay went away: preload.cjs). The
    * main window appears as it was left (place, maximized, full screen, minimized), and the splash goes once it is
    * on screen. A start that shows nothing only lets the splash go.
    */
@@ -791,9 +800,8 @@ function startApp() {
         writeState({ port: result.port, backend: owned ? { launcherPid: backend.launcherPid, supervisorPid: backend.supervisorPid, port: backend.port, version, startedAt: new Date().toISOString() } : null });
         startLog.add('app', t('logOpening'));
         showStatus({ ...startingStatus(t('opening'), startedAt, 'loading'), hint: result.alternativePort ? t('otherPort', { preferred: result.preferredPort, port: result.port }) : '' });
-        // The page the window showed before an update, once; '/' every other time. Behind the splash the window
-        // waits for the interface to say it is ready (preload.cjs), and no longer than INTERFACE_READY_WAIT_MS
-        // after its page has loaded (or twice that, when the page never says it loaded).
+        // The page the window showed before an update, once; '/' every other time. Navigation and renderer
+        // initialization each get their own deadline, starting with their respective webContents events.
         mainWindow.loadURL(backendUrl(result.port, firstPath)).catch(error => {
           if (error.code !== 'ERR_ABORTED') log(error.message);
         });
@@ -835,6 +843,7 @@ function startApp() {
         });
         return;
       }
+      log(`startup failed: phase=backend event=${result.code || result.type} elapsed=${Date.now() - startedAt} ms`);
       showStatus({
         state: 'failed', heading: t('headingFailed'), line: result.message || '', hint: t('failedHint'), detail: result.log ? result.log : '',
         actions: [{ id: 'retry', label: t('retry'), primary: true }, { id: 'logs', label: t('openLogs') }, { id: 'quit', label: t('quit') }],

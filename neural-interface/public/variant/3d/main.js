@@ -57,7 +57,10 @@ injectSharedHTML();
 // The first frame in index.html owns the bounded retry for a failed module graph.
 let app = null;
 let moduleFailed = false;
-const retryModule = () => window.dispatchEvent(new Event('synabun:startup-module-failed'));
+const retryModule = () => {
+  window.synabunLoadingDiagnostics?.record('import-retry', { module: 'app' });
+  window.dispatchEvent(new Event('synabun:startup-module-failed'));
+};
 initLoading({ onInit: () => {
   if (app) app.boot();
   else if (moduleFailed) retryModule();
@@ -66,6 +69,7 @@ initLoading({ onInit: () => {
 
 import('./app.js').then((module) => { app = module; }, async (err) => {
   moduleFailed = true;
+  window.synabunLoadingDiagnostics?.record('import-failed', { module: 'app' });
   console.error('Init error:', err);
   const health = await fetchHealth().catch(() => null);
   if (health?.ok === true && !health.restarting) { retryModule(); return; }

@@ -38,6 +38,9 @@ export const RUN_EVENT_KINDS = [
   'run.completed', 'run.budget', 'run.notice', 'run.message', 'run.progress',
 ] as const;
 
+/** One title limit for agent_route planned_split.slices and agent_team slices[].title (= TEAM_LIMITS.title in neural-interface/lib/teams/schema.js). */
+export const SLICE_TITLE_MAX = 80;
+
 const runIdField = (purpose: string) => z.string().min(1).max(200).describe(purpose);
 const optionalId = (purpose: string) => z.string().min(1).max(200).optional().describe(purpose);
 
@@ -61,9 +64,10 @@ export const agentRouteSchema = {
   ),
   planned_split: z.object({
     workers: z.number().int().min(1).max(6),
-    slices: z.array(z.string().min(1).max(200)).min(1).max(6),
+    slices: z.array(z.string().min(1).max(SLICE_TITLE_MAX).describe(`Slice title, at most ${SLICE_TITLE_MAX} characters: agent_team start must give exactly these titles.`)).min(1).max(6),
     reason: z.string().min(1).max(400).optional(),
   }).optional().describe('At Pair/Team/Swarm, plan code/complex/research/review before routing. Give the target 2/4/6 workers and distinct slice titles; fewer requires a reason why it cannot sensibly split further. One approval covers the whole plan.'),
+  needs_host: z.boolean().optional().describe('Set true when this task requires host access unavailable to workers, such as writing outside the workspace. Computer use alone does not require it. The worker-only classes design, image_gen, and video_gen refuse needs_host:true.'),
   needs_vision: z.boolean().optional().describe('true when the task needs to see images or the screen (always true for computer).'),
   proposals: z.array(z.object({
     kind: z.enum(['direct', 'dispatch']).describe('"direct" = do it here on your own model (or another model of your own provider); "dispatch" = hand it to a worker.'),
@@ -269,7 +273,7 @@ export const agentCatalogDescription =
   'Discover what you can route to: providers (claude-code, codex, opencode, antigravity) with models (tier, price per 1M tokens, vision, context, efforts), plus `chat` (chat-only providers such as maritaca: a side panel the user talks to, prices in BRL, never a dispatch target), accounts with subscription usage remaining (or usage unknown; API keys are n/a), registered projects (cwd candidates), SynaBun tool groups and each host\'s effect, rails/limits, active runs, and `agents`: the SynaBun agents the owner approved, which a dispatch names with agent_ref (ref, name, description, provider/model, task classes, scope global or project, revision; provider and search filter them too). Without arguments it returns a compact routing view (OpenCode sampled); pass provider and/or search to list more models. Call it when the routing sheet in your instructions lacks a model, or after a MODEL_UNKNOWN rejection. Returns JSON.';
 
 export const agentRouteDescription =
-  'The runtime taskId owns one card: retries return it even with different wording or proposals. Only a genuinely separate subtask uses its own stable task_key. Plan the whole task before routing it once. At Pair/Team/Swarm, code/complex/research/review target 2/4/6 workers: pass planned_split with that many distinct titles or fewer with a reason. All four require cwd; a non-git project falls back to one worker with a reason. The card shows this split and one approval covers all workers. Follow next: agent_team plan → start for all splits. Research/review pass task_class and empty owned_paths: separate worktrees, no integration or landing; wait and synthesize. Never route individual slices. Other classes and Solo stay single. Route an actionable task BEFORE starting it (you are the planner). Give task_class, a one-line summary, your honest confidence (0-1) and 1-3 proposals (direct = here on your model; dispatch = a worker provider/model). proposals.account_id accepts an account id or "auto" (most subscription usage left); limited pinned/default accounts fall back within the provider. The returned target.account includes usage and corrections explain the choice. The server applies the session\'s route mode (always ask / ask when unsure / never ask): it approves at once, or shows the user a route card and waits briefly. A planned split uses workers; on a single-task route card the user can pick here or a worker: follow the returned target.kind and next, never your proposal. Follow the returned status and next: approved+dispatch → follow next with the approved route_id; approved+direct → do it yourself (a route the user kept here is never dispatched: agent_dispatch refuses it with ROUTE_IS_DIRECT); continuation → end your turn (SynaBun continues on the chosen model); pending → end your turn, the choice arrives as a [SynaBun Mailbox] route_decided event; declined → do not start (reason no_capable_model: no model can make the image or video, or see for design; tell the user which Model routes row needs one); clarifying → end your turn, the user has not answered your agent_clarify questions yet (independent:true for a task that does not depend on them). image_gen / video_gen always route to a worker whose model generates the medium, design to a worker whose model can see. With a session budget, a provider whose share is used up cannot take the task: SynaBun first divides the unspent budget again, then moves the task to the next capable provider with money left (your next proposal, the same tier on another provider, then a free model) and says so in corrections (reason budget_share, "budget: codex share used up -> claude-code/sonnet"); the saved routes yield to this. When no provider can pay it declines with reason budget_exhausted and names the dry providers (dry). The result carries budget: each provider\'s share, spent and left. Routed workers inherit the approved agent for their task class; agent_ref "none" opts out. A proposal may name an agent (agent_ref, with cwd for a project\'s own): it is a dispatch on what the agent runs on, unless the proposal names its own. Never use it for conversation or bookkeeping. Returns JSON.';
+  'The runtime taskId owns one card: retries return it even with different wording or proposals. Only a genuinely separate subtask uses its own stable task_key. Plan the whole task before routing it once. At Pair/Team/Swarm, code/complex/research/review target 2/4/6 workers: pass planned_split with that many distinct titles or fewer with a reason. All four require cwd; a non-git project falls back to one worker with a reason. The card shows this split and one approval covers all workers. Follow next: agent_team plan → start for all splits. Research/review pass task_class and empty owned_paths: separate worktrees, no integration or landing; wait and synthesize. Never route individual slices. Other classes and Solo stay single. For work that requires access outside the worker sandbox, set needs_host:true. Only Here is available. The worker-only classes design, image_gen, and video_gen refuse needs_host:true with ROUTE_INVALID. Route an actionable task BEFORE starting it (you are the planner). Give task_class, a one-line summary, your honest confidence (0-1) and 1-3 proposals (direct = here on your model; dispatch = a worker provider/model). proposals.account_id accepts an account id or "auto" (most subscription usage left); limited pinned/default accounts fall back within the provider. The returned target.account includes usage and corrections explain the choice. The server applies the session\'s route mode (always ask / ask when unsure / never ask): it approves at once, or shows the user a route card and waits briefly. A planned split uses workers; on a single-task route card the user can pick here or a worker: follow the returned target.kind and next, never your proposal. Follow the returned status and next: approved+dispatch → follow next with the approved route_id; approved+direct → do it yourself (a route the user kept here is never dispatched: agent_dispatch refuses it with ROUTE_IS_DIRECT); continuation → end your turn (SynaBun continues on the chosen model); pending → end your turn, the choice arrives as a [SynaBun Mailbox] route_decided event; declined → do not start (reason no_capable_model: no model can make the image or video, or see for design; tell the user which Model routes row needs one); clarifying → end your turn, the user has not answered your agent_clarify questions yet (independent:true for a task that does not depend on them). image_gen / video_gen always route to a worker whose model generates the medium, design to a worker whose model can see. With a session budget, a provider whose share is used up cannot take the task: SynaBun first divides the unspent budget again, then moves the task to the next capable provider with money left (your next proposal, the same tier on another provider, then a free model) and says so in corrections (reason budget_share, "budget: codex share used up -> claude-code/sonnet"); the saved routes yield to this. When no provider can pay it declines with reason budget_exhausted and names the dry providers (dry). A host-only route on an unpriced provider declines with reason budget_unpriced (BUDGET_UNPRICED). The result carries budget: each provider\'s share, spent and left. Routed workers inherit the approved agent for their task class; agent_ref "none" opts out. A proposal may name an agent (agent_ref, with cwd for a project\'s own): it is a dispatch on what the agent runs on, unless the proposal names its own. Never use it for conversation or bookkeeping. Returns JSON.';
 
 export const agentClarifyDescription =
   'Ask the user 1-3 targeted questions BEFORE routing a new request that is materially ambiguous: two plausible readings with different results, an unclear target (project, feature, files, audience), destructive or irreversible scope, spend, or memories that conflict with it. Not for clear requests, details a sensible default covers, anything the request, memory or the project answers, or the model (agent_route asks that). Each question gets 2-4 options (recommended first; the user can always type their own); add constraints (what the request fixes) and assumptions (what you will assume for the rest). The card waits briefly. Follow the returned status and next: answered → route, then agent_dispatch with the brief_id (SynaBun adds the user\'s original words, their answers, the constraints and assumptions to the worker\'s context); declined → proceed on your assumptions; pending → end your turn, the answers arrive as a [SynaBun Mailbox] clarify_answered event or as the user\'s next message, and dependent routes and dispatches wait until then. Returns JSON.';
@@ -304,13 +308,13 @@ export const agentUsageDescription =
 // ════ agents-p4 BEGIN: agent_team ════
 // One task given to several workers (neural-interface/lib/teams/scheduler.js). The same role gate as every agent_*
 // tool; the Neural Interface enforces the session's Agent density, the plan's rules and the landing rule.
-export const AGENT_TEAM_ACTIONS = ['plan', 'start', 'status', 'integrate', 'land', 'cleanup', 'discard', 'list'] as const;
+export const AGENT_TEAM_ACTIONS = ['plan', 'start', 'status', 'assign', 'set_test_command', 'integrate', 'land', 'cleanup', 'discard', 'list'] as const;
 /** The most slices any Agent density allows (Swarm). */
 export const AGENT_TEAM_MAX_SLICES = 6;
 
 const teamSliceSchema = z.object({
   id: z.string().min(1).max(40).describe('Short lower-case name of the slice, e.g. "api" ("integration" is reserved).'),
-  title: z.string().min(1).max(80).describe('What this part is, in a few words.'),
+  title: z.string().min(1).max(SLICE_TITLE_MAX).describe(`What this part is, in a few words; exactly the approved route's planned_split title (an older route's longer title: its first ${SLICE_TITLE_MAX} characters).`),
   task: z.string().min(1).max(16000).describe('Self-contained instructions for this slice\'s worker: goal, constraints, acceptance. It sees only its own slice, plus which files the other slices own.'),
   owned_paths: z.array(z.string().min(1).max(300)).max(64).optional().describe('The files this slice may write, as patterns relative to the project ("src/api/**", "docs/guide.md"). No file may be owned by two slices. Research/review omit this or pass [] (read-only).'),
   depends_on: z.array(z.string().min(1).max(40)).max(5).optional().describe('Slices that must be joined before this one starts (it then starts from their finished work).'),
@@ -320,16 +324,16 @@ const teamSliceSchema = z.object({
 
 export const agentTeamSchema = {
   action: z.enum(AGENT_TEAM_ACTIONS).describe(
-    'plan: check a plan (density, overlapping files, dependency cycles) and return it normalized; creates nothing. start: create the worktrees and dispatch the workers. status: slices, runs, claims, the integration branch, the last events. integrate: try again after a needs_attention. land: the integration branch into the user\'s branch. cleanup: after successful land and the user\'s yes, delete finished team worktrees/branches. discard: give the team up. list: this session\'s teams.'
+    'plan: check a plan (density, overlapping files, dependency cycles) and return it normalized; creates nothing. start: create the worktrees and dispatch the workers. status: slices, runs, claims, the integration branch, the last events. assign: give unowned paths to a slice. set_test_command: correct the test command before the first join attempt. integrate: try again after a needs_attention. land: the integration branch into the user\'s branch. cleanup: after successful land and the user\'s yes, delete finished team worktrees/branches. discard: give the team up. list: this session\'s teams.'
   ),
   assistant_session_id: optionalId('Your ASSISTANT_SESSION_ID (plan, start, list).'),
-  team_id: z.string().min(1).max(40).optional().describe('status / integrate / land / cleanup (required) / discard: the team. start: the team_id the plan action returned (omitted: one is made from the title).'),
+  team_id: z.string().min(1).max(40).optional().describe('Required for status, assign, set_test_command, integrate, land, cleanup and discard. For start, use the team_id from plan or let the server generate one.'),
   title: z.string().min(1).max(80).optional().describe('plan / start: the team\'s task in a few words.'),
   project_path: z.string().min(1).max(1024).optional().describe('plan / start: absolute path of the project (a git repository with at least one commit; pick from agent_catalog projects).'),
   base_commit: z.string().min(40).max(64).optional().describe('start: the full commit id the plan action pinned (omitted: the project\'s current commit).'),
   fewer_reason: z.string().min(1).max(400).optional().describe('Required when slices are fewer than density. Must match planned_split.reason on the approved route.'),
   slices: z.array(teamSliceSchema).min(1).max(AGENT_TEAM_MAX_SLICES).optional().describe('plan / start: the parts of the task, one worker each. At most what the session\'s Agent density allows (Pair 2, Team 4, Swarm 6; Solo: no team).'),
-  test_command: z.string().min(1).max(600).optional().describe('start: what proves the joined work, run on the integration branch after every join (e.g. "npm test"). Without one nothing is tested and you cannot land.'),
+  test_command: z.string().min(1).max(600).optional().describe('start / set_test_command: what proves the joined work, run on the integration branch after every join (e.g. "npm test"). The first join attempt locks this command. Without one nothing is tested and you cannot land.'),
   route_id: optionalId('start: the route_id agent_route returned with status "approved" for this task. One route covers every slice.'),
   task_class: z.enum(TASK_CLASSES).optional().describe('plan/start: code (default), complex, research or review. Research/review have read-only worktrees, no integration branch, tests or landing; the approved route must match.'),
   provider: z.enum(PROVIDERS).optional().describe('start: the worker runtime, when there is no route_id and a slice names no agent_ref.'),
@@ -342,7 +346,8 @@ export const agentTeamSchema = {
   context: z.string().max(8000).optional().describe('start: background every worker of the team gets (decisions already taken, conventions).'),
   tags: z.array(z.string().min(1).max(40)).max(6).optional().describe('start: tags for the runs.'),
   brief_id: optionalId('start: the brief_id of a clarification, so every worker gets the user\'s own words and answers.'),
-  slice_id: z.string().min(1).max(40).optional().describe('integrate: only this slice (omitted: every slice that is not joined).'),
+  slice_id: z.string().min(1).max(40).optional().describe('assign: the slice receiving the paths. integrate: retry only this slice (omitted: every slice that is not joined).'),
+  paths: z.array(z.string().min(1).max(300)).min(1).max(64).optional().describe('assign: unowned project-relative paths or patterns to add to this slice, using the plan’s ownership rules.'),
   target_branch: z.string().min(1).max(200).optional().describe('land: the branch that receives the work (default: the branch checked out in the project).'),
   mode: z.enum(['ff', 'merge']).optional().describe('land: "ff" (default) moves the branch forward to the integration branch; "merge" makes a merge commit.'),
   user_confirmed: z.boolean().optional().describe('cleanup: true only after the user says yes to deleting the landed team worktrees and branches; otherwise refused locally.'),
@@ -352,6 +357,7 @@ export const agentTeamSchema = {
 export const agentTeamDescription =
   'Code/complex/research/review: plan the task first, then target the session density (Pair 2, Team 4, Swarm 6). Fewer slices require fewer_reason matching the approved route. agent_route planned_split must match the project, count and titles. One approved route covers all slices, including replacements; never route a slice. Research/review use task_class and empty owned_paths: every worker gets its own worktree from one pinned commit, removed when it ends. Changes or commits are kept and reported. No integration branch, test_command or landing; wait and synthesize their results. Give ONE task to several workers at once, each in its own git worktree and branch (never the user\'s checkout or branch). Code/complex tasks need file-disjoint parts; research/review need distinct read-only scopes, within the user\'s Agent density (Solo 1: no team; Pair 2; Team 4; Swarm 6): SynaBun refuses a team at Solo (TEAM_DENSITY_SOLO) and a plan with more slices than the level allows (TEAM_TOO_MANY_SLICES), with overlapping files or a dependency cycle. ' +
   'Flow: agent_route the task once → action "plan" (returns the normalized plan with its team_id and base_commit, the density check and any errors; creates nothing) → action "start" with that plan and the approved route_id (returns workflow_id) → agent_wait on the workflow_id → a team_ready mailbox event → action "status" → action "land", or ask the user. ' +
+  'For a request_change on an unowned path, use "assign" with team_id, slice_id and paths. The worker receives the new scope. Use "set_test_command" to correct the verification command before the first join attempt. ' +
   'SynaBun commits each finished slice\'s own files, joins them on synabun/<team>/integration in dependency order and runs test_command on that exact commit; a conflict or failed tests go back to the slice\'s worker with the report (twice), then a needs_attention event reaches you: read "status", help with agent_send, then "integrate", or "discard". ' +
   'Landing rule: land yourself only when you judge the work ready, the integration tests passed, the user\'s branch has not moved and no file with local changes is touched; land returns SynaBun\'s refusal report unchanged (TESTS_NOT_PASSED, NOT_FAST_FORWARD, OWNER_BRANCH_MOVED, DIRTY_FILES_AFFECTED, TEAM_NOT_READY…). On a refusal do not retry or work around it: ask the user. ' +
   'Cleanup: successful land returns cleanup (worktrees, branches). When the task is fully finished, suggest deleting them with a synabun-followups confirm card. Only after the user says yes call cleanup with team_id and user_confirmed:true. The server requires a landed team, every run ended done, every branch merged into the target and every worktree clean. Refusals CLEANUP_NOT_CONFIRMED, TEAM_NOT_LANDED, TEAM_RUNS_ACTIVE, BRANCH_NOT_MERGED, BRANCH_MOVED (a branch moved after the check), WORKTREE_DIRTY remove nothing: keep them and tell the user which check failed. Never delete team worktrees or branches with git directly. Returns JSON.';
@@ -406,6 +412,7 @@ export function handleAgentRoute(args: AgentRouteArgs): Promise<ToolResult> {
     task_key: args.task_key,
     summary: args.summary,
     confidence: args.confidence,
+    needs_host: args.needs_host,
     needs_vision: args.needs_vision,
     planned_split: args.planned_split,
     proposals: args.proposals,
@@ -686,6 +693,12 @@ export function handleAgentTeam(args: AgentTeamArgs): Promise<ToolResult> {
       }
       case 'status':
         return needTeam() ?? json(await ni.assistantTeamStatus(args.team_id as string));
+      case 'assign':
+        if (!args.team_id || !args.slice_id || !args.paths?.length) return invalid('assign needs team_id, slice_id and paths.');
+        return json(await ni.assistantTeamAssign(args.team_id, args.slice_id, args.paths));
+      case 'set_test_command':
+        if (!args.team_id || !args.test_command?.trim()) return invalid('set_test_command needs team_id and test_command.');
+        return json(await ni.assistantTeamSetTestCommand(args.team_id, args.test_command));
       case 'integrate':
         return needTeam() ?? json(await ni.assistantTeamIntegrate(args.team_id as string, { sliceId: args.slice_id }));
       case 'land':
@@ -712,7 +725,11 @@ export function registerAgentTools(server: McpServer) {
   return [
     server.tool('agent_catalog',  agentCatalogDescription,  agentCatalogSchema,  (args) => handleAgentCatalog(args)),
     server.tool('agent_list',     agentListDescription,     agentListSchema,     (args) => handleAgentList(args)),
-    server.tool('agent_route',    agentRouteDescription,    agentRouteSchema,    (args) => handleAgentRoute(args)),
+    // Claude resumes conversations with their deferred tools. Keep this first-step tool in the
+    // current prompt so routing uses the schema advertised by the live MCP connection.
+    server.registerTool('agent_route', {
+      description: agentRouteDescription, inputSchema: agentRouteSchema, _meta: { 'anthropic/alwaysLoad': true },
+    }, (args) => handleAgentRoute(args)),
     server.tool('agent_clarify',  agentClarifyDescription,  agentClarifySchema,  (args) => handleAgentClarify(args)),
     // Preserve unknown input until the handler can reject retired fields from cached client schemas.
     // Neither retired spelling is advertised or accepted as a working dispatch field.

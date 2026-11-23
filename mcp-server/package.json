@@ -1,6 +1,6 @@
 {
   "name": "claude-memory-mcp",
-  "version": "2.4.1",
+  "version": "2.4.2",
   "private": true,
   "description": "Private MCP server runtime bundled with SynaBun for persistent memory and agent tooling",
   "license": "Apache-2.0",

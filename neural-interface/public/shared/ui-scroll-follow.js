@@ -31,7 +31,11 @@ export function createStickyScrollController(container, options = {}) {
   let frameId = 0;
   let generation = 0;
   let touchY = null;
+  let pointerDown = false;
+  let pointerScrolled = false;
   let lastScrollTop = container.scrollTop;
+  let lastScrollHeight = null;
+  let lastClientHeight = null;
 
   const distanceFromBottom = () => Math.max(
     0,
@@ -60,6 +64,8 @@ export function createStickyScrollController(container, options = {}) {
       container.scrollTop = container.scrollHeight;
     }
     lastScrollTop = container.scrollTop;
+    lastScrollHeight = container.scrollHeight;
+    lastClientHeight = container.clientHeight;
   };
 
   // A transcript inside a closed side panel is not drawn (ui-sidepanel-windows.js: data-sp-visible="false",
@@ -127,25 +133,79 @@ export function createStickyScrollController(container, options = {}) {
     if (hasScrollableContent()) setFollowing(false);
   };
 
+  const onPointerDown = (event) => {
+    if (event?.target && event.target !== container) return;
+    pointerDown = true;
+    pointerScrolled = false;
+  };
+  const onPointerUp = () => {
+    if (!pointerDown) return;
+    const scrolled = pointerScrolled;
+    pointerDown = false;
+    pointerScrolled = false;
+    if (disposed || !active || !scrolled) return;
+    if (!following && refreshPosition()) scrollToBottom();
+  };
+
   const onScroll = () => {
     const nextScrollTop = container.scrollTop;
-    const movedUp = nextScrollTop < lastScrollTop - 1;
+    const nextScrollHeight = container.scrollHeight;
+    const nextClientHeight = container.clientHeight;
+    if (pointerDown) pointerScrolled = true;
+    const prevScrollTop = lastScrollTop;
+    const prevScrollHeight = lastScrollHeight;
+    const prevClientHeight = lastClientHeight;
+    const movedUp = nextScrollTop < prevScrollTop - 1;
     lastScrollTop = nextScrollTop;
-    if (movedUp && distanceFromBottom() > 1) {
-      setFollowing(false);
+    lastScrollHeight = nextScrollHeight;
+    lastClientHeight = nextClientHeight;
+
+    const remaining = Math.max(0, nextScrollHeight - nextScrollTop - nextClientHeight);
+    if (movedUp && remaining > 1) {
+      const maxShrankBy = (prevScrollHeight != null && prevClientHeight != null)
+        ? Math.max(0, (prevScrollHeight - prevClientHeight) - (nextScrollHeight - nextClientHeight))
+        : 0;
+      const clientGrewBy = prevClientHeight != null ? Math.max(0, nextClientHeight - prevClientHeight) : 0;
+      const layoutShrink = Math.max(maxShrankBy, clientGrewBy);
+      // A layout shrink (composer collapsing, top rows pruned/collapsed, streamed row
+      // replaced, or zoom) makes the engine clamp scrollTop downward without user intent.
+      // Keep following when no user pointer/wheel/key/touch gesture is active and either a
+      // follow frame is already queued from the mutation/resize or the shrinkage accounts
+      // for the drop.
+      const clampedByLayout = following && !pointerDown && (
+        frameId !== 0
+        || (layoutShrink > 0 && (prevScrollTop - nextScrollTop) <= layoutShrink + 2)
+      );
+      if (!clampedByLayout) {
+        setFollowing(false);
+        return;
+      }
+    }
+    // Never yank the scrollbar out of the user's hand mid-drag; wait for release or true bottom.
+    if (pointerDown) {
+      if (remaining <= 1) setFollowing(true);
       return;
     }
     // A scroll event caused by writeBottom() may arrive after more streamed
     // content has already increased scrollHeight. In that case the viewport
     // is temporarily far from the new bottom without having moved upward.
     // Preserve follow mode so the queued mutation/resize frame can catch up.
+    if (following) {
+      if (remaining > 0.5) scrollToBottom();
+      return;
+    }
     if (refreshPosition()) scrollToBottom();
   };
   const onWheel = (event) => {
     if (event.deltaY < 0) detachForUpwardIntent();
   };
   const onKeyDown = (event) => {
-    if (event.key === 'PageUp' || event.key === 'ArrowUp' || event.key === 'Home') {
+    if (
+      event.key === 'PageUp'
+      || event.key === 'ArrowUp'
+      || event.key === 'Home'
+      || (event.key === ' ' && event.shiftKey)
+    ) {
       detachForUpwardIntent();
     }
   };
@@ -156,14 +216,27 @@ export function createStickyScrollController(container, options = {}) {
     touchY = nextY;
   };
   const onTouchEnd = () => { touchY = null; };
+  const fonts = container.ownerDocument?.fonts;
+  const onFontsDone = () => { if (!disposed) scrollToBottom(); };
 
   container.addEventListener('scroll', onScroll, { passive: true });
   container.addEventListener('wheel', onWheel, { passive: true });
   container.addEventListener('keydown', onKeyDown);
+  container.addEventListener('pointerdown', onPointerDown, { passive: true });
+  container.addEventListener('mousedown', onPointerDown, { passive: true });
   container.addEventListener('touchstart', onTouchStart, { passive: true });
   container.addEventListener('touchmove', onTouchMove, { passive: true });
   container.addEventListener('touchend', onTouchEnd, { passive: true });
   container.addEventListener('touchcancel', onTouchEnd, { passive: true });
+  if (typeof view?.addEventListener === 'function') {
+    view.addEventListener('pointerup', onPointerUp, { passive: true });
+    view.addEventListener('pointercancel', onPointerUp, { passive: true });
+    view.addEventListener('mouseup', onPointerUp, { passive: true });
+    view.addEventListener('blur', onPointerUp, { passive: true });
+  }
+  if (typeof fonts?.addEventListener === 'function') {
+    fonts.addEventListener('loadingdone', onFontsDone);
+  }
 
   const ResizeObserverCtor = view.ResizeObserver || globalThis.ResizeObserver;
   const MutationObserverCtor = view.MutationObserver || globalThis.MutationObserver;
@@ -184,7 +257,12 @@ export function createStickyScrollController(container, options = {}) {
     for (const child of current) {
       if (observedChildren.has(child)) continue;
       observedChildren.add(child);
-      resizeObserver.observe(child);
+      // Observe border-box so row padding/border changes also trigger bottom lock.
+      try {
+        resizeObserver.observe(child, { box: 'border-box' });
+      } catch {
+        resizeObserver.observe(child);
+      }
     }
   };
   resizeObserver?.observe(container);
@@ -203,7 +281,7 @@ export function createStickyScrollController(container, options = {}) {
     childList: true,
     characterData: true,
     attributes: true,
-    attributeFilter: ['class', 'hidden', 'open', 'style'],
+    attributeFilter: ['class', 'hidden', 'open', 'style', 'data-state', 'aria-expanded', 'aria-hidden'],
   });
 
   const controller = {
@@ -222,6 +300,8 @@ export function createStickyScrollController(container, options = {}) {
     destroy() {
       if (disposed) return;
       disposed = true;
+      pointerDown = false;
+      pointerScrolled = false;
       cancelScheduled();
       stopWaitingForHost();
       resizeObserver?.disconnect();
@@ -230,10 +310,21 @@ export function createStickyScrollController(container, options = {}) {
       container.removeEventListener('scroll', onScroll);
       container.removeEventListener('wheel', onWheel);
       container.removeEventListener('keydown', onKeyDown);
+      container.removeEventListener('pointerdown', onPointerDown);
+      container.removeEventListener('mousedown', onPointerDown);
       container.removeEventListener('touchstart', onTouchStart);
       container.removeEventListener('touchmove', onTouchMove);
       container.removeEventListener('touchend', onTouchEnd);
       container.removeEventListener('touchcancel', onTouchEnd);
+      if (typeof view?.removeEventListener === 'function') {
+        view.removeEventListener('pointerup', onPointerUp);
+        view.removeEventListener('pointercancel', onPointerUp);
+        view.removeEventListener('mouseup', onPointerUp);
+        view.removeEventListener('blur', onPointerUp);
+      }
+      if (typeof fonts?.removeEventListener === 'function') {
+        fonts.removeEventListener('loadingdone', onFontsDone);
+      }
       controllers.delete(container);
     },
   };

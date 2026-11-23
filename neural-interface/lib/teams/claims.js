@@ -33,7 +33,7 @@ import { runGitReadSync } from '../git-read.js';
 import { realPlace, registerTeamSlice, unregisterTeamSlice } from '../worker-confinement.js';
 import {
   RESERVED_PATH_ROOTS, claimablePaths, globsOverlap, integrationBranchName, isLockfilePath, isTeamSlug, normalizeRelPath, pathOwner,
-  branchName, worktreePath,
+  TEAM_LIMITS, branchName, normalizeOwnedPath, validateTeamPlan, worktreePath,
 } from './schema.js';
 import { parseNameStatus, parseStatus } from './git.js';
 import { SETTLED_SLICE_STATES, TERMINAL_TEAM_STATES, planSlice, refuse, sliceState } from './state.js';
@@ -71,15 +71,18 @@ function gitIgnores(worktree, relPath) {
  * @param {(tag: string, detail: any) => void} [deps.log]
  */
 export function createTeamClaims({ store, state, git = null, isIgnored = gitIgnores, registry = { register: registerTeamSlice, unregister: unregisterTeamSlice }, log = () => {} } = {}) {
-  const plans = new Map();      // teamId → the team's plan (a plan does not change once the team exists)
+  const plans = new Map();      // latest committed ownership for the synchronous worker guard
   const contexts = new Map();   // `${teamId}/${sliceId}` → the context registered with the worker guard
 
   function planOf(teamId) {
+    return plans.get(teamId) || null;
+  }
+
+  async function loadPlan(teamId) {
     if (plans.has(teamId)) return plans.get(teamId);
-    const record = isTeamSlug(teamId) ? state.record(teamId) : null;
-    if (!record) return null;
-    plans.set(teamId, record.plan);
-    return record.plan;
+    const plan = isTeamSlug(teamId) ? (await state.record(teamId))?.plan : null;
+    if (plan) plans.set(teamId, plan);
+    return plan;
   }
 
   /** Does the slice own something inside this folder? (`mkdir -p src` on the way to `src/api/x.js`.) */
@@ -104,7 +107,7 @@ export function createTeamClaims({ store, state, git = null, isIgnored = gitIgno
     if (owner === sliceId) {
       if (isLockfilePath(path)) return { allow: true, owner, relPath: path, code: 'lockfile_owner', beneath };
       // The claim is what says the slice is at work on it: a slice that finished gave its claims back.
-      const held = store.claimsFor({ teamId, sliceId, path }).length > 0;
+      const held = store.holdsClaim(teamId, sliceId, path);
       return held ? { allow: true, owner, relPath: path, code: 'owned', beneath } : { allow: false, owner, relPath: path, code: 'claim_released', beneath };
     }
     if (plan.readOnly) return { allow: false, owner: null, relPath: path, code: 'unowned', beneath: false };
@@ -171,15 +174,15 @@ export function createTeamClaims({ store, state, git = null, isIgnored = gitIgno
     return made;
   }
 
-  function claimSlice(plan, sliceId, runId) {
+  async function claimSlice(plan, sliceId, runId) {
     const globs = claimablePaths(plan, sliceId);
     if (!globs.length) return { ok: true, claims: [] };   // a slice that owns lockfiles only: owned by rule
-    return store.claim({ teamId: plan.teamId, sliceId, runId: runId || null, globs });
+    return await store.claim({ teamId: plan.teamId, sliceId, runId: runId || null, globs });
   }
 
-  function announceConflict(teamId, sliceId, conflicts) {
+  async function announceConflict(teamId, sliceId, conflicts) {
     try {
-      store.append({
+      await store.append({
         teamId, kind: EVENT_KINDS.CLAIM_CONFLICT,
         payload: { teamId, sliceId, conflicts: conflicts.map((each) => ({ glob: each.glob, heldBy: each.heldBy?.sliceId || null })) },
       });
@@ -192,17 +195,17 @@ export function createTeamClaims({ store, state, git = null, isIgnored = gitIgno
    * @param {string} teamId
    * @param {{ only?: (sliceId: string) => boolean }} [options]  which slices (default: every slice)
    */
-  function start(teamId, { only = null } = {}) {
-    const plan = planOf(teamId);
+  async function start(teamId, { only = null } = {}) {
+    const plan = await loadPlan(teamId);
     if (!plan) return refuse('TEAM_NOT_FOUND', `No team named "${teamId}" is recorded.`);
     const taken = [];
     const claims = [];
     for (const slice of plan.slices) {
       if (only && !only(slice.id)) continue;
-      const result = claimSlice(plan, slice.id, null);
+      const result = await claimSlice(plan, slice.id, null);
       if (!result.ok) {
-        for (const sliceId of taken) store.release({ teamId, sliceId });
-        announceConflict(teamId, slice.id, result.conflicts);
+        for (const sliceId of taken) await store.release({ teamId, sliceId });
+        await announceConflict(teamId, slice.id, result.conflicts);
         return refuse('CLAIM_CONFLICT', `Slice "${slice.id}" could not take its files: ${result.conflicts.map((each) => `${each.glob} is held by slice "${each.heldBy.sliceId}"`).join('; ')}.`, { sliceId: slice.id, conflicts: result.conflicts });
       }
       taken.push(slice.id);
@@ -213,29 +216,62 @@ export function createTeamClaims({ store, state, git = null, isIgnored = gitIgno
   }
 
   /** A slice goes to a run: its claims are (re)taken in that run's name and its context registered. */
-  function assign(teamId, sliceId, runId = null) {
-    const plan = planOf(teamId);
+  async function assign(teamId, sliceId, runId = null) {
+    const plan = await loadPlan(teamId);
     if (!plan || !plan.slices.some((slice) => slice.id === sliceId)) return refuse('SLICE_NOT_FOUND', `Team "${teamId}" has no slice "${sliceId}".`);
-    const result = claimSlice(plan, sliceId, runId);
+    const result = await claimSlice(plan, sliceId, runId);
     if (!result.ok) {
-      announceConflict(teamId, sliceId, result.conflicts);
+      await announceConflict(teamId, sliceId, result.conflicts);
       return refuse('CLAIM_CONFLICT', `Slice "${sliceId}" could not take its files: ${result.conflicts.map((each) => `${each.glob} is held by slice "${each.heldBy.sliceId}"`).join('; ')}.`, { sliceId, conflicts: result.conflicts });
     }
     register(teamId, sliceId);
     return { ok: true, claims: result.claims };
   }
 
+  /** Extend one slice's ownership under the scheduler's team and slice reservations. */
+  async function assignPaths(record, sliceId, paths) {
+    const own = planSlice(record, sliceId);
+    if (!own) return refuse('SLICE_NOT_FOUND', `Team "${record.teamId}" has no such slice.`);
+    const current = sliceState(record, sliceId);
+    if (current === 'integrated') return refuse('SLICE_ALREADY_INTEGRATED', `Slice "${sliceId}" has already joined.`);
+    const holdsClaims = CLAIMING_SLICE_STATES.has(current) || current === 'rejected';
+    if (!holdsClaims && !['conflict', 'tests-failed'].includes(current)) {
+      return refuse('SLICE_NOT_EDITABLE', `Slice "${sliceId}" is ${current}. Assign paths to a working, waiting or retryable slice.`);
+    }
+    if (!Array.isArray(paths) || !paths.length || paths.length > TEAM_LIMITS.ownedPaths || paths.some(path => !normalizeOwnedPath(path))) {
+      return refuse('INVALID_PLAN', `Give 1 to ${TEAM_LIMITS.ownedPaths} nonempty project-relative paths.`);
+    }
+    const requested = [...new Set(paths.map(normalizeOwnedPath))];
+    const slices = record.plan.slices.map(slice => slice === own ? { ...slice, ownedPaths: [...own.ownedPaths, ...requested] } : slice);
+    const checked = validateTeamPlan({ ...record.plan, slices }, { maxSlices: slices.length });
+    if (!checked.ok) return refuse('INVALID_PLAN', checked.errors[0].message, { errors: checked.errors });
+    const plan = checked.value;
+    const ownedPaths = plan.slices.find(slice => slice.id === sliceId).ownedPaths;
+    if (ownedPaths.length !== own.ownedPaths.length) {
+      const globs = holdsClaims ? claimablePaths(plan, sliceId) : [];
+      try {
+        await state.writeSlice(record.teamId, sliceId, current, { ownedPaths }, record.slices[sliceId].runId, globs);
+      } catch (error) {
+        if (error.code === 'CLAIM_CONFLICT') return refuse(error.code, error.message, { conflicts: error.conflicts });
+        throw error;
+      }
+    }
+    plans.set(record.teamId, plan);
+    register(record.teamId, sliceId);
+    return { ok: true, ownedPaths, requested };
+  }
+
   /**
    * Give claims back: a slice's when it finishes, the whole team's with no `sliceId`. The slice's context stays
    * registered with the worker guard (a worker still running there is refused: its claims are gone) until `end`.
    */
-  function release(teamId, sliceId = null) {
-    return store.release(sliceId ? { teamId, sliceId } : { teamId });
+  async function release(teamId, sliceId = null) {
+    return await store.release(sliceId ? { teamId, sliceId } : { teamId });
   }
 
   /** The team is over (landed, discarded, removed): every claim back, every context off the worker guard. */
-  function end(teamId) {
-    const released = isTeamSlug(teamId) ? store.release({ teamId }).released : 0;
+  async function end(teamId) {
+    const released = isTeamSlug(teamId) ? (await store.release({ teamId })).released : 0;
     for (const [key, made] of [...contexts]) {
       if (!key.startsWith(`${teamId}/`)) continue;
       try { registry.unregister(made); } catch { /* already gone */ }
@@ -250,12 +286,12 @@ export function createTeamClaims({ store, state, git = null, isIgnored = gitIgno
    * is registered with the worker guard again (the registry is in memory). Claims of teams that are over are given
    * back.
    */
-  function restore() {
+  async function restore() {
     const out = [];
-    for (const entry of state.teams()) {
-      const record = state.record(entry.teamId);
+    for (const entry of await state.teams()) {
+      const record = await state.record(entry.teamId);
       if (!record) continue;
-      if (TERMINAL_TEAM_STATES.includes(record.state) || record.removed) { out.push({ teamId: record.teamId, released: end(record.teamId).released }); continue; }
+      if (TERMINAL_TEAM_STATES.includes(record.state) || record.removed) { out.push({ teamId: record.teamId, released: (await end(record.teamId)).released }); continue; }
       plans.set(record.teamId, record.plan);
       const claimed = [];
       const conflicts = [];
@@ -263,7 +299,7 @@ export function createTeamClaims({ store, state, git = null, isIgnored = gitIgno
         const current = sliceState(record, slice.id);
         if (!SETTLED_SLICE_STATES.includes(current)) register(record.teamId, slice.id);
         if (!CLAIMING_SLICE_STATES.has(current)) continue;
-        const result = claimSlice(record.plan, slice.id, record.slices[slice.id]?.runId || null);
+        const result = await claimSlice(record.plan, slice.id, record.slices[slice.id]?.runId || null);
         if (result.ok) claimed.push(slice.id); else conflicts.push({ sliceId: slice.id, conflicts: result.conflicts });
       }
       out.push({ teamId: record.teamId, claimed, conflicts });
@@ -283,7 +319,7 @@ export function createTeamClaims({ store, state, git = null, isIgnored = gitIgno
    */
   async function verifyOwnership(teamId, sliceId) {
     if (typeof git !== 'function') throw new Error('verifyOwnership needs a git runner.');
-    const record = isTeamSlug(teamId) ? state.record(teamId) : null;
+    const record = isTeamSlug(teamId) ? await state.record(teamId) : null;
     if (!record) return refuse('TEAM_NOT_FOUND', `No team named "${teamId}" is recorded.`);
     const slice = planSlice(record, sliceId);
     if (!slice) return refuse('SLICE_NOT_FOUND', `Team "${teamId}" has no slice "${sliceId}".`);
@@ -311,5 +347,5 @@ export function createTeamClaims({ store, state, git = null, isIgnored = gitIgno
     return { ok: violations.length === 0, head, reference, changed, violations, uncommitted, stray, warnings };
   }
 
-  return { start, assign, release, end, restore, checkWrite, checkRelative, context, verifyOwnership, planOf };
+  return { start, assign, assignPaths, release, end, restore, checkWrite, checkRelative, context, verifyOwnership, planOf };
 }

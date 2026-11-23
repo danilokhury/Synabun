@@ -97,56 +97,6 @@ export function getSharedHTML() {
 <div id="app-frame-surface" aria-hidden="true"></div>
 <div id="app-frame" aria-hidden="true"></div>
 
-<!-- Loading Overlay -->
-<div id="loading-overlay">
-  <div id="loading-mascot" data-state="asleep">
-    <svg viewBox="0 0 280 140" width="160" height="80" style="overflow:visible" aria-hidden="true">
-      <g class="syna-eye">
-        <g class="syna-lid" transform="translate(0,60) scale(1,0.08) translate(0,-60)">
-          <rect x="80" y="24" width="38" height="72" rx="19" fill="#ffffff"/>
-        </g>
-      </g>
-      <g class="syna-eye">
-        <g class="syna-lid" transform="translate(0,60) scale(1,0.08) translate(0,-60)">
-          <rect x="162" y="24" width="38" height="72" rx="19" fill="#ffffff"/>
-        </g>
-      </g>
-      <path d="M125,112 Q140,118 155,112" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="2.5" stroke-linecap="round"/>
-    </svg>
-    <span id="loading-zzz">z</span>
-  </div>
-  <img src="synabun.png?v=2" alt="SynaBun" class="loading-logo">
-  <div id="loading-text">${t('loading.connecting')}</div>
-  <div id="loading-sub">${t('loading.initializingNeural')}</div>
-  <div id="loading-action">
-    <button id="loading-action-btn" type="button">
-      <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-      <span id="loading-action-label">${t('loading.startServer')}</span>
-    </button>
-    <div id="loading-action-status" role="status" aria-live="polite" aria-atomic="true"></div>
-    <div id="loading-action-elapsed" role="timer" aria-live="off"></div>
-    <div id="loading-action-hint"></div>
-    <ul id="loading-action-trail"></ul>
-    <div id="loading-action-log"></div>
-  </div>
-  <div id="loading-server-cmd">
-    <div id="loading-server-cmd-hint">${t('loading.runCommand')}</div>
-    <div id="loading-server-cmd-box">
-      <code id="loading-cmd-text">npm start</code>
-      <button id="loading-cmd-copy" title="${t('loading.copyToClipboard')}">
-        <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-      </button>
-    </div>
-    <br>
-    <button id="loading-retry-btn" type="button">
-      <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-      ${t('loading.retryConnection')}
-    </button>
-    <div id="loading-retry-status"></div>
-    <img src="synabun.png?v=2" alt="SynaBun" style="margin-top:6px;height:32px;width:auto;filter:grayscale(0.5);opacity:0.18;">
-  </div>
-</div>
-
 <!-- Node Hover Tooltip -->
 <div id="tooltip" class="glass">
   <div id="tooltip-category"></div>
@@ -914,6 +864,8 @@ export function injectSharedHTML() {
   // The workspace sits in the inset rounded frame (app-frame.js): set before the shell lands, so nothing is laid
   // out once without it.
   document.documentElement.classList.add(FRAMED_CLASS);
-  document.body.insertAdjacentHTML('afterbegin', getSharedHTML());
-  document.getElementById('startup-status')?.remove();
+  // Once per document: a second call would duplicate every id. The loading overlay is never part of the shell: the
+  // first frame (index.html) owns it and the shell takes that one over.
+  if (!document.getElementById('app-frame')) document.body.insertAdjacentHTML('afterbegin', getSharedHTML());
+  window.synabunAdoptLoading?.(t);
 }

@@ -20,7 +20,7 @@ import { randomUUID } from 'node:crypto';
 import express, { type Request, type Router } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
-import { ensureDatabase } from './services/sqlite.js';
+import { ensureDatabase, memoryStoreStatus } from './services/sqlite.js';
 import { initCategoryCache } from './services/categories.js';
 import { warmupEmbeddings } from './services/local-embeddings.js';
 import {
@@ -329,6 +329,15 @@ export async function ensureInit() {
   try { await initPromise; } finally { initPromise = null; }
 }
 
+let lastInitFailure = '';
+/** Say once why the store or the categories could not be set up (every request tries again and would say it again). */
+function noteInitFailure(error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message === lastInitFailure) return;
+  lastInitFailure = message;
+  console.error('[SynaBun] MCP endpoint: the memory store is not available:', message);
+}
+
 /**
  * Create Express routes for the MCP HTTP endpoint.
  * Auth is handled externally (URL-embedded key in server.js).
@@ -344,7 +353,16 @@ export function createMcpRoutes(options: McpRoutesOptions = {}): Router {
   router.use(express.json());
 
   router.post('/', async (req, res) => {
-    await ensureInit();
+    // A request never waits for a migration of the memory store: `initialize` and the tool list are answered at
+    // once, and a memory tool waits for the store itself, then says that it is migrating (index.ts whenStoreReady).
+    // A store that cannot be opened (a needed migration without room for its copy) does not take the endpoint down
+    // either: the request is served, and a memory tool answers with the reason (sqlite.ts getDb).
+    const init = ensureInit();
+    if (memoryStoreStatus().state === 'migrating') init.catch(() => { /* the eager init at start reports it */ });
+    else {
+      try { await init; }
+      catch (error) { noteInitFailure(error); }
+    }
     try {
       const sid = req.get('mcp-session-id') || undefined;
 

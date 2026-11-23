@@ -119,6 +119,8 @@ export function createClaudeBrain({ session, sink, deps = {}, persona = '', hook
     // are CLI-oriented (greeting, loop driver, stop nudges) and are not loaded.
     settingSources: Array.isArray(deps.settingSources) ? deps.settingSources : ['user'],
     hooks: hooks || undefined,
+    // A resumed conversation must discover SynaBun's current tools after a server update.
+    synabunDiscoveryCache: false,
     mcpHeaders: {
       'X-Synabun-Role': 'assistant', 'X-Synabun-Terminal': session.id, 'X-Synabun-Memory-Session': session.id,
       ...(deps.desktopGrant ? { 'X-Synabun-Desktop-Grant': deps.desktopGrant } : {}),

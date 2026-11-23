@@ -6,7 +6,7 @@
 // callers:
 //
 //   /api/assistant/teams/*          the Assistant's `agent_team` tool (and the owner's page): plan, start, status,
-//                                   integrate, land, discard, list. Behind the Assistant API's orchestration guard:
+//                                   assign, set_test_command, integrate, land, cleanup, discard, list. Behind the Assistant API's orchestration guard:
 //                                   a brain by its launch credential, or the owner's page. Never a worker.
 //   /api/assistant/team/*           a worker's `team` tool: context, post, read, wait, ack, claims, request. Only a
 //                                   run that proves its pin (its terminal token) AND works a team slice now. The
@@ -129,6 +129,15 @@ export function registerAssistantTeamRoutes(router, { scheduler, orchestrationGu
     const body = req.body || {};
     send(res, await teams.integrate(req.params.id, { sliceId: body.sliceId || body.slice_id || body.slice || null }));
   }));
+  router.post('/teams/:id/assign', orchestrationGuard, run(async (req, res, teams) => {
+    if (refuseOthers(req, res, teams, req.params.id) || refusePlanning(req, res, 'assign paths to a slice')) return;
+    const body = req.body || {};
+    send(res, await teams.assign(req.params.id, { sliceId: body.sliceId ?? body.slice_id, paths: body.paths }));
+  }));
+  router.post('/teams/:id/set_test_command', orchestrationGuard, run(async (req, res, teams) => {
+    if (refuseOthers(req, res, teams, req.params.id) || refusePlanning(req, res, 'change the team test command')) return;
+    send(res, await teams.setTestCommand(req.params.id, req.body?.testCommand ?? req.body?.test_command));
+  }));
   router.post('/teams/:id/land', orchestrationGuard, run(async (req, res, teams) => {
     if (refuseOthers(req, res, teams, req.params.id)) return;
     if (refusePlanning(req, res, 'land the team')) return;
@@ -178,11 +187,11 @@ export function registerAssistantTeamRoutes(router, { scheduler, orchestrationGu
   }));
   router.post('/team/post', worker(async (req, res, teams, who) => {
     const body = req.body || {};
-    send(res, teams.post(who.runId, { to: body.to, kind: body.kind, text: body.text, path: body.path || null, id: body.id || body.idempotency_key || null }));
+    send(res, await teams.post(who.runId, { to: body.to, kind: body.kind, text: body.text, path: body.path || null, id: body.id || body.idempotency_key || null }));
   }));
   router.post('/team/read', worker(async (req, res, teams, who) => {
     const body = req.body || {};
-    send(res, teams.read(who.runId, { afterSeq: body.afterSeq ?? body.after_seq ?? null, kinds: body.kinds || null, limit: body.limit ?? null }));
+    send(res, await teams.read(who.runId, { afterSeq: body.afterSeq ?? body.after_seq ?? null, kinds: body.kinds || null, limit: body.limit ?? null }));
   }));
   router.post('/team/wait', worker(async (req, res, teams, who) => {
     const body = req.body || {};
@@ -190,14 +199,14 @@ export function registerAssistantTeamRoutes(router, { scheduler, orchestrationGu
   }));
   router.post('/team/ack', worker(async (req, res, teams, who) => {
     const body = req.body || {};
-    send(res, teams.ack(who.runId, { ids: body.ids || body.eventIds || null, throughSeq: body.throughSeq ?? body.through_seq ?? null }));
+    send(res, await teams.ack(who.runId, { ids: body.ids || body.eventIds || null, throughSeq: body.throughSeq ?? body.through_seq ?? null }));
   }));
   router.post('/team/claims', worker(async (req, res, teams, who) => {
-    send(res, teams.claims(who.runId, { path: (req.body || {}).path ?? null }));
+    send(res, await teams.claims(who.runId, { path: (req.body || {}).path ?? null }));
   }));
   router.post('/team/request', worker(async (req, res, teams, who) => {
     const body = req.body || {};
-    send(res, teams.request(who.runId, { path: body.path, text: body.text }));
+    send(res, await teams.request(who.runId, { path: body.path, text: body.text }));
   }));
 }
 
