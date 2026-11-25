@@ -34,6 +34,7 @@
 import { OPENCODE_SESSION_TABLES } from './opencode-db-schema.js';
 import { opencodeMcpServerEntry } from './opencode-config.js';
 import { storedToolList } from './tool-lists.js';
+import { readSafeShellOutputPage, readShellOutputPage, SHELL_OUTPUT_PAGE_BYTES } from './opencode-shell-read.js';
 import { statSync } from 'node:fs';
 import { LOCATION_MISSING_CODE, locationNotFoundMessage } from '../public/shared/ocp-v2/ocp-v2-location-logic.js';
 
@@ -251,6 +252,37 @@ async function sessionTodo(msg, deps) {
 async function sessionStatus(msg, deps) {
   const r = await deps.bound(sessionKeyOf(msg)).extra.session.status({ directory: directoryOf(msg) });
   return { status: r.status, data: { status: statusForSession(r.data, sessionIdOf(msg)) } };
+}
+
+// ── The shell commands of a session's tool calls ────────────────────────────
+// OpenCode 2 no longer sends a command's output with the tool call: it keeps it
+// in a file, read in pages by byte position while the command runs and after.
+
+/** The most a `shell:output` request reads at once. */
+export { SHELL_OUTPUT_PAGE_BYTES };
+
+/** The session's commands as its event stream told them (`{ id, status, command, callID, background, … }`). */
+async function shellList(msg, deps) {
+  const r = await deps.bound(sessionKeyOf(msg)).extra.shell.list({ sessionID: sessionIdOf(msg) });
+  return { status: r.status, data: Array.isArray(r.data) ? r.data : [] };
+}
+
+/**
+ * A page of one command's output. Only a command of the session the request names is read (`shellId` is the
+ * page's word). `cursor`: the byte to read from; `tail`: instead, the last so many bytes (a panel that opens
+ * on a command with a long output starts at its end).
+ */
+async function shellOutput(msg, deps) {
+  const shellId = typeof msg.shellId === 'string' ? msg.shellId : '';
+  if (!shellId) return failure(400, 'shellId required');
+  const extra = deps.bound(sessionKeyOf(msg)).extra;
+  const listed = await extra.shell.list({ sessionID: sessionIdOf(msg) });
+  const known = (Array.isArray(listed.data) ? listed.data : []).find((shell) => shell.id === shellId);
+  if (!known) return failure(404, 'That command is not one of this session.');
+  // Scrubbed on the whole window around the page, as the Assistant reads it (lib/opencode-shell-read.js
+  // readSafeShellOutputPage): each page scrubbed on its own would let a secret through that the panel joins.
+  const read = (q) => readShellOutputPage(extra.shell, { shellID: shellId, directory: directoryOf(msg), cursor: q.cursor, limit: q.limit }, { errorText: proxyErrorText });
+  return readSafeShellOutputPage(read, { cursor: msg.cursor, tail: msg.tail, limit: msg.limit, running: known.status === 'running' });
 }
 
 // An MCP server as OpenCode 2 takes it (`mcp.servers.<name>`, lib/opencode-config.js), from what SynaBun
@@ -745,6 +777,8 @@ const HANDLERS = {
   },
   'session:compact': { session: true, run: compactSession },
   'session:status': { session: true, run: sessionStatus },
+  'shell:list': { session: true, run: shellList },
+  'shell:output': { session: true, run: shellOutput },
   'session:todo': { session: true, run: sessionTodo },
   'permission:reply': { run: permissionReply },
   'permission:list': { run: permissionList },

@@ -718,10 +718,12 @@ async function settleAsk(eventType, sessionId, requestId, response) {
   return result;
 }
 
-async function abortSession(sessionId) {
+// `force`: "Stop anyway" (offered after a second Stop that could not end a command): the turn ends even while that
+// command may still run. A server from before it ignores the flag (a plain Stop).
+async function abortSession(sessionId, { force = false } = {}) {
   const pending = _asks.openAsksOf(sessionId);
   const stored = storedAsks((owner) => owner === sessionId || knownDescendant(owner, sessionId, _parentOf));
-  const result = await request({ type: 'message:abort', sessionId });
+  const result = await request({ type: 'message:abort', sessionId, ...(force ? { force: true } : {}) });
   if (!replyFailed(result)) {
     // Stop can finish after a new turn has started. Clear only the requests seen when Stop was pressed.
     for (const ask of pending) _asks.note(`${ask.kind}.replied`, { requestID: ask.id, sessionID: ask.owner });
@@ -766,6 +768,9 @@ export const api = {
   sessionStatus:  ({ sessionId, cwd } = {}) => gated({ type: 'session:status', sessionId, cwd }),
   permissionList: ({ sessionId, cwd } = {}) => gated({ type: 'permission:list', sessionId, cwd }),
   sessionTodo:    ({ sessionId, cwd } = {}) => gated({ type: 'session:todo', sessionId, cwd }),
+  // The shell commands of the session's tool calls, and a page of what one printed (ocp-v2-shell-logic.js).
+  shellList:      ({ sessionId, cwd } = {}) => gated({ type: 'shell:list', sessionId, cwd }),
+  shellOutput:    ({ sessionId, shellId, cwd, cursor, tail, limit } = {}) => gated({ type: 'shell:output', sessionId, shellId, cwd, cursor, tail, limit }),
   sessionRevert:   ({ sessionId, messageID, partID, cwd } = {}) => gated({ type: 'session:revert', sessionId, messageID, partID, cwd }),
   sessionUnrevert: ({ sessionId, cwd } = {}) => gated({ type: 'session:unrevert', sessionId, cwd }),
   sessionFork:     ({ sessionId, messageID, cwd } = {}) => gated({ type: 'session:fork', sessionId, messageID, cwd }),

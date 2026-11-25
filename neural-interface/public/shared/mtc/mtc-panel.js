@@ -33,6 +33,7 @@ import { dropdownHTML, dropdownOf, setDropdownDisabled, setDropdownItems, wireDr
 import { renderMarkdown } from '../cp/cp-markdown.js';
 import { fetchProjects } from '../api.js';
 import { createStickyScrollController } from '../ui-scroll-follow.js';
+import { composerHoldsDraft, markAutoCloseKeep } from '../tray-auto-close.js';
 
 export const PANEL_OWNER = 'maritaca-sidepanel';
 const ICON = ICONS.mark;
@@ -368,7 +369,7 @@ async function stageFiles(files) {
     }
     saveTabs();
   } catch (error) { showBanner(T('attachmentFailed', { name: '', error: error.message }), 'error'); }
-  finally { tab.pendingAttachments = false; renderComposer(); }
+  finally { tab.pendingAttachments = false; renderComposer(); renderPills(); }
 }
 
 async function copyText(text) {
@@ -738,6 +739,18 @@ async function switchBranch(branch) {
     await loadBranches(project);
   }
 }
+// What the tray's auto-close must leave open (tray-auto-close.js), or '': a tab holding an unsent draft, its text (in
+// the composer while the tab is the one on screen) or its staged attachments, and while a message is being edited the
+// draft and attachments the edit put aside. Its X (closeTab) throws them away; the user's X closes it as before.
+function autoCloseKeepOf(tab) {
+  if (!tab) return '';
+  const input = tab === activeTab() ? $('.mtc-input') : null;
+  const editing = tab.editingIndex != null;
+  const held = composerHoldsDraft(input ? input.value : tab.draft, tab.attachments)
+    || (editing && composerHoldsDraft(tab.beforeEdit, tab.beforeEditAttachments));
+  return held ? 'draft' : '';
+}
+
 function renderPills() {
   const tray = document.getElementById('term-minimized-tray');
   for (const tab of _tabs) {
@@ -748,6 +761,7 @@ function renderPills() {
       pill.dataset.tabId = tab.id;
       pill.tabIndex = 0;
       pill.setAttribute('role', 'button');
+      pill.keepFromAutoClose = () => autoCloseKeepOf(tab);
       pill.innerHTML = `<span class="mtc-pill-ring" aria-hidden="true"><i></i></span><span class="term-minimized-pill-icon mtc-mark">${ICON}</span><span class="term-minimized-pill-label"></span><button class="term-minimized-pill-close" data-tooltip="${esc(T('closeTab'))}" aria-label="${esc(T('closeTab'))}">&times;</button>`;
       // A closed panel goes to this tab first and is shown after: showing it first drew, and loaded the session
       // of, the tab it was left on before the one that was clicked.
@@ -762,6 +776,7 @@ function renderPills() {
     const label = tab.pillEl.querySelector('.term-minimized-pill-label');
     if (label) label.textContent = tabLabel(tab, T);
     tab.pillEl.classList.toggle('mtc-pill-running', !!tab.running);
+    markAutoCloseKeep(tab.pillEl, autoCloseKeepOf(tab));
     const meaningful = !!(tab.sessionId || tab.running || tab.draft || tab.attachments?.length);
     tab.pillEl.style.display = meaningful && (!_visible || tab !== activeTab()) ? '' : 'none';
   }
@@ -1196,7 +1211,7 @@ function wire() {
   $('#mtc-model')?.addEventListener('change', (event) => { const tab = activeTab(); if (!tab) return; tab.model = event.target.value || null; tab.effort = null; saveTabs(); renderComposer(); renderHeader(); renderContextPop(); });
   $('.mtc-attach')?.addEventListener('click', () => $('.mtc-file-input')?.click());
   $('.mtc-file-input')?.addEventListener('change', (event) => { stageFiles([...event.target.files]); event.target.value = ''; });
-  $('.mtc-staged')?.addEventListener('click', (event) => { const remove = event.target.closest('[data-remove-attachment]'); const tab = activeTab(); if (!remove || tab?.submitting) return; tab.attachments.splice(Number(remove.dataset.removeAttachment), 1); saveTabs(); renderComposer(); });
+  $('.mtc-staged')?.addEventListener('click', (event) => { const remove = event.target.closest('[data-remove-attachment]'); const tab = activeTab(); if (!remove || tab?.submitting) return; tab.attachments.splice(Number(remove.dataset.removeAttachment), 1); saveTabs(); renderComposer(); renderPills(); });
   input?.addEventListener('paste', (event) => { const files = [...(event.clipboardData?.files || [])]; if (files.length) { event.preventDefault(); stageFiles(files); } });
   let dragDepth = 0;
   _panel.addEventListener('dragenter', (event) => { if (![...(event.dataTransfer?.types || [])].includes('Files')) return; event.preventDefault(); dragDepth++; _panel.classList.add('mtc-dragging'); });

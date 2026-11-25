@@ -1,4 +1,11 @@
 {
+  "shellStop": {
+    "failed": "Parar não conseguiu encerrar {commands} ({reason}). O comando continua em execução, então este turno continua. Pressione Parar de novo.",
+    "failedAgain": "Parar não conseguiu encerrar {commands} de novo ({reason}). O comando continua em execução. Pressione Parar de novo, ou Parar assim mesmo para encerrar este turno aqui.",
+    "anyway": "Parar assim mesmo",
+    "abandoned": "Turno parado. {commands} pode continuar em execução nesta máquina: o SynaBun continua tentando encerrá-lo em segundo plano.",
+    "unknownReason": "sem motivo informado"
+  },
   "workerQuestion": {
     "deliveryFailed": "Não foi possível enviar sua resposta. Tente novamente.",
     "resolved": "Resolvido"
@@ -1463,7 +1470,7 @@
           "help": "Armazenamento, busca e backups"
         },
         "ai_decisions": {
-          "label": "Jev",
+          "label": "Decisões de IA",
           "help": "Avaliações inteligentes e custo"
         },
         "projects": {
@@ -1521,7 +1528,7 @@
           "purpose": "Veja onde suas memórias ficam, escolha como o SynaBun as encontra e mantenha uma cópia que você possa restaurar."
         },
         "ai_decisions": {
-          "title": "Jev",
+          "title": "Decisões de IA",
           "purpose": "Controle onde as avaliações inteligentes ajudam, o que podem usar e quanto custam."
         },
         "projects": {
@@ -5037,11 +5044,11 @@
           "omitted": "Outros {n} não couberam e só aparecem quando forem relevantes.",
           "learn": {
             "killSwitch": "Sem aprender no momento: as avaliações inteligentes estão desativadas neste servidor (SYNABUN_TYPESAFE=off). O que já se sabe continua sendo usado.",
-            "masterOff": "Sem aprender no momento: o {page} está desativado. O que já se sabe continua sendo usado.",
-            "noKey": "Sem aprender no momento: o {page} está sem chave de API. O que já se sabe continua sendo usado.",
-            "surfaceOff": "Sem aprender no momento: “User learning” está desativado no {page}. O que já se sabe continua sendo usado.",
-            "waiting": "Sem aprender por um instante: o {page} precisou esperar antes do próximo pedido. O que já se sabe continua sendo usado.",
-            "unavailable": "Sem aprender no momento: o {page} não está disponível. O que já se sabe continua sendo usado."
+            "masterOff": "Sem aprender no momento: as avaliações estão desativadas em {page}. O que já se sabe continua sendo usado.",
+            "noKey": "Sem aprender no momento: falta a chave de API em {page}. O que já se sabe continua sendo usado.",
+            "surfaceOff": "Sem aprender no momento: “User learning” está desativado em {page}. O que já se sabe continua sendo usado.",
+            "waiting": "Sem aprender por um instante: o serviço de {page} precisou esperar antes do próximo pedido. O que já se sabe continua sendo usado.",
+            "unavailable": "Sem aprender no momento: o serviço de {page} não está disponível. O que já se sabe continua sendo usado."
           },
           "openPage": "Abrir {page}",
           "writer": {
@@ -10464,6 +10471,26 @@
       "error": "Erro: {text}"
     },
     "rack": {
+      "shell": {
+        "running": "em execução",
+        "runningNow": "Em execução",
+        "background": "em segundo plano",
+        "stopped": "interrompido",
+        "timedOut": "tempo esgotado",
+        "exit": "saída {code}",
+        "loadFull": "Carregar saída completa",
+        "loading": "Carregando…",
+        "jump": "Ir para o fim",
+        "copy": "Copiar saída",
+        "copied": "Copiado",
+        "label": "Saída do comando",
+        "noOutputYet": "Ainda sem saída",
+        "noOutput": "Sem saída",
+        "reading": "Lendo a saída…",
+        "gone": "O OpenCode não guarda mais a saída deste comando.",
+        "partial": "Mostrando os últimos {shown} de {size}.",
+        "capped": "Mostrando os últimos {shown} de {size}: a saída completa é longa demais para mostrar aqui."
+      },
       "kind": {
         "think": "Pensando",
         "shell": "Terminal de comandos",
@@ -14650,12 +14677,13 @@
     "noControlled": "Nenhuma aba sob controle de agentes. Inicie uma tarefa no SynaBun. O agente e suas abas aparecerão aqui.",
     "takeBack": "Retomar",
     "setupTitle": "Conectar seu navegador",
-    "setupHelp": "Abre seu navegador padrão e a pasta da extensão. Você conclui três etapas de instalação no navegador.",
+    "setupHelp": "Baixa a extensão de synabun.ai na primeira vez e depois abre seu navegador padrão e a pasta da extensão. Você conclui três etapas de instalação no navegador.",
     "setupConnect": "Conectar seu navegador",
     "setupReconnect": "Configurar novamente",
     "setupReinstall": "Reinstalar",
     "setupCancel": "Cancelar configuração",
     "reloadNeeded": "A extensão no seu navegador é mais antiga que a cópia do SynaBun: abra a página de extensões do navegador e clique em Recarregar no SynaBun Browser Bridge.",
+    "reloadRepaired": "O SynaBun substituiu os arquivos da pasta da extensão pela cópia verificada. Seu navegador continua executando os arquivos antigos até você recarregar a extensão: abra chrome://extensions (edge://extensions no Edge), encontre o SynaBun Browser Bridge e clique no botão Recarregar. Depois, confirme abaixo.",
     "setup": {
       "documentTitle": "Conectar seu navegador — SynaBun",
       "title": "Conectar seu navegador",
@@ -14680,6 +14708,7 @@
       "openedIn": "A página de configuração abriu no {browser}. Continue lá.",
       "restart": "Reiniciar configuração",
       "reloadNeeded": "A extensão no {browser} é mais antiga que a cópia do SynaBun: clique em Recarregar no SynaBun Browser Bridge na página de extensões.",
+      "reloadRepaired": "O SynaBun substituiu os arquivos da pasta da extensão pela cópia verificada. O {browser} ainda pode executar os arquivos antigos: clique em Recarregar no SynaBun Browser Bridge na página de extensões e depois confirme em Configurações → Navegador do SynaBun.",
       "liveIdle": "Nenhuma configuração em andamento. Clique em \"Conectar seu navegador\" em Configurações → Navegador do SynaBun.",
       "liveWaiting": "Mantenha esta página aberta. Detectaremos o SynaBun assim que for instalado.",
       "liveFound": "Extensão encontrada. Pareando automaticamente…",
@@ -14697,16 +14726,21 @@
       "error": "Algo deu errado. Comece de novo em Configurações → Navegador do SynaBun.",
       "errorSETUP_EXPIRED": "O tempo desta configuração acabou. Comece de novo.",
       "errorEXTENSION_FOLDER_FAILED": "O SynaBun não conseguiu preparar a pasta da extensão.",
+      "errorEXTENSION_FOLDER_UNSAFE": "O SynaBun não usou a pasta da extensão na pasta de dados: ela é um link, pertence a outro usuário ou outras pessoas podem alterá-la (no Linux, um grupo que não seja o seu grupo pessoal conta como outras pessoas). Nada foi mudado. Corrija ou remova a pasta browser-extension e tente novamente.",
       "errorOPEN_FAILED": "O SynaBun não conseguiu abrir esta página no navegador sozinho. Os passos abaixo continuam valendo.",
       "errorSETUP_NOT_ACTIVE": "Nenhuma configuração em andamento. Comece de novo em Configurações → Navegador do SynaBun.",
       "errorSETUP_TICKETS_USED": "Esta configuração esgotou as tentativas de pareamento. Comece de novo ou pareie com um código nas Configurações.",
       "errorPAGE_SECRET_REQUIRED": "Recarregue esta página.",
       "errorPEER_UNAVAILABLE": "O SynaBun não conseguiu identificar este navegador. Recarregue esta página.",
+      "errorEXTENSION_DOWNLOAD_OFFLINE": "O SynaBun não conseguiu acessar synabun.ai para baixar a extensão. Verifique sua conexão com a internet e tente novamente.",
+      "errorEXTENSION_DOWNLOAD_UNAVAILABLE": "O synabun.ai não tem agora a extensão de que esta versão do SynaBun precisa. Tente mais tarde ou atualize o SynaBun.",
+      "errorEXTENSION_VERIFY_FAILED": "O download não era o arquivo que esta versão do SynaBun espera, então nada foi instalado. Tente novamente. Se continuar, atualize o SynaBun.",
       "settings_waiting_for_extension": "Configuração aberta no {browser}. Conclua as três etapas de instalação lá. Este cartão será atualizado automaticamente após o pareamento.",
       "settings_pairing": "Pareando automaticamente… A extensão está instalada. Conectando ao SynaBun, sem precisar digitar um código.",
       "settings_connected": "Conectado.",
       "settings_unsupported": "{browser} não executa a extensão. Abra a configuração em outro navegador instalado:",
       "settings_error": "A configuração parou ({code}). Comece de novo.",
+      "settings_downloading": "Baixando a extensão de synabun.ai… {percent}%",
       "eyebrow": "{browser} · três etapas e pareamento automático",
       "stepOpenTitle": "Abra a página de extensões",
       "stepDeveloperTitle": "Ative o Modo do desenvolvedor",
@@ -14733,6 +14767,14 @@
       "needHelp": "Algo não está funcionando",
       "helpText": "Extensão não detectada? Verifique se selecionou a pasta browser-extension que contém manifest.json e se o SynaBun está ativado neste perfil.",
       "policyText": "Uma política da organização pode impedir o Modo do desenvolvedor ou Carregar sem compactação. Peça ajuda ao administrador ou escolha um navegador permitido.",
+      "movedText": "A extensão sumiu depois de atualizar o SynaBun? Versões anteriores a carregavam de dentro da pasta de instalação do SynaBun, que não a contém mais. Carregue a pasta mostrada na etapa 3: é a mesma extensão, e ela pareia de novo sozinha.",
+      "downloadingTitle": "Baixando a extensão…",
+      "liveDownloading": "Baixando a extensão do SynaBun de synabun.ai…",
+      "downloadingHelp": "O SynaBun confere o download com esta versão antes de instalar qualquer coisa. O guia de configuração abre quando estiver pronto.",
+      "downloadProgress": "{received} de {total} KB",
+      "downloadErrorTitle": "Não foi possível obter a extensão",
+      "retryDownload": "Tentar novamente",
+      "updateNeeded": "O SynaBun está atualizando a pasta da extensão para esta versão. Quando este aviso mudar, clique em Recarregar no SynaBun Browser Bridge na página de extensões.",
       "copyFailed": "Não foi possível copiar. Selecione o endereço e copie manualmente."
     },
     "card": {
@@ -14746,6 +14788,7 @@
       "settingsTitle": "Seu navegador do dia a dia",
       "openGuide": "Abrir guia de configuração",
       "setupDefault": "O controle total é o padrão. Os agentes podem usar sites em que você já está conectado.",
+      "reloadConfirm": "Já recarreguei a extensão",
       "advanced": "Arquivos e limites",
       "details": "Detalhes da conexão",
       "untitledTab": "Aba sem título",
@@ -14762,6 +14805,12 @@
       "unpairedHelp": "Conecte este navegador ao SynaBun no seu computador.",
       "launching": "Abrindo seu navegador…",
       "launchingHelp": "Preparando o guia de configuração e a pasta da extensão.",
+      "downloading": "Baixando a extensão…",
+      "downloadingHelp": "De synabun.ai. O SynaBun a verifica antes de instalar qualquer coisa.",
+      "updating": "Atualizando a pasta da extensão para esta versão do SynaBun…",
+      "updateFailed": "O SynaBun não conseguiu baixar a extensão desta versão, então a pasta continua com a anterior. Seu navegador segue funcionando com ela.",
+      "folderPending": "Criada quando você clicar em Conectar seu navegador",
+      "movedHelp": "A extensão sumiu do navegador depois de uma atualização? Versões anteriores do SynaBun a carregavam de dentro da pasta de instalação do app, que não a contém mais. Execute a configuração abaixo e carregue a pasta que ela mostrar.",
       "setupRunningTitle": "Configuração aberta no {browser}",
       "setupRunningHelp": "Conclua as três etapas de instalação lá. Este cartão será atualizado automaticamente após o pareamento.",
       "pairing": "Pareando automaticamente…",

@@ -77,7 +77,7 @@ import { createMarkSettle } from './asst-motion-gate.js';
 import {
   closeAssistantSession, dispatchAssistantRun, escalateAssistantRun, focusAssistantRun, getAssistantRun,
   fetchManageCatalog, getAssistantRunResult, getAssistantSession, getAssistantSessionUsage, getRouting, killAllAssistantRuns, removeAssistantRun, clearFinishedAssistantRuns,
-  listAssistantSessions, patchAssistantSession, patchHiddenModels, setAdminSandbox, stopAssistantRun, uploadAssistantAttachment,
+  listAssistantSessions, patchAssistantSession, patchHiddenModels, setAdminSandbox, stopAssistantRun, uploadAssistantAttachment, readAssistantShellOutput,
 } from './asst-api.js';
 
 const ICON_SESSIONS = '<svg viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h12"/></svg>';
@@ -534,8 +534,43 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
         || (c.contains('asst-rack') && (row.dataset.state !== 'settled' || c.contains('is-folding')));
     },
   });
+  // The shell commands of an OpenCode brain: what they are comes over the socket, what they print is read in
+  // pages only while a block shows it (asst-shell-logic.js). Display data, in this tab only. Its modules load with
+  // the first command, so a tab of another brain, and the app's first paint, never pay for them.
+  let shellTracker = null;
+  let shellParts = null;     // { logic, block } once loaded
+  let shellLoading = null;
+  let shellsListed = false;  // this server tells commands (it sends the list on every attach)
+  let shellPackets = [];
+  function applyShellPacket(packet) {
+    if (packet.type === 'assistant:shell') shellTracker.apply(packet.shell);
+    else shellTracker.applyList(packet.shells);
+  }
+  function receiveShellPacket(packet) {
+    shellsListed = true;
+    if (shellTracker) { applyShellPacket(packet); return; }
+    if (packet.type === 'assistant:shells' && !packet.shells?.length && !shellLoading) return;
+    shellPackets.push(packet);
+    shellLoading ||= Promise.all([import('./asst-shell-logic.js'), import('./asst-shell.js')]).then(([logic, block]) => {
+      if (destroyed) return;
+      shellParts = { logic, block };
+      shellTracker = logic.createShellTracker({ read: (args) => readAssistantShellOutput(sessionId, args) });
+      shellTracker.onChange((shell) => renderer.noteShell(shell));
+      const waiting = shellPackets;
+      shellPackets = [];
+      for (const held of waiting) applyShellPacket(held);
+    }).catch((error) => { shellLoading = null; shellPackets = []; console.warn('[assistant] the terminal block did not load', error); });
+  }
   const renderer = createRenderer(transcriptEl, {
     t,
+    shells: {
+      forCall: (id) => shellTracker?.forCall(id) || null,
+      view: (id) => shellTracker?.view(id) || null,
+      label: (shell) => shellParts?.logic.shellStateLabel(shell, tt) || '',
+      failedLate: (shell) => !!shellParts?.logic.shellFailedLate(shell),
+      supported: () => shellsListed,
+      terminal: (id, callbacks) => shellParts.block.mountShellTerminal(shellTracker, id, { t: tt, ...callbacks }),
+    },
     providerIcon,
     providerColor,
     copy: clipCopy,
@@ -878,6 +913,11 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
 
   function handlePacket(packet) {
     if (destroyed || !packet?.type) return;
+    // A command's state is live state, never history: it is not one of the packets a reattach counted.
+    if (packet.type === 'assistant:shell' || packet.type === 'assistant:shells') {
+      if (!packet.sessionId || packet.sessionId === sessionId) receiveShellPacket(packet);
+      return;
+    }
     if (replay && packet.type !== 'reattach_result') {
       replay.packets.push(packet);
       if ((replay.left -= 1) <= 0) flushReplay();
@@ -937,10 +977,30 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
         if (!st.running) setRunning(true);
         return;
       case 'done':
+        renderer.clearStopFailure?.();
         finishTurn({ aborted: false });
         return;
       case 'aborted':
+        renderer.clearStopFailure?.();
         finishTurn({ aborted: true });
+        return;
+      case 'stop_failed':
+        // Stop could not end a command in the background: the turn goes on (its Stop button too), and the panel
+        // says which and why; from the second failure, "Stop anyway" ends the turn here. (The words load only now.)
+        stopView().then((view) => {
+          const failure = view?.describeStopFailure(packet, t);
+          if (!failure) return;
+          renderer.appendStopFailure(failure.message, failure.canForce
+            ? { forceLabel: view.shellStopText('anyway', {}, t), onForce: () => sock.send({ type: 'abort', force: true }) }
+            : {});
+          announce(failure.message);
+        });
+        return;
+      case 'stop_abandoned':
+        stopView().then((view) => {
+          const left = view?.describeAbandoned(packet.shells, t);
+          if (left) renderer.appendStatus(left, 'warn');
+        });
         return;
       case 'error': {
         // The server no longer has this session: no error row and no retry loop; the host closes the tab.
@@ -1696,6 +1756,13 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     } catch (err) {
       renderer.appendError(`${tt('assistant.status.dispatchFailed', 'Dispatch failed')}: ${err?.message || err}`);
     }
+  }
+
+  // What a Stop that could not end a command says (public/shared/shell-stop-view.js), loaded on its first use.
+  let stopViewLoad = null;
+  function stopView() {
+    stopViewLoad ||= import('../shell-stop-view.js').catch(() => { stopViewLoad = null; return null; });
+    return stopViewLoad;
   }
 
   function abort() {
@@ -2460,6 +2527,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       destroyed = true;
       cancelIdleLoad?.();
       cancelIdleLoad = null;
+      shellTracker?.destroy();
       if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; }
       clearTimeout(announceTimer);
       if (replay) { clearTimeout(replay.timer); replay = null; }

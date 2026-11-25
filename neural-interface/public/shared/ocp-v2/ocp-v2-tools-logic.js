@@ -8,6 +8,8 @@
 // tool this file does not know falls back to its input and output as text.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { shellCardState } from './ocp-v2-shell-logic.js';
+
 export const TOOL_OUTPUT_MAX_LINES = 24;
 export const TOOL_OUTPUT_MAX_CHARS = 4000;
 
@@ -133,9 +135,15 @@ function diffSection(lines) {
  * Everything a tool card shows.
  *   { tool, label, iconKey, status, title, meta, sections, defaultExpanded,
  *     copyText, childSessionId, attachments }
- * sections: { kind: 'code' | 'output' | 'error' | 'diff' | 'todos', … }
+ * sections: { kind: 'code' | 'output' | 'error' | 'diff' | 'todos' | 'terminal', … }
+ * `context.shell`: the shell command of a bash call as the panel knows it live
+ * (ocp-v2-state.js `shells`), with `context.live` when its output can be read
+ * as it is printed: the card then shows a terminal block instead of the text
+ * the call returned, and says whether the command still runs. OpenCode ends a
+ * call whose command runs on in the background: the call is "completed" then,
+ * the command is not.
  */
-export function toolCardView(part) {
+export function toolCardView(part, context = {}) {
   const state = part?.state && typeof part.state === 'object' ? part.state : {};
   const input = state.input && typeof state.input === 'object' ? state.input : (part?.input && typeof part.input === 'object' ? part.input : {});
   const metadata = state.metadata && typeof state.metadata === 'object' ? state.metadata : {};
@@ -165,11 +173,18 @@ export function toolCardView(part) {
       const command = str(input.command);
       view.title = oneLine(input.description) || view.title || oneLine(command);
       if (command) view.sections.push({ kind: 'code', text: command, prompt: '$' });
-      addOutput(str(metadata.output) || output);
+      const shell = context.shell && typeof context.shell === 'object' ? context.shell : null;
+      const live = shell ? shellCardState(shell) : null;
+      if (shell && context.live) view.sections.push({ kind: 'terminal', shellId: str(shell.id), text: `${shell.status}:${shell.exit ?? ''}` });
+      else addOutput(str(metadata.output) || output);
       view.copyText = command;
+      if (live?.status) view.status = live.status;
+      const exit = typeof shell?.exit === 'number' ? shell.exit : (typeof metadata.exit === 'number' ? metadata.exit : null);
+      const note = live?.note || (exit != null && exit !== 0 ? `exit ${exit}` : '');
+      if (live?.running && Number.isFinite(start)) view.meta = '';
+      if (note) view.meta = [view.meta, note].filter(Boolean).join(' · ');
       // A command that is running or failed is what the user is waiting on.
-      view.defaultExpanded = status !== 'completed';
-      if (typeof metadata.exit === 'number' && metadata.exit !== 0) view.meta = [view.meta, `exit ${metadata.exit}`].filter(Boolean).join(' · ');
+      view.defaultExpanded = view.status !== 'completed' || (exit != null && exit !== 0);
       break;
     }
     case 'edit':

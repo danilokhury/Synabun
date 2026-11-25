@@ -13,9 +13,10 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { normalizeOpenCodeModel } from '../native-loop-providers.js';
 import { agentOf, mcpServersOf, opencodeConfigFilePath, readOpencodeConfigDocument, setAgent, setMcpServer, withPlugin, withoutPlugin } from '../opencode-config.js';
-import { createOpenCodeEnvelopeTranslator, opencodeControlResponse } from '../assistant-envelope.js';
+import { createOpenCodeEnvelopeTranslator, opencodeControlResponse, opencodeShellView } from '../assistant-envelope.js';
 import { opencodePlanPermission, opencodeReadOnlyPermission, planDenyMessage, readOnlyDenyMessage } from '../assistant-plan-permissions.js';
 import { planModeInstructions } from '../assistant-persona.js';
+import { readShellOutputPage, SHELL_OUTPUT_GONE_TEXT } from '../opencode-shell-read.js';
 import { waitForSynabunTools, synabunConfigured, synabunToolsTimeoutText, OPENCODE_MCP_READY_TIMEOUT_MS, OPENCODE_MCP_SETTLE_MS, OPENCODE_MCP_LIST_GRACE_MS } from '../opencode-mcp-ready.js';
 export { synabunMcpState } from '../opencode-mcp-ready.js';
 
@@ -154,6 +155,9 @@ export function patchOpenCodeAssistantConfig(xdgRoot, { persona = '', role = 'as
 }
 
 
+/** How many shell commands of its tool calls a brain remembers (a command still running is never forgotten for a newer one). */
+export const OPENCODE_BRAIN_SHELLS_MAX = 200;
+
 /** The assistant's OpenCode approval mode: 'auto' (auto-accept) or 'default'. */
 export function opencodeApprovalMode(mode) {
   return mode === 'auto' || mode === 'acceptEdits' || mode === 'bypassPermissions' ? 'auto' : 'default';
@@ -208,12 +212,18 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
   let startPromise = null;
   let synabunExpected = false;
   let stops = 0;
+  // After a "Stop anyway" (a command may still run): what OpenCode does for that command's end (a start the client
+  // interrupts, its error) is no turn of the runtime's, and reaches nobody until the next turn of the user's.
+  let muted = false;
   let waitingAbort = null;
   let interruptPrompt = null;
   let exited = false;
   const serveExitMessage = 'The isolated OpenCode server stopped during this turn. Send the message again to resume.';
   const serveExitError = () => Object.assign(new Error(serveExitMessage), { code: 'OPENCODE_SERVE_EXITED' });
   const serveExited = () => exited || entry?.proc?.exitCode != null || entry?.proc?.signalCode != null;
+  const stopMayFail = () => {
+    try { return !!(client && sessionId && client.getClient?.()?.stopNeedsKill?.(sessionId) === true); } catch { return false; }
+  };
   function onServeExit() {
     if (disposed) return;
     exited = true;
@@ -248,8 +258,31 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
     if (typeof plan === 'boolean') planMode = plan;
   }
 
+  // The shell commands of this brain's tool calls, as its event stream told them (shellId → the panel's view of
+  // it, assistant-envelope.js opencodeShellView): what a panel is sent when it attaches, and the only commands
+  // whose output this brain reads for it. Display data: nothing of it goes to the model, the transcript or a meter.
+  const shells = new Map();
+  function noteShell(shell) {
+    if (!shell?.id) return;
+    shells.delete(shell.id);
+    shells.set(shell.id, shell);
+    if (shells.size <= OPENCODE_BRAIN_SHELLS_MAX) return;
+    for (const [id, known] of shells) {
+      if (shells.size <= OPENCODE_BRAIN_SHELLS_MAX) break;
+      if (known.status !== 'running') shells.delete(id);
+    }
+  }
+
   const emit = (packet) => {
     if (disposed) return;
+    if (packet.type === 'assistant:shell') { noteShell(packet.shell); sink.send(packet); return; }
+    if (muted) {
+      // What OpenCode does for an abandoned command's end is no turn of anyone's: its model output goes nowhere. A
+      // permission request or a question of it would wait where nobody sees it, so it is refused at once, and every
+      // panel of the session says so (review 29cd51fe, finding 3).
+      if (packet.type === 'control_request' && client) refuseMuted(packet);
+      return;
+    }
     const decision = packet.type === 'control_request' && client ? opencodeAutoDecision(packet, { approvalMode: remoteReadOnly ? 'default' : approvalMode, planMode: planning(), readOnly: remoteReadOnly }) : null;
     if (decision) {
       const body = opencodeControlResponse(packet, { behavior: decision });
@@ -268,6 +301,18 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
   };
   sink.send({ type: 'engine', engine: 'opencode', brain: 'opencode' });
 
+  /** A request asked after a "Stop anyway", before the user's next turn: refused, never left pending, and said. */
+  function refuseMuted(packet) {
+    const body = opencodeControlResponse(packet, { behavior: 'deny' });
+    const tool = packet.request?.tool_name || (body.kind === 'question' ? 'a question' : 'a permission');
+    sink.send({ type: 'stderr', text: `Declined ${tool}: OpenCode asked it after Stop anyway, while no turn of yours was running. Send a message to go on.` });
+    if (!body.requestID) return;
+    const call = body.kind === 'question'
+      ? client.question.reject({ requestID: body.requestID, directory: cwd })
+      : client.permission.reply({ requestID: body.requestID, reply: 'reject', directory: cwd, message: 'The user stopped this turn.' });
+    Promise.resolve(call).catch((error) => { if (!serveExited()) sink.send({ type: 'error', message: `OpenCode decline failed: ${error?.message || error}` }); });
+  }
+
   function bindTranslator() {
     translator = createOpenCodeEnvelopeTranslator({
       sessionId, emit, brain: { cwd, model: brain.model || null }, planTurn: () => turnPlanned,
@@ -279,6 +324,21 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
     unsubscribe = source?.onEvent?.((envelope) => {
       if (!disposed && !serveExited()) translator.handle(envelope?.eventType || '', envelope?.event || {});
     }) || null;
+    recallShells();
+  }
+
+  // A brain that comes back to a serve already running (a resumed conversation) learns the commands that serve
+  // still knows for its session; what the stream says from now on is newer, so a command already noted stays.
+  async function recallShells() {
+    const asked = sessionId;
+    if (!asked || typeof client?.extra?.shell?.list !== 'function') return;
+    let listed = null;
+    try { listed = await client.extra.shell.list({ sessionID: asked }); } catch { return; }
+    if (disposed || asked !== sessionId) return;
+    for (const item of Array.isArray(listed?.data) ? listed.data : []) {
+      const shell = opencodeShellView(item);
+      if (shell?.callID && !shells.has(shell.id)) emit({ type: 'assistant:shell', shell });
+    }
   }
 
   /** The serve's MCP servers as an `mcp_status` event (the runtime reads whether SynaBun, and so agent_route, is reachable). */
@@ -331,12 +391,14 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
     needsRestart: serveExited,
     start,
     async sendUserTurn({ text, images = [], model = null, effort = null, permissionMode: mode = null, planMode: plan = null } = {}) {
+      muted = false;
       const stop = stops;
       await start();
       if (disposed || stops !== stop) return false;
       if (serveExited()) throw serveExitError();
       applyModes(mode, plan);
       turnActive = true;
+      translator?.noteTurnStart?.();
       // The runtime passes the effective model/effort on every turn (the record
       // may have changed since this brain started; routed turns override it).
       const parts = [{ type: 'text', text }, ...opencodeImageParts(images)];
@@ -390,12 +452,31 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
         throw serveExited() ? serveExitError() : error;
       } finally { interruptPrompt = null; }
     },
-    async abort() {
-      stops += 1;
-      waitingAbort?.abort();
-      if (serveExited()) return;
-      try { if (client && sessionId) await client.session.abort({ sessionID: sessionId, directory: cwd }); } catch {}
+    /** Could a Stop fail now (a command in the background to end, lib/opencode2-client.js stopNeedsKill)? */
+    stopMayFail: () => stopMayFail(),
+    /**
+     * Stop the turn. A Stop that has a command to end tears nothing down before OpenCode confirmed its end: when it
+     * could not (lib/opencode2-client.js abortSession, review B3) the turn goes on, held for the command, and the
+     * error (code SHELL_STOP_FAILED, `shells`) says which and why. `force` ("Stop anyway"): the turn ends whatever
+     * the command does; → `{ abandoned }`, the commands that may still run.
+     */
+    async abort({ force = false } = {}) {
+      const mayFail = !force && stopMayFail();
+      if (!mayFail) { stops += 1; waitingAbort?.abort(); }
+      if (serveExited()) return { abandoned: [] };
+      let answer = null;
+      try { if (client && sessionId) answer = await client.session.abort({ sessionID: sessionId, directory: cwd, ...(force ? { force: true } : {}) }); } catch (error) {
+        if (error?.cause?.name === 'ShellStopFailed' && !serveExited()) {
+          error.code = 'SHELL_STOP_FAILED';
+          error.shells = Array.isArray(error.data?.shells) ? error.data.shells : [];
+          throw error;
+        }
+      }
+      if (mayFail) { stops += 1; waitingAbort?.abort(); }
+      const abandoned = Array.isArray(answer?.data?.abandoned) ? answer.data.abandoned : [];
       if (!serveExited()) emit({ type: 'aborted' });
+      if (force) muted = true;
+      return { abandoned };
     },
     async setPermissionMode(mode, { planMode: plan = null } = {}) { applyModes(mode, plan); sink.send({ type: 'mode_changed', mode: approvalMode, planMode }); },
     respondControl(requestId, response) {
@@ -413,9 +494,31 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
     async compact() {
       await start();
       turnPlanned = false;
+      // A compact is the user's own request: what it says is theirs again, even right after a Stop anyway.
+      muted = false;
       await client.session.compact({ sessionID: sessionId, directory: cwd });
     },
     async mcpStatus() { await reportMcpStatus(); },
+    /** The shell commands of this brain's tool calls, oldest first (what a panel that attaches is shown). */
+    shells: () => [...shells.values()],
+    /**
+     * A page of what one of those commands printed (stdout and stderr as written, in order), for the panel that
+     * shows it: from the byte `cursor`, or the last `tail` bytes. Only a command this brain ran is read, on its
+     * own serve. → { status, data: { output, cursor, size, from } } or { ok: false, status, error }. Never throws.
+     */
+    async shellOutput({ shellId, cursor, tail, limit } = {}) {
+      const id = typeof shellId === 'string' ? shellId : '';
+      if (!id || !shells.has(id)) return { ok: false, status: 404, error: 'That command is not one of this conversation.' };
+      const api = client?.extra?.shell;
+      if (disposed || serveExited() || typeof api?.output !== 'function') return { ok: false, status: 404, error: SHELL_OUTPUT_GONE_TEXT };
+      try {
+        return await readShellOutputPage(api, { shellID: id, directory: cwd, cursor, tail, limit });
+      } catch (error) {
+        const status = Number(error?.status);
+        // OpenCode keeps a finished command's output for a while only (404); any other failure may pass.
+        return { ok: false, status: status >= 400 && status < 600 ? status : 502, error: status === 404 ? SHELL_OUTPUT_GONE_TEXT : (error?.message || 'The output could not be read.') };
+      }
+    },
     async reconcileUsage(meter) {
       if (!client || !sessionId || !meter || serveExited()) return false;
       let failed = false;
@@ -441,7 +544,18 @@ export function createOpenCodeBrain({ session, sink, deps = {}, persona = '' } =
       return !failed;
     },
     // The session resumed is the conversation now: the usage meter's root follows it.
-    async resume(id) { if (!id) return; sessionId = id; deps.onOpenCodeRoot?.(id); if (client) bindTranslator(); },
+    async resume(id) {
+      if (!id) return;
+      // Another provider conversation (/resume): the commands of the one before are not this one's, neither to
+      // list nor to read (review S3). The panels hear the new list; the commands its serve knows follow.
+      if (id !== sessionId && shells.size) {
+        shells.clear();
+        if (!disposed) sink.send({ type: 'assistant:shells' });
+      }
+      sessionId = id;
+      deps.onOpenCodeRoot?.(id);
+      if (client) bindTranslator();
+    },
     async listSessions() { await start(); const rows = await client.session.list({ directory: cwd }).catch(() => null); return Array.isArray(rows?.data) ? rows.data : []; },
     isBusy() { return turnActive || pendingControls.size > 0; },
     identity() { return { providerSessionId: sessionId, providerThreadId: null, accountId: null, model: brain.model || null, effort: null, cwd, costUsd, busy: turnActive, termId }; },

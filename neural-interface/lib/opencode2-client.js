@@ -46,6 +46,10 @@ const SYSTEM_ENTRY = 'synabun-system';
 const PAGE_LIMIT = 200;
 const MAX_PAGES = 50;
 const WAIT_TIMEOUT_MS = 30 * 60 * 1000;
+/** How many checks of a turn that is not held waitForTurn makes before it gives up (an error, never success). */
+const WAIT_ROUNDS_MAX = 1000;
+/** How often a held turn is looked at again. */
+const HELD_POLL_MS = 500;
 
 const str = (v) => (typeof v === 'string' ? v : v == null ? '' : String(v));
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
@@ -65,7 +69,11 @@ export function vcsModeToV2(mode) {
  * `baseUrl` of the serve and the launch's `password`. `version` is the serve's
  * (sessions carry it), `fetchImpl` a fetch (tests pass a fixture's).
  */
-export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThis.fetch, version = '' } = {}) {
+export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThis.fetch, version = '', timing = {} } = {}) {
+  // `timing`: tests shorten the waits (heldPollMs, waitRoundsMax, waitPauseMs, heldSettleMs, heldRecheckMs, heldConfirmMs).
+  const HELD_POLL = Number(timing.heldPollMs) > 0 ? Number(timing.heldPollMs) : HELD_POLL_MS;
+  const ROUNDS_MAX = Number(timing.waitRoundsMax) > 0 ? Number(timing.waitRoundsMax) : WAIT_ROUNDS_MAX;
+  const WAIT_PAUSE = Number(timing.waitPauseMs) > 0 ? Number(timing.waitPauseMs) : 200;
   if (!baseUrl) throw new Error('createOpencode2Client: baseUrl required');
   const root = String(baseUrl).replace(/\/+$/, '');
   const auth = password ? basicAuthHeader(password) : null;
@@ -254,6 +262,8 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
   async function sendPrompt(params = {}, options = {}) {
     const { sessionID, model, variant, agent, system, noReply } = params;
     if (!sessionID) return { result: { data: undefined, error: { message: 'sessionID required' }, response: { status: 400, ok: false } } };
+    // The user's turn: a wake-up a Stop left pending must not interrupt it.
+    if (noReply !== true) forgetStoppedWake(sessionID);
     const failed = await prepare(sessionID, { model, variant, agent, system });
     if (failed) return { result: failed };
     const { body, synthetic } = promptBody(params);
@@ -286,10 +296,19 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
    */
   async function waitForTurn(sessionID, { since, signal, directory, quietEnds = false } = {}) {
     const base = `/api/session/${encodeURIComponent(sessionID)}`;
-    for (let round = 0; round < 1000; round++) {
+    // `round` counts the checks of a turn that is not held: time held for a command the model waits for (a long
+    // test run) is bounded by `signal` alone, never by this budget (review B4: 1,000 held polls of 500 ms ran it
+    // out after 8 min 20 s, and running out read as the end of the turn).
+    for (let round = 0; round < ROUNDS_MAX;) {
       const waited = await call('POST', `/api/experimental/session/${encodeURIComponent(sessionID)}/wait`, { signal });
       if (waited.error) return waited;
       if (!since) return null;
+      // At rest for OpenCode, but a command the model waits for still runs: the turn is not over (a held turn).
+      if (translator.held(sessionID)) {
+        await pause(HELD_POLL, signal);
+        continue;
+      }
+      round += 1;
       const info = await call('GET', base, { signal });
       if (info.error) return info;
       if (Number(info.data?.data?.time?.idle) >= since) return null;
@@ -301,9 +320,10 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
         const pending = Array.isArray(queued.data?.data) && queued.data.data.length > 0;
         if (!queued.error && !active.error && !pending && !obj(active.data?.data)[sessionID]) return null;
       }
-      await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+      await pause(WAIT_PAUSE, signal);
     }
-    return null;
+    // Out of checks with the turn still not over: said as a failure, never taken for its end.
+    return { data: undefined, error: { name: 'TurnWaitExhausted', message: 'OpenCode did not say the turn was over: SynaBun stopped waiting for it.' }, response: { status: 504, ok: false } };
   }
 
   /**
@@ -345,6 +365,7 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
    * the command's prompt carries.
    */
   async function runCommand({ sessionID, command, arguments: args, agent, model, variant, parts, directory } = {}, options = {}) {
+    forgetStoppedWake(sessionID);
     const failed = await prepare(sessionID, { model, variant, agent });
     if (failed) return failed;
     const { body: attached } = promptBody({ parts });
@@ -358,6 +379,17 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
     const waited = await waitForTurn(sessionID, { since: before, signal, directory, quietEnds: true });
     if (waited) return waited;
     return replyOf(sessionID, { directory, before, latest: false });
+  }
+
+  /** A wait `signal` ends early (its rejection is the caller's, as a call's would be). */
+  function pause(ms, signal) {
+    return new Promise((resolveWait, rejectWait) => {
+      if (signal?.aborted) { rejectWait(signal.reason ?? new Error('aborted')); return; }
+      const done = () => { signal?.removeEventListener?.('abort', stop); resolveWait(); };
+      const timer = setTimeout(done, ms);
+      const stop = () => { clearTimeout(timer); rejectWait(signal.reason ?? new Error('aborted')); };
+      signal?.addEventListener?.('abort', stop, { once: true });
+    });
   }
 
   // ── Events ──
@@ -375,11 +407,33 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
     }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
+    // What this client says by itself (the end of a held turn: releaseHeld) reaches the reader between two events
+    // of OpenCode's, never out of a read that is under way.
+    const queue = [];
+    let wake = null;
+    const push = (events) => {
+      queue.push(...events);
+      const resume = wake;
+      wake = null;
+      resume?.();
+    };
+    streams.add(push);
+    // A stream (re)opened: what OpenCode said while none was open is unknown, so no wake-up a Stop left pending can
+    // be told from the user's next start any more (review S2).
+    stoppedWakes.clear();
     async function* stream() {
       let buffer = '';
+      let pending = null;
       try {
         while (true) {
-          const { value, done } = await reader.read();
+          while (queue.length) yield queue.shift();
+          if (!pending) pending = reader.read();
+          const woken = new Promise((resolveWake) => { wake = resolveWake; });
+          const result = await Promise.race([pending, woken.then(() => null)]);
+          wake = null;
+          if (!result) continue;
+          pending = null;
+          const { value, done } = result;
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
           let cut;
@@ -390,14 +444,279 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
             if (!data) continue;
             let event;
             try { event = JSON.parse(data); } catch { continue; }
+            if (event && typeof event.type === 'string') stopWoken(event);
             for (const translated of translator.translate(event)) yield translated;
+            if (event?.type === 'shell.exited' || event?.type === 'shell.deleted') watchHeld(HELD_SETTLE_MS);
+            else if (event?.type === 'session.execution.succeeded') watchHeld();
           }
         }
       } finally {
+        streams.delete(push);
         try { reader.releaseLock(); } catch { /* already released */ }
       }
     }
     return { stream: stream() };
+  }
+
+  // ── Commands that run on after their tool call (lib/opencode2-translate.js: a held turn) ──
+
+  const streams = new Set();
+  const inject = (events) => { if (events.length) for (const push of streams) push(events); };
+
+  /**
+   * Is OpenCode done with the held turn of `sessionID`: no execution, none of the commands the turn waits for still
+   * running, and no notification of one queued for the model? null when it cannot be asked. Only the waited
+   * commands count (review S1): a server the model sent to the background itself runs on for good and holds
+   * nothing; and between a command's end and the start OpenCode makes for it, its notification sits in the inbox.
+   */
+  async function sessionSettled(sessionID) {
+    const directory = translator.sessionDirectory(sessionID);
+    const waited = new Set(translator.heldShellIds(sessionID));
+    const [active, jobs, inbox] = await Promise.all([
+      call('GET', '/api/session/active', { query: located(directory) }),
+      call('GET', '/api/experimental/job', { query: located(directory, { sessionID }) }),
+      call('GET', `/api/session/${encodeURIComponent(sessionID)}/inbox`, { query: located(directory) }),
+    ]).catch(() => [null, null, null]);
+    if (!active || active.error || !jobs || jobs.error || !inbox || inbox.error) return null;
+    if (obj(active.data?.data)[sessionID]) return false;
+    const queued = Array.isArray(inbox.data?.data) ? inbox.data.data : [];
+    if (queued.length) return false;
+    const jobId = (job) => str(job?.shellID || job?.jobID || job?.id);
+    return !(Array.isArray(jobs.data?.data) ? jobs.data.data : []).some((job) => job?.status === 'running' && waited.has(jobId(job)));
+  }
+
+  /**
+   * A held turn ends when its command exits and OpenCode starts the session again. Should that start never come
+   * (OpenCode itself says the session is at rest and holds no command of it), the turn is over: said here.
+   */
+  async function releaseStale(sessionID) {
+    if (disposed || !translator.held(sessionID)) return false;
+    if (await sessionSettled(sessionID) !== true) return false;
+    // Between a command's end and the start OpenCode makes for it the session is at rest for a moment: asked twice.
+    await new Promise((resolveWait) => { const timer = setTimeout(resolveWait, HELD_CONFIRM_MS); timer.unref?.(); });
+    if (disposed || !translator.held(sessionID) || await sessionSettled(sessionID) !== true || !translator.held(sessionID) || disposed) return false;
+    inject(translator.release(sessionID));
+    return true;
+  }
+  // While a turn is held, OpenCode is asked now and then whether it still backs it (an event the stream lost must
+  // not leave a session busy for good), and sooner after a command's end that should have started the session.
+  const HELD_SETTLE_MS = Number(timing.heldSettleMs) > 0 ? Number(timing.heldSettleMs) : 4000;
+  const HELD_RECHECK_MS = Number(timing.heldRecheckMs) > 0 ? Number(timing.heldRecheckMs) : 30000;
+  const HELD_CONFIRM_MS = Number(timing.heldConfirmMs) > 0 ? Number(timing.heldConfirmMs) : 1500;
+  let heldWatch = null;
+  let heldWatchAt = 0;
+  // A client that was let go (its serve stopped, its wrapper stopped) asks OpenCode nothing more (review S1).
+  let disposed = false;
+  function dispose() {
+    disposed = true;
+    if (heldWatch) clearTimeout(heldWatch);
+    heldWatch = null;
+    stoppedWakes.clear();
+    stoppedShells.clear();
+    for (const id of [...abandonedShells.keys()]) dropAbandoned(id);
+    userQueued.clear();
+  }
+  function watchHeld(ms = HELD_RECHECK_MS) {
+    if (disposed || !translator.heldSessions().length) return;
+    const at = Date.now() + ms;
+    if (heldWatch) {
+      if (at >= heldWatchAt) return;
+      clearTimeout(heldWatch);
+    }
+    heldWatchAt = at;
+    heldWatch = setTimeout(async () => {
+      heldWatch = null;
+      if (disposed) return;
+      for (const sessionID of translator.heldSessions()) await releaseStale(sessionID).catch(() => false);
+      watchHeld();
+    }, ms);
+    heldWatch.unref?.();
+  }
+
+  /**
+   * Stop a session. OpenCode's interrupt ends an execution and leaves the commands in the background running
+   * (checked on 2.3.2: `{ interrupted: false }` on a session at rest, the command goes on), so those are ended
+   * here, one by one, and a turn held for them is ended as a stopped one. OpenCode then tells the model that its
+   * command is gone and starts the session for that, a moment or seconds later: that execution is the stopped
+   * turn's too, and is interrupted when its start arrives on the event stream (`stopWoken`).
+   */
+  async function abortSession(sessionID, { force = false } = {}) {
+    const base = `/api/session/${encodeURIComponent(sessionID)}`;
+    // An execution still at work with a command in the background: the commands are ended first, and the execution
+    // is interrupted only once they are. Interrupted first, its end would reach the panels as the end of the turn
+    // even when a removal then fails (the turn must stay on while its command runs). A held turn has no execution
+    // to interrupt: as before, the interrupt goes first.
+    const deleteFirst = !force && stopNeedsKill(sessionID) && !translator.held(sessionID);
+    let first = deleteFirst ? null : await call('POST', `${base}/interrupt`);
+    const running = translator.backgroundShells(sessionID);
+    if (!running.length) {
+      if (!first) first = await call('POST', `${base}/interrupt`);
+      return map(first, (body) => body?.interrupted !== false);
+    }
+    const directory = translator.sessionDirectory(sessionID);
+    const until = Date.now() + STOPPED_SHELL_MS;
+    for (const shell of running) if (!abandonedShells.has(shell.id)) stoppedShells.set(shell.id, { until, sessionID });
+    // Each removal is checked: a command whose end is not confirmed (an HTTP error, a network failure) still runs,
+    // so it is never marked killed, the turn stays held for it, and the caller is told which (review B3). A 404 is
+    // a command OpenCode no longer holds: ended.
+    const removals = await Promise.all(running.map((shell) => removeShell(shell.id, directory)));
+    const why = new Map(running.map((shell, i) => [shell.id, removals[i]]));
+    // A command an earlier "Stop anyway" gave up on holds no turn: its removal is tried again here, but it never
+    // fails the Stop of a later turn.
+    const left = running.filter((shell, i) => removals[i] !== true && !abandonedShells.has(shell.id));
+    for (const shell of left) stoppedShells.delete(shell.id);
+    if (left.length && force) {
+      // "Stop anyway" (offered after a second failed Stop): the turn ends here while the command may still run on
+      // the machine. It holds nothing from now on, its removal is tried again in the background, and the start
+      // OpenCode makes for its notification (when it ends, or when a removal works) is interrupted like a Stop's.
+      for (const shell of left) abandonShell(shell.id, sessionID, directory);
+      const ids = left.map((shell) => shell.id);
+      inject([...translator.unhold(ids), ...translator.release(sessionID, { aborted: true, running: ids })]);
+      return { data: { stopped: true, abandoned: left.map((shell) => ({ id: shell.id, command: shell.command, reason: why.get(shell.id) })) }, error: undefined, response: { status: 200, ok: true } };
+    }
+    if (left.length) {
+      const names = left.map((shell) => shell.command || shell.id);
+      const reasons = [...new Set(left.map((shell) => why.get(shell.id)))].join('; ');
+      return {
+        data: undefined,
+        error: { name: 'ShellStopFailed', message: `Stop could not end ${left.length === 1 ? 'a command' : `${left.length} commands`} still running in the background: ${names.join(', ')} (${reasons}). Press Stop again.`, data: { shells: left.map((shell) => ({ id: shell.id, command: shell.command, reason: why.get(shell.id) })) } },
+        response: { status: 502, ok: false },
+      };
+    }
+    if (!first) first = await call('POST', `${base}/interrupt`);
+    inject(translator.release(sessionID, { aborted: true }));
+    return first.error ? first : { ...first, data: true };
+  }
+
+  // The commands a Stop removed, until OpenCode has told the model (shellID → { until, sessionID }), and the
+  // notification OpenCode queued for each (sessionID → { inboxID, until }): the execution that starts while that
+  // notification is still undelivered, with nothing of the user's queued after it, is the stopped turn's and is
+  // interrupted. Anything else ends the entry (review S2): the notification delivered, a prompt of the user's (queued
+  // in OpenCode or sent through this client), a lapse, a new event stream (what it missed is unknown).
+  const STOPPED_SHELL_MS = 60_000;
+  const STOPPED_WAKE_MS = 30_000;
+  const stoppedShells = new Map();
+  const stoppedWakes = new Map();
+  // The commands a "Stop anyway" gave up on (shellID → { sessionID, until, timer, attempt }): they may run for
+  // hours, so they wait for their notification until they end (then STOPPED_SHELL_MS more), at most ABANDONED_MS.
+  // Unlike a Stop's, a prompt of the user's does not forget them: the turn they belonged to is over either way.
+  const ABANDONED_MS = 24 * 60 * 60_000;
+  const KILL_RETRY_MS = Array.isArray(timing.killRetryMs) && timing.killRetryMs.length ? timing.killRetryMs.map(Number) : [2_000, 5_000, 15_000, 30_000, 60_000];
+  const abandonedShells = new Map();
+  // Prompts of the user's queued in OpenCode and not delivered yet (sessionID → inbox ids, '' for one sent through
+  // this client): a notification queued after one of them wakes nothing of its own (the next start is the user's).
+  const userQueued = new Map();
+  const noteUserQueued = (sessionID, inboxID) => userQueued.set(sessionID, new Set([...(userQueued.get(sessionID) || []), inboxID]));
+  /** Would a Stop of `sessionID` have commands to end (one it could fail to end)? Those a "Stop anyway" left do not count. */
+  function stopNeedsKill(sessionID) {
+    return translator.backgroundShells(str(sessionID)).some((shell) => !abandonedShells.has(shell.id));
+  }
+  /**
+   * A removal of a command: true once OpenCode says it is gone (a 404 too); otherwise why that is not confirmed (a
+   * short line: OpenCode's own message and status, or the network error), for the panel to say.
+   */
+  async function removeShell(shellID, directory) {
+    try {
+      const r = await call('DELETE', `/api/shell/${encodeURIComponent(shellID)}`, { query: located(directory) });
+      const status = Number(r.response?.status);
+      if (!r.error || status === 404) return true;
+      const said = str(r.error?.message || r.error?._tag || r.error?.name).trim().slice(0, 200);
+      return [said, status ? `HTTP ${status}` : ''].filter(Boolean).join(', ') || 'OpenCode did not confirm the end';
+    } catch (error) { return str(error?.cause?.code || error?.message || error).slice(0, 200) || 'OpenCode could not be reached'; }
+  }
+  /** Give up on ending `shellID` now; keep trying in the background until it ends or OpenCode removes it. */
+  function abandonShell(shellID, sessionID, directory) {
+    const entry = { sessionID, until: Date.now() + ABANDONED_MS, timer: null, attempt: 0 };
+    abandonedShells.set(shellID, entry);
+    const retry = () => {
+      if (disposed || abandonedShells.get(shellID) !== entry) return;
+      const delay = KILL_RETRY_MS[Math.min(entry.attempt, KILL_RETRY_MS.length - 1)];
+      entry.attempt += 1;
+      entry.timer = setTimeout(async () => {
+        entry.timer = null;
+        if (disposed || abandonedShells.get(shellID) !== entry) return;
+        // Ended by itself meanwhile: nothing to remove (its notification is still awaited).
+        if (translator.shell(shellID)?.status !== 'running') return;
+        if (Date.now() > entry.until) { abandonedShells.delete(shellID); return; }
+        if ((await removeShell(shellID, directory)) !== true) retry();
+      }, delay);
+      entry.timer.unref?.();
+    };
+    retry();
+  }
+  function dropAbandoned(shellID) {
+    const entry = abandonedShells.get(shellID);
+    if (!entry) return;
+    if (entry.timer) clearTimeout(entry.timer);
+    abandonedShells.delete(shellID);
+  }
+  /** A turn of the user's begins on `sessionID`: no wake-up of a Stop before it may interrupt it. */
+  function forgetStoppedWake(sessionID) {
+    const id = str(sessionID);
+    stoppedWakes.delete(id);
+    for (const [shellID, entry] of stoppedShells) if (entry.sessionID === id) stoppedShells.delete(shellID);
+    if (abandonedShells.size) noteUserQueued(id, '');
+  }
+  /** Called with every event of OpenCode's, as it arrives. */
+  function stopWoken(event) {
+    if (!stoppedShells.size && !stoppedWakes.size && !abandonedShells.size) return;
+    const data = obj(event?.data);
+    const sessionID = str(data.sessionID);
+    const now = Date.now();
+    for (const [id, entry] of stoppedShells) if (now > entry.until) stoppedShells.delete(id);
+    for (const [id, wake] of stoppedWakes) if (now > wake.until) stoppedWakes.delete(id);
+    for (const [id, entry] of abandonedShells) if (now > entry.until) dropAbandoned(id);
+    if ((event.type === 'shell.exited' || event.type === 'shell.deleted') && abandonedShells.has(str(data.id))) {
+      // Its end: the notification follows soon, or never (a serve that tells nothing).
+      const entry = abandonedShells.get(str(data.id));
+      if (entry.timer) { clearTimeout(entry.timer); entry.timer = null; }
+      entry.until = Math.min(entry.until, now + STOPPED_SHELL_MS);
+      return;
+    }
+    if (event.type === 'session.inbox.enqueued') {
+      const item = obj(data.item);
+      const shellID = item.type === 'synthetic' ? str(obj(obj(item.payload).metadata).shellID) : '';
+      if (shellID && abandonedShells.has(shellID)) {
+        dropAbandoned(shellID);
+        // A prompt of the user's waits in OpenCode before it: the start is theirs, and takes the notification along.
+        if (userQueued.get(sessionID)?.size) return;
+        stoppedWakes.set(sessionID, { inboxID: str(data.inboxID), until: now + STOPPED_WAKE_MS });
+        return;
+      }
+      const entry = shellID ? stoppedShells.get(shellID) : undefined;
+      if (entry === undefined) {
+        // Something else queued after the notification (the user's prompt): the next start may be theirs.
+        if (item.type !== 'synthetic') {
+          stoppedWakes.delete(sessionID);
+          if (abandonedShells.size) noteUserQueued(sessionID, str(data.inboxID));
+        }
+        return;
+      }
+      stoppedShells.delete(shellID);
+      stoppedWakes.set(sessionID, { inboxID: str(data.inboxID), until: now + STOPPED_WAKE_MS });
+    } else if (event.type === 'session.execution.started') {
+      userQueued.delete(sessionID);
+      if (!stoppedWakes.delete(sessionID)) return;
+      call('POST', `/api/session/${encodeURIComponent(sessionID)}/interrupt`).catch(() => {});
+    } else if (event.type === 'session.inbox.delivered') {
+      // Delivered without a start this client saw: the wake-up went by; nothing later is it.
+      if (stoppedWakes.get(sessionID)?.inboxID === str(data.inboxID)) stoppedWakes.delete(sessionID);
+      userQueued.get(sessionID)?.delete(str(data.inboxID));
+    } else if (event.type === 'session.deleted') {
+      forgetStoppedWake(sessionID);
+    }
+  }
+
+  /** A page of a command's output (stdout and stderr as written, in order), from the byte `cursor`. */
+  async function shellOutput({ shellID, directory, cursor = 0, limit } = {}) {
+    const id = str(shellID);
+    if (!id) return { data: undefined, error: { message: 'shellID required' }, response: { status: 400, ok: false } };
+    const where = directory || translator.sessionDirectory(translator.shell(id)?.sessionID);
+    const read = await call('GET', `/api/shell/${encodeURIComponent(id)}/output`, { query: located(where, { cursor: Math.max(0, Number(cursor) || 0), ...(Number(limit) > 0 ? { limit: Math.floor(Number(limit)) } : {}) }) });
+    return map(read, (body) => {
+      const page = obj(body?.data);
+      return { output: str(page.output), cursor: Number(page.cursor) || 0, size: Number(page.size) || 0, truncated: page.truncated === true };
+    });
   }
 
   // ── Asks ──
@@ -568,7 +887,8 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
       if (!removed.error) sessionState.delete(sessionID);
       return ok(removed, true);
     },
-    abort: async ({ sessionID } = {}) => map(await call('POST', `/api/session/${encodeURIComponent(sessionID)}/interrupt`), (body) => body?.interrupted !== false),
+    // `force`: "Stop anyway", the turn ends even when a command in the background could not be ended.
+    abort: ({ sessionID, force } = {}) => abortSession(str(sessionID), { force: force === true }),
     messages: ({ sessionID, directory, limit } = {}) => messagesV1(sessionID, { directory, limit }),
     message: async ({ sessionID, messageID, directory } = {}) => {
       const read = await call('GET', `/api/session/${encodeURIComponent(sessionID)}/message/${encodeURIComponent(messageID)}`);
@@ -576,11 +896,16 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
     },
     prompt: (p, o) => prompt(p, o),
     promptAsync: (p, o) => promptAsync(p, o),
+    // A session held for a command in the background (OpenCode lists it as at rest) is busy here too: a reader
+    // that asks instead of listening (a reloaded panel) is told what the events said. A hold OpenCode no longer
+    // backs is ended first.
     status: async ({ directory } = {}) => {
+      for (const sessionID of translator.heldSessions()) await releaseStale(sessionID).catch(() => false);
       const active = await call('GET', '/api/session/active', { query: located(directory) });
       return map(active, (body) => {
         const out = {};
         for (const [id, status] of Object.entries(obj(body?.data))) out[id] = status?.type === 'running' ? { type: 'busy' } : { type: 'idle' };
+        for (const id of translator.heldSessions()) if (out[id]?.type !== 'busy') out[id] = { type: 'busy', background: true };
         return out;
       });
     },
@@ -605,6 +930,7 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
     init: async ({ sessionID } = {}) => ok(await call('POST', `/api/session/${encodeURIComponent(sessionID)}/command`, { body: { name: 'init', text: '' } }), true),
     command: (p, o) => runCommand(p, o),
     shell: async ({ sessionID, command, agent, model } = {}) => {
+      forgetStoppedWake(sessionID);
       const failed = await prepare(sessionID, { model, agent });
       if (failed) return failed;
       return ok(await call('POST', `/api/session/${encodeURIComponent(sessionID)}/shell`, { body: { command: String(command || '') } }), { info: null, parts: [] });
@@ -612,6 +938,10 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
   };
 
   const client = {
+    /** Let this client go: no more checks of held turns are scheduled, none that is due runs. */
+    dispose,
+    /** Would a Stop of the session have a command in the background to end (and so could it fail)? */
+    stopNeedsKill,
     global: {
       event: globalEvent,
       health: async () => map(await call('GET', '/api/info'), (body) => ({ healthy: true, version: str(body?.version) })),
@@ -784,6 +1114,11 @@ export function createOpencode2Client({ baseUrl, password, fetchImpl = globalThi
         const info = await call('GET', '/api/info');
         return map(info, () => ({ home: '', state: '', config: '', worktree: str(directory), directory: str(directory) }));
       },
+    },
+    // The shell commands of tool calls: which a session has (as its event stream told), and a command's output.
+    shell: {
+      list: async ({ sessionID } = {}) => ({ data: translator.shells(sessionID), error: undefined, response: { status: 200, ok: true } }),
+      output: (params) => shellOutput(params),
     },
     // A stateless one-shot (editor autocomplete, titles): OpenCode 2's generator.
     generate: async ({ prompt: text, model, directory, signal } = {}) => {

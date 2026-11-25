@@ -37,6 +37,7 @@ export function extensionSettingsHTML(kit) {
         <span class="stg-badge bc-ext-status" id="bc-extension-status" role="status" aria-live="polite" aria-labelledby="bc-extension-status-label"></span>
       </div>
       <p class="stg-help bc-ext-text bc-ext-status-help" id="bc-extension-status-help"></p>
+      <p class="stg-help bc-ext-text bc-ext-note" id="bc-extension-moved" hidden>${c('movedHelp')}</p>
       <div class="bc-inline-group bc-ext-actions" id="bc-extension-status-actions" hidden>
         <button type="button" class="cli-detect-btn bc-ext-primary" data-extension-action="resume">${c('reconnect')}</button>
         <button type="button" class="cli-detect-btn" data-extension-action="retry" hidden>${c('retry')}</button>
@@ -71,7 +72,14 @@ export function extensionSettingsHTML(kit) {
       <p class="stg-help bc-ext-text" id="bc-extension-setup-status" role="status" aria-live="polite"></p>
       <div class="bc-inline-group bc-ext-actions" id="bc-extension-setup-alternatives" hidden></div>
       <p class="stg-help bc-ext-text bc-ext-note" id="bc-extension-setup-default">${c('setupDefault')}</p>
-      <p class="stg-help bc-ext-text bc-ext-note" id="bc-extension-reload" data-tone="warn" hidden>${t('reloadNeeded')}</p>
+      <p class="stg-help bc-ext-text bc-ext-note" id="bc-extension-reload" data-tone="warn" data-reload-text="${t('reloadNeeded')}" data-repaired-text="${t('reloadRepaired')}" hidden>${t('reloadNeeded')}</p>
+      <div class="bc-inline-group bc-ext-actions" id="bc-extension-reload-actions" hidden>
+        <button type="button" class="cli-detect-btn" data-extension-action="reload-confirm">${c('reloadConfirm')}</button>
+      </div>
+      <p class="stg-help bc-ext-text bc-ext-note" id="bc-extension-update" data-tone="warn" role="status" data-updating-text="${c('updating')}" data-failed-text="${c('updateFailed')}" hidden></p>
+      <div class="bc-inline-group bc-ext-actions" id="bc-extension-update-actions" hidden>
+        <button type="button" class="cli-detect-btn" data-extension-action="update">${c('retry')}</button>
+      </div>
     </section>
     <details class="stg-advanced bc-ext-advanced" id="bc-extension-files" data-extension-section="files">
       <summary>${CHEVRON}<span>${c('advanced')}</span></summary>
@@ -90,7 +98,7 @@ export function extensionSettingsHTML(kit) {
           <p class="stg-help bc-ext-text">${t('install')}</p>
           <label class="bc-ext-label" for="bc-extension-folder">${t('folder')}</label>
           <div class="bc-ext-control-row">
-            <input class="browser-cfg-input bc-ext-path" id="bc-extension-folder" readonly spellcheck="false" autocomplete="off">
+            <input class="browser-cfg-input bc-ext-path" id="bc-extension-folder" readonly spellcheck="false" autocomplete="off" placeholder="${c('folderPending')}">
             <div class="bc-inline-group bc-ext-actions">${button('copy', 'copy')}${button('refresh', 'refresh')}</div>
           </div>
         </section>
@@ -130,12 +138,29 @@ export function cardState(data, setup = null, { failed = false, launching = fals
   const running = setup?.state || data?.setup;
   if (launching) return 'launching';
   if (data?.connected) return failed ? 'error' : 'connected';
+  if (running === 'downloading') return 'downloading';
   if (running === 'waiting-for-extension') return 'setup';
   if (running === 'pairing') return 'pairing';
   if (running === 'unsupported') return 'unsupported';
   if (failed) return 'error';
   if (data?.paired) return 'disconnected';
   return 'unpaired';
+}
+/** The setup's download errors (lib/browser-extension-setup.js DOWNLOAD_ERRORS): each has its own sentence, and Try again. */
+export const DOWNLOAD_ERRORS = Object.freeze(['EXTENSION_DOWNLOAD_OFFLINE', 'EXTENSION_DOWNLOAD_UNAVAILABLE', 'EXTENSION_VERIFY_FAILED']);
+/** How far a download is, 0 to 100 (0 while the size is not known). */
+export function downloadPercent(download) {
+  const total = Number(download?.total) || 0, received = Number(download?.received) || 0;
+  return total > 0 ? Math.max(0, Math.min(100, Math.floor(received / total * 100))) : 0;
+}
+/**
+ * What the card says about the folder's own update (a folder older than this release's extension, which SynaBun
+ * downloads by itself): 'updating' while it is on its way or about to be, 'failed' when it did not arrive, else null.
+ */
+export function updateNote(data) {
+  const pkg = data?.package;
+  if (!pkg || pkg.needs !== 'update') return null;
+  return pkg.phase === 'failed' ? 'failed' : 'updating';
 }
 /** Host and path of an address: the query and fragment (sign-in challenges, tokens) are never shown. */
 export function shownAddress(url) {
@@ -161,7 +186,7 @@ export function groupByAgent(tabs = []) {
 const STATUS_TONES = ['stg-badge-ok', 'stg-badge-warn', 'stg-badge-err'];
 const HEAD = {
   connected: ['ok', 'connectedHelp'], disconnected: ['warn', 'disconnectedHelp'], unpaired: ['off', 'unpairedHelp'],
-  launching: ['sync', 'launchingHelp'], setup: ['sync', 'setupRunningHelp'], pairing: ['sync', 'pairingHelp'],
+  launching: ['sync', 'launchingHelp'], downloading: ['sync', 'downloadingHelp'], setup: ['sync', 'setupRunningHelp'], pairing: ['sync', 'pairingHelp'],
   unsupported: ['err', 'unsupportedHelp'], error: ['err', 'errorHelp'],
 };
 const CONFIRMS = {
@@ -288,24 +313,26 @@ export function wireExtensionSettings(root, { tx, signal }) {
     if (section.hidden) return;
     const running = setup?.state || data.setup;
     section.dataset.state = running;
-    const again = !!data.paired && !['setup', 'pairing', 'unsupported', 'launching'].includes(state);
+    const again = !!data.paired && !['setup', 'pairing', 'unsupported', 'launching', 'downloading'].includes(state);
     section.dataset.mode = again ? 'again' : 'connect';
     const title = query('setup-title'), help = query('setup-help');
     title.textContent = again ? title.dataset.againText : title.dataset.connectText;
     help.textContent = again ? help.dataset.againText : help.dataset.connectText;
     const start = query('setup-start');
-    start.textContent = data.connected ? start.dataset.reinstallText : data.paired ? start.dataset.reconnectText : start.dataset.connectText;
+    // A download that failed is tried again by the same button, under its own words.
+    const downloadFailed = running === 'error' && DOWNLOAD_ERRORS.includes(setup?.code);
+    start.textContent = downloadFailed ? c('retry') : data.connected ? start.dataset.reinstallText : data.paired ? start.dataset.reconnectText : start.dataset.connectText;
     start.classList.toggle('bc-ext-primary', !data.paired);
     start.disabled = launching;
     const active = !['idle', 'connected'].includes(running);
-    start.hidden = ['waiting-for-extension', 'pairing'].includes(running);
+    start.hidden = ['downloading', 'waiting-for-extension', 'pairing'].includes(running);
     query('setup-cancel').hidden = !active;
     query('setup-reopen').hidden = running !== 'waiting-for-extension';
     query('setup-default').hidden = again || active;
     const name = setup?.browser?.name || '';
-    const known = ['waiting-for-extension', 'pairing', 'connected', 'unsupported'].includes(running);
-    query('setup-status').textContent = launching ? c('launching') : running === 'idle' ? '' : known ? tx(`browserExtension.setup.settings_${running.replace(/-/g, '_')}`, { browser: name })
-      : tx('browserExtension.setup.settings_error', { code: setup?.code || '' });
+    const known = ['downloading', 'waiting-for-extension', 'pairing', 'connected', 'unsupported'].includes(running);
+    query('setup-status').textContent = launching ? c('launching') : running === 'idle' ? '' : known ? tx(`browserExtension.setup.settings_${running.replace(/-/g, '_')}`, { browser: name, percent: downloadPercent(setup?.download) })
+      : downloadFailed ? tx(`browserExtension.setup.error${setup.code}`) : tx('browserExtension.setup.settings_error', { code: setup?.code || '' });
     const alternatives = query('setup-alternatives'); alternatives.replaceChildren();
     const others = running === 'unsupported' ? (setup?.installedBrowsers || []).filter(b => b?.supported && b.id !== setup?.browser?.id) : [];
     for (const browser of others) {
@@ -314,7 +341,19 @@ export function wireExtensionSettings(root, { tx, signal }) {
       alternatives.append(option);
     }
     alternatives.hidden = !others.length;
-    query('reload').hidden = !(data.reloadNeeded === true);
+    // The browser's Reload: for an older copy or a port change, or in a repair's own words (files that were not the
+    // extension were replaced, and the browser may still run them). Said until the setup page sees the extension (a port change) or
+    // the owner confirms the Reload below (a repair).
+    const reload = query('reload'), reloadText = data.reloadRepaired === true ? reload.dataset.repairedText : reload.dataset.reloadText;
+    reload.hidden = !(data.reloadNeeded === true);
+    if (reloadText && reload.textContent !== reloadText) reload.textContent = reloadText;
+    // A repair's Reload ends only by the owner's click here (POST reload/confirm): the copy the browser still runs
+    // would answer the setup page just the same, so nothing it says, nor any refresh of this card, clears it.
+    query('reload-actions').hidden = !(data.reloadNeeded === true && data.reloadRepaired === true);
+    // The folder's own update (never while a setup shows its own download): on its way, or failed with Try again.
+    const update = active ? null : updateNote(data), note = query('update');
+    note.hidden = !update; note.textContent = update ? (update === 'failed' ? note.dataset.failedText : note.dataset.updatingText) : '';
+    query('update-actions').hidden = update !== 'failed';
   }
   // The status at the top: a symbol, the word (Settings' badge), what it means, the one action that helps.
   function showHead(state, data, error) {
@@ -325,13 +364,15 @@ export function wireExtensionSettings(root, { tx, signal }) {
     if (error) setStatus(`${t('restart')} ${error}`, 'err');
     else if (state === 'connected') setStatus(`${t('connected')}${modeWord}`, 'ok');
     else if (state === 'disconnected') setStatus(`${t('disconnected')}${modeWord}`, 'warn');
-    else if (['setup', 'pairing', 'launching'].includes(state)) setStatus(c(state === 'setup' ? 'setupRunningTitle' : state, { browser: lastSetup?.browser?.name || '' }));
+    else if (['setup', 'pairing', 'launching', 'downloading'].includes(state)) setStatus(c(state === 'setup' ? 'setupRunningTitle' : state, { browser: lastSetup?.browser?.name || '' }));
     else if (state === 'unsupported') setStatus(c('unsupported'));
     else setStatus(t('unpaired'));
     query('status-help').textContent = c(help, { browser: lastSetup?.browser?.name || '' });
     const actions = query('status-actions');
     const resume = actions.querySelector('[data-extension-action="resume"]'), retry = actions.querySelector('[data-extension-action="retry"]');
     resume.hidden = state !== 'disconnected'; retry.hidden = !error;
+    // Paired, and the browser stays away: the extension may have been loaded from the old folder inside the app.
+    query('moved').hidden = !(state === 'disconnected' && !error);
     actions.hidden = resume.hidden && retry.hidden;
     query('footer').hidden = !data?.paired;
     query('files').hidden = !data?.paired;
@@ -397,13 +438,14 @@ export function wireExtensionSettings(root, { tx, signal }) {
     if (busy) { if (action === 'mode') queuedMode = body; return; }
     busy = true;
     try {
-      if (action === 'copy') { await navigator.clipboard.writeText(folder); }
+      if (action === 'copy') { if (folder) await navigator.clipboard.writeText(folder); }
       else if (action === 'setup-start' || action === 'setup-open-in') {
         launching = true; render();
         try { await api('setup/start', action === 'setup-open-in' ? { browser: body?.browser } : {}); } finally { launching = false; }
       }
       else if (action === 'setup-cancel') await api('setup/cancel', {});
       else if (action === 'setup-reopen') await api('setup/reopen', {});
+      else if (action === 'reload-confirm') await api('reload/confirm', { reloaded: true });
       else if (!['refresh', 'retry'].includes(action)) {
         const data = await api(action, body || (action === 'pair' ? { port: Number(query('port').value) } : {}));
         if (action !== 'mode') showCode(action === 'pair' ? data.code : null);

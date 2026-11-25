@@ -87,9 +87,11 @@ function attachmentNode(file) {
  * helpers:
  *   contentBlocks(output)  → a node for MCP content blocks, or null
  *   onOpenChild(sessionId) → open the sub-agent session of a task card
+ *   shell                  → the shell command of a bash call, as the panel knows it live
+ *   terminal(shellId)      → the node that shows that command's output as it is printed
  */
 export function renderToolCard(part, helpers = {}) {
-  const view = toolCardView(part);
+  const view = toolCardView(part, { shell: helpers.shell || null, live: typeof helpers.terminal === 'function' });
   const callId = part.callID || part.id || `${view.tool}-${part.messageID || ''}`;
   const expanded = _expandedByUser.has(callId) ? _expandedByUser.get(callId) : view.defaultExpanded;
 
@@ -119,6 +121,8 @@ export function renderToolCard(part, helpers = {}) {
     const next = !wrap.classList.contains('ocpv2-tool-expanded');
     _expandedByUser.set(callId, next);
     wrap.classList.toggle('ocpv2-tool-expanded', next);
+    // A terminal block has a size only once its card is open.
+    if (next) for (const term of wrap.querySelectorAll('.ocpv2-term')) term.dispatchEvent(new Event('ocpv2-term-show'));
   });
   wrap.appendChild(head);
 
@@ -126,6 +130,8 @@ export function renderToolCard(part, helpers = {}) {
   for (const section of view.sections) {
     if (section.kind === 'code') {
       body.appendChild(el('div', 'ocpv2-tool-input', section.prompt ? `${section.prompt} ${section.text}` : section.text));
+    } else if (section.kind === 'terminal') {
+      body.appendChild(helpers.terminal(section.shellId));
     } else if (section.kind === 'output') {
       body.appendChild(outputSection(section, helpers));
     } else if (section.kind === 'diff') {

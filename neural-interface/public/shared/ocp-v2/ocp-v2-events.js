@@ -196,6 +196,11 @@ export function applyEvent(store, eventType, ev = {}, hooks = {}) {
       hooks.onOutcome?.(store, 'error');
       break;
     }
+    case 'shell.updated':
+      // A tool call's shell command: started, running on after its call (in the
+      // background), ended. What it prints is read apart (ocp-v2-shell-logic.js).
+      if (ev.shell) store.upsertShell?.(ev.shell);
+      break;
     case 'todo.updated':
       store.setTodos(ev.todos);
       break;

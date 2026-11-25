@@ -471,6 +471,29 @@ export const RACK_CSS = `
   .asst-rack .asst-station[data-kind="computer"]:not(.is-open) .asst-tool-body { display: none; }
   .asst-rack .asst-computer-frame { margin: 4px 0 2px 18px; }
 
+  /* ── A shell command's live output ──────────────────────────────── */
+  .asst-tool[data-shell="running"] > .asst-tool-hdr > .asst-tool-mark { color: var(--rk-gold); }
+  .asst-term { min-width: 0; margin-top: 6px; }
+  .asst-term-note { display: flex; align-items: center; gap: 8px; min-width: 0; margin-top: 4px; color: var(--rk-text-3); font-size: 11px; line-height: 1.45; }
+  .asst-term > .asst-term-note { margin: 0 0 3px; }
+  .asst-term-note[hidden] { display: none; }
+  .asst-term-note-text { flex: 1 1 auto; min-width: 0; }
+  /* One text node, appended to: no wrapping to redo, its layout kept to itself, and the wheel stops at its ends. */
+  .asst-rack .asst-tool-section.asst-term-out {
+    max-height: 280px;
+    overflow: auto;
+    overscroll-behavior: contain;
+    contain: content;
+    white-space: pre;
+    overflow-wrap: normal;
+    tab-size: 8;
+  }
+  .asst-rack .asst-tool-section.asst-term-out[hidden] { display: none; }
+  .asst-term-foot { display: flex; align-items: center; gap: 4px; min-height: 22px; color: var(--rk-text-3); font-size: 11px; }
+  .asst-term-state { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .asst-term-foot > .asst-copy { margin-left: 0; }
+  .asst-term-load, .asst-term-jump { flex: none; margin-top: 0; }
+
   .asst-tool-sec + .asst-tool-sec { margin-top: 6px; }
   .asst-tool-sec-head { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
   .asst-rack .asst-tool-label { margin: 0; color: var(--rk-text-3); font-size: 11px; letter-spacing: 0; text-transform: none; }

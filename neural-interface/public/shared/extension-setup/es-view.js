@@ -1,24 +1,27 @@
 // The "Connect your browser" page's decisions (public/extension-setup.html; docs/browser-extension-bridge.md →
 // One-button setup). DOM-free and import-free: node --test loads it. The page (es-page.js) renders what this returns.
 //
-// Page states (data-state on <main>): the server's setup state (idle, waiting-for-extension, pairing, connected,
-// unsupported, error), with one page-only refinement: `extension-found` while the server still waits but the
+// Page states (data-state on <main>): the server's setup state (idle, downloading, waiting-for-extension, pairing,
+// connected, unsupported, error), with one page-only refinement: `extension-found` while the server still waits but the
 // extension's content script has announced itself on this page (it then gets the one-time token and pairs).
 
 /** The server's setup states, and the page's own. */
-export const SETUP_STATES = Object.freeze(['idle', 'waiting-for-extension', 'pairing', 'connected', 'unsupported', 'error']);
+export const SETUP_STATES = Object.freeze(['idle', 'downloading', 'waiting-for-extension', 'pairing', 'connected', 'unsupported', 'error']);
 export const PAGE_STATES = Object.freeze([...SETUP_STATES, 'extension-found']);
 /** What the extension's service worker may answer the content script (setup-content.js writes it to data-synabun-pair). */
 export const PAIR_ANSWERS = Object.freeze(['sent', 'started', 'ALREADY_CONNECTED', 'ALREADY_PAIRED', 'PAUSED', 'BUSY', 'NOT_OWNED', 'INVALID_MESSAGE', 'REFUSED', 'EXTENSION_UNAVAILABLE']);
 /** Error codes the page has a sentence for (browserExtension.setup.error<CODE>); any other is `error`. */
-export const SETUP_ERRORS = Object.freeze(['SETUP_EXPIRED', 'EXTENSION_FOLDER_FAILED', 'OPEN_FAILED', 'SETUP_NOT_ACTIVE', 'SETUP_TICKETS_USED', 'PAGE_SECRET_REQUIRED', 'PEER_UNAVAILABLE']);
+export const SETUP_ERRORS = Object.freeze(['SETUP_EXPIRED', 'EXTENSION_FOLDER_FAILED', 'EXTENSION_FOLDER_UNSAFE','EXTENSION_DOWNLOAD_OFFLINE', 'EXTENSION_DOWNLOAD_UNAVAILABLE', 'EXTENSION_VERIFY_FAILED', 'OPEN_FAILED', 'SETUP_NOT_ACTIVE', 'SETUP_TICKETS_USED', 'PAGE_SECRET_REQUIRED', 'PEER_UNAVAILABLE']);
+/** The errors of the extension's download (the package was not fetched or did not verify): the page offers to try again. */
+export const DOWNLOAD_ERRORS = Object.freeze(['EXTENSION_DOWNLOAD_OFFLINE', 'EXTENSION_DOWNLOAD_UNAVAILABLE', 'EXTENSION_VERIFY_FAILED']);
 /** Answers after which the page asks for a fresh ticket (a new token) once its wait has passed. */
 const RETRY_AFTER = Object.freeze({ ALREADY_PAIRED: 8000, BUSY: 2500, REFUSED: 5000, EXTENSION_UNAVAILABLE: 5000, started: 20000 });
 
 /**
  * The page's view of a status (GET /api/browser/extension/setup/status) and what the page saw of the extension:
  * `extensionVersion` (data-synabun-extension, '' when absent) and `pairAnswer` (data-synabun-pair).
- * Returns { state, title, lead, steps, browser, extensionsUrl, folder, alternatives, live, tone, reloadNeeded, retry }.
+ * Returns { state, title, lead, steps, browser, extensionsUrl, folder, alternatives, live, tone, reloadNeeded, reloadRepaired, updateNeeded,
+ * progress, restart, restartLabel }.
  * Strings are i18n keys under browserExtension.setup (the page translates them); `params` fill their {placeholders}.
  */
 export function setupView(status = {}, { extensionVersion = '', pairAnswer = '' } = {}) {
@@ -41,25 +44,37 @@ export function setupView(status = {}, { extensionVersion = '', pairAnswer = '' 
   // "Open in X instead": the installed supported browsers other than the one this setup uses.
   const alternatives = (status.installedBrowsers || []).filter(b => b?.supported && b.id !== browser?.id).map(b => ({ id: b.id, name: b.name }));
   const live = {
-    idle: 'liveIdle', 'waiting-for-extension': 'liveWaiting', 'extension-found': PAIR_ANSWERS.includes(pairAnswer) && pairAnswer !== 'sent' && pairAnswer !== 'started' ? `answer${pairAnswer}` : 'liveFound',
+    idle: 'liveIdle', downloading: 'liveDownloading', 'waiting-for-extension': 'liveWaiting', 'extension-found': PAIR_ANSWERS.includes(pairAnswer) && pairAnswer !== 'sent' && pairAnswer !== 'started' ? `answer${pairAnswer}` : 'liveFound',
     pairing: 'livePairing', connected: 'liveConnected', unsupported: 'liveUnsupported', error: `error${SETUP_ERRORS.includes(status.code) ? status.code : ''}`,
   }[state];
   const tone = state === 'connected' ? 'ok' : state === 'error' || state === 'unsupported' ? 'err' : state === 'idle' ? '' : 'warn';
-  const showSteps = !['unsupported', 'idle'].includes(state) && !(state === 'error' && !status.folder);
+  // No steps while the extension is on its way: there is no folder to load yet.
+  const showSteps = !['unsupported', 'idle', 'downloading'].includes(state) && !(state === 'error' && !status.folder);
+  const downloadFailed = state === 'error' && DOWNLOAD_ERRORS.includes(status.code);
+  // The bytes so far, in whole KB (the page shows them beside the status; never in the live region, which would be read out at every poll).
+  const kb = n => Math.max(0, Math.round((Number(n) || 0) / 1024));
+  const progress = state === 'downloading' && status.download && Number(status.download.total) > 0 ? { received: kb(Math.min(status.download.received, status.download.total)), total: kb(status.download.total) } : null;
   // The guide (the steps beside the status) while the owner installs; one result card once there is nothing to do there.
   const layout = showSteps && state !== 'connected' ? 'guide' : 'result';
-  const statusTitle = { 'waiting-for-extension': 'waitingTitle', 'extension-found': 'foundTitle', pairing: 'pairingTitle', connected: 'titleConnected',
-    unsupported: 'titleUnsupported', idle: 'idleTitle', error: 'errorTitle' }[state];
+  const statusTitle = { downloading: 'downloadingTitle', 'waiting-for-extension': 'waitingTitle', 'extension-found': 'foundTitle', pairing: 'pairingTitle', connected: 'titleConnected',
+    unsupported: 'titleUnsupported', idle: 'idleTitle', error: downloadFailed ? 'downloadErrorTitle' : 'errorTitle' }[state];
   return {
     layout, statusTitle, eyebrow: name ? 'eyebrow' : '',
-    help: state === 'connected' ? 'connectedHelp' : '',
+    help: state === 'connected' ? 'connectedHelp' : state === 'downloading' ? 'downloadingHelp' : '',
+    progress,
     state, title: state === 'connected' ? 'titleConnected' : state === 'unsupported' ? 'titleUnsupported' : 'title',
     lead: state === 'unsupported' ? 'leadUnsupported' : 'lead', steps, browser: name, extensionsUrl,
     folder: typeof status.folder === 'string' ? status.folder : '', alternatives, live, liveParams: { browser: name }, tone,
     reloadNeeded: status.reloadNeeded === true,
+    // SynaBun replaced files that were not its extension: the same Reload, in the words of a repair.
+    reloadRepaired: status.reloadNeeded === true && status.reloadRepaired === true,
+    // The folder holds an older extension than this release's: SynaBun downloads the new one; a Reload comes after.
+    updateNeeded: status.updateNeeded === true && status.reloadNeeded !== true,
     showSteps,
     // What the page offers: start again (idle, error), back to SynaBun and the pin tip (connected).
     restart: ['error', 'idle'].includes(state), back: state === 'connected', pinTip: state === 'connected',
+    // A download that failed is tried again by the same button, under its own words.
+    restartLabel: downloadFailed ? 'retryDownload' : 'restart',
     // "Open in X instead" while there is still something to install here; never once pairing began.
     showAlternatives: alternatives.length > 0 && !['pairing', 'connected'].includes(state),
   };

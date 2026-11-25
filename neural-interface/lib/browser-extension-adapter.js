@@ -2,13 +2,11 @@ import { createHash, randomBytes } from 'node:crypto';
 import { basename, extname, isAbsolute, resolve } from 'node:path';
 import express from 'express';
 import { readConfinedFileWithMetadata } from './confined-fs.js';
-import { fileURLToPath } from 'node:url';
-import { EVALUATE_SCRIPT_MAX, EVALUATE_TIMEOUT_MAX, EVALUATE_WORLDS, fail, handle, HISTORY, LOAD_STATES, MAX_FILE, NETWORK_IDLE_TIMEOUT_MAX, safeError } from '../../browser-extension/protocol.js';
+import { EVALUATE_SCRIPT_MAX, EVALUATE_TIMEOUT_MAX, EVALUATE_WORLDS, fail, handle, HISTORY, LOAD_STATES, MAX_FILE, NETWORK_IDLE_TIMEOUT_MAX, safeError } from './browser-extension-protocol.js';
 import sharp from 'sharp';
 import { parseScreenshotOptions, screenshotPathRefusal, defaultScreenshotPath, writeScreenshotFile } from './browser-screenshot.js';
 import { ownerOnlyCreateFields } from './browser-automation-routes.js';
 
-export const EXTENSION_FOLDER = fileURLToPath(new URL('../../browser-extension/', import.meta.url));
 // Use the server's static-file MIME table. Its bundled table predates these image formats.
 export function uploadMimeType(name) {
   const ext = extname(name).toLowerCase();

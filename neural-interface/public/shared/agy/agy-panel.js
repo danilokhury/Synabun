@@ -58,6 +58,7 @@ import { runAwaitsAnswer, runTurnLive } from '../sidepanel-session-status.js';
 import { wireFileLinks } from '../ui-file-links.js';
 import { notify, NOTIF_TYPE } from '../ui-notifications.js';
 import { forgetGreeting, mountGreeting } from '../greeting/greeting-card.js';
+import { composerHoldsDraft, markAutoCloseKeep } from '../tray-auto-close.js';
 
 export const PANEL_OWNER = 'antigravity-sidepanel';
 const ICON = ICONS.mark;
@@ -557,10 +558,12 @@ function blockedNow() {
   return '';
 }
 
-async function send({ text: given = null, staged: givenStaged = null, fromQueue = false } = {}) {
-  const tab = activeTab();
+// `tab` is the tab the message is for: the one on screen, or (from drainQueue only) a tab in the background
+// whose turn ended with its queue to go on, whose composer is not the one on screen and is never touched.
+async function send({ text: given = null, staged: givenStaged = null, fromQueue = false, tab = activeTab() } = {}) {
   if (!tab || tab.automationActive) return;
-  const input = $('.agy-input');
+  const onScreen = tab === activeTab();
+  const input = onScreen ? $('.agy-input') : null;
   const text = given ?? (input?.value || '');
   const rt = runtimeOf(tab);
   const staged = givenStaged ?? rt.staged;
@@ -645,7 +648,7 @@ async function send({ text: given = null, staged: givenStaged = null, fromQueue 
   rt.notice = null;
   tab.running = true;
   tab.startedAt = Date.now();
-  hideHints();
+  if (onScreen) hideHints();
   saveTabs();
   renderTabs();
   renderAttachments();
@@ -667,13 +670,20 @@ async function send({ text: given = null, staged: givenStaged = null, fromQueue 
   }
 }
 
+/**
+ * Send the next prompt queued in `tab`, the tab it was typed in, as the Claude Code and Codex panels do: a tab in
+ * the background whose turn ends goes on with its own queue, one prompt per turn in the order they were queued
+ * (the next one goes at that prompt's turn:end). A paused queue waits; so does one that cannot be sent now (a
+ * send under way, a running automation, a missing or broken agy): the prompt stays first in its queue.
+ */
 function drainQueue(tab) {
   const rt = runtimeOf(tab);
-  if (!rt.queue.length || rt.queuePaused || tab.running) { renderQueue(); return; }
+  if (!rt.queue.length || rt.queuePaused || tab.running || rt.sending || tab.automationActive) { renderQueue(tab); return; }
+  if (blockedNow()) { if (tab === activeTab()) nudgeSetup(); renderQueue(tab); return; }
   const next = rt.queue.shift();
-  renderQueue();
-  if (tab === activeTab()) send({ text: next.text, staged: next.staged, fromQueue: true });
-  else rt.queue.unshift(next);
+  // send() takes the prompt before its first await (rt.sending), so the mark below still says 'queue'.
+  send({ tab, text: next.text, staged: next.staged, fromQueue: true });
+  renderQueue(tab);
 }
 
 async function stop() {
@@ -1261,9 +1271,13 @@ function renderAttachments() {
   box.innerHTML = staged.map((file, idx) => `<span class="agy-chip" title="${esc(file.path || file.name)}">${file.mimeType?.startsWith('image/') && file.dataUrl ? `<img src="${esc(file.dataUrl)}" alt="">` : ''}<span>${esc(file.name)}</span><button type="button" data-unstage="${idx}" aria-label="${esc(T('attachmentRemove', { name: file.name }))}">&times;</button></span>`).join('');
 }
 
-function renderQueue() {
+function renderQueue(tab = activeTab()) {
+  // The tray's auto-close keeps a tab while its queue holds prompts (autoCloseKeepOf): said at every change,
+  // for a tab in the background too; only the tab on screen has its queue drawn.
+  if (tab?.pillEl) markAutoCloseKeep(tab.pillEl, autoCloseKeepOf(tab));
+  if (tab !== activeTab()) return;
   const box = $('.agy-queue');
-  const rt = runtimeOf(activeTab());
+  const rt = runtimeOf(tab);
   if (!box) return;
   const queue = rt?.queue || [];
   box.hidden = !queue.length;
@@ -1581,6 +1595,18 @@ function chooseHint(idx) {
   renderComposer();
 }
 
+// What the tray's auto-close must leave open (tray-auto-close.js), or '': a tab with prompts in its queue that
+// were never sent ('queue': paused or not, and while one taken off it is still on its way, `sending`), else a tab
+// holding an unsent draft, its text (in the composer while the tab is the one on screen) and its staged
+// attachments. The user's X closes it as before. renderQueue repaints the mark at every change of a queue.
+function autoCloseKeepOf(tab) {
+  if (!tab) return '';
+  const rt = _runtime.get(tab.id);
+  if (rt?.queue.length || rt?.sending) return 'queue';
+  const input = tab === activeTab() ? $('.agy-input') : null;
+  return composerHoldsDraft(input ? input.value : tab.draft, rt?.staged) ? 'draft' : '';
+}
+
 // ── Tray pills (shown for tabs with something in them while the panel is closed, or not the active tab) ──
 function renderPills() {
   const tray = document.getElementById('term-minimized-tray');
@@ -1591,6 +1617,7 @@ function renderPills() {
       pill.className = 'term-minimized-pill agy-session-pill';
       pill.dataset.tabId = tab.id;
       pill.getAutomationRunId = () => tab.automationRunId;
+      pill.keepFromAutoClose = () => autoCloseKeepOf(tab);
       pill.tabIndex = 0;
       pill.innerHTML = `<span class="term-minimized-pill-icon agy-mark">${ICON}</span><span class="term-minimized-pill-label"></span><button class="term-minimized-pill-close" data-tooltip="${esc(T('closeTab'))}" data-tooltip-pos="top">&times;</button>`;
       const openIt = () => {
@@ -1622,6 +1649,7 @@ function renderPills() {
     const needsYou = !!(tab.needsYou || tab.automationAwaits);
     tab.pillEl.classList.toggle('agy-pill-attention', needsYou);
     tab.pillEl.classList.toggle('agy-pill-running', !needsYou && !!tab.running);
+    markAutoCloseKeep(tab.pillEl, autoCloseKeepOf(tab));
     const meaningful = !!(tab.sessionId || tab.running || tab.draft || tab.automationRunId || tab.needsYou);
     tab.pillEl.style.display = meaningful && (!_visible || tab !== activeTab()) ? '' : 'none';
   }

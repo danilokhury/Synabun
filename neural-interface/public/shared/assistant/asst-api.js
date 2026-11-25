@@ -40,6 +40,31 @@ function jsonBody(data, method = 'POST') {
 
 const enc = encodeURIComponent;
 
+// ── A shell command's output (OpenCode brain) ─
+
+/**
+ * One page of what a command of this conversation printed. Never throws and raises no guest toast: a page that
+ * cannot be read is the terminal block's to say. → { status, data: { output, cursor, size, from } } or { ok: false, status, error }.
+ */
+export async function readAssistantShellOutput(sessionId, { shellId, cursor, tail, limit } = {}) {
+  const query = new URLSearchParams();
+  if (Number.isSafeInteger(cursor) && cursor >= 0) query.set('cursor', String(cursor));
+  if (Number.isSafeInteger(tail) && tail > 0) query.set('tail', String(tail));
+  if (Number.isSafeInteger(limit) && limit > 0) query.set('limit', String(limit));
+  const search = query.toString();
+  let res;
+  try {
+    res = await fetch(`/api/assistant/sessions/${enc(sessionId)}/shells/${enc(shellId)}/output${search ? `?${search}` : ''}`, { credentials: 'same-origin' });
+  } catch (error) {
+    return { ok: false, error: error?.message || 'The output could not be read.' };
+  }
+  let body = null;
+  try { body = await res.json(); } catch { /* not JSON */ }
+  if (!res.ok || !body?.ok) return { ok: false, status: res.status, error: body?.error || `HTTP ${res.status}` };
+  const { ok: _ok, ...data } = body;
+  return { status: res.status, data };
+}
+
 // ── Catalog ──────────────────────────────────
 
 export function fetchAssistantCatalog({ force = false } = {}) {

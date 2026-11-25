@@ -2,7 +2,13 @@
 // JavaScript or watch the network yet. Each of these is a one-time owner setup in the browser, not a failure of the
 // page or of the call: the answer says what the owner does and what the agent can use meanwhile, so nobody retries,
 // reaches for another browser or reports the tool as broken. The codes are the extension contract's
-// (browser-extension/protocol.js ERROR_TEXT); a result with any other code is not one of these.
+// (neural-interface/lib/browser-extension-protocol.js ERROR_TEXT, the app's own copy of the extension's protocol.js);
+// a result with any other code is not one of these.
+//
+// The extension itself is not part of the app: the owner's "Connect your browser" downloads the version this SynaBun
+// release pins from synabun.ai and verifies it, and a newer pin is fetched in the background after start. A browser
+// that runs an older extension is told to Reload it once that folder is up to date, which SynaBun's Settings →
+// Browser says. An agent never tells the owner to fetch or load the extension from anywhere else.
 
 const EXTENSIONS_PAGE = 'chrome://extensions (edge://extensions in Edge)';
 const NAME = '"SynaBun Browser Bridge"';
@@ -15,7 +21,7 @@ const SETUP: Record<string, string> = {
   USER_SCRIPTS_UNSUPPORTED:
     `The owner's browser cannot run page JavaScript for an extension (that needs Chrome or Edge 135 or later), so nothing was run. Tell the user to update the browser, then open ${EXTENSIONS_PAGE}, ${ALLOW}. ${MEANWHILE_READ}`,
   EXTENSION_RELOAD_REQUIRED:
-    `The owner's browser still runs an older SynaBun Browser Bridge than this needs (1.4.0 or later), so nothing was done. Tell the user to open ${EXTENSIONS_PAGE} and press Reload on ${NAME}; for browser_evaluate, then ${ALLOW} once more. Until then read the page with browser_snapshot or browser_content, and wait with a selector or a fixed timeout.`,
+    `The owner's browser still runs an older SynaBun Browser Bridge than this needs (1.4.0 or later), so nothing was done. Tell the user to open ${EXTENSIONS_PAGE} and press Reload on ${NAME}; for browser_evaluate, then ${ALLOW} once more. If Reload changes nothing, SynaBun has not finished downloading this version's extension from synabun.ai: its Settings → Browser says so and offers Try again. Until then read the page with browser_snapshot or browser_content, and wait with a selector or a fixed timeout.`,
   NETWORK_IDLE_UNAVAILABLE:
     `The SynaBun extension cannot watch this browser's network requests yet (its webRequest permission is not in effect), so it cannot tell when the network is idle. Tell the user to open ${EXTENSIONS_PAGE} and press Reload on ${NAME}. Until then wait with loadState "load", a selector or a fixed timeout.`,
 };

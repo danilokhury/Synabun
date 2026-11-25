@@ -294,9 +294,51 @@ async function routeLatest(runId) {
   return false;
 }
 
-/** Tray timer: a missing descriptor, unfinished task or refused completion keeps its tab. */
-export async function autoCloseNativeLoopTab(runId) {
-  const run = getNativeLoopRun(runId);
+/**
+ * A run a tab still names and this window no longer follows, as the server has it: `over` when it
+ * ended or the server keeps it no more (its ledger never drops a live run), with its descriptor when
+ * there is one; null when the server did not say.
+ */
+async function readUnfollowedRun(runId) {
+  try {
+    const response = await fetch(`/api/sidepanel-runs/${encodeURIComponent(runId)}`);
+    if (response.status === 404) return { over: true, run: null };
+    if (!response.ok) return null;
+    const data = await response.json();
+    const run = descriptorFrom(data) || descriptorFrom(data?.run);
+    return run?.runId === runId ? { over: TERMINAL_STATUSES.has(run.status), run } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Tray timer: an unfinished task or a refused completion keeps its tab.
+ *
+ * A tab can name a run this window follows no more: the user continued the run's session by hand
+ * (OpenCode keeps the run on the tab, and the tab let the run go: 'native-loop:dismissed'), or a reload
+ * brought the tab back and not its run (reconcileRuns restores ended runs of the last day, ten at
+ * most). The server is asked about such a run: once it is over its tab is detached like any ended
+ * run's (the session and its transcript stay with the provider; nothing is stopped or deleted), and it
+ * stays while the run lives or the server did not answer. `provider` is the panel the tab is in, for a
+ * run the server keeps no more.
+ */
+export async function autoCloseNativeLoopTab(runId, provider = null) {
+  if (!runId) return;
+  let run = getNativeLoopRun(runId);
+  if (!run) {
+    const read = await readUnfollowedRun(runId);
+    // Followed again meanwhile (a reconcile attached it): decided below, like any run this window follows.
+    run = getNativeLoopRun(runId);
+    if (!run) {
+      const panel = read?.over ? (read.run?.provider || provider) : null;
+      if (!panel) return;
+      forgetWorkerEnd(runId);
+      window.dispatchEvent(new CustomEvent('native-loop:dismissed', { detail: { runId } }));
+      await detachProviderRun(runId, panel);
+      return;
+    }
+  }
   if (!(await mayAutoCloseWorkerTab(run)) || _dismissed.has(runId)) return;
   forgetWorkerEnd(runId);
   window.dispatchEvent(new CustomEvent('native-loop:dismissed', { detail: { runId } }));

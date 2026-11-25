@@ -1,0 +1,33 @@
+{
+  "$comment": "The one SynaBun Browser Bridge this app release works with (docs/browser-extension-bridge.md -> Where the extension comes from). The app downloads exactly this file when the owner presses \"Connect your browser\" and installs it only when its size and SHA-256 are these. files is the SHA-256 of every file in it (the manifest with its setup content script set to port 1): the folder the browser loads counts as this extension only when it holds exactly these files. version, url, sha256, size and files are written by `node scripts/extension/check-browser-extension-pin.mjs --write` from the zip built out of browser-extension/ (Dev only); never edit them by hand. key is the extension's public key (its manifest's `key`): the extension ID is derived from it and never changes.",
+  "name": "SynaBun Browser Bridge",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsDPDDuBTQq9nQgulmTSvzujxyOMZ7A7ttMSXtbIwup/X3kOlbkqoJEqQRGGJeb7+cNBSiiDBA5lhS0oYc9YeFcwNCucNMvGawDGblbQzDWEmn9dDK1krFVXWqNHVPIrEWlzCD2swXmIE2FCjMd5zw6dSRmmxu7VgE6bzvuOgB/W/oeOAyCsEDhDRDLBkjmb+yCsuexiXRWoempPsvAVhxhE8zEQJ1e8ChlFMtpOXSobU+YDgKYfcFy9Fbmk/o6M6B9y5zSlzs/HYIu7xvcCwjZI457idVMRxxAT6J/kXytmfKe/zbi5IO5/i0x9SCA1HRvt8K3nJqoH03h4TOvFwOwIDAQAB",
+  "version": "1.4.0",
+  "url": "https://synabun.ai/Public/downloads/browser-extension/synabun-browser-bridge-1.4.0.zip",
+  "sha256": "6c6fdd942c9b11173758701678571d3c60f1b56aa8712e3f754d6c7b8a7a96bb",
+  "size": 206907,
+  "files": {
+    "content.js": "5420e3bf96c4aea5c7d5f529264eedd49bae9431da3f52abb96de536a4f48944",
+    "engine.js": "653f06e353e99b7c417e61c1415925673455ffce075105ba794ae740e6a2c816",
+    "icons/icon-128.png": "0749c9c8b40090232e0a234443c634117275598630ec06f4834d20bcad2b6841",
+    "icons/icon-16.png": "e91f674029855c7ea4bc6ca045087fe867ddba706209707060379c4832c15422",
+    "icons/icon-32.png": "5cc0916b2557a8d13c479a7e3a0170584be4c2f58cf770899c1be1aea106fe53",
+    "icons/icon-48.png": "6076ff8376ddf79356adc53672524b893f35a007c1666c9b3873c15803a386d8",
+    "icons/status-off-16.png": "b860b60a99a5f89bb024fd8411c6645ca071fabc4eee807dad7d7e1a0eec6a26",
+    "icons/status-off-32.png": "9ecc6608dd8da21b3d35497aa94480bb4c8b542398d6d8b35b35d3912e72c7c1",
+    "icons/status-off-48.png": "9b1395d665df287e299b20b5ba7a0503eb880cd0797fa07c600572491e126c9a",
+    "icons/status-on-16.png": "c9cbb6e4211f918b2179a796908cf9ebcf7cb5723d9aaa38a93486c2e3b0cd3e",
+    "icons/status-on-32.png": "b67d8fb865e02754ca0d1f1f2e0ead08655340a4ad93511e52ff65db4d487ed7",
+    "icons/status-on-48.png": "c9f306fb5dcbd6a919e5169e3c87c618116bad54858b434b02245dcd1a40b269",
+    "manifest.json": "d027d047542b2affa0c2528ee1863de29767f4b2d9abdc79085022455b301735",
+    "popup-strings.js": "683063d9896a306b3abf5d19283ba38a8f0ed88a0c32db1f028262fa1d075107",
+    "popup-view.js": "c7c9bd582a893d11ca088544e64dd5661c75406920ef5f2b0609a44a58f183c4",
+    "popup.css": "d6a6c5442942bede66f315accef476c591ad71ea4ac09b51d689a622753208f1",
+    "popup.html": "b04a333f7c7db956fe30dfc760e2bb528984dcf874d5a8e5849776209b8529ec",
+    "popup.js": "62a83c93aa9657e16dbd81eb6e853cc772794b22042fca051ea8744c55602670",
+    "protocol.js": "7b29203855da05a6122565273b77094e2abfd91d2e820ac90797d6317bb8bea4",
+    "service-worker.js": "b8871ebe8b62b1e8d44c6b38757175cd8d519534ed04360597c8cc19cc956b88",
+    "setup-content.js": "9cb56f6f046af294328c03a080cefc58052ee405366eff5f3d70bb1ea02dbabe",
+    "tokens.css": "a27f691794d844cb81b98b45e12863b102e06e9f0a3c722ba96b69b84d3c5a3f"
+  }
+}

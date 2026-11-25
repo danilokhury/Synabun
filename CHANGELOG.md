@@ -1,3 +1,23 @@
+# SynaBun v.2.4.3
+
+This release fixes OpenCode turns that ended too early and sessions that came back to life after a stop, makes OpenCode updates take effect without a restart, and stops the auto-close toggle from losing your drafts and queued prompts. The browser extension is now downloaded when you connect your browser.
+
+## 🛠 Fixed
+
+- **OpenCode turns wait for long shell commands.** When a command such as a test run outlived its time limit, the OpenCode side panel and the Assistant went idle while it was still running, and its output was never read. The turn now stays active until the model has answered, and the command's output shows live in the side panel and the Assistant's activity view, also after a reload. Stop ends background commands too, and tells you when one is still running.
+- **Stopped OpenCode sessions stay stopped.** A session stopped in the middle of a turn could start running again, and calling its model, the next time OpenCode was opened in a terminal. SynaBun now ends running turns before it stops OpenCode. Sessions left in that state by an earlier version can still resume once.
+- **OpenCode updates take effect right away.** After an update, SynaBun kept using the old OpenCode version until it was restarted. It now switches to the new one as soon as nothing is running on the old one.
+- **OpenCode updates on Windows.** An OpenCode installed with its own installer can now be updated from the update badge, and a WinGet install no longer shows an update that WinGet does not offer yet.
+- **Auto-close closes finished OpenCode sessions.** With the auto-close toggle on, a finished OpenCode session no longer stays in the tray. Sessions that were never automations are now closed without being deleted, so you can reopen them with their transcript.
+- **Auto-close keeps your unfinished work.** Tabs with an unsent draft or attachments, a temporary chat, or prompts waiting in their queue now stay open until the draft is sent or the queue is done. This covers Claude Code, Codex, Antigravity and Maritaca.
+- **Antigravity sends queued prompts from background tabs.** A queued prompt in an Antigravity tab that was not on screen no longer waits forever: it is sent when the turn ends, as in the other panels.
+
+## ⚙️ Changed
+
+- **The browser extension is downloaded when you connect.** SynaBun Browser Bridge no longer ships inside the app or the npm package. Pressing Connect your browser downloads it from synabun.ai and installs it only after checking that it is the exact expected version. The extension, its setup and its pairing stay the same.
+
+---
+
 # SynaBun v.2.4.2
 
 This release gives you control over your backups, with optional password protection and a choice of what each one contains. It also makes side panels easier to read and fixes problems with restarts, large memory databases and OpenCode.

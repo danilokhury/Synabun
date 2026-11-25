@@ -26,7 +26,7 @@ const BASE_URL = process.env.NEURAL_INTERFACE_URL
 const DEFAULT_TIMEOUT = 10_000;
 const LONG_TIMEOUT = 30_000;
 // A page script. In the owner's everyday browser (the extension backend) one may run 30 s, and the Neural Interface
-// waits 35 s for the extension's answer (browser-extension/protocol.js: EVALUATE_TIMEOUT plus LONG_MARGIN); a shorter
+// waits 35 s for the extension's answer (the extension contract, neural-interface/lib/browser-extension-protocol.js: EVALUATE_TIMEOUT plus LONG_MARGIN); a shorter
 // wait here would give up on a script that is still running and answers. The Playwright backends answer within their
 // own 10 s deadline, so for them this only bounds how long a lost answer is waited for.
 export const EVALUATE_TIMEOUT = 40_000;

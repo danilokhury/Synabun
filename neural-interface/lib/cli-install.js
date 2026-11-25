@@ -249,6 +249,11 @@ async function writeAll(handle, buffer) {
 /**
  * Download `url` into `destination` (a new file), HTTPS only and only through
  * hosts `allow` accepts. Checks the size and, when given, the SHA-256.
+ * `identityOnly`: an answer with any Content-Encoding but identity is refused
+ * before its body is read, so `maxBytes` bounds the bytes on the wire and no
+ * decoding work is done (fetch would otherwise decode gzip or br by itself and
+ * count the decoded bytes). Every answer that is refused, and every transfer
+ * that fails, ends its request: the body is cancelled and the request aborted.
  * Resolves { sha256, size, url } (the address the file came from).
  */
 export async function downloadFile({
@@ -263,6 +268,7 @@ export async function downloadFile({
   onProgress = () => {},
   stallMs = 60_000,
   accept = 'application/octet-stream',
+  identityOnly = false,
 }) {
   let current;
   try { current = new URL(url); } catch { throw new CliInstallError('internal', `Not an address: ${url}`); }
@@ -280,26 +286,33 @@ export async function downloadFile({
   let made = false;
   let answered = false;
   let received = 0;
+  // The body still open (an answer being looked at, then the reader): cancelled whenever the download is given up.
+  let release = null;
   const hash = createHash('sha256');
   try {
     alive();
     let response = null;
     for (let hop = 0; ; hop++) {
       response = await fetchImpl(current, { redirect: 'manual', signal: stop.signal, headers: { accept, 'accept-encoding': 'identity', 'user-agent': 'synabun' } });
+      const answer = response;
+      release = () => answer.body?.cancel();
       if (response.status < 300 || response.status >= 400) break;
       const next = nextHop(response, current, allow);
       try { await response.body?.cancel(); } catch { /* nothing to drain */ }
+      release = null;
       if (hop >= MAX_REDIRECTS) throw new CliInstallError('http', 'The download server redirected too many times.');
       current = next;
       alive();
     }
     if (response.status !== 200 || !response.body) {
-      try { await response.body?.cancel(); } catch { /* nothing to drain */ }
       throw new CliInstallError('http', `${current.hostname} answered ${response.status} instead of the file.`, { detail: String(response.status) });
+    }
+    const encoding = String(response.headers.get('content-encoding') || '').trim().toLowerCase();
+    if (identityOnly && encoding && encoding !== 'identity') {
+      throw new CliInstallError('http', `${current.hostname} sent the file encoded (${encoding.slice(0, 20)}) although it was asked for the file as it is. It was not downloaded.`, { detail: 'content-encoding' });
     }
     const announced = Number(response.headers.get('content-length'));
     if (Number.isFinite(announced) && announced > 0 && ((expectedSize && announced !== expectedSize) || announced > maxBytes)) {
-      try { await response.body.cancel(); } catch { /* nothing to drain */ }
       throw new CliInstallError('checksum', `${current.hostname} offered ${announced} bytes${expectedSize ? `; the published file has ${expectedSize}` : ''}. It was not downloaded.`);
     }
     answered = true;
@@ -310,6 +323,7 @@ export async function downloadFile({
     // Read through a reader of our own, cancelled on a stall or a stop: the transfer ends then whatever the
     // transport does with the signal.
     const reader = response.body.getReader();
+    release = () => reader.cancel();
     const onStop = () => { reader.cancel(stop.signal.reason).catch(() => {}); };
     stop.signal.addEventListener('abort', onStop, { once: true });
     try {
@@ -336,12 +350,18 @@ export async function downloadFile({
     await handle.sync();
     await handle.close();
     handle = null;
+    release = null;
     return { sha256: digest, size: received, url: current.href };
   } catch (error) {
+    const stoppedFor = stop.signal.aborted && stop.signal.reason instanceof CliInstallError ? stop.signal.reason : null;
+    // Whatever ended it, the request ends here too: nothing more arrives, is decoded or is read.
+    if (!stop.signal.aborted) stop.abort(new CliInstallError('cancelled', 'The download was given up.'));
+    try { await release?.(); } catch { /* cancelled already */ }
+    release = null;
     try { await handle?.close(); } catch { /* closed */ }
     handle = null;
     if (made) rmSync(destination, { force: true });
-    if (stop.signal.aborted && stop.signal.reason instanceof CliInstallError) throw stop.signal.reason;
+    if (stoppedFor) throw stoppedFor;
     if (error instanceof CliInstallError) throw error;
     if (DISK_CODES.has(errorCode(error))) throw asInstallError(error, 'disk', `The download could not be saved (${errorCode(error)}).`);
     if (answered) throw new CliInstallError('interrupted', `The download from ${current.hostname} ended after ${received} bytes.`, { cause: error, detail: errorCode(error) || error?.message });

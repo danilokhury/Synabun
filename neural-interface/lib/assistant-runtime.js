@@ -45,6 +45,7 @@ import { browserPolicyRoots } from './browser-policy-roots.js';
 import { stripFollowups } from '../public/shared/assistant/asst-followups.js';
 import { readJsonStrict } from './rulesets/fs-safe.js';
 import { redactTerminalSecrets } from './terminal-token-redaction.js';
+import { readSafeShellOutputPage } from './opencode-shell-read.js';
 
 export const BRAIN_PROVIDERS = new Set(['claude-code', 'codex', 'opencode', 'antigravity']);
 // Every tab is called SynaBun; the session title (the history list) comes from
@@ -1203,6 +1204,52 @@ export function createAssistantRuntime({
     const raw = JSON.stringify({ type: 'assistant:limit', sessionId: live.record.id, limit: live.limit });
     for (const ws of sockets) { if (ws.readyState === 1) { try { ws.send(raw); } catch {} } }
   }
+  /**
+   * The shell commands of the brain's tool calls (an OpenCode brain: assistant-brains/opencode.js `shells`) are a
+   * view as well: which command belongs to which call, whether it runs, how it ended. A change goes to the open
+   * sockets, the whole list to a socket when it attaches and to all of them when the brain is gone (an empty one).
+   * Never buffered, replayed, journaled or shown to the packet observers, and what a command printed is in none
+   * of it: a panel reads that in pages (shellOutput), so nothing of it reaches the model, the transcript, a memory
+   * or a meter.
+   */
+  function brainShells(live) {
+    try { const list = live.brain?.shells?.(); return Array.isArray(list) ? list : []; } catch { return []; }
+  }
+  function sendShell(live, shell) {
+    if (!shell?.id) return;
+    const raw = JSON.stringify({ type: 'assistant:shell', sessionId: live.record.id, shell });
+    for (const ws of live.sockets) { if (ws.readyState === 1) { try { ws.send(raw); } catch {} } }
+  }
+  function sendShells(live, sockets = live.sockets) {
+    const raw = JSON.stringify({ type: 'assistant:shells', sessionId: live.record.id, shells: redactTerminalSecrets(brainShells(live)) });
+    for (const ws of sockets) { if (ws.readyState === 1) { try { ws.send(raw); } catch {} } }
+  }
+  /** The session's shell commands as its brain knows them now; null for an unknown session. */
+  function shellList(sessionId) {
+    const live = sessions.get(String(sessionId || ''));
+    return live ? redactTerminalSecrets(brainShells(live)) : null;
+  }
+  /**
+   * A page of what one of the session's commands printed, for the owner's panel (GET
+   * /api/assistant/sessions/:id/shells/:shellId/output). The session's own brain reads it, and only for a command
+   * it ran: another conversation's command is not readable through this one. What comes back is scrubbed of
+   * SynaBun's run secrets like everything a brain says. → { status, data } or { ok: false, status, error }.
+   */
+  async function shellOutput(sessionId, { shellId, cursor, tail, limit } = {}) {
+    const live = sessions.get(String(sessionId || ''));
+    if (!live) return { ok: false, status: 404, code: 'SESSION_NOT_FOUND', error: `Unknown assistant session ${sessionId}` };
+    const brain = live.brain;
+    if (typeof brain?.shellOutput !== 'function') return { ok: false, status: 404, code: 'SHELL_OUTPUT_GONE', error: 'The output of that command is no longer available.' };
+    // Scrubbed on the whole window around the page (opencode-shell-read.js readSafeShellOutputPage): matched on the
+    // complete read plus what lies on both sides first, cut after, so a secret at a page boundary, or one followed by
+    // what looks like the start of another, never leaves in pieces. Every read the brain does is a raw page.
+    const running = brainShells(live).some((shell) => shell.id === shellId && shell.status === 'running');
+    const page = await readSafeShellOutputPage((q) => brain.shellOutput({ shellId, cursor: q.cursor, limit: q.limit }), { cursor, tail, limit, running });
+    if (!page || page.ok === false || !(Number(page.status) < 400)) {
+      return { ok: false, status: Number(page?.status) >= 400 ? Number(page.status) : 502, code: Number(page?.status) === 404 ? 'SHELL_OUTPUT_GONE' : 'SHELL_OUTPUT_FAILED', error: page?.error || 'The output could not be read.' };
+    }
+    return { status: 200, data: page.data };
+  }
   /** `next`: a limitNotice() value. True when the session's notice changed (and the sockets heard). */
   function setLimit(live, next, { remember = true } = {}) {
     if (next === undefined) return false;
@@ -1411,6 +1458,10 @@ export function createAssistantRuntime({
     // launch credential or a worker's terminal token an agent printed (lib/terminal-token-redaction.js).
     packet = redactTerminalSecrets(packet);
     const id = live.record.id;
+    // A shell command of the brain's tool call changed (OpenCode): a view for the panels that are open, nothing else.
+    if (packet.type === 'assistant:shell') { sendShell(live, packet.shell); return; }
+    // The brain's list was replaced (another provider conversation): every open panel gets the list it has now.
+    if (packet.type === 'assistant:shells') { sendShells(live); return; }
     if (packet.type === 'event') {
       const event = packet.event || {};
       // The usage limit comes with every response: the session keeps its state and says so when
@@ -1524,6 +1575,8 @@ export function createAssistantRuntime({
           else settleClaudeEstimate(live, 'interrupted');
         }
         live.running = false;
+        // A new turn counts its own failed Stops (stopTurn: "Stop anyway" from the second one on).
+        live.stopFailures = 0;
         // A remote session's computer use ends with its turn (the approval and the live grant); a
         // prompt the CLI still holds starts its own turn, unapproved.
         endComputerTurn(live, packet.type === 'aborted' ? 'stopped' : 'turn_ended');
@@ -2322,6 +2375,8 @@ export function createAssistantRuntime({
     live.pendingControls.clear();
     clearControlTimers(live);
     try { await brain.dispose?.(); } catch (error) { log('assistant:brain-dispose-error', error?.message || String(error)); }
+    // Its commands ended with its serve: the open panels stop following them (the next brain has none yet).
+    if (!live.brain) sendShells(live);
     // The next brain reports its own routing reach, and its own OpenCode serve says hello again.
     live.gatePluginAt = null;
     live.gate?.setUnavailable(null);
@@ -3460,17 +3515,42 @@ export function createAssistantRuntime({
    * included), and closes the plan card (late answers are refused), which
    * releases its hold: the mailbox goes on. The in-turn route cards close.
    */
-  async function stopTurn(id, { origin = 'api' } = {}) {
+  async function stopTurn(id, { origin = 'api', force: forced = false, forceAfterFailures = 0 } = {}) {
     const live = sessions.get(String(id || ''));
     if (!live) return { ok: false, code: 'SESSION_NOT_FOUND', message: `Unknown assistant session ${id}` };
-    newGeneration(live, 'stopped');
-    // A remote session: computer use stops with the turn, before the brain is even asked to (its
-    // approval, its open request, the live grant; an action in progress is aborted).
-    endComputerTurn(live, 'stopped');
-    try { router?.cancelForSession?.(live.record.id, 'aborted', { origins: BRAIN_CARD_ORIGINS }); } catch {}
-    if (origin !== 'ui') log('assistant:stop', `${live.record.id}: turn stopped from ${origin}`);
-    try { await live.brain?.abort?.(); } catch (error) { return { ok: false, code: 'STOP_FAILED', message: error?.message || String(error) }; }
-    return { ok: true };
+    // `forceAfterFailures` (WhatsApp's /stop, which has no "Stop anyway" button): this Stop is a Stop anyway once
+    // that many Stops of THIS turn failed (live.stopFailures is reset when a turn ends), never because of an earlier turn.
+    const force = forced === true || (Number(forceAfterFailures) > 0 && (live.stopFailures || 0) >= Number(forceAfterFailures));
+    // A Stop the brain may fail (an OpenCode command in the background to end) tears the turn down only once it
+    // worked: a failed one leaves the turn, its queue and its cards as they were (the command still runs).
+    const mayFail = !force && live.brain?.stopMayFail?.() === true;
+    const tearDown = () => {
+      newGeneration(live, 'stopped');
+      // A remote session: computer use stops with the turn, before the brain is even asked to (its
+      // approval, its open request, the live grant; an action in progress is aborted).
+      endComputerTurn(live, 'stopped');
+      try { router?.cancelForSession?.(live.record.id, 'aborted', { origins: BRAIN_CARD_ORIGINS }); } catch {}
+    };
+    if (!mayFail) tearDown();
+    if (origin !== 'ui') log('assistant:stop', `${live.record.id}: turn stopped from ${origin}${force ? ' (stop anyway)' : ''}`);
+    let stopped = null;
+    try { stopped = await live.brain?.abort?.(force ? { force: true } : undefined); } catch (error) {
+      const message = error?.message || String(error);
+      if (error?.code !== 'SHELL_STOP_FAILED') return { ok: false, code: 'STOP_FAILED', message };
+      // The turn goes on: every panel of the session hears which command still runs and why, and from the second
+      // failure of this turn on it offers "Stop anyway" (abort with `force`).
+      const failures = (live.stopFailures || 0) + 1;
+      live.stopFailures = failures;
+      const shells = Array.isArray(error.shells) ? error.shells.map((shell) => ({ id: String(shell?.id || ''), command: String(shell?.command || ''), reason: String(shell?.reason || '') })) : [];
+      const packet = { type: 'stop_failed', code: 'SHELL_STOP_FAILED', message, shells, failures, canForce: failures >= 2 };
+      sendToSockets(live, packet);
+      return { ok: false, code: 'STOP_FAILED', message, shells, failures, canForce: failures >= 2 };
+    }
+    if (mayFail) tearDown();
+    live.stopFailures = 0;
+    const abandoned = Array.isArray(stopped?.abandoned) ? stopped.abandoned.map((shell) => ({ id: String(shell?.id || ''), command: String(shell?.command || '') })) : [];
+    if (abandoned.length) sendToSockets(live, { type: 'stop_abandoned', shells: abandoned });
+    return { ok: true, ...(abandoned.length ? { abandoned } : {}) };
   }
   function controlResolved(live, requestId, origin) {
     sendToSockets(live, { type: 'control_resolved', request_id: requestId, origin: String(origin || 'ui') });
@@ -3655,6 +3735,8 @@ export function createAssistantRuntime({
     try { const budgetNow = sessionMoney(live.record.id); if (budgetNow) ws.send(JSON.stringify({ type: 'assistant:budget', sessionId: live.record.id, reason: 'attached', budget: budgetNow })); } catch {}
     // The limit notice as it is now (null clears one this panel still shows from before).
     sendLimit(live, [ws]);
+    // The shell commands of the brain's tool calls as they are now (an empty list ends what this panel still follows).
+    sendShells(live, [ws]);
     const replay = live.buffer.splice(0, live.buffer.length);
     try { ws.send(JSON.stringify({ type: 'reattach_result', ok: true, sessionId: live.record.id, running: live.running, replayed: replay.length })); } catch {}
     for (const packet of replay) { try { ws.send(JSON.stringify(packet)); } catch {} }
@@ -3707,7 +3789,8 @@ export function createAssistantRuntime({
         return;
       }
       case 'abort':
-        await stopTurn(live.record.id, { origin: 'ui' });
+        // `force`: the panel's "Stop anyway", offered after a second Stop that could not end a command.
+        await stopTurn(live.record.id, { origin: 'ui', force: msg.force === true });
         return;
       case 'set_route_mode':
         applyRouteMode(live, msg.mode);
@@ -4440,6 +4523,8 @@ export function createAssistantRuntime({
     clarifySession, clarifyEvent, clarifyGate, clarifySinks,
     getComputerUse, getComputerTurn, supersedeComputerApproval, abortTurn, notifySession,
     brainSpend, brainSpendByProvider, budgetSession, onBudgetChanged, onBudgetSplit, sendBudget, currentTask, usageView,
+    // The shell commands of a session's OpenCode brain and a page of what one printed (the panel's terminal blocks).
+    shellList, shellOutput,
     // Programmatic surface (the WhatsApp bridge) and remote sessions.
     observe, submit, stopTurn, answerControl, answerDispatchControl, pendingControls, isBusy, sessionPolicy, sessionChannel,
     // whatsapp_send_file's caller identity (POST /api/assistant/whatsapp/send-file).

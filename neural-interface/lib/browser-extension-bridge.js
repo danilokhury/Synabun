@@ -1,14 +1,17 @@
 import { createServer } from 'node:http';
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { compareVersions } from './browser-extension-folder.js';
 import { dirname } from 'node:path';
 import { lookup } from 'node:dns/promises';
 import { WebSocketServer } from 'ws';
-import { anyOrigin, channel, command, COMMAND_WAIT, commandWait as operationWait, CONTROL, controlSurface, equalMac, ERROR_TEXT, fail, handle, HISTORY, inventory, localHost, LONG_OPS_SINCE, longOp, mac, MAX_MESSAGE, nonce, object, pairingKey, parse, payload, portOf, publicOrigin, safeError, string } from '../../browser-extension/protocol.js';
+import { anyOrigin, channel, command, COMMAND_WAIT, commandWait as operationWait, CONTROL, controlSurface, equalMac, ERROR_TEXT, fail, handle, HISTORY, inventory, localHost, LONG_OPS_SINCE, longOp, mac, MAX_MESSAGE, nonce, object, pairingKey, parse, payload, portOf, publicOrigin, safeError, string } from './browser-extension-protocol.js';
+import { EXTENSION_ID } from './browser-extension-pin.js';
 
-const manifest = JSON.parse(readFileSync(new URL('../../browser-extension/manifest.json', import.meta.url), 'utf8'));
-export const EXTENSION_ID = createHash('sha256').update(Buffer.from(manifest.key, 'base64')).digest('hex').slice(0, 32).replace(/[0-9a-f]/g, c => String.fromCharCode(97 + parseInt(c, 16)));
+// The wire contract is the app's own copy of the extension's protocol.js (kept byte-identical by
+// scripts/extension/check-browser-extension-pin.mjs), and the extension's identity is the app's pin: the server
+// starts, restores a pairing and checks an Origin with no extension folder anywhere.
+export { EXTENSION_ID };
 const empty = () => ({ tabs: [], sites: [], allowNewTabs: false, uploads: false, downloads: false });
 export async function publicDestination(url, resolver = lookup) {
   const origin = publicOrigin(url);

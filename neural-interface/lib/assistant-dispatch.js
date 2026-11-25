@@ -55,6 +55,7 @@ import { claudeTokensCostUsd } from './assistant-pricing.js';
 import { RemotePolicyError, clampDispatchSpec, getSessionPolicy, readRegisteredProjects } from './remote-policy.js';
 import { validateWorkerReply } from './worker-question.js';
 import { limitFromText } from '../public/shared/assistant/asst-limit.js';
+import { abandonedPrograms, describeAbandoned } from '../public/shared/shell-stop-view.js';
 // agents-p1: a dispatch's agent_ref (lib/agents/resolve.js).
 import { agentCorrections, agentIntake, agentPinOf, agentRefOf, routedAgent, carryAgentRun, getAgentResolver, stampAgentRun } from './agents/resolve.js';
 // Agents P2 (durable agent messaging): run events, typed waits, the follow-up outbox and the transcript on disk.
@@ -3970,7 +3971,13 @@ export function createAssistantDispatcher({
       if (entry.state === 'resuming') await endOldProcess(entry);
     }
     const runtime = safeRuntime();
-    const stopped = runtime ? await runtime.stop(runId, reason, { stopProvenance: provenance }) : false;
+    // The runtime marks the run stopped before its adapter's abort answers, and a finalize started by that mark
+    // waits for this stop to settle (finalizeRun): what the abort gave up on (abandonedCommands) is then on the run.
+    let stopSettled = () => {};
+    runtimeStops.set(runId, new Promise((resolveStop) => { stopSettled = resolveStop; }));
+    let stopped = false;
+    try { stopped = runtime ? await runtime.stop(runId, reason, { stopProvenance: provenance }) : false; }
+    finally { runtimeStops.delete(runId); stopSettled(); }
     if (!stopped) {
       // Another stop can win while it is disposing the adapter. Keep its action and caller.
       const winner = runtime?.get?.(runId);
@@ -3994,6 +4001,8 @@ export function createAssistantDispatcher({
   // Native runtime notifications do not await subscribers. Keep terminal events
   // admitted through their outbox cancellation before closing the shared store.
   const finalizations = new Map();
+  // runId → a promise settled when this dispatcher's runtime.stop of the run returned (stop).
+  const runtimeStops = new Map();
   function finalize(entry, runtimeRun) {
     if (finalizations.has(entry.runId)) return finalizations.get(entry.runId);
     if (TERMINAL_STATES.has(entry.state)) return Promise.resolve();
@@ -4016,6 +4025,15 @@ export function createAssistantDispatcher({
   }
   async function finalizeRun(entry, runtimeRun) {
     if (TERMINAL_STATES.has(entry.state)) return;
+    // A stop of ours still under way (stop): its abort's answer is on the run once it settled (bounded by the
+    // adapter's own wait for OpenCode).
+    const stopping = runtimeStops.get(entry.runId);
+    if (stopping) {
+      await stopping;
+      if (TERMINAL_STATES.has(entry.state)) return;
+      const latest = safeRuntime()?.get?.(entry.runId);
+      if (Array.isArray(latest?.abandonedCommands) && latest.abandonedCommands.length) runtimeRun = { ...(runtimeRun || {}), abandonedCommands: latest.abandonedCommands };
+    }
     const liveState = live.get(entry.runId);
     // Follow-ups still queued for it (behind a turn, or for its resume after a restart) go with it: its notes say so.
     const cancelled = cancelFollowUps(entry.runId);
@@ -4055,6 +4073,12 @@ export function createAssistantDispatcher({
     const unsent = await cancelled;
     const undelivered = unsent.length ? `${unsent.length} queued follow-up${unsent.length === 1 ? '' : 's'} not delivered: the run ended first (the first: "${clip(unsent[0].text, 160)}")` : null;
     if (undelivered) entry.notes.push(undelivered);
+    // A command its stop could not end (OpenCode, lib/native-loop-runtime.js _abortAdapter) may still be running: the
+    // result says so, by program name only (a command line can hold a token), and the brain hears it with the stop.
+    const abandoned = Array.isArray(runtimeRun?.abandonedCommands) && runtimeRun.abandonedCommands.length ? abandonedPrograms(runtimeRun.abandonedCommands) : [];
+    const abandonedNote = abandoned.length ? describeAbandoned(abandoned.map((command) => ({ command }))) : null;
+    if (abandonedNote) { entry.abandonedCommands = abandoned; entry.notes.push(abandonedNote); }
+    const endText = [abandonedNote, undelivered].filter(Boolean).join('\n');
     if (entry.state === 'failed' && !budgetStopReason(entry.completionReason) && judge?.workerOutcome && !isEvalRun(entry)) {
       // State, queue and desktop move on now; the 'failed' event waits for its cause.
       const failed = emitFailed(entry, liveState?.evidence || null);
@@ -4063,7 +4087,7 @@ export function createAssistantDispatcher({
     }
     if (entry.state === 'failed' || entry.lastResult?.status === 'blocked') { noteLimit(entry); entry.escalation = computeEscalation(entry, terminal.state); }
     // The end event says which follow-ups never reached the worker (a stop the brain hears of carries it to its mailbox).
-    await emit(entry, terminal.state, undelivered ? { text: undelivered } : {}, completion);
+    await emit(entry, terminal.state, endText ? { text: endText } : {}, completion);
     // A memory already stored for the run (by the worker or the brain) is the run's memory.
     // An evaluation run (lib/skills/evals.js) is a measurement, not work to remember: it stores no memory.
     if (memory?.rememberDispatch && !isEvalRun(entry) && !syncMemory(entry, { announce: true }) && (entry.state === 'completed' || (entry.state === 'stopped' && entry.lastResult))) {

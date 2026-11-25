@@ -180,6 +180,89 @@ export function containsTokenText(text) {
 }
 
 /**
+ * For a text read in pages by position (a command's output file, where no stream is kept between two reads): how many
+ * characters at the end of `text` could still become a token or a known form once the next page follows (a token's
+ * beginning, the beginning of a known form). 0 when the page can go out whole. A reader holds that end back and
+ * starts its next page there, so no page boundary ever cuts a secret in two that each half would pass unmasked.
+ */
+export function partialSecretTail(text) {
+  if (typeof text !== 'string' || !text) return 0;
+  let start = text.length;
+  const tail = PARTIAL_TAIL_RE.exec(text);
+  if (tail) start = Math.min(start, tail.index);
+  for (const form of knownForms) {
+    const from = Math.max(0, text.length - (form.length - 1));
+    for (let i = from; i < start; i++) {
+      if (text.charCodeAt(i) !== form.charCodeAt(0) || !form.startsWith(text.slice(i))) continue;
+      start = i;
+      break;
+    }
+  }
+  return text.length - start;
+}
+
+/** How many characters before a page a reader passes to scrubPageText: more than the longest form of a secret. */
+export const PAGE_CONTEXT_CHARS = 128;
+
+/**
+ * One page of a text read by position, scrubbed. `before`: the characters right before the page, so a secret the
+ * page starts in the middle of is still recognised and its rest masked (a reader that opens on the end of a long
+ * output starts wherever that falls). `final`: nothing follows this page, so a marked beginning at its end (a token
+ * the output was cut in) is masked too. Only the page comes back.
+ */
+export function scrubPageText(text, { before = '', final = false } = {}) {
+  if (typeof text !== 'string' || !text) return '';
+  const context = typeof before === 'string' ? before.slice(-PAGE_CONTEXT_CHARS) : '';
+  const whole = context + text;
+  const found = secretIntervals(whole, knownForms);
+  if (final) {
+    const tail = PARTIAL_TAIL_RE.exec(whole);
+    if (tail && MARKED_PARTIAL_RE.test(tail[0])) found.push([tail.index, whole.length]);
+  }
+  const intervals = mergeIntervals(found);
+  return intervals.length ? render(whole, context.length, whole.length, intervals) : text;
+}
+
+/**
+ * One page of a text read by position, with what lies on both sides of it, scrubbed so that the pages a reader joins
+ * never hold a secret whole: the masked stretches are found on the complete window (`before` + `text` + `after`)
+ * first, and only then is the page cut, so a secret that ends at the page's end is masked whole whatever follows it,
+ * and a secret that crosses the page's end is either masked here through its end or left for the next page (which
+ * starts with it), never split into two halves that each pass. `before`: the characters right before the page;
+ * `after`: the characters right after it (as many as were read; at least PAGE_CONTEXT_CHARS unless the text ends
+ * there); `final`: nothing will ever follow `after` (a marked beginning at the very end is masked); otherwise an end
+ * of the window that could still become a secret, when it reaches back into the page, is held for the next page.
+ * → `{ text, consumed, held }`: the scrubbed page, how many characters of `text` + `after` it covers (the next page
+ * starts there), and whether its end was held back because it could still become a secret.
+ */
+export function scrubOutputWindow(text, { before = '', after = '', final = false } = {}) {
+  const page = typeof text === 'string' ? text : '';
+  const context = typeof before === 'string' ? before.slice(-PAGE_CONTEXT_CHARS) : '';
+  const ahead = typeof after === 'string' ? after : '';
+  const whole = context + page + ahead;
+  const start = context.length;
+  let end = start + page.length;
+  if (!page) return { text: '', consumed: 0, held: false };
+  const found = secretIntervals(whole, knownForms);
+  let held = false;
+  if (final) {
+    const tail = PARTIAL_TAIL_RE.exec(whole);
+    if (tail && MARKED_PARTIAL_RE.test(tail[0])) found.push([tail.index, whole.length]);
+  } else {
+    const keep = partialSecretTail(whole);
+    if (keep > 0 && whole.length - keep < end) { end = Math.max(start, whole.length - keep); held = true; }
+  }
+  const intervals = mergeIntervals(found);
+  for (const [a, b] of intervals) {
+    if (a >= end || b <= end) continue;
+    // A secret across the cut: the page ends before it, or (when the page starts inside it) runs through its end.
+    if (a > start) { end = a; } else { end = b; held = false; }
+  }
+  const out = intervals.length ? render(whole, start, end, intervals) : whole.slice(start, end);
+  return { text: out, consumed: end - start, held };
+}
+
+/**
  * `value` with every token-shaped string replaced, at any depth of plain objects and arrays (the events, results and
  * messages SynaBun passes on). Copy on write: what holds no token is returned as it is (the same reference), and so is
  * anything that is not a plain object or an array (a Buffer, a Date, a class instance). Cycles and depth are bounded.

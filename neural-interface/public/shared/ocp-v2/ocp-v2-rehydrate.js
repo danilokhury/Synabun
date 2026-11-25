@@ -155,7 +155,7 @@ function bindingCheck(store, sessionId, isCurrent) {
  * that was closed meanwhile. Resolves what it applied, for the caller's log.
  */
 export async function rehydrateSessionState(store, api, { sessionId, cwd, hasPanel, isDescendant, isCurrent } = {}) {
-  const applied = { status: false, permissions: false, questions: false, todos: false };
+  const applied = { status: false, permissions: false, questions: false, todos: false, shells: false };
   if (!sessionId) return applied;
   const stillBound = bindingCheck(store, sessionId, isCurrent);
   const revisionOf = (slice) => (typeof store.getRevisions === 'function' ? store.getRevisions()[slice] : 0);
@@ -200,6 +200,12 @@ export async function rehydrateSessionState(store, api, { sessionId, cwd, hasPan
       () => (api.sessionTodo ? api.sessionTodo({ sessionId, cwd }) : { ok: false }),
       (res) => (Array.isArray(res.data) ? res.data : undefined),
       (todos) => store.setTodos(todos)),
+    // The commands of the session's tool calls: one that still runs (also after
+    // its call ended) is followed again, with its output, from where it is now.
+    sync('shells',
+      () => (api.shellList && typeof store.setShells === 'function' ? api.shellList({ sessionId, cwd }) : { ok: false }),
+      (res) => (Array.isArray(res.data) ? res.data : undefined),
+      (shells) => store.setShells(shells)),
   ]);
   return applied;
 }

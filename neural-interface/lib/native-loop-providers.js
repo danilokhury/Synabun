@@ -1656,7 +1656,16 @@ export async function createOpenCodeNativeLoopAdapter(options = {}) {
       if (activeAbort) activeAbort.abort(asAbortError(reason));
       settleActiveTurn(asAbortError(reason));
       try {
-        await settleWithin(client.session.abort({ sessionID: sessionId, directory: cwd || undefined }));
+        // A worker's or a loop's stop ends its run whatever OpenCode answers, so a command in the background it
+        // cannot end is given up on with `force` (Stop anyway, lib/opencode2-client.js): still removed in the
+        // background, and its end wakes no model turn in a session nobody owns any more.
+        // What it gave up on goes back to the runtime (lib/native-loop-runtime.js stop), which keeps it on the run:
+        // its result, its tab and the brain then say that the command may still be running (review 29cd51fe).
+        const answer = await settleWithin(client.session.abort({ sessionID: sessionId, directory: cwd || undefined, force: true }));
+        const abandoned = Array.isArray(answer?.data?.abandoned) ? answer.data.abandoned : [];
+        if (abandoned.length) {
+          return { stopped: true, abandoned: abandoned.map((shell) => ({ id: String(shell?.id || ''), command: String(shell?.command || '').slice(0, 200) })) };
+        }
       } catch {}
       return true;
     },

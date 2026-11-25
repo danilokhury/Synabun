@@ -194,6 +194,10 @@ export function createStickyScrollController(container, options = {}) {
       if (remaining > 0.5) scrollToBottom();
       return;
     }
+    // Detached: only a scroll back down near the bottom follows again. An animated key or wheel scroll upward
+    // (WebKit's PageUp / ArrowUp) can step 1 px or less, under movedUp's 1 px; treating that step as "near the
+    // bottom" re-attached and the follow frame snapped the reader back, cancelling their scroll.
+    if (nextScrollTop < prevScrollTop) return;
     if (refreshPosition()) scrollToBottom();
   };
   const onWheel = (event) => {

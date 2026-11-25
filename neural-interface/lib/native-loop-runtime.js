@@ -68,6 +68,9 @@ function rawDescriptor(record) {
     claimedAt: record.claimedAt || null,
     error: record.error || null,
     ...(record.errorCode ? { errorCode: record.errorCode, offenders: record.offenders } : {}),
+    // The commands its stop could not end (an OpenCode command in the background): they may still be running, and the
+    // client keeps trying to end them (lib/opencode2-client.js abortSession force).
+    ...(Array.isArray(record.abandonedCommands) && record.abandonedCommands.length ? { abandonedCommands: record.abandonedCommands } : {}),
     version: Number(record.version) || 0,
     // Task-mode (assistant dispatch) fields. Absent/null for classic loops so
     // existing consumers (router, sidepanels, schedules) are unaffected.
@@ -932,6 +935,21 @@ export class NativeLoopRuntime {
     }
   }
 
+  /**
+   * The adapter's abort, for a run that is ending. An OpenCode adapter answers `{ abandoned: [{ id, command }] }` when
+   * a command in the background could not be ended (its stop forces, lib/native-loop-providers.js): the run keeps
+   * them (`abandonedCommands`, in its descriptor and its state file), so its result and its tab can say so.
+   */
+  async _abortAdapter(record, reason) {
+    let answer;
+    try { answer = await record.adapter?.abort?.(reason); } catch { return; }
+    const abandoned = Array.isArray(answer?.abandoned) ? answer.abandoned.filter((shell) => shell && (shell.command || shell.id)) : [];
+    if (!abandoned.length) return;
+    record.abandonedCommands = abandoned.slice(0, 20).map((shell) => ({ id: String(shell.id || ''), command: String(shell.command || '').slice(0, 200) }));
+    this.log(record.runId, 'native:stop-abandoned', 'its stop could not end a command in the background: it may still be running, and SynaBun keeps trying to end it', { count: abandoned.length });
+    this._writeTerminalState(record, { abandonedCommands: record.abandonedCommands });
+  }
+
   _releaseRuntimeRefs(record, { turnState = 'terminal' } = {}) {
     if (!record) return;
     record.adapter = null;
@@ -976,7 +994,7 @@ export class NativeLoopRuntime {
     try { record.startupAbortController?.abort(reason); } catch {}
     if (record._cancelStartup) { record._cancelStartup(reason); record._cancelStartup = null; }
     this._writeTerminalState(record, { active: false, pending: false, completedAt: record.completedAt, stoppedReason: reason, error: record.error, errorCode: record.errorCode, offenders: record.offenders });
-    try { await record.adapter?.abort?.(reason); } catch {}
+    await this._abortAdapter(record, reason);
     try { await record.adapter?.dispose?.({ preserveSession: true }); } catch {}
     this._releaseRuntimeRefs(record);
     this._emit(record.status === 'interrupted' ? 'sidepanel:run-stopped' : 'sidepanel:run-failed', record);
@@ -1020,7 +1038,7 @@ export class NativeLoopRuntime {
     try { record.startupAbortController?.abort(reason); } catch {}
     if (record._cancelStartup) { record._cancelStartup(reason); record._cancelStartup = null; }
     this._writeTerminalState(record, { active: false, pending: false, completedAt: record.completedAt, stoppedReason: reason });
-    try { await record.adapter?.abort?.(reason); } catch {}
+    await this._abortAdapter(record, reason);
     try { await record.adapter?.dispose?.({ preserveSession: true, ...(terminate ? { terminate: true } : {}) }); } catch {}
     this._releaseRuntimeRefs(record);
     this._emit('sidepanel:run-stopped', record);

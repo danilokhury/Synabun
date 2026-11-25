@@ -3353,6 +3353,46 @@ const PARITY_CSS = `
   padding: 6px 12px;
   border-top: 1px solid rgba(255,255,255,0.05);
 }
+/* A command's output as it is printed (ocp-v2-shell.js). The block scrolls by itself, so a long test run
+   never stretches the transcript; its colours and type are the tool output's. */
+.ocpv2-term { display: flex; flex-direction: column; min-width: 0; }
+.ocpv2-term-out {
+  max-height: 340px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  tab-size: 4;
+}
+.ocpv2-term-out:focus-visible { outline: 1px solid rgba(255,255,255,0.28); outline-offset: -1px; }
+.ocpv2-term-note,
+.ocpv2-term-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-top: 1px solid rgba(255,255,255,0.05);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: rgba(255,255,255,0.55);
+}
+/* What the block hides is gone, whatever its own class says about display (a button of the card is a block). */
+.ocpv2-term [hidden] { display: none; }
+.ocpv2-term-note .ocpv2-tc-more,
+.ocpv2-term-foot .ocpv2-tc-more { margin-top: 0; flex-shrink: 0; }
+.ocpv2-term-state { flex: 1; min-width: 0; }
+.ocpv2-term[data-running="true"] .ocpv2-term-state::after {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: rgba(232,224,220,0.75);
+  vertical-align: middle;
+  animation: ocpv2-term-pulse 1.2s ease-in-out infinite;
+}
+@keyframes ocpv2-term-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .ocpv2-term[data-running="true"] .ocpv2-term-state::after { animation: none; } }
+.ocpv2-term-foot .ocpv2-msg-action { opacity: 1; }
 .ocpv2-tc-diff { white-space: pre; overflow-x: auto; }
 .ocpv2-diff-line { min-height: 1.5em; }
 .ocpv2-diff-add { color: rgba(140,200,160,0.85); background: rgba(140,200,160,0.04); }

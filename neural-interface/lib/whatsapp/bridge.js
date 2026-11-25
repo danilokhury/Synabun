@@ -57,6 +57,7 @@
 // composition are injected (Packages A and C); nothing here knows a phone number.
 
 import { assistantEventKey } from '../../public/shared/assistant/asst-state.js';
+import { abandonedPrograms } from '../../public/shared/shell-stop-view.js';
 import { stripFollowups } from '../../public/shared/assistant/asst-followups.js';
 import { brainCapsLevel, defaultRemotePolicyRegistry, effectiveLevel, remoteBrainNotice } from '../remote-policy.js';
 import { brainSignature, resolveBrainChoice } from './brain.js';
@@ -136,7 +137,39 @@ const ROUTE_DONE_PHASES = new Set(['decided', 'auto', 'expired', 'declined', 'ca
 const WORKER_MOVED_ON_NOTE = 'The user did not approve this on WhatsApp (they moved on to something else). Do not retry it: continue without it, or report it as blocked.';
 const CLARIFY_DONE_PHASES = new Set(['answered', 'declined', 'chat', 'cancelled', 'expired']);
 // Computer control was stopped at the Mac (Esc, the corner, the Stop button): one line to the phone.
-export const MAC_STOP_TEXT = 'Computer control was stopped on your Mac: I am no longer controlling it.';
+/**
+ * Why a Stop could not end a command, as the phone is told it: one generic reason from what the client recorded
+ * (lib/opencode2-client.js removeShell: OpenCode's own message with its HTTP status, or a network error). OpenCode's
+ * words never leave the machine: they can quote the command line.
+ */
+export function phoneStopReason(shells) {
+  const said = (Array.isArray(shells) ? shells : []).map((shell) => String(shell?.reason || '')).join(' ');
+  if (/\bHTTP 5\d\d\b/.test(said)) return 'OpenCode answered with an error';
+  if (/\bHTTP 4\d\d\b/.test(said)) return 'OpenCode refused';
+  if (/ECONN|ETIMEDOUT|EHOSTUNREACH|ENOTFOUND|EPIPE|socket|fetch failed|could not be reached|timed? ?out/i.test(said)) return 'OpenCode could not be reached';
+  return 'OpenCode did not confirm the end';
+}
+
+const programList = (names) => (Array.isArray(names) ? names : []).slice(0, 5).map((name) => (name === 'command' ? 'a command' : `\`${name}\``)).join(', ');
+
+/**
+ * The reply to /stop: what was cancelled (the session's runs and the queue) in every case, then what the turn's Stop
+ * did. `turnStop`: `{ failed: [program], reason }` (the turn goes on: the next /stop of that turn stops anyway) or
+ * `{ abandoned: [program] }` (it stopped anyway; the command may still run). Programs by name only.
+ */
+export function phoneStopReply(cancelled, turnStop = null) {
+  const n = Math.max(0, Number(cancelled) || 0);
+  const tasks = `${n} task${n === 1 ? '' : 's'}`;
+  if (turnStop?.failed) {
+    const what = programList(turnStop.failed) || 'a command';
+    const one = turnStop.failed.length <= 1;
+    return `${n ? `Cancelled ${tasks}, but could not` : 'Could not'} end ${what} on your computer (${turnStop.reason || 'OpenCode did not confirm the end'}). ${one ? 'It is' : 'They are'} still running, so the current reply goes on. Send /stop again to stop anyway: ${one ? 'it' : 'they'} may keep running on the computer, and SynaBun will keep trying to end ${one ? 'it' : 'them'}.`;
+  }
+  const left = turnStop?.abandoned?.length ? ` ${programList(turnStop.abandoned)} may still be running on your computer: SynaBun keeps trying to end ${turnStop.abandoned.length === 1 ? 'it' : 'them'} in the background.` : '';
+  return `Stopped. Cancelled ${tasks}.${left}`;
+}
+
+export const MAC_STOP_TEXT ='Computer control was stopped on your Mac: I am no longer controlling it.';
 const usd = (value) => `$${(Number(value) || 0).toFixed(2)}`;
 const hhmm = (ms) => new Date(ms).toTimeString().slice(0, 5);
 const monthDay = (ms) => new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -1071,9 +1104,8 @@ export function createWhatsAppBridge({
         // what waited behind it) is not acted on, as /stop clears what already waits in line.
         state.stoppedAt = Math.max(state.stoppedAt, tsMs(message.ts, now()));
         state.stopLateNoted = false;
-        const { stoppedRuns, clearedQueue } = await stopEverything({ reason: 'phone' });
-        const n = stoppedRuns + clearedQueue;
-        await say(`Stopped. Cancelled ${n} task${n === 1 ? '' : 's'}.`, { maxChunks: 1 });
+        const { stoppedRuns, clearedQueue, turnStop } = await stopEverything({ reason: 'phone' });
+        await say(phoneStopReply(stoppedRuns + clearedQueue, turnStop), { maxChunks: 1 });
         return;
       }
       case 'new':
@@ -1124,7 +1156,21 @@ export function createWhatsAppBridge({
     let stoppedRuns = 0;
     const turn = id ? state.turns.get(id) : null;
     if (turn) turn.stoppedByPhone = reason === 'phone';
-    if (rt && id) { try { await rt.stopTurn?.(id, { origin: 'whatsapp' }); } catch {} }
+    // A Stop that could not end a command in the background (OpenCode): the turn goes on, and the phone is told. The
+    // phone has no "Stop anyway" button, so the next /stop of the same turn is one (forceAfterFailures: 1, counted by
+    // the runtime per turn); a stop of the service's never leaves a turn behind. What the phone hears of it is the
+    // program's name and a generic reason only (phoneStopReply): never a command line or OpenCode's own words.
+    let turnStop = null;
+    if (rt && id) {
+      try {
+        const r = await rt.stopTurn?.(id, { origin: 'whatsapp', ...(reason !== 'phone' ? { force: true } : { forceAfterFailures: 1 }) });
+        if (r && r.ok === false && Array.isArray(r.shells)) turnStop = { failed: abandonedPrograms(r.shells), reason: phoneStopReason(r.shells) };
+        else if (r?.abandoned?.length) turnStop = { abandoned: abandonedPrograms(r.abandoned) };
+        // A stop of the service's (no phone to tell): the Assistant panels of the session hear it from the runtime
+        // (stop_abandoned), and the log keeps it.
+        if (reason !== 'phone' && turnStop?.abandoned) log('whatsapp:bridge', `session ${id}: stopped anyway; ${turnStop.abandoned.join(', ')} may still be running (SynaBun keeps trying to end it)`);
+      } catch {}
+    }
     const d = dispatcher();
     if (d?.list && d?.stop && id) {
       let runs = [];
@@ -1147,7 +1193,7 @@ export function createWhatsAppBridge({
     const cleared = state.queue.splice(0, state.queue.length);
     for (const job of cleared) react(job.sourceIds, 'stopped');
     persistBridgeState();
-    return { stoppedRuns, clearedQueue: cleared.length };
+    return { stoppedRuns, clearedQueue: cleared.length, turnStop };
   }
   function pause(by = 'desktop') {
     state.paused = true;

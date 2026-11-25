@@ -88,6 +88,7 @@ export async function disconnect() {
   _stopRequested = true;
   if (_abort) { try { _abort.abort(); } catch {} }
   _abort = null;
+  try { _client?.dispose?.(); } catch {}
   _client = null;
   _port = null;
   _password = null;
@@ -211,6 +212,8 @@ export const EXTRA_CLIENT_METHODS = Object.freeze({
   mcp: ['add'],
   lsp: ['status'],
   formatter: ['status'],
+  // The shell commands of tool calls: a session's list and a command's output in pages.
+  shell: ['list', 'output'],
 });
 
 function extraGroups(getRaw) {
@@ -369,7 +372,7 @@ export function createClientInstance({ port, clientFactory = createOpencode2Clie
       if (!connected) throw new Error('OpenCode isolated event stream did not become ready');
       return true;
     },
-    stop() { stopRequested = true; if (abort) { try { abort.abort(); } catch {} } abort = null; client = null; },
+    stop() { stopRequested = true; if (abort) { try { abort.abort(); } catch {} } abort = null; try { client?.dispose?.(); } catch {} client = null; },
     isConnected: () => connected,
     session: {
       list:     (p = {}) => unwrap(req().session.list(clean(p))),

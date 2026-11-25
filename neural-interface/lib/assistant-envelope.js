@@ -443,6 +443,28 @@ export function opencodeControlResponse(pending, response = {}) {
 }
 
 /**
+ * A shell command of an OpenCode tool call as the Assistant panel shows it: which call it belongs to (`callID` is
+ * the tool_use id of that call in the envelope), whether it runs, how it ended. Never what it printed: that is
+ * read apart, in pages, by the panel that shows it. null for anything without an id.
+ */
+export function opencodeShellView(shell) {
+  if (!shell || typeof shell !== 'object' || typeof shell.id !== 'string' || !shell.id) return null;
+  const time = shell.time && typeof shell.time === 'object' ? shell.time : {};
+  const started = Number(time.started) || 0;
+  const ended = Number(time.ended) || 0;
+  return {
+    id: shell.id,
+    callID: typeof shell.callID === 'string' ? shell.callID : '',
+    command: clip(typeof shell.command === 'string' ? shell.command : '', 4000),
+    status: typeof shell.status === 'string' && shell.status ? shell.status : 'running',
+    background: shell.background === true,
+    waited: shell.waited === true,
+    ...(typeof shell.exit === 'number' ? { exit: shell.exit } : {}),
+    time: ended ? { started, ended } : { started },
+  };
+}
+
+/**
  * Stateful translator for one OpenCode brain session: SSE events → envelope.
  * Only events for `sessionId` are considered.
  */
@@ -543,10 +565,22 @@ export function createOpenCodeEnvelopeTranslator({ sessionId, emit, onTurnEnd = 
   }
   return {
     state,
+    /** A turn of the brain's own starts: a stop told before it is over. */
+    noteTurnStart() { state.stopTold = false; },
     handle(eventType, ev = {}) {
       // Metering only (child sessions too, before the filter): a throw here must not drop the event.
       if (/^(?:message|session)[.:](?:updated|created)$/i.test(eventType)) { try { onUsageEvent(eventType, ev); } catch {} }
       if (!belongs(ev)) return false;
+      // A tool call's shell command started, went on after its call ("in the background") or ended
+      // (lib/opencode2-translate.js). It is what the panel shows next to the call, never an event of the
+      // conversation: a packet of its own, which the runtime sends to the open panels and keeps nowhere.
+      if (/^shell[.:]updated$/i.test(eventType)) {
+        // Named by its session or not at all: a command is never taken for this conversation's by default.
+        if (ev.sessionID !== sessionId) return false;
+        const shell = opencodeShellView(ev.shell);
+        if (shell) emit({ type: 'assistant:shell', shell });
+        return !!shell;
+      }
       if (!state.announcedInit) { state.announcedInit = true; event(synthesizeInit({ brain: 'opencode', sessionId, cwd: brain.cwd || null, model: brain.model || null })); }
       if (/^message[.:]updated$/i.test(eventType)) {
         const info = ev.info || ev.message?.info || {};
@@ -585,6 +619,12 @@ export function createOpenCodeEnvelopeTranslator({ sessionId, emit, onTurnEnd = 
       }
       if (/^session[.:]error$/i.test(eventType)) {
         const message = ev.error?.message || ev.error?.data?.message || (typeof ev.error === 'string' ? ev.error : 'OpenCode session error');
+        // A Stop while a command ran in the background ends the turn at once; OpenCode then starts the session to
+        // report the removed command, and that execution is interrupted too. It is the same Stop: nothing more is
+        // said, and the idle that follows it ends nothing (the next turn's own start clears this).
+        const stopped = ev.error?.name === 'MessageAbortedError';
+        if (stopped && state.stopTold) { state.errored = true; return true; }
+        state.stopTold = stopped;
         flushHeld();
         if (state.started) event(messageStop());
         state.errored = true;

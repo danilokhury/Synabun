@@ -56,6 +56,7 @@ import { historyHasResultSupport, historyResultsNotice, snapshotWantsResults, fu
 import { CP_STYLES } from './cp/cp-styles.js';
 import { TEMPORARY_CAPABILITY, keepsNothing, chooseTemporary, applyTemporary, temporaryRefusal, endTemporary, leaveTemporary, tabAfterTemporary, persistableTabs, temporaryBlocks, reattaches } from './cp/cp-temporary.js';
 import { paintTemporary } from './cp/cp-temporary-view.js';
+import { composerHoldsDraft, markAutoCloseKeep } from './tray-auto-close.js';
 import { renderMarkdown } from './cp/cp-markdown.js';
 import { synabunToolKey, synabunToolLabel, synabunToolSummary, synabunToolGroup } from './synabun-tools.js';
 import { normalizeToolHeartbeat } from './tool-heartbeat.js';
@@ -3250,6 +3251,7 @@ function _createTrayPill(tab) {
   pill.className = 'term-minimized-pill cp-session-pill';
   pill.dataset.tabId = tab.id;
   pill.getAutomationRunId = () => tab.automationRunId;
+  pill.keepFromAutoClose = () => _autoCloseKeep(tab);
   pill.innerHTML = `
     <span class="cp-pill-ring" aria-hidden="true"><i></i></span>
     <span class="term-minimized-pill-icon">${_CP_ICON_SVG}</span>
@@ -3344,6 +3346,22 @@ function paintPillState(pill, tab) {
   const needsYou = tabNeedsYou(tab);
   pill.classList.toggle('cp-pill-attention', needsYou);
   pill.classList.toggle('cp-pill-running', !needsYou && tabWorking(tab));
+  markAutoCloseKeep(pill, _autoCloseKeep(tab));
+}
+
+/**
+ * What the tray's auto-close must leave open (tray-auto-close.js), or '': a temporary chat,
+ * whose close ends it for good (it keeps no transcript), and a tab holding an unsent draft (its text, in the
+ * composer while the tab is the one on screen, and its attached images and files). The user's X closes both.
+ * Also a tab with prompts in its queue that were never sent: a paused queue, one stranded behind another
+ * conversation, or the one being taken off it (`_queueSending`). renderQueue repaints the mark at every change.
+ */
+function _autoCloseKeep(tab) {
+  if (!tab) return '';
+  if (keepsNothing(tab)) return 'temporary';
+  if (tab.queue?.length || tab._queueSending) return 'queue';
+  const $input = tab === activeTab() ? _panel?.querySelector('#cp-input') : null;
+  return composerHoldsDraft($input ? $input.value : tab.draft, tab.attachedImages, tab.attachedFiles) ? 'draft' : '';
 }
 
 // Whether each tab was saved needing you: a change is written at once, for the placeholder a reload
@@ -9984,6 +10002,8 @@ function addToQueue(tab, text, images, files) {
 }
 
 function renderQueue(tab) {
+  // The tray's auto-close keeps a tab while its queue holds prompts (_autoCloseKeep): said at every change.
+  if (tab?.pillEl) markAutoCloseKeep(tab.pillEl, _autoCloseKeep(tab));
   if (tab !== activeTab()) return;
   const $tray = _panel?.querySelector('#cp-queue-tray');
   const $items = $tray?.querySelector('.cp-queue-items');

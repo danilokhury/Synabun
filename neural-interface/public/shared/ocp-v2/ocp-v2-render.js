@@ -42,6 +42,7 @@ import {
   revertToMessage, restoreReverted, retryFromMessage, forkSession,
 } from './ocp-v2-session-actions.js';
 import { synabunToolKey, synabunToolLabel, synabunToolSummary } from '../synabun-tools.js';
+import { renderShellTerminal, retainShellFollowing, shellOutputSupported } from './ocp-v2-shell.js';
 
 const _expandedReasoningIds = new Set();
 const _activeRenderers = new Set();
@@ -117,13 +118,22 @@ export function mountRenderer(containerEl, store = getDefaultStore(), opts = {})
     // The server listed this session's open permission requests: a reason
     // typed for one that is no longer among them has no card to come back to.
     if (event?.type === 'permission:set' && event.listed) settlePermissionReasons(state);
+    // What a command printed is drawn by its own terminal block (ocp-v2-shell.js): no card is built again for
+    // it. The transcript only keeps its place at the end while the block grows.
+    if (event?.type === 'shell:output') {
+      requestAnimationFrame(() => { if (_container) scrollController?.scrollToBottom(); });
+      return;
+    }
     scheduleRender();
   });
+  // The commands of this panel's session are followed for as long as it is on screen.
+  const releaseShells = retainShellFollowing(store);
 
   const instance = {
     render: doRender,
     unmount: () => {
       try { unsubscribe(); } catch {}
+      try { releaseShells(); } catch {}
       scrollController?.destroy();
       rowWatcher.disconnect();
       _activeRenderers.delete(instance);
@@ -153,6 +163,18 @@ function _partSig(part) {
   let sig = _partSigs.get(part);
   if (sig === undefined) { sig = partSignature(part); _partSigs.set(part, sig); }
   return sig;
+}
+
+// A bash card also shows its command as the panel knows it live (running on after the call, ended, its exit
+// code): the card is built again when that changes, never for what the command prints.
+function _shellOf(part, state) {
+  if (part?.type !== 'tool') return null;
+  const shellId = part.state?.metadata?.shellID;
+  return typeof shellId === 'string' && shellId ? state.shells?.get(shellId) || null : null;
+}
+function _shellSig(part, state) {
+  const shell = _shellOf(part, state);
+  return shell ? `|sh:${shell.status}:${shell.background ? 'b' : ''}:${shell.exit ?? ''}:${shellOutputSupported() ? 'l' : ''}` : '';
 }
 
 function _msgSig(msg) {
@@ -299,7 +321,7 @@ function render(_container, store, opts = {}) {
         const partKey = part.id || `${part.type}:${part.index ?? ''}`;
         desired.push({
           key: `a:${msg.id}:${partKey}`,
-          sig: `${isContinuation ? 'c' : 'h'}|${msg.info?.summary ? 's' : ''}|${_partSig(part)}`,
+          sig: `${isContinuation ? 'c' : 'h'}|${msg.info?.summary ? 's' : ''}|${_partSig(part)}${_shellSig(part, s)}`,
           build: () => renderAssistantPartBubble(msg, part, isContinuation, store),
         });
         prevAssistantId = msg.id;
@@ -1012,6 +1034,9 @@ function renderToolPart(part, store) {
       return holder;
     },
     onOpenChild: _rendererOpts.get(store)?.onOpenChild || null,
+    shell: _shellOf(part, store.getState()),
+    // An older server cannot be asked for a command's output: the card shows what the call returned.
+    terminal: shellOutputSupported() ? (shellId) => renderShellTerminal(store, shellId) : null,
   });
 }
 

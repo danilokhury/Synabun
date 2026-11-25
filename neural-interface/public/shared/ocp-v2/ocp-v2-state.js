@@ -78,6 +78,13 @@ export function createPanelStore() {
     todos: [],
     // What the session changed on disk (session.diff): SnapshotFileDiff[].
     sessionDiff: [],
+    // The shell commands of the session's tool calls (shell.updated, shell:list):
+    // shellId → { id, status, command, callID, messageID, background, waited,
+    // exit, time }. A command can outlive its tool call ("in the background").
+    shells: new Map(),
+    // What each command has printed, as far as it was read (ocp-v2-shell-logic.js):
+    // shellId → { text, from, size, done, gone, error }.
+    shellOutput: new Map(),
 
     mode: 'build',
     agent: 'build',
@@ -112,7 +119,7 @@ export function createPanelStore() {
   // `binding` counts how often the store moved to another session: an answer
   // that was asked for under an older binding belongs to a session the panel
   // has left (or left and came back to) and is dropped by whoever asked.
-  const _rev = { status: 0, permissions: 0, questions: 0, todos: 0, binding: 0 };
+  const _rev = { status: 0, permissions: 0, questions: 0, todos: 0, shells: 0, binding: 0 };
   function getRevisions() { return { ..._rev }; }
   // The binding identity on its own: it changes every time the store is bound
   // to another session (a new one, a switch, a project change, no session),
@@ -175,7 +182,7 @@ export function createPanelStore() {
     // left is gone before any listener runs, so nobody sees the new session
     // with the old one's run state or requests.
     _rev.binding += 1;
-    _rev.status += 1; _rev.todos += 1; _rev.permissions += 1; _rev.questions += 1;
+    _rev.status += 1; _rev.todos += 1; _rev.permissions += 1; _rev.questions += 1; _rev.shells += 1;
     const wasRunning = _state.running;
     _state.running = false;
     _state.sessionStatus = { type: 'idle' };
@@ -183,6 +190,9 @@ export function createPanelStore() {
     _state.autoAccept = false;
     _state.todos = [];
     _state.sessionDiff = [];
+    // A command belongs to the session that ran it, and so does what it printed.
+    _state.shells = new Map();
+    _state.shellOutput = new Map();
     _state.contextGauge = createDefaultContextGauge(sessionId ? 'pending' : 'idle');
     // A request waiting for an answer belongs to the session it was raised
     // in. One that arrived while the next session was still being created
@@ -407,6 +417,42 @@ export function createPanelStore() {
   function setSessionDiff(diff) {
     _state.sessionDiff = Array.isArray(diff) ? diff : [];
     notify({ type: 'diff:set' });
+  }
+
+  // One command changed (shell.updated): it started with its call, went on in
+  // the background, or ended. A command of another session is not this store's.
+  function upsertShell(shell) {
+    const id = shell && typeof shell.id === 'string' ? shell.id : '';
+    if (!id) return false;
+    if (shell.sessionID && _state.sessionId && shell.sessionID !== _state.sessionId) return false;
+    _rev.shells += 1;
+    _state.shells.set(id, { ..._state.shells.get(id), ...shell });
+    notify({ type: 'shell:update', shellId: id });
+    return true;
+  }
+
+  // The server's list of the session's commands (after a reload or a reconnect):
+  // what it knows replaces what the store held, what it printed is kept.
+  function setShells(list) {
+    _rev.shells += 1;
+    const next = new Map();
+    for (const shell of Array.isArray(list) ? list : []) {
+      if (!shell || typeof shell.id !== 'string' || !shell.id) continue;
+      if (shell.sessionID && _state.sessionId && shell.sessionID !== _state.sessionId) continue;
+      next.set(shell.id, { ..._state.shells.get(shell.id), ...shell });
+    }
+    _state.shells = next;
+    notify({ type: 'shell:update', shellId: null });
+  }
+
+  // What a command printed, as far as it was read. Only the transcript's
+  // terminal blocks read this (they draw it themselves): no slice of the
+  // rehydrated state depends on it.
+  function setShellOutput(shellId, view) {
+    if (!shellId) return;
+    if (view) _state.shellOutput.set(shellId, view);
+    else _state.shellOutput.delete(shellId);
+    notify({ type: 'shell:output', shellId });
   }
 
   function setAutoAccept(value) {
@@ -661,7 +707,7 @@ export function createPanelStore() {
     appendPartDelta, removePart, hydrateMessages,
     setRunning, setSessionStatus, setCompacting,
     setPendingPermission, setPendingPermissions, addPendingPermission, removePendingPermission,
-    setAutoAccept, setTodos, setSessionDiff,
+    setAutoAccept, setTodos, setSessionDiff, upsertShell, setShells, setShellOutput,
     setPendingQuestions, addPendingQuestion, removePendingQuestion,
     pushError, dismissError, clearErrors, setHealing, setKnownSessions,
     setHelpCard,

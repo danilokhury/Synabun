@@ -82,6 +82,19 @@ export const OPENCODE_UPDATE_SOURCES = Object.freeze({
   brewToken: 'opencode-v2',
 });
 
+/**
+ * OpenCode 2 in WinGet (checked 2026-11-23): the package id, and the arguments OpenCode's own updater asks WinGet
+ * with to find the version it can install (`winget search …`). WinGet is the yardstick of a WinGet install, not
+ * OpenCode's update API: a release reaches WinGet's repository days after it is published, and some never do (on
+ * 2026-11-23 the API said 2.4.1 while WinGet's newest was 2.3.2, after 2.2.7 with nothing between). `opencode
+ * upgrade --method winget` installs what WinGet has, so a badge measured against the API stays lit after an update
+ * that did all it could.
+ */
+export const OPENCODE_WINGET_ID = 'Anomaly.OpenCode';
+export const OPENCODE_WINGET_SEARCH_ARGS = Object.freeze([
+  'search', '--id', OPENCODE_WINGET_ID, '--exact', '--source', 'winget', '--accept-source-agreements', '--disable-interactivity',
+]);
+
 const PLAIN_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const plainVersion = (value) => {
   const text = typeof value === 'string' ? value.trim().replace(/^v(?=\d)/i, '') : '';
@@ -102,6 +115,24 @@ export function parseVendorLatest(body) {
 export function parseFormulaVersion(text) {
   const match = String(text ?? '').match(/^[ \t]*version[ \t]+["']([^"'\s]+)["'][ \t]*$/m);
   return match ? plainVersion(match[1]) : null;
+}
+
+/**
+ * The version `winget search --id <id> --exact` lists for a package, or null. Read as OpenCode's own updater reads
+ * it: on any line, the word after the package id (the table's columns are Name, Id, Version, Source; a progress
+ * spinner may share the first line, separated by carriage returns).
+ */
+export function parseWingetSearchVersion(output, id = OPENCODE_WINGET_ID) {
+  const wanted = String(id || '').toLowerCase();
+  if (!wanted) return null;
+  for (const line of String(output ?? '').split(/\r?\n|\r/)) {
+    const words = line.trim().split(/\s+/);
+    const at = words.findIndex((word) => word.toLowerCase() === wanted);
+    if (at === -1) continue;
+    const version = plainVersion(words[at + 1]);
+    if (version) return version;
+  }
+  return null;
 }
 
 /**
@@ -295,14 +326,32 @@ export function quoteCommandPath(file, platform = process.platform) {
  * upgrade` refreshes by itself only once in a while (HOMEBREW_AUTO_UPDATE_SECS,
  * a day by default) and would answer "already installed", leaving the badge
  * lit: the command refreshes first.
+ *
+ * `gitBash`: a Git Bash this PC has (lib/git-bash resolver: bash.exe), for OpenCode 2's own installer on Windows.
+ * `opencode upgrade --method curl` runs that installer, a bash script, with Git Bash, which it looks for through
+ * `git --exec-path`: a PC whose git is not on PATH (Git's "Git Bash only" setup, or SynaBun's own copy of Git) has
+ * one all the same, and is told where it is (OPENCODE_GIT_BASH_PATH, for that one command).
+ *
+ * `installedVersion`: the version found, when the caller knows it. An OpenCode in %USERPROFILE%\.opencode\bin that
+ * is not OpenCode 2 (the release archive an older SynaBun put there was OpenCode 1) gets no command, as before: its
+ * own upgrade is not the one meant here, and SynaBun's panel already says how to get OpenCode 2.
  */
-export function buildUpdateCommand(toolKey, installSource, { brewToken = null, binPath = null, platform = null, refreshBrew = false } = {}) {
+export function buildUpdateCommand(toolKey, installSource, { brewToken = null, binPath = null, platform = null, refreshBrew = false, gitBash = null, installedVersion = null } = {}) {
+  if (toolKey === 'opencode' && installSource === 'standalone' && platform === 'win32' && installedVersion != null && !/^v?2\./.test(String(installedVersion).trim())) return null;
   const planned = planUpdateCommand(toolKey, installSource, { brewToken, platform });
   const command = planned && refreshBrew && isBrewSource(installSource) ? `brew update && ${planned}` : planned;
   const name = TOOL_COMMANDS[toolKey];
   if (!command || !binPath || !name) return command;
   if (command !== name && !command.startsWith(`${name} `)) return command;
-  return `${quoteCommandPath(binPath, platform || process.platform)}${command.slice(name.length)}`;
+  const started = `${quoteCommandPath(binPath, platform || process.platform)}${command.slice(name.length)}`;
+  const bash = toolKey === 'opencode' && platform === 'win32' && installSource === 'standalone' ? cmdSetValue(gitBash) : null;
+  return bash ? `set "OPENCODE_GIT_BASH_PATH=${bash}" && ${started}` : started;
+}
+
+/** A value cmd.exe takes unchanged inside `set "NAME=value"`, or null (a quote, a variable or an escape in it). */
+function cmdSetValue(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return text && !/["%!^\r\n]/.test(text) ? text : null;
 }
 
 function planUpdateCommand(toolKey, installSource, { brewToken = null, platform = null } = {}) {
@@ -326,8 +375,10 @@ function planUpdateCommand(toolKey, installSource, { brewToken = null, platform 
 
   // OpenCode 2 updates itself through the channel it came from (brew is handled above).
   if (toolKey === 'opencode') {
-    // Its installer script is bash: a copy in %USERPROFILE%\.opencode\bin on Windows is no OpenCode 2 install.
-    if (installSource === 'standalone' && platform === 'win32') return null;
+    // %USERPROFILE%\.opencode\bin\opencode.exe is an install of OpenCode 2's own script on Windows too (the script
+    // runs in Git Bash and names the file opencode.exe), and OpenCode 2 updates it there with `--method curl`
+    // through Git Bash (read in the Windows builds of 2.2.7 and 2.4.1, 2026-11-23). It used to get no command here,
+    // so its badge could only say "update via the official installer".
     if (OPENCODE_METHODS[installSource]) return `opencode upgrade --method ${OPENCODE_METHODS[installSource]}`;
     if (['volta', 'scoop', 'choco'].includes(installSource)) return null; // not an OpenCode 2 channel: the caller shows a hint
     return selfUpdate;
@@ -408,6 +459,13 @@ export function parseBrewOutdated(raw) {
  * tool's formula as its tap publishes it (OpenCode's tap only): what Homebrew
  * installs once the tap is refreshed, so it counts when it is newer than the
  * install and `brew outdated` has not heard of it yet.
+ *
+ * `winget`: what WinGet was asked about a WinGet install (OpenCode 2 only):
+ * `{ version }`, the version WinGet lists, or null when it could not be
+ * asked. WinGet is then the yardstick, as Homebrew is for a Homebrew install:
+ * its version when that is newer than the install, else the install itself (no
+ * badge), and the install itself when WinGet could not be asked (fail closed:
+ * the update API's version is one WinGet may not have).
  */
 export function resolveLatest({
   installSource,
@@ -416,7 +474,12 @@ export function resolveLatest({
   npmLatest = null,
   brewUpstream = null,
   installed = null,
+  winget = undefined,
 } = {}) {
+  if (installSource === 'winget' && winget !== undefined) {
+    if (!installed) return null;
+    return winget?.version && semverNewer(installed, winget.version) ? winget.version : installed;
+  }
   if (!isBrewSource(installSource)) return npmLatest;
   if (!installed) return null;
   if (!brewOutdated) return installed;

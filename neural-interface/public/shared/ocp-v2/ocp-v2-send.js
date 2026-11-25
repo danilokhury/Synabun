@@ -37,6 +37,7 @@ import {
 import { hydrateTranscript } from './ocp-v2-rehydrate.js';
 import { captureBinding, trackBinding, isBindingToken, searchOnBinding } from './ocp-v2-binding.js';
 import { takeGreetingId } from './ocp-v2-greeting.js';
+import { t } from '../i18n.js';
 
 const STOR_MODE = 'opencode-v2-mode';   // the last agent picked (build / plan / a custom one)
 const STOR_HISTORY = 'ocp-v2-prompt-history';
@@ -1564,11 +1565,16 @@ export function mountCompose(rootEl, store = getDefaultStore(), opts = {}) {
       const unsubInner = store.subscribe((event, state) => {
         if ((event?.type === 'running:set' && !state.running) || !turn.isCurrent()) cleanup();
       });
-      // Working time only: the clock stops while the session waits on the user (a permission, a question).
+      // Working time only: the clock stops while the session waits on the user (a permission, a question) or on
+      // a command of its own still running in the background (a long test run: `sessionStatus.background`).
       clock = createTurnClock({
         ms: TURN_LIMIT_MS,
-        paused: () => sessionWaitsOnUser(turn.sessionId),
-        subscribe: onAsksChanged,
+        paused: () => sessionWaitsOnUser(turn.sessionId) || (turn.isCurrent() && store.getState().sessionStatus?.background === true),
+        subscribe: (changed) => {
+          const offAsks = onAsksChanged(changed);
+          const offStatus = store.subscribe((event) => { if (event?.type === 'status:set') changed(); });
+          return () => { try { offAsks?.(); } catch { /* gone */ } offStatus(); };
+        },
         onExpire: () => {
           if (run.isCurrent()) store.pushError({ message: 'OpenCode turn timed out waiting for session.idle.' });
           endTurn(store, run);
@@ -1580,7 +1586,7 @@ export function mountCompose(rootEl, store = getDefaultStore(), opts = {}) {
     });
   }
 
-  async function doAbort() {
+  async function doAbort({ force = false } = {}) {
     // `turn` is the session Stop was pressed in, and the turn that was running
     // there. The loop-stop request and the abort are for that session; what is
     // cleared afterwards is cleared only while the panel is still on that
@@ -1600,13 +1606,40 @@ export function mountCompose(rootEl, store = getDefaultStore(), opts = {}) {
     }
     _suppressAbortErrorUntil = Date.now() + 15000;
     _suppressAbortErrorCount += 1;
+    let stopped = null;
     try {
-      await api.abort(turn.sessionId);
+      stopped = await api.abort(turn.sessionId, force ? { force: true } : undefined);
     } catch (err) {
       console.warn('[ocp-v2-send] abort failed', err);
     } finally {
-      clearStoppedTurn();
+      // The banner of an earlier failed Stop of this session goes: this answer says what holds now.
+      if (turn.isCurrent()) dismissStopNotices();
+      // Its words are loaded only when a Stop has something to say (not before the app is shown).
+      const view = (stopped?.code === 'SHELL_STOP_FAILED' || stopped?.abandoned?.length) ? await import('../shell-stop-view.js').catch(() => null) : null;
+      const failure = view?.describeStopFailure(stopped, t) || null;
+      if (stopped?.code === 'SHELL_STOP_FAILED') {
+        // A command Stop could not end still runs: the turn stays on (its Stop button too), and the panel says which
+        // and why. No "aborted" send failure follows (the prompt's wait goes on), so none is held back for it.
+        _suppressAbortErrorCount = Math.max(0, _suppressAbortErrorCount - 1);
+        if (turn.isCurrent()) {
+          store.pushError({
+            message: failure?.message || stopped.error || 'Stop could not end a command still running in the background. Press Stop again.',
+            kind: STOP_NOTICE,
+            // From the second failure on: end the turn here, telling plainly what may still run.
+            ...(failure?.canForce ? { actions: [{ label: view.shellStopText('anyway', {}, t), run: () => { doAbort({ force: true }).catch(() => {}); } }] } : {}),
+          });
+        }
+      } else {
+        clearStoppedTurn();
+        const left = view?.describeAbandoned(stopped?.abandoned, t) || null;
+        if (left && turn.isCurrent()) store.pushError({ message: left, kind: STOP_NOTICE, notice: true });
+      }
     }
+  }
+
+  const STOP_NOTICE = 'shell-stop';
+  function dismissStopNotices() {
+    for (const err of store.getState().errors || []) if (err?.kind === STOP_NOTICE && err.id) store.dismissError(err.id);
   }
 
   function shouldSuppressAbortError(err) {

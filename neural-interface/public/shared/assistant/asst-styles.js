@@ -469,6 +469,7 @@ export function injectAssistantStyles() {
     .asst-status { color: var(--asst-text-3); font-size: 12px; }
     .asst-status.info { color: var(--asst-text-2); }
     .asst-status.error { color: var(--asst-live); }
+    .asst-status .asst-stop-anyway { margin-left: 8px; vertical-align: baseline; }
     .asst-divider { display: flex; align-items: center; gap: 10px; color: var(--asst-text-3); font-size: 11px; }
     .asst-divider::before, .asst-divider::after { content: ''; flex: 1; height: 1px; background: var(--asst-line); }
 

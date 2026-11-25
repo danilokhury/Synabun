@@ -4,11 +4,27 @@ Connect Chrome or Edge to let an agent work in a browser profile where you are a
 
 ## Connect the extension
 
-1. On macOS, Windows or Linux, open **Settings → Browser** in SynaBun. Select **Existing browser via extension** and choose **Connect your browser**.
+1. On macOS, Windows or Linux, open **Settings → Browser** in SynaBun. Select **Existing browser via extension** and choose **Connect your browser**. The first time, SynaBun downloads the extension from synabun.ai, which takes a moment and needs an internet connection.
 2. In the browser you want to connect, open the extensions address shown on the setup page. Turn on **Developer mode**, choose **Load unpacked**, and select the folder SynaBun opened. Use this folder again if you reinstall the extension.
 3. Keep the setup page open until it shows **Connected**. For manual pairing, start pairing in Settings and enter the displayed port and code in the extension popup.
 
 The extension connects to SynaBun on this computer at `127.0.0.1`. Setup requires neither a NativeMessagingHosts installation nor an allowed_origins manifest. If your organization blocks unpacked extensions, contact your browser administrator.
+
+## Where the extension comes from
+
+SynaBun Browser Bridge is not part of the SynaBun app or its installers. When you choose **Connect your browser**, SynaBun downloads it from `synabun.ai` over HTTPS and installs it only when the file is exactly the one your SynaBun version expects (its size and SHA-256 are fixed in each SynaBun release). A file that does not match is discarded and nothing is installed.
+
+- **The folder.** The verified extension is unpacked into `browser-extension/unpacked` inside SynaBun's data folder. This is the folder you load in the browser. It stays in place across SynaBun updates.
+- **Nothing is downloaded until you ask.** SynaBun starts and works without the extension and without a connection. It downloads the extension only when you start **Connect your browser**.
+- **Updates.** When a new SynaBun version needs a newer extension, SynaBun downloads it in the background after it starts and replaces the folder's files. If that download fails, the folder you have keeps working and Settings offers **Try again**. Afterwards, choose **Reload** on SynaBun Browser Bridge in the browser's extensions page when Settings prompts you.
+- **The folder is checked against the release.** Each SynaBun release lists every file of its extension with its SHA-256. The folder counts as up to date only when it holds exactly those files and nothing else. Only the setup page's port in the manifest may differ. A changed, added or deleted file, or a manifest with other permissions, makes SynaBun replace the folder with the verified extension. It uses the verified copy it keeps in `browser-extension/package.zip`, so no connection is needed, and downloads it again when that copy is missing or does not match. The setup port is rewritten only after the folder has passed that check.
+- **A safe folder, one writer.** SynaBun uses `browser-extension` only when that folder and the data folder are yours, are not links, and cannot be written by other users. Otherwise it changes nothing there and reports `EXTENSION_FOLDER_UNSAFE`. On Linux, a folder its group can write is accepted when that group is your own private group (common with umask 002). It must be your primary group, carry your user name, list no other members, and be no other account's primary group. SynaBun checks this in `/etc/passwd` and `/etc/group`. If those files cannot be read, or your account comes from LDAP or another directory and is not listed there, the folder is refused and the message says why. On macOS a folder its group can write is always refused, because its groups, such as `staff`, are shared. Changes run under an operating-system lock, so two SynaBun servers that share a data folder take turns.
+- **Replacing the folder.** The new folder is written beside the old one and recorded in `browser-extension/transaction.json`. Then the old folder is renamed aside and the new one is moved into its place. This is the same on every system, and SynaBun starts no other program to do it. For the short moment between those two renames, the path the browser loads is empty. If the old folder cannot be moved, for example because the browser holds it open on Windows, the update waits and the old folder stays as it was. Files are never overwritten one by one. If SynaBun is stopped part-way, its next start finishes or reverses the step from that record. An old folder goes back only if the record shows it was the verified extension.
+- **Reload after a repair.** When SynaBun replaces files in the folder that were not the verified extension, even at the same version, your browser keeps running the old files until the extension is reloaded. Settings and the setup page then ask you to choose **Reload** on SynaBun Browser Bridge in `chrome://extensions` (`edge://extensions` in Edge), whether or not the extension is connected. They keep asking across restarts, and if the setup port changes meanwhile, the repair is still what they ask about. Once you have reloaded it, choose **I reloaded the extension** in **Settings → Browser**. Only that click clears the request. The setup page does not clear it, even when it sees the extension, because the old copy has the same version and would answer the page in the same way.
+- **What that confirmation cannot prove.** A changed extension with access to all sites can run scripts on any page in that browser, SynaBun's own Settings included, so no confirmation inside the browser is fully tamper-proof. The confirmation stops an old copy from clearing the warning by itself, simply by still running. If you suspect the extension was changed, remove it from the browser, then choose **Connect your browser** again.
+- **Your pairing is kept.** The extension keeps the same identity in every version, so an update does not ask you to pair again. When only the setup page's port changes, Settings asks you to reload the extension until the setup page sees it running on the new port.
+
+If you connected with an earlier SynaBun version, your browser may have loaded the extension from a folder inside SynaBun's own install location (a path that contains `node_modules` or the app's resources). That folder no longer contains the extension, so the browser reports it as missing after the update. Choose **Connect your browser** again and load the folder SynaBun shows. It is the same extension.
 
 ## Choose what agents can access
 
@@ -34,7 +50,11 @@ Automations that publish on X or pace their social posts are held to the same pu
 
 | Message | What to do |
 | --- | --- |
-| `EXTENSION_NOT_CONNECTED` | Open the paired browser, check that the extension is enabled, and compare the port in its popup with the port in Settings. |
+| `EXTENSION_NOT_CONNECTED` | Open the paired browser, check that the extension is enabled, and compare the port in its popup with the port in Settings. If the extension is missing from the browser after a SynaBun update, see [Where the extension comes from](#where-the-extension-comes-from). |
+| `EXTENSION_DOWNLOAD_OFFLINE` | SynaBun could not reach synabun.ai. Check your internet connection, then choose **Try again**. |
+| `EXTENSION_DOWNLOAD_UNAVAILABLE` | synabun.ai did not have the extension your SynaBun version needs. Try again later, or update SynaBun. |
+| `EXTENSION_VERIFY_FAILED` | The download was not the file your SynaBun version expects, so SynaBun installed nothing. Choose **Try again**. If it keeps happening, update SynaBun. This check cannot be skipped. |
+| `EXTENSION_FOLDER_UNSAFE` | `browser-extension` in SynaBun's data folder, or the data folder itself, is a link, belongs to another user, or can be written by others, so SynaBun changed nothing there. On Linux, a group that is not your own private group counts as others (see [Where the extension comes from](#where-the-extension-comes-from)); the server's log line says which check failed. Fix its owner and permissions, or remove the `browser-extension` folder, then choose **Connect your browser** again. |
 | `PAIRING_EXPIRED` | Start a fresh pairing from Settings. |
 | `SITE_NOT_APPROVED` | In restricted mode, share the site in the popup. |
 | `NAVIGATION_NOT_COMMITTED` | Check which page the tab shows before retrying. |
@@ -42,7 +62,7 @@ Automations that publish on X or pace their social posts are held to the same pu
 | `RESTRICTED_PAGE` or `SYNABUN_PAGE_BLOCKED` | Choose an ordinary website tab. Browser settings, extension pages and SynaBun's control interface are protected. |
 | `USER_SCRIPTS_DISABLED` | Turn on **Allow User Scripts** in the extension's details, then reload the extension. See [Let agents run page scripts](#let-agents-run-page-scripts). |
 | `USER_SCRIPTS_UNSUPPORTED` | Update Chrome or Edge to version 135 or later. |
-| `EXTENSION_RELOAD_REQUIRED` | The browser still runs an older copy of the extension. Reload SynaBun Browser Bridge from the browser's extensions page. |
+| `EXTENSION_RELOAD_REQUIRED` | The browser still runs an older copy of the extension. Reload SynaBun Browser Bridge from the browser's extensions page. If Settings says the extension folder is still being updated, wait for that to finish first. |
 | `NETWORK_IDLE_UNAVAILABLE` | Reload the extension so its `webRequest` permission takes effect. Until then, wait for an element or for the `load` state. |
 | `PAGE_ERROR` | The script itself failed on the page. Pass one JavaScript expression and wrap statements in a function: `(() => { …; return value; })()`. |
 | `BLANK_PAGE` | Navigate the tab to a website before running a script. |

@@ -45,6 +45,7 @@ import { isFarRowStyleRecord, stripFarRowStyles, watchTranscriptRows } from '../
 import { requestGeneratedSessionTitle } from '../session-title.js';
 import { fileLinkText } from '../ui-file-links.js';
 import { WORKER_END_CLASS, buildWorkerEndCard, endWorkerRunOnClose, forgetWorkerEnd, leaveWorkerTab } from '../ui-worker-end.js';
+import { composerHoldsDraft, markAutoCloseKeep } from '../tray-auto-close.js';
 import {
   CODEX_COMMANDS, CODEX_COMMAND_BY_NAME, parseCodexCommand, codexCommandHints,
   capabilityAvailability, latestCompletedCodexText, configValue,
@@ -2685,6 +2686,24 @@ function hasMeaningfulTrayState(tab) {
   );
 }
 
+/**
+ * What the tray's auto-close must leave open (tray-auto-close.js), or '': a tab with prompts in its queue that
+ * were never sent ('queue': a paused queue, or one held behind a request or a plan approval), else a tab holding
+ * an unsent draft, its text (in the composer while the tab is the one on screen), images, paths and @ mentions.
+ * The user's X closes it as before. markQueueKeep repaints the mark at every change of a queue.
+ */
+function autoCloseKeepOf(tab) {
+  if (!tab) return '';
+  if (tab.queue?.length) return 'queue';
+  const input = isActiveTab(tab) ? panelEl('#cxp-input') : null;
+  return composerHoldsDraft(input ? input.value : tab.draft, tab.attachedImages, tab.pendingPaths, tab.pendingMentions) ? 'draft' : '';
+}
+
+/** Says a tab's keep reason to its pill: wherever a queue changes, the tab on screen's or one in the background. */
+function markQueueKeep(tab) {
+  if (tab?.pillEl) markAutoCloseKeep(tab.pillEl, autoCloseKeepOf(tab));
+}
+
 function hasCustomSessionLabel(tab) {
   const label = normalizeSessionLabel(tab?.pendingSessionLabel || tab?.sessionLabel || '');
   if (!label) return false;
@@ -2769,6 +2788,7 @@ function createTrayPill(tab) {
   pill.className = 'term-minimized-pill cxp-session-pill';
   pill.dataset.tabId = tab.id;
   pill.getAutomationRunId = () => tab.automationRunId;
+  pill.keepFromAutoClose = () => autoCloseKeepOf(tab);
   pill.innerHTML = `
     <span class="term-minimized-pill-icon">${OPENAI_ICON}</span>
     <span class="term-minimized-pill-label">${esc(tab.sessionLabel || 'New session')}</span>
@@ -2814,6 +2834,7 @@ export function renderPills() {
     const name = tab.sessionLabel || 'New session';
     if (label && label.textContent !== name) label.textContent = name;
     paintTrayPill(tab.pillEl, tab);
+    markAutoCloseKeep(tab.pillEl, autoCloseKeepOf(tab));
     const shouldShow = hasMeaningfulTrayState(tab) && (!_getVisible() || tab !== active);
     tab.pillEl.style.display = shouldShow ? '' : 'none';
   }
@@ -7200,6 +7221,7 @@ function tabTurnRunning(tab) {
 export function syncQueueTray() {
   const tab = activeTab();
   if (!tab) return;
+  markQueueKeep(tab);
   const queue = tab.queue || [];
   const count = queue.length;
   const tray = panelEl('#cxp-queue-tray');
@@ -7312,6 +7334,7 @@ export function advanceQueue(tab = activeTab()) {
   if (!sent) {
     // Not sent: it stays first in its tab's queue.
     tab.queue.unshift(next);
+    markQueueKeep(tab);
     syncQueueTray();
     return false;
   }
@@ -7320,6 +7343,8 @@ export function advanceQueue(tab = activeTab()) {
     appendLocalUserMessage(next.text || '', queueImages);
     tab._pendingSendImages = queueImages;
   }
+  // A background tab's pill too: syncQueueTray paints the tab on screen's only.
+  markQueueKeep(tab);
   syncQueueTray();
   return true;
 }

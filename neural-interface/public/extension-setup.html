@@ -14,8 +14,9 @@
      status, then automatic pairing. Every string comes from i18n browserExtension.setup.* (es-page.js); es-view.js
      decides. Stable hooks: #es-setup[data-state], #es-title, #es-lead, #es-live[data-tone], #es-browser,
      #es-steps > li[data-step][data-done], #es-extensions-url + #es-copy-url, #es-folder + #es-copy-folder + #es-reveal,
-     #es-alternatives, #es-reload, #es-restart, #es-copied. The ticket element is the only thing the extension's content
-     script reads; it is filled only while the extension is on this page and the server waits for it. -->
+     #es-alternatives, #es-reload, #es-restart, #es-copied, #es-progress (the bytes of the extension's download, while
+     the state is "downloading"). The ticket element is the only thing the extension's content script reads; it is
+     filled only while the extension is on this page and the server waits for it. -->
 <main id="es-setup" class="es-setup" data-state="idle" data-layout="result" aria-busy="true">
   <div class="es-top">
     <p class="es-brand"><img src="/icon-192.png" alt="" width="32" height="32"><span>SynaBun</span></p>
@@ -75,6 +76,7 @@
           <h2 class="es-status-title" id="es-status-title"></h2>
           <p id="es-live" class="es-live" role="status" aria-live="polite" data-tone=""></p>
           <p id="es-help" class="es-note" hidden></p>
+          <p id="es-progress" class="es-note es-progress" hidden></p>
           <section id="es-alternatives" class="es-alternatives" hidden aria-labelledby="es-alternatives-title">
             <h3 id="es-alternatives-title" class="es-subtitle"></h3>
             <div id="es-alternatives-list" class="es-row"></div>
@@ -95,6 +97,7 @@
       <details class="es-surface es-info es-help" id="es-trouble">
         <summary id="es-trouble-title"></summary>
         <p id="es-trouble-help" class="es-note"></p>
+        <p id="es-moved-help" class="es-note"></p>
         <p id="es-policy-help" class="es-note"></p>
       </details>
     </div>

@@ -978,6 +978,7 @@ let _lastWaitingPill = null;
 // when it is first shown.
 const PILL_API = {
   sessionStatus: (args) => api.sessionStatus(args),
+  shellList: (args) => api.shellList(args),
   permissionList: (args) => api.permissionList(args),
   questionList: (args) => api.questionList(args),
 };

@@ -36,7 +36,8 @@ jobs:
       contents: read
       id-token: write
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # Covers the build, the scan (30) and the wait for the registry to serve an accepted upload (60).
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,6 +54,12 @@ jobs:
             npm-shrinkwrap.json
             mcp-server/package-lock.json
             neural-interface/package-lock.json
+
+      # No publication before the browser extension this tree pins is live on synabun.ai and is the pinned file. The
+      # pin and the download code are the checked-out tree's own (Node built-ins only, nothing installed yet); a tree
+      # without either fails. No input, condition or continue-on-error skips it (docs/release-pipeline.md).
+      - name: Verify the pinned browser extension is live on synabun.ai
+        run: node lib/release-extension-live.mjs
 
       - name: Verify event, workflow, repository, main commit and registry version
         id: registry
@@ -124,7 +131,8 @@ jobs:
       contents: write
       id-token: write
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # Covers the build, the scan (30) and the wait for the registry to serve an accepted upload (60).
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
         with:
@@ -141,6 +149,12 @@ jobs:
             npm-shrinkwrap.json
             mcp-server/package-lock.json
             neural-interface/package-lock.json
+
+      # No publication before the browser extension this tree pins is live on synabun.ai and is the pinned file. The
+      # pin and the download code are the checked-out tree's own (Node built-ins only, nothing installed yet); a tree
+      # without either fails. No input, condition or continue-on-error skips it (docs/release-pipeline.md).
+      - name: Verify the pinned browser extension is live on synabun.ai
+        run: node lib/release-extension-live.mjs
 
       - name: Verify event, workflow, repository, main commit and registry version
         id: registry

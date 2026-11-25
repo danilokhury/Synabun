@@ -22,6 +22,10 @@ const CROUCH = [26, 0.45]; // the take-off squash, rubbery
 const SCALE = [14, 0.72];
 const ARRIVED = { px: 4, speed: 140 }; // close and slow enough for the beat to go on (the spring finishes on its own)
 const KEEP_OUT_MARGIN = 6; // px of clear board round what the mascot draws
+// The face width (CSS px) the beats are choreographed for: a place's `scale` is relative to it, whatever size the
+// host draws the face at (the empty state's hero is 280 × 140 since v2.3.0; the tour's places, its ink and its
+// keep-outs were laid out round a 120 × 60 face, which a 320 px board has room for). Home is the face's own size.
+const TOUR_FACE_W = 120;
 
 export function createActor(target, { reduced = () => false, onMove = null } = {}) {
   const rig = target.rig;
@@ -78,6 +82,13 @@ export function createActor(target, { reduced = () => false, onMove = null } = {
     rect.width = rect.right - rect.left;
     rect.height = rect.bottom - rect.top;
     return rect;
+  }
+
+  /** The transform scale for a place: home (no point) is the face's own size, any other place the tour's face size times `scale`. */
+  function kFor(point, scale = 1) {
+    if (!point) return 1;
+    const w = base?.w;
+    return w > 0 ? scale * (TOUR_FACE_W / w) : scale;
   }
 
   const tellMove = () => { if (onMove && base) try { onMove(boundsAt(s.x, s.y + s.arc, s.k)); } catch { /* the host's */ } };
@@ -146,7 +157,7 @@ export function createActor(target, { reduced = () => false, onMove = null } = {
   }
 
   /**
-   * Fly to `point` (client px; null = home) at `scale`. Resolves once it has
+   * Fly to `point` (client px; null = home, at the face's own size) at `scale` (of TOUR_FACE_W). Resolves once it has
    * arrived closely enough for the next op (the landing finishes on its own),
    * at once under reduced motion or when there is no character on screen.
    */
@@ -154,7 +165,7 @@ export function createActor(target, { reduced = () => false, onMove = null } = {
     place = { point: point ? { ...point } : null, scale };
     if (!present()) return Promise.resolve();
     const c = readBase() ? { x: base.cx, y: base.cy } : layoutCentre();
-    const to = { x: point ? point.x - c.x : 0, y: point ? point.y - c.y : 0, k: scale };
+    const to = { x: point ? point.x - c.x : 0, y: point ? point.y - c.y : 0, k: kFor(point, scale) };
     const dist = Math.hypot(to.x - s.x, to.y - s.y);
     Object.assign(goal, to);
     if (reduced()) {
@@ -196,7 +207,7 @@ export function createActor(target, { reduced = () => false, onMove = null } = {
     if (!svg) return null;
     if (!base) readBase();
     if (!base) return null;
-    return boundsAt(point ? point.x - base.cx : 0, point ? point.y - base.cy : 0, scale, margin);
+    return boundsAt(point ? point.x - base.cx : 0, point ? point.y - base.cy : 0, kFor(point, scale), margin);
   }
 
   /** The face's client rect where it will land (its goal), for ink placed beside it. */

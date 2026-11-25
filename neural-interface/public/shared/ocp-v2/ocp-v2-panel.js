@@ -29,7 +29,7 @@ import {
 import {
   forkSession, undoLastTurn, restoreReverted,
   loadSelectedSession, applySessionSelections, restoreDraftAttachments,
-  readTranscriptExport, stopForNavigation, createSessionForNavigation, renameSession,
+  readTranscriptExport, stopForNavigation, noteAbandoned, createSessionForNavigation, renameSession,
   navigateAfter, adoptReusableSession, landWithoutTabs, shouldNameCreatedSession, renameBox,
 } from './ocp-v2-session-actions.js';
 import { captureBinding, latestFor, createNavigation } from './ocp-v2-binding.js';
@@ -2168,8 +2168,14 @@ function deleteSessionBestEffort(sessionId, { abort = false, context = 'delete' 
   if (!sessionId) return Promise.resolve({ ok: true });
   return (async () => {
     if (abort) {
-      try { await api.abort(sessionId); }
+      // The tab is going: nobody is left to press Stop again, so a command Stop cannot end is given up on ("Stop
+      // anyway": it is still removed in the background, and its end wakes no model turn).
+      let stopped = null;
+      try { stopped = await api.abort(sessionId, { force: true }); }
       catch (err) { console.warn(`[ocp-v2-panel] abort before ${context} failed`, err); }
+      // What it gave up on may still be running: the panel, still open on another tab, says so.
+      // (Best effort: the notice never holds up the deletion.)
+      try { await noteAbandoned(getDefaultStore(), stopped, t); } catch { /* the close goes on */ }
     }
     let res;
     try { res = await api.sessionDelete(sessionId); }
@@ -2433,6 +2439,7 @@ function createTabPill(sessionId) {
   pill.dataset.sessionId = sessionId;
   pill.getAutomationRunId = () => _automationRunIds.get(sessionId);
   pill.hasQueuedWorkerPrompts = () => _automationRunIds.has(sessionId) && promptsWaitingFor(sessionId).length > 0;
+  pill.detachForAutoClose = () => detachTabForAutoClose(sessionId);
   pill.innerHTML = `
     <span class="ocpv2-pill-ring" aria-hidden="true"><i></i></span>
     <span class="term-minimized-pill-icon">${OPENCODE_ICON}</span>
@@ -2467,6 +2474,20 @@ async function closeTabByUser(sessionId, context, { deleteBeforeClose = false } 
   if (deletePillSession) await backendClose;
   try { await handlePillClose(sessionId, { byUser: true }); }
   catch (err) { console.warn(`[ocp-v2-panel] local ${context} failed`, err); }
+  return true;
+}
+
+// The tray's auto-close toggle, for a session that names no run. Unlike the X,
+// which deletes the session, this only takes the tab and its pill away: the
+// session and its transcript stay in OpenCode and the session menu opens them
+// again. Nobody chose this close, so nobody is asked: a turn that started or a
+// prompt still waiting keeps the tab. Resolves whether the tab went.
+async function detachTabForAutoClose(sessionId) {
+  const working = sessionId === getState().sessionId ? !!getState().running : _sessionBusy.get(sessionId) === true;
+  if (!_tabSessionIds.includes(sessionId) || _automationRunIds.has(sessionId) || working
+    || promptsWaitingFor(sessionId).length) return false;
+  try { await handlePillClose(sessionId); }
+  catch (err) { console.warn('[ocp-v2-panel] auto-close detach failed', err); }
   return true;
 }
 
@@ -2775,6 +2796,17 @@ export async function attachOpenCodeAutomation(run, { focus = !!run?.focus, isCa
     cachedInfo._automationLifecycleError = run.error;
     _tabInfoCache.set(sessionId, cachedInfo);
     pushError({ message: run.error });
+  }
+  // A stop of the run (a worker's, a loop's) that could not end a command in the background: it may still be
+  // running, and the tab says so once (lib/native-loop-runtime.js abandonedCommands; the words are the panel Stop's).
+  if (Array.isArray(run.abandonedCommands) && run.abandonedCommands.length && getState().sessionId === sessionId
+    && !_tabInfoCache.get(sessionId)?._automationAbandonedShown) {
+    const cachedInfo = _tabInfoCache.get(sessionId) || info;
+    cachedInfo._automationAbandonedShown = true;
+    _tabInfoCache.set(sessionId, cachedInfo);
+    const view = await import('../shell-stop-view.js').catch(() => null);
+    const left = view?.describeAbandoned(run.abandonedCommands, t) || null;
+    if (left) pushError({ message: left, kind: 'shell-stop', notice: true });
   }
   trackWorkerEnd(run, { apply: (view) => showWorkerEnd(sessionId, view) });
   renderPill();

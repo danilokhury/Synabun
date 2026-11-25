@@ -499,6 +499,8 @@ const PREVIEW_LINES = 5;
 const THINK_PREVIEW_LINES = 10;
 const MAX_DIFF_LINES = 400; // an edit's mini diff draws this many lines; "Show full input" draws the rest
 // The empty state's suggestions (asst-panel.js ids) and the kind each one is about.
+// A tool result that only says its command went on in the background (OpenCode 2.3): none of the output is in it.
+const isBackgroundNotice = (result) => typeof result === 'string' && /^Command moved to the background \(shell ID: /.test(result);
 const SUGGESTION_KINDS = { computer: 'computer', web: 'web', fix: 'edit', skill: 'skill', schedule: 'plan', remember: 'memory' };
 
 /**
@@ -1446,6 +1448,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     step.endedAt = nowMs();
     step.timed = step.timed && isTimed();
     if (step.kind === 'runs') noteAgentResult(text);
+    if (step.shell) applyShellOutcome(step);
     refreshStep(step);
     if (step.bodyBuilt) fillCallBody(step);
     if (step.state === 'error') onFailure(step);
@@ -1473,7 +1476,87 @@ export function createRenderer(transcriptEl, hooks = {}) {
     placeStep(rack, step);
     if (!muted && turnActive && !step.auto) { turn.calls += 1; turn.last = step; }
     if (rack.steps.length === 1 && !muted && turnActive) announce(rack, stepSentence(step, step.state === 'running'));
+    if (step.kind === 'shell') syncShell(step); // its command may be known already (a panel that attached mid-run)
     return step;
+  }
+
+  // ── A shell call's command (an OpenCode brain: asst-shell-logic.js) ──
+  /** What the runtime says about the call's command: the row's state word, its failure, its terminal block. */
+  function syncShell(step) {
+    const shell = hooks.shells?.forCall?.(step.id) || null;
+    if (!shell) return;
+    const wasRunning = step.shell?.status === 'running';
+    step.shell = shell;
+    if (wasRunning && shell.status !== 'running' && step.state !== 'running') step.endedAt = nowMs();
+    // OpenCode announces a call before its input: the row and the stage read the command from here then.
+    const learned = !commandOf(step.input || {}) && !!shell.command;
+    if (learned) step.input = canonicalToolInput({ ...(step.input || {}), command: shell.command });
+    applyShellOutcome(step);
+    refreshStep(step);
+    if (learned && step.bodyBuilt) fillCallBody(step);
+    // The turn was told over before its command (a Stop): the row settles now, as it would have at the turn's end.
+    if (wasRunning && shell.status !== 'running' && !turnActive) foldShellRows();
+    if (shell.status === 'running' && (shell.waited || turnActive)) openForShell(step);
+    syncTerminal(step);
+  }
+
+  /** A command that failed after its tool call had answered (it went on in the background) fails the call. */
+  function applyShellOutcome(step) {
+    if (step.state !== 'ok' || !hooks.shells?.failedLate?.(step.shell)) return;
+    step.state = 'error';
+    step.code = typeof step.shell.exit === 'number' ? step.shell.exit : null;
+    onFailure(step);
+  }
+
+  /** A running command's output is on screen without a click, unless the reader closed that row. */
+  function openForShell(step) {
+    const { rack, station: st } = step;
+    if (!st || st.userSet || rack.userSet) return;
+    if (!st.open) { st.autoOpened = true; setStationOpen(rack, st, true); }
+    if (!rack.open && !rack.staged) { rack.autoOpened = true; setRackOpen(rack, true); }
+  }
+
+  /** A block exists only while its row is open: a closed row costs no text in the page and no polling. */
+  function syncTerminal(step) {
+    if (!step.shell || !step.station?.open) {
+      if (step.terminal) { step.terminal.dispose(); step.terminal = null; }
+      return;
+    }
+    if (!step.bodyBuilt) buildCallBody(step);
+    else if (!step.terminal) fillCallBody(step);
+  }
+
+  /** The block of a shell call whose row is open (made once; a rebuilt body takes the same one). */
+  function terminalOf(step) {
+    if (!step.shell || !step.station?.open || !hooks.shells?.terminal) return null;
+    step.terminal ||= hooks.shells.terminal(step.shell.id, {
+      onDraw: () => scrollEnd(),
+      onGone: () => { if (step.bodyBuilt) fillCallBody(step); },
+    });
+    return step.terminal;
+  }
+
+  /** The turn ended: rows opened for a command fold again, unless one failed or the model still waits for it. */
+  function foldShellRows() {
+    for (const rack of racks) {
+      for (const st of rack.stations.values()) {
+        if (!st.autoOpened) continue;
+        if (st.userSet || rack.userSet) { st.autoOpened = false; continue; }
+        if (st.steps.some(s => s.shell?.status === 'running' && s.shell.waited)) continue;
+        st.autoOpened = false;
+        if (st.steps.some(s => s.state === 'error')) { if (!rack.open) setRackOpen(rack, true); continue; }
+        setStationOpen(rack, st, false);
+        if (rack.autoOpened) { rack.autoOpened = false; setRackOpen(rack, false); }
+      }
+    }
+  }
+
+  /** The runtime's word on a command changed (asst-panel.js): its call's row follows, wherever it is. */
+  function noteShell(shell) {
+    const step = shell?.callID ? stepsById.get(shell.callID) : null;
+    if (!step || step.type !== 'call' || step.kind !== 'shell') return;
+    syncShell(step);
+    renderRack(step.rack);
   }
 
   /** The final block of a streamed call, or the same block replayed: the step learns its input, nothing is added. */
@@ -1665,7 +1748,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     };
     row._rack = rack;
     motion.watch(row); // its sweep, ticks and scene loop only while it is on screen
-    rack.receipt.btn.addEventListener('click', () => setRackOpen(rack, !rack.open));
+    rack.receipt.btn.addEventListener('click', () => { rack.userSet = true; setRackOpen(rack, !rack.open); });
     row.querySelector('.asst-rack-view').addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-view]');
       if (btn) setRackView(rack, btn.dataset.view);
@@ -1673,7 +1756,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     rack.ledger.addEventListener('click', (e) => {
       const hdr = e.target.closest('.asst-station-hdr');
       const owner = hdr ? headers.get(hdr) : null;
-      if (owner?.rack === rack) setStationOpen(rack, owner.st, !owner.st.open);
+      if (owner?.rack === rack) { owner.st.userSet = true; setStationOpen(rack, owner.st, !owner.st.open); }
     });
     rack.ledger.addEventListener('keydown', (e) => onLedgerKey(rack, e));
     rack.stage.subject.addEventListener('click', () => setBubbleOpen(rack, !rack.bubble.open));
@@ -1712,6 +1795,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     st.hdr.setAttribute('aria-expanded', st.open ? 'true' : 'false');
     st.log.hidden = !st.open && st.kind !== 'computer';
     if (st.open) for (const step of st.steps) buildCallBody(step);
+    for (const step of st.steps) if (step.kind === 'shell') syncTerminal(step);
     renderStationFace(rack, st);
   }
 
@@ -1744,8 +1828,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
     else if (e.key === 'ArrowUp') next = list[Math.max(0, at - 1)];
     else if (e.key === 'Home') next = list[0];
     else if (e.key === 'End') next = list[list.length - 1];
-    else if (e.key === 'ArrowRight') { e.preventDefault(); if (!owner.st.open) setStationOpen(rack, owner.st, true); return; }
-    else if (e.key === 'ArrowLeft') { e.preventDefault(); if (owner.st.open) setStationOpen(rack, owner.st, false); return; }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); owner.st.userSet = true; if (!owner.st.open) setStationOpen(rack, owner.st, true); return; }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); owner.st.userSet = true; if (owner.st.open) setStationOpen(rack, owner.st, false); return; }
     else return;
     e.preventDefault();
     if (!next) return;
@@ -2781,8 +2865,12 @@ export function createRenderer(transcriptEl, hooks = {}) {
     else if (step.state === 'error') state = t('assistant.tool.error', 'error');
     else if (step.state === 'neutral') state = t('assistant.rack.state.noMatches', 'no matches');
     else if (step.state === 'ok') state = t('assistant.tool.done', 'done');
+    if (step.shell) {
+      state = hooks.shells?.label?.(step.shell) || state;
+      li.dataset.shell = step.shell.status;
+    }
     q('.asst-tool-state').textContent = state;
-    q('.asst-tool-time').textContent = step.endedAt && step.timed ? fmtDuration(step.endedAt - step.startedAt, t) : '';
+    q('.asst-tool-time').textContent = step.endedAt && step.timed && step.shell?.status !== 'running' ? fmtDuration(step.endedAt - step.startedAt, t) : '';
   }
 
   /** Bodies are built on first expand: a replayed history costs a header per call. */
@@ -2811,6 +2899,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
     }
     // Keep a Show toggle's keyboard focus across the rebuild below.
     const refocus = body.contains(document.activeElement) && document.activeElement.classList.contains('asst-reveal');
+    // The reader's place in a terminal block survives it too (the block goes back in below).
+    const inTerminal = step.terminal?.el.contains(document.activeElement) ? document.activeElement : null;
     body.textContent = '';
     const input = step.input || {};
     const say = sayOf(step);
@@ -2857,10 +2947,21 @@ export function createRenderer(transcriptEl, hooks = {}) {
       default:
         inputSection(body, step, red);
     }
-    if (step.result && step.kind !== 'plan') {
+    // A command with a terminal block shows what it printed there; the call's own result is the fallback once
+    // OpenCode no longer has that output.
+    const terminal = step.kind === 'shell' ? terminalOf(step) : null;
+    if (terminal) body.appendChild(terminal.el);
+    const outputGone = !!terminal && !!hooks.shells?.view?.(step.shell.id)?.gone;
+    if (step.result && step.kind !== 'plan' && (!terminal || (outputGone && !isBackgroundNotice(step.result)))) {
       const output = hidden ? maskEcho(step.result, hidden, t) : step.result;
       section(body, t('assistant.rack.body.output', 'Output'), output, { copy: true });
+      // The result only says the command went on, and nobody can read what it printed any more.
+      if (!terminal && step.kind === 'shell' && hooks.shells?.supported?.() && isBackgroundNotice(step.result)) {
+        body.appendChild(el('div', 'asst-term-note', t('assistant.rack.shell.gone', 'OpenCode no longer keeps the output of this command.')));
+      }
     }
+    terminal?.show();
+    inTerminal?.focus({ preventScroll: true });
     if (!body.children.length) { body.remove(); return; }
     if (refocus) body.querySelector('.asst-reveal')?.focus({ preventScroll: true });
   }
@@ -3068,6 +3169,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
     rack.clearTimer = 0;
     rack.sr.timer = 0;
     rack.holdTimer = 0;
+    for (const step of rack.steps) if (step.terminal) { step.terminal.dispose(); step.terminal = null; }
     const had = !!rack.rig;
     rack.rig?.destroy?.();
     rack.rig = null;
@@ -3171,6 +3273,31 @@ export function createRenderer(transcriptEl, hooks = {}) {
     const row = appendStatus(text || t('assistant.errorGeneric', 'Something went wrong'), 'error');
     if (text) offerLimitWait(text); // a usage limit: the waiting card under it
     return row;
+  }
+
+  /**
+   * A Stop that could not end a command in the background (the runtime's `stop_failed`): the reason as an error row,
+   * and from the second failure of the turn a "Stop anyway" button (`onForce`). The row of an earlier failure goes:
+   * one row says what holds now.
+   */
+  let stopFailureRow = null;
+  function appendStopFailure(text, { forceLabel = '', onForce = null } = {}) {
+    clearStopFailure();
+    const row = appendStatus(text, 'error');
+    if (!row) return null;
+    row.classList.add('asst-stop-failed');
+    if (forceLabel && typeof onForce === 'function') {
+      const button = el('button', 'asst-btn asst-btn-secondary asst-stop-anyway', forceLabel);
+      button.type = 'button';
+      button.addEventListener('click', () => { button.disabled = true; onForce(); });
+      row.appendChild(button);
+    }
+    stopFailureRow = row;
+    return row;
+  }
+  function clearStopFailure() {
+    stopFailureRow?.remove?.();
+    stopFailureRow = null;
   }
 
   function appendDivider(label) {
@@ -4160,6 +4287,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
       else if (!stage.holdTimer) stage.holdUntil = 0; // a hold already running (the `done` after a result) keeps its time
     }
     endBursts(rootScope);
+    foldShellRows();
     for (const rack of [...racks]) {
       const tail = liveTail(rack.scope) === rack;
       rack.closed = true;
@@ -4286,6 +4414,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
     appendAssistantMarkdown,
     appendStatus,
     appendError,
+    appendStopFailure,
+    clearStopFailure,
     appendDivider,
     appendNode,
     appendMemoryChips,
@@ -4320,6 +4450,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
     forgetSeen: () => { seen.clear(); snapshot = null; },
     /** A card waits on the user: `toolUseId` names the call it holds (the newest live stage when unknown); false clears it. */
     setWaiting,
+    /** A shell command of the brain changed: its call's row and terminal block follow (asst-shell-logic.js). */
+    noteShell,
     /** The session's usage-limit report changed: this turn's waiting card counts to its reset time. */
     noteLimit,
     /** Dismiss the Assistant's own limit-wait card (a provider switch already decided what follows). */

@@ -252,9 +252,28 @@ export async function loadSelectedSession(store, api, sessionId, info, apply) {
  */
 export async function stopForNavigation(store, api, nav) {
   if (nav.sessionId && nav.isCurrent() && store.getState().running) {
-    try { await api.abort(nav.sessionId); } catch (err) { console.warn('[ocp-v2-session-actions] abort before navigation failed', err); }
+    // The panel leaves this session: a command Stop cannot end is given up on, as on a tab's close (Stop anyway).
+    let stopped = null;
+    try { stopped = await api.abort(nav.sessionId, { force: true }); } catch (err) { console.warn('[ocp-v2-session-actions] abort before navigation failed', err); }
+    // What it gave up on may still be running: the panel's next view says so (a notice outlives the clear).
+    await noteAbandoned(store, stopped);
   }
   return nav.isCurrent();
+}
+
+/**
+ * A forced Stop's answer that left commands running (`abandoned`): one notice in the panel, in the words of the
+ * panel's own Stop anyway (shell-stop-view.js, loaded only then). Nothing for any other answer.
+ */
+export async function noteAbandoned(store, stopped, translate = null) {
+  if (!Array.isArray(stopped?.abandoned) || !stopped.abandoned.length) return false;
+  const view = await import('../shell-stop-view.js').catch(() => null);
+  let tr = translate;
+  if (!tr) { try { tr = (await import('../i18n.js')).t; } catch { tr = null; } }
+  const message = view?.describeAbandoned(stopped.abandoned, tr) || null;
+  if (!message) return false;
+  store.pushError({ message, kind: 'shell-stop', notice: true });
+  return true;
 }
 
 /**

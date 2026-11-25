@@ -1169,6 +1169,39 @@ export function createAssistantApi({
       res.json({ ok: true, usage: runtime.usageView?.(id, task) ?? usage?.taskView(id, task) ?? null, budget: sessionBudgetView(id) });
     } catch (error) { sendError(res, error); }
   });
+  // The shell commands of a session's OpenCode brain (which tool call each belongs to, whether it runs, how it
+  // ended) and a page of what one printed: what the panel's terminal blocks show. The owner's page alone reads
+  // them (this boot's page secret, no agent header): what a command printed is display data, so no brain and no
+  // worker gets it here, and with it nothing of it reaches a model's context. The session in the path is the one
+  // whose own brain is asked, and that brain reads only a command it ran itself (runtime.shellOutput).
+  function shellReader(req, res) {
+    const agent = ['x-synabun-terminal', 'x-synabun-assistant', 'x-synabun-role', 'x-synabun-brain-token', 'x-synabun-desktop-grant'].some((name) => req.get(name));
+    if (agent || isGuestRequest(req) || callerContext(req).kind !== 'ui') { uiOnly(req, res, 'A command\'s output is shown in the user\'s own Assistant panel only.'); return false; }
+    // The automation browser verifies as the owner while the owner's setting lets it act as owner; it still never
+    // reads what a command printed (review S4): a page an agent drives would hand it to that agent's model.
+    let fromAutomationBrowser = false;
+    try { fromAutomationBrowser = typeof pageSession?.isAutomationBrowser === 'function' && pageSession.isAutomationBrowser(req) === true; } catch { fromAutomationBrowser = true; }
+    if (fromAutomationBrowser) { res.status(403).json({ ok: false, code: 'WORKER_BROWSER', error: 'A command\'s output is shown in the owner\'s own browser or the app, never in SynaBun\'s automation browser.' }); return false; }
+    return true;
+  }
+  router.get('/sessions/:id/shells', noStore, (req, res) => {
+    if (!requireRuntime(res) || !shellReader(req, res)) return;
+    const shells = typeof runtime.shellList === 'function' ? runtime.shellList(req.params.id) : null;
+    if (!shells) return res.status(404).json({ ok: false, code: 'SESSION_NOT_FOUND', error: `Unknown assistant session ${req.params.id}` });
+    res.json({ ok: true, shells });
+  });
+  router.get('/sessions/:id/shells/:shellId/output', noStore, async (req, res) => {
+    if (!requireRuntime(res) || !shellReader(req, res)) return;
+    if (typeof runtime.shellOutput !== 'function') return res.status(404).json({ ok: false, code: 'SHELL_OUTPUT_GONE', error: 'The output of that command is no longer available.' });
+    const shellId = String(req.params.shellId || '');
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(shellId)) return res.status(400).json({ ok: false, code: 'SHELL_ID_INVALID', error: 'That is not a command of this conversation.' });
+    const number = (value) => (typeof value === 'string' && /^\d{1,15}$/.test(value) ? Number(value) : undefined);
+    try {
+      const page = await runtime.shellOutput(req.params.id, { shellId, cursor: number(req.query.cursor), tail: number(req.query.tail), limit: number(req.query.limit) });
+      if (!page || page.ok === false) return res.status(Number(page?.status) >= 400 ? Number(page.status) : 502).json({ ok: false, code: page?.code || 'SHELL_OUTPUT_FAILED', error: page?.error || 'The output could not be read.' });
+      res.json({ ok: true, ...page.data });
+    } catch (error) { sendError(res, error); }
+  });
   router.get('/sessions/:id', (req, res) => {
     if (!requireRuntime(res)) return;
     const session = runtime.getSession(req.params.id, { transcript: req.query.transcript !== '0', limit: clampInt(req.query.limit, 1, 2000, 400) });

@@ -29,10 +29,10 @@ function fixedText() {
   put($('es-copy-url'), tx('copyAddress')); put($('es-copy-folder'), tx('copyFolder'));
   put($('es-folder-label'), tx('folderLabel'));
   put($('es-reveal'), tx(revealKey(navigator.userAgentData?.platform || navigator.platform || '')));
-  put($('es-alternatives-title'), tx('alternativesTitle')); put($('es-restart'), tx('restart'));
+  put($('es-alternatives-title'), tx('alternativesTitle'));
   put($('es-back'), tx('backToApp')); put($('es-pin'), tx('pinTip'));
   put($('es-full-title'), tx('fullTitle')); put($('es-full-help'), tx('fullHelp'));
-  put($('es-trouble-title'), tx('needHelp')); put($('es-trouble-help'), tx('helpText')); put($('es-policy-help'), tx('policyText'));
+  put($('es-trouble-title'), tx('needHelp')); put($('es-trouble-help'), tx('helpText')); put($('es-moved-help'), tx('movedText')); put($('es-policy-help'), tx('policyText'));
 }
 function render() {
   const view = setupView(status, { extensionVersion: extensionSeen(), pairAnswer: pairAnswer() });
@@ -45,6 +45,7 @@ function render() {
   $('es-status').dataset.tone = view.tone || 'idle';
   put($('es-status-title'), tx(view.statusTitle));
   $('es-help').hidden = !view.help; put($('es-help'), view.help ? tx(view.help) : '');
+  $('es-progress').hidden = !view.progress; put($('es-progress'), view.progress ? tx('downloadProgress', view.progress) : '');
   $('es-browser').hidden = !view.browser; put($('es-browser-name'), view.browser);
   $('es-steps').hidden = !view.showSteps;
   for (const step of view.steps) {
@@ -67,8 +68,8 @@ function render() {
       list.append(button);
     }
   }
-  $('es-reload').hidden = !view.reloadNeeded; put($('es-reload'), tx('reloadNeeded', { browser: view.browser }));
-  $('es-restart').hidden = !view.restart;
+  $('es-reload').hidden = !view.reloadNeeded && !view.updateNeeded; put($('es-reload'), tx(view.updateNeeded ? 'updateNeeded' : view.reloadRepaired ? 'reloadRepaired' : 'reloadNeeded', { browser: view.browser }));
+  $('es-restart').hidden = !view.restart; put($('es-restart'), tx(view.restartLabel));
   $('es-back').hidden = !view.back; $('es-pin').hidden = !view.pinTip;
   // The row is hidden by the code that fills it (never found by a :has(), which every hidden toggle re-checks).
   $('es-actions').hidden = !view.restart && !view.back;
@@ -80,6 +81,11 @@ async function poll() {
   busy = true;
   try {
     status = await call('status');
+    // The extension's content script ran on this page, on this port: the browser runs the folder's manifest for it, so
+    // the Reload a port change asked for is done (the server keeps saying "reload" until then). Never for a repair: the
+    // copy the browser still runs would answer the same, so this page only says to confirm in SynaBun Settings (and the
+    // server ignores `seen` for it anyway).
+    if (status.reloadNeeded && !status.reloadRepaired && extensionSeen() && extensionSeen() === status.folderVersion) status = await call('seen', {});
     if (wantsTicket(status, { extensionVersion: extensionSeen(), pairAnswer: pairAnswer(), offeredAt, tickets })) {
       tickets++;
       const ticket = await call('ticket', {});

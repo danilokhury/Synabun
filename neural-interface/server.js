@@ -167,7 +167,9 @@ import {
   buildInstallCommand,
   buildUpdateCommand,
   isBrewSource,
+  OPENCODE_WINGET_SEARCH_ARGS,
   parseBrewOutdated,
+  parseWingetSearchVersion,
   quoteCommandPath,
   resolveBrewToken,
   resolveLatest,
@@ -213,6 +215,7 @@ import * as opencodeV2Client from './lib/opencode-v2-client.js';
 import { OPENCODE_MIN_VERSION, basicAuthHeader, checkPrivateOpencodeServer as checkOpencodeServer, createServeLogRedactor, opencodeInstallCommands, opencodeProblemText, opencodeSupportFor, redactServeOutput, servePasswordReader, serveSpecFor, serveUnsetCommand, withServeEnv } from './lib/opencode-protocol.js';
 import { SERVE_TOKEN_ENV } from './lib/process-identity.js';
 import { commandArgs, createServeRecords } from './lib/opencode-serve-records.js';
+import { activeOpencodeSessions, binaryFileKey as opencodeBinaryFileKey, createServeEnds, staleServePlan } from './lib/opencode-turn-release.js';
 import { opencode2Proxy } from './lib/opencode2-proxy.js';
 import { macScreenshotDir } from './lib/screenshot-location.js';
 import { integrationCredentialIds, integrationsWithCredentials } from './lib/opencode2-translate.js';
@@ -228,6 +231,7 @@ import {
   handleOpencodeV2Request, opencodeV2WsCapabilities,
   buildSessionListQuery, mapSessionListRow, OPENCODE_V2_WS_MUTATION_TYPES, guardOpencodeV2Request, folderIsGone,
 } from './lib/opencode-v2-ws-requests.js';
+import { createStopFailures } from './lib/opencode-stop-failures.js';
 import { NativeLoopRuntime, isNativeLoopProfile } from './lib/native-loop-runtime.js';
 import { scheduleScratchRetention } from './lib/scratch-retention.js';
 import { migrateAutomationContextFiles, normalizeAutomationRecord } from './lib/automation-storage-migration.js';
@@ -697,11 +701,12 @@ import { createOpencodeCompletionEngine } from './lib/editor-completion-opencode
 import { createEndpointCompletionEngine } from './lib/editor-completion-endpoint.js';
 import { ownerRouteGuard } from './lib/http-guards.js';
 import { createBridgeStore, createExtensionBridge } from './lib/browser-extension-bridge.js';
-import { createExtensionAdapter, EXTENSION_FOLDER } from './lib/browser-extension-adapter.js';
+import { createExtensionAdapter } from './lib/browser-extension-adapter.js';
 import { detectBrowsers } from './lib/browser-default.js';
-import { extensionFolderState, prepareExtensionFolder } from './lib/browser-extension-folder.js';
-import { createExtensionSetup, setupError as extensionSetupError } from './lib/browser-extension-setup.js';
-import { safeError as extensionSafeError } from '../browser-extension/protocol.js';
+import { extensionFolderState } from './lib/browser-extension-folder.js';
+import { createExtensionPackage } from './lib/browser-extension-package.js';
+import { createExtensionSetup, extensionVersions, setupError as extensionSetupError } from './lib/browser-extension-setup.js';
+import { safeError as extensionSafeError } from './lib/browser-extension-protocol.js';
 import { setUntrustedFileHeaders } from './lib/untrusted-file-headers.js';
 import { BUNDLED_LOGO_FILES, UPLOADED_IMAGE_PATH } from './lib/request-gate.js';
 import { createCloudflaredManager } from './lib/cloudflared/manager.js';
@@ -2583,6 +2588,10 @@ async function runGracefulShutdown(reason) {
 
   // 1. opencode sidecar — has its own teardown that handles managed PID + ollama.
   try { stopOpencodeServer(); } catch (err) { console.warn('  opencode stop err:', err?.message); }
+  // The serves stopped above interrupt the turns still running on them before their processes end
+  // (lib/opencode-turn-release.js). Waited for here, bounded, so that the exit does not cut that short and leave a
+  // session claimed for OpenCode's own background service to resume.
+  try { await _ocpServeEnds.settled(); } catch (err) { console.warn('  opencode serve end err:', err?.message); }
 
   // 2. Agents in agentRegistry — use platform-native tree kill so descendants die too.
   try {
@@ -8423,6 +8432,16 @@ const opencodeServeRecords = createServeRecords({
 migrateOpencodeManagedPid();
 let _ocpBootReconcileTried = false;
 let _ocpLastBootAt = 0;           // Date.now() when serve process last became ready
+// The file SynaBun's shared serve was started from (lib/opencode-turn-release.js binaryFileKey), while SynaBun's own
+// child runs it: an OpenCode update replaces the file on disk and leaves this serve on the old program.
+let _ocpServeFileKey = null;
+// The end of the shared serve while its turns are still being released: a new start waits for it, so that it never
+// finds the serve that is being stopped still answering on the port.
+let _ocpSharedEnd = null;
+// How SynaBun ends its serves (lib/opencode-turn-release.js): the turns still running on a serve are interrupted
+// before its process is stopped. A turn left in flight stays claimed in OpenCode's database, and OpenCode's own
+// background service (a plain `opencode` in a terminal starts it) resumes every such session at its boot.
+const _ocpServeEnds = createServeEnds({ log: (line) => console.log(`[opencode] ${line}`) });
 
 // ── Verbose trace logging (opt-in: OCP_VERBOSE=1 to enable) ──
 const OCP_VERBOSE = process.env.OCP_VERBOSE === '1';
@@ -9074,6 +9093,8 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, c
         });
         entry.proc = proc;
         entry.password = launch.password || null;
+        // The file this serve runs: an update of OpenCode makes it a serve of the old program (retireStaleOpencodeServes).
+        entry.fileKey = opencodeBinaryFileKey(launch.nativeServe?.identity);
         // On record from its spawn: a crash of SynaBun from here on does not leave it running for good.
         const tracked = trackOpencodeServe(proc, { kind: 'isolated', id: termId, port, token, nativeWebSocketSafe: launch.nativeWebSocketSafe, nativeServe: launch.nativeServe });
         // While it boots, its start sees an exit itself (another server on the port is a collision); afterwards
@@ -9191,7 +9212,10 @@ async function ensureIsolatedServe(termId, { xdgRoot: requestedXdgRoot = null, c
   }
 }
 
-function stopIsolatedServe(termId, { preserveBindings = false } = {}) {
+// `immediate`: the process's exit handler, where nothing can be awaited: the serve's process is ended at once.
+// Otherwise the turns still running on the serve are interrupted first (lib/opencode-turn-release.js, a bounded
+// wait), so that none of its sessions stays claimed in OpenCode's database; everything else here is done at once.
+function stopIsolatedServe(termId, { preserveBindings = false, immediate = false } = {}) {
   const entry = _ocpIsoServes.get(termId);
   if (entry?.xdgRoot) _externalMcpLogValues.delete(entry.xdgRoot);
   if (!entry) return;
@@ -9208,12 +9232,20 @@ function stopIsolatedServe(termId, { preserveBindings = false } = {}) {
   }
   try { entry.unsub?.(); } catch {}
   try { entry.client?.stop(); } catch {}
-  killIsolatedServeProcess(entry.proc);
+  const proc = entry.proc;
+  _ocpServeEnds.end({
+    port: entry.ready ? entry.port : null,
+    password: entry.password || null,
+    alive: () => !!proc && proc.exitCode == null && proc.signalCode == null,
+    kill: () => killIsolatedServeProcess(proc),
+    label: `serve ${String(termId).slice(-8)}`,
+    immediate,
+  });
   try { if (!entry.persistentData && entry.xdgRoot && existsSync(entry.xdgRoot)) rmSync(entry.xdgRoot, { recursive: true, force: true }); } catch {}
 }
 
-function stopAllIsolatedServes() {
-  for (const termId of [..._ocpIsoServes.keys()]) stopIsolatedServe(termId);
+function stopAllIsolatedServes({ immediate = false } = {}) {
+  for (const termId of [..._ocpIsoServes.keys()]) stopIsolatedServe(termId, { immediate });
 }
 
 // Resolve the client to run a TURN for a session. Every sidepanel session gets
@@ -9393,7 +9425,62 @@ setInterval(() => {
   }
 }, 60 * 1000).unref?.();
 
-process.once('exit', stopAllIsolatedServes);
+// Whether an isolated serve is in use right now (the reaper's own rule): a live run or brain keeps it, a turn runs
+// on it, or it is still starting.
+function isolatedServeBusy(termId, entry) {
+  if (entry.keepAlive && (_nativeLoopRuntime?.isAlive(termId) || _assistantRuntime?.ownsIsolatedServe?.(termId))) return true;
+  if (entry.starting || !entry.ready) return true;
+  if ([..._ocpSessionServeStarts.values()].some((pending) => pending.termId === termId)) return true;
+  return [...entry.sessions].some((sessionId) => _ocpActiveSessionTurns.has(sessionId));
+}
+
+// The file of the OpenCode SynaBun would start now, as a key. null (nothing is decided) when Settings names a
+// command line (which runs whatever it names), while the file has not answered `--version` yet (an update still
+// being written; the resolver asks in the background and the next look knows), and for an OpenCode SynaBun does not
+// drive: a serve that works is never stopped for one that would be refused.
+function currentOpencodeFileKey() {
+  if (configuredCommandLine('opencode')) return null;
+  const found = cliResolver.launcher('opencode');
+  if (found.state !== 'installed' || !opencodeSupportFor(found.version, { path: found.path }).supported) return null;
+  return opencodeBinaryFileKey(opencodeBinaryIdentity(found.launchPath || found.path || null));
+}
+
+// OpenCode was updated while SynaBun runs (its badge, `opencode upgrade` in a terminal, OpenCode's own updater):
+// the file on disk is the new program, and the serves SynaBun started before still run the old one. The shared
+// serve is restarted once it runs no turn, and a session's serve that is not in use is stopped (the session's next
+// message starts one, as after the idle reaper). A serve in use is left for the next look. Looked at after every
+// check of the CLI versions and once a minute while a serve of SynaBun's runs.
+let _ocpRetireInFlight = null;
+function retireStaleOpencodeServes(reason = 'watch') {
+  if (_ocpRetireInFlight) return _ocpRetireInFlight;
+  _ocpRetireInFlight = (async () => {
+    if (_ocpHistoryClearInProgress || (!_ocpProc && _ocpIsoServes.size === 0)) return null;
+    let current = null;
+    try { current = currentOpencodeFileKey(); } catch { current = null; }
+    const plan = staleServePlan({
+      current,
+      shared: { key: _ocpServeFileKey, managed: !!_ocpProc, ready: _ocpReady, starting: _ocpStarting },
+      isolated: [..._ocpIsoServes].map(([termId, entry]) => ({ termId, key: entry.fileKey || null, busy: isolatedServeBusy(termId, entry) })),
+    });
+    for (const termId of plan.isolated) {
+      console.log(`[ocp-iso] OpenCode on disk changed: stopping serve ${String(termId).slice(-8)}, which runs the earlier program (${reason}); its session's next message starts a new one`);
+      stopIsolatedServe(termId);
+    }
+    if (plan.shared === 'restart') {
+      const turns = await activeOpencodeSessions({ port: _ocpPort, password: _ocpPassword });
+      // Asked again after the wait: a stop or a restart meanwhile has already replaced it.
+      if (turns.ok && !turns.ids.length && _ocpProc && _ocpReady && !_ocpStarting && _ocpServeFileKey && _ocpServeFileKey !== current) {
+        console.log(`[opencode] OpenCode on disk changed: restarting SynaBun's shared serve, which runs the earlier program (v${_ocpVersion || '?'}; ${reason})`);
+        try { await takeoverOpencodeServer(); } catch (error) { console.warn(`[opencode] shared serve restart after an OpenCode update failed: ${error?.message || error}`); }
+      }
+    }
+    return plan;
+  })().catch(() => null).finally(() => { _ocpRetireInFlight = null; });
+  return _ocpRetireInFlight;
+}
+setInterval(() => { retireStaleOpencodeServes('watch'); }, 60 * 1000).unref?.();
+
+process.once('exit', () => { stopAllIsolatedServes({ immediate: true }); _ocpServeEnds.killNow(); });
 
 // ── Antigravity side panel (/ws/antigravity) ──
 // One `agy acp` (Google's Antigravity ACP server) per panel socket, one ACP session per tab
@@ -9468,6 +9555,10 @@ function handleOpencodeV2Ws(ws) {
 
   // Track in-flight prompts so a fresh send can abort the previous turn cleanly.
   const sendAborts = new Map();  // sessionID → AbortController
+  // Stops that could not end a command of the turn (lib/opencode-stop-failures.js): from the second one on the panel
+  // offers "Stop anyway" (message:abort with `force`). A new turn starts the count again; an entry goes with its
+  // turn, its session and this socket.
+  const stopFailures = createStopFailures({ activeTurn: (sid) => _ocpActiveSessionTurns.get(sid) });
 
   const send = (data) => {
     if (ws.readyState === 1) {
@@ -9507,6 +9598,7 @@ function handleOpencodeV2Ws(ws) {
         end() {
           if (_ocpActiveSessionTurns.get(sid) === token) _ocpActiveSessionTurns.delete(sid);
           if (sendAborts.get(sid) === ctrl) sendAborts.delete(sid);
+          stopFailures.prune();
         },
       };
     },
@@ -9632,6 +9724,7 @@ function handleOpencodeV2Ws(ws) {
           _ocpSessionToServe.delete(msg.sessionId);
           _ocpSessionTools.delete(msg.sessionId);
           _ocpActiveSessionTurns.delete(msg.sessionId);
+          stopFailures.clear(msg.sessionId);
           if (entry && entry.sessions.size === 0) stopIsolatedServe(termId);
           send({ type: 'session:delete:result', id, status: r.status, data: r.data });
           break;
@@ -9734,19 +9827,43 @@ function handleOpencodeV2Ws(ws) {
               _ocpActiveSessionTurns.delete(sid);
             }
             if (sendAborts.get(sid) === ctrl) sendAborts.delete(sid);
+            // A turn that ended (or was replaced by this one) takes its failed Stops along.
+            stopFailures.prune();
           }
           break;
         }
         case 'message:abort': {
           const sid = msg.sessionId;
-          const ctrl = sendAborts.get(sid);
-          if (ctrl) { try { ctrl.abort(); } catch {} sendAborts.delete(sid); }
+          // `force`: "Stop anyway", offered after a second failed Stop. The turn ends even while a command OpenCode
+          // could not end may still run (its removal goes on in the background, lib/opencode2-client.js).
+          const force = msg.force === true;
+          const bound = boundIsoClient(sid);
+          const endSend = () => {
+            const ctrl = sendAborts.get(sid);
+            if (ctrl) { try { ctrl.abort(); } catch {} sendAborts.delete(sid); }
+          };
+          // A Stop with a command to end can fail, and then the turn goes on: the prompt's wait (`sendAborts`) is
+          // ended only once the stop worked. With none, as always: the wait ends first.
+          const mayFail = !force && bound?.getClient?.()?.stopNeedsKill?.(sid) === true;
+          if (!mayFail) endSend();
           try {
-            await boundIsoClient(sid).session.abort({ sessionID: sid });
+            const r = await bound.session.abort({ sessionID: sid, ...(force ? { force: true } : {}) });
+            endSend();
             _ocpActiveSessionTurns.delete(sid);
-            send({ type: 'message:abort:result', id, ok: true });
+            stopFailures.clear(sid);
+            const abandoned = Array.isArray(r?.data?.abandoned) ? r.data.abandoned : [];
+            send({ type: 'message:abort:result', id, ok: true, ...(abandoned.length ? { abandoned } : {}) });
           } catch (err) {
-            send({ type: 'message:abort:result', id, ok: false, error: err?.message });
+            if (err?.cause?.name === 'ShellStopFailed') {
+              // A command Stop could not end still runs (lib/opencode2-client.js abortSession): the turn goes on,
+              // and the panel says so instead of showing it stopped; from the second failure it offers Stop anyway.
+              const count = stopFailures.fail(sid);
+              const shells = Array.isArray(err?.data?.shells) ? err.data.shells : [];
+              send({ type: 'message:abort:result', id, ok: false, error: err?.message, code: 'SHELL_STOP_FAILED', shells, failures: count, canForce: count >= 2 });
+            } else {
+              endSend();
+              send({ type: 'message:abort:result', id, ok: false, error: err?.message });
+            }
           }
           break;
         }
@@ -9790,6 +9907,7 @@ function handleOpencodeV2Ws(ws) {
     _ocpV2WsClients.delete(ws);
     for (const ctrl of sendAborts.values()) { try { ctrl.abort(); } catch {} }
     sendAborts.clear();
+    stopFailures.clearAll();
     console.log(`[ocp-v2-ws] close conn=${connId} total=${_ocpV2WsClients.size}`);
   });
 
@@ -9923,6 +10041,7 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
     return false;
   }
   _ocpStarting = true;
+  if (_ocpSharedEnd) await _ocpSharedEnd;
 
   // 0. Which OpenCode is installed. One SynaBun does not drive (OpenCode 1, an OpenCode 2 older than the
   // minimum) is refused here, with a sentence the panel and Settings show, instead of failing call by call later.
@@ -9986,6 +10105,7 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
           shell: false,
         });
         _ocpProc = proc;
+        _ocpServeFileKey = opencodeBinaryFileKey(launch.nativeServe?.identity);
         // On record from its spawn: a crash of SynaBun from here on does not leave it running for good.
         tracked = trackOpencodeServe(proc, { kind: 'shared', id: 'shared', port: _ocpPort, token, nativeWebSocketSafe: launch.nativeWebSocketSafe, nativeServe: launch.nativeServe });
         const readPassword = servePasswordReader();
@@ -10006,6 +10126,7 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
           // its process either way: trackOpencodeServe.)
           if (_ocpProc !== proc) return;
           _ocpProc = null;
+          _ocpServeFileKey = null;
           _ocpReady = false;
           opencodeV2Client.disconnect().catch(() => {});
           broadcastToOpencodeV2Clients({ type: 'server:status', status: 'offline', port: _ocpPort });
@@ -10068,10 +10189,14 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
   return false;
 }
 
-function stopOpencodeServer({ stopManagedOllama = true } = {}) {
+// Returns a promise of the end of SynaBun's own child when its turns are released first (a bounded wait,
+// lib/opencode-turn-release.js), else null: its process was ended at once. `immediate`: the process's exit handler,
+// where nothing can be awaited.
+function stopOpencodeServer({ stopManagedOllama = true, immediate = false } = {}) {
   opencodeV2Client.disconnect().catch(() => {});
   const procPid = _ocpProc?.pid || null;
   const isWin = process.platform === 'win32';
+  let ended = null;
 
   // On Windows `process.kill(pid, 'SIGTERM')` is unreliable for non-Node
   // children (cmd.exe shells, opencode native binaries). Use taskkill /T /F
@@ -10088,12 +10213,26 @@ function stopOpencodeServer({ stopManagedOllama = true } = {}) {
   };
 
   if (_ocpProc && !_ocpProc.killed) {
-    if (isWin && procPid) {
-      winKill(procPid);
-    } else {
-      try { _ocpProc.kill(); } catch {}
+    const proc = _ocpProc;
+    ended = _ocpServeEnds.end({
+      // Only a serve that answered can be asked for its turns; one that never became healthy has none.
+      port: _ocpReady ? _ocpPort : null,
+      password: _ocpPassword,
+      alive: () => proc.exitCode == null && proc.signalCode == null,
+      kill: () => {
+        if (isWin && procPid) winKill(procPid);
+        else { try { proc.kill(); } catch {} }
+      },
+      label: 'shared serve',
+      immediate,
+    });
+    if (ended) {
+      const ending = ended;
+      _ocpSharedEnd = ending;
+      ending.finally(() => { if (_ocpSharedEnd === ending) _ocpSharedEnd = null; });
     }
     _ocpProc = null;
+    _ocpServeFileKey = null;
   }
   // SynaBun's recorded serves (a process its child started that answers on the port; one of an earlier run whose
   // SynaBun has ended), only while the OS still reports each as that very process: a pid another program has by now,
@@ -10112,6 +10251,7 @@ function stopOpencodeServer({ stopManagedOllama = true } = {}) {
   if (stopManagedOllama) {
     try { stopOllama(); } catch {}
   }
+  return ended;
 }
 
 // Takeover: a fresh shared serve that boots from the updated auth/config files. A serve is stopped only when it
@@ -10124,8 +10264,9 @@ function stopOpencodeServer({ stopManagedOllama = true } = {}) {
 async function takeoverOpencodeServer() {
   if (_ocpHistoryClearInProgress) throw new Error('OpenCode history is being cleared');
   if (_ocpProc) {
-    // Already managed — simple restart
-    stopOpencodeServer();
+    // Already managed — simple restart. The old serve's end is waited for (its turns are released first): the new
+    // start must never find the old one still answering on the port.
+    await stopOpencodeServer();
     await new Promise(r => setTimeout(r, 1000));
     return ensureOpencodeServer();
   }
@@ -18937,6 +19078,32 @@ async function probeBrewOutdated(env) {
   }
 }
 
+// Ask WinGet which version of OpenCode it can install (`winget search`, as OpenCode's own updater does: a release
+// reaches WinGet's repository days after OpenCode publishes it, and some never do). `{ version }`, or null when
+// WinGet could not be asked or lists no version: the caller fails closed, like the brew probe.
+async function probeWingetOpencode(env) {
+  try {
+    const { stdout } = await execFileAsync('winget', [...OPENCODE_WINGET_SEARCH_ARGS], {
+      encoding: 'utf-8',
+      timeout: 20000,
+      env,
+      windowsHide: true,
+      maxBuffer: 1024 * 1024,
+    });
+    const version = parseWingetSearchVersion(stdout);
+    return version ? { version } : null;
+  } catch {
+    return null;
+  }
+}
+
+// The Git Bash this PC has, for OpenCode's own installer (`opencode upgrade --method curl` on Windows runs it with
+// Git Bash): the one Claude Code gets (lib/git-bash/). null anywhere else, and where there is none.
+function opencodeGitBashPath() {
+  if (process.platform !== 'win32') return null;
+  try { return gitBash.resolution()?.path || null; } catch { return null; }
+}
+
 // Resolve SynaBun's own install roots so we can reject any tool binary that
 // lives inside our bundled node_modules — bulletproof guard for the recurring
 // phantom-version bug (e.g. stale @anthropic-ai/claude-code left over from
@@ -19000,6 +19167,10 @@ async function checkToolVersions({ force = false } = {}) {
   const brewOutdated = Object.values(statuses).some((status) => status.state === 'installed' && isBrewSource(status.installSource))
     ? await probeBrewOutdated(cleanEnv)
     : null;
+  // A WinGet install of OpenCode is measured against what WinGet can install (`undefined`: not such an install).
+  const wingetOpencode = process.platform === 'win32' && statuses.opencode?.state === 'installed' && statuses.opencode.installSource === 'winget'
+    ? await probeWingetOpencode(cleanEnv)
+    : undefined;
 
   const checkOneTool = async (tool) => {
     const status = statuses[tool.key];
@@ -19046,12 +19217,13 @@ async function checkToolVersions({ force = false } = {}) {
       npmLatest: upstreamLatest,
       brewUpstream,
       installed,
+      ...(tool.key === 'opencode' ? { winget: wingetOpencode } : {}),
     });
     const refreshBrew = brewNeedsRefresh({ installSource, brewToken, brewOutdated, brewUpstream, installed });
     // A self-updater is started by the path found, so the update reaches this
     // very installation even where a terminal's PATH does not name its folder.
     const updateCommand = installed
-      ? buildUpdateCommand(tool.key, installSource, { brewToken, binPath: status.path, platform: process.platform, refreshBrew })
+      ? buildUpdateCommand(tool.key, installSource, { brewToken, binPath: status.path, platform: process.platform, refreshBrew, installedVersion: installed, gitBash: tool.key === 'opencode' ? opencodeGitBashPath() : null })
       : null;
 
     return [tool.key, {
@@ -19106,6 +19278,9 @@ async function checkToolVersions({ force = false } = {}) {
   // A check started before a newer refresh must never publish its stale answer.
   if (generation !== _toolVersionGeneration) return;
   _toolVersionCache = { checkedAt: new Date().toISOString(), tools: results };
+  // An update that just landed (the badge's own poll asks every 10 s until it has): SynaBun's serves that still run
+  // the earlier program are replaced now, not at the next restart of SynaBun.
+  try { retireStaleOpencodeServes('version check'); } catch { /* the once-a-minute look tries again */ }
 
   const updates = Object.entries(results).filter(([, v]) => v.updateAvailable);
   const broken = Object.entries(results).filter(([, v]) => v.state === 'broken');
@@ -33100,13 +33275,22 @@ const extensionAdapter = createExtensionAdapter({
   caller: browserCaller, ownerPage: browserOwnerPageOnly, evaluateGate: extensionEvaluateGate,
   selected: req => loadBrowserConfig().connectMode === 'extension' && !runMoreLoginPin(browserCaller(req).id),
 });
-// The extension folder the owner loads (DATA_HOME/browser-extension/unpacked): refreshed at start when the bundled
-// extension changed and is not older (lib/browser-extension-folder.js). The browser then needs the extension's Reload,
-// which Settings and the setup page say (`reloadNeeded`). Never fatal: a folder that cannot be written is prepared
-// again by the one-button setup, which says so.
-const prepareOwnerExtensionFolder = () => prepareExtensionFolder({ source: EXTENSION_FOLDER, home: DATA_HOME, appPort: Number(PORT) || 3344 });
-try { const prepared = prepareOwnerExtensionFolder(); if (prepared.changed) console.log(`[extension-bridge] extension folder ${prepared.previousVersion ? `refreshed ${prepared.previousVersion} → ${prepared.version}` : `prepared (${prepared.version})`}; reload the extension in the browser`); }
-catch (error) { console.warn(`[extension-bridge] extension folder not prepared (${error?.code || 'error'})`); }
+// The extension folder the owner loads (DATA_HOME/browser-extension/unpacked). Its files are the one package this
+// release pins (lib/browser-extension-pin.js), downloaded from synabun.ai and verified (lib/browser-extension-package.js):
+// nothing of the extension is inside the app, and nothing here needs it or the network to start. At start only the
+// folder's own setup content script is brought to this server's port (no network). A folder older than the pin is
+// refreshed after listen, in the background (the old one stays on any failure); a folder that is not there is
+// downloaded only when the owner starts "Connect your browser". The browser then needs the extension's Reload, which
+// Settings and the setup page say (`reloadNeeded`). Never fatal.
+const extensionPackage = createExtensionPackage({
+  home: DATA_HOME, appPort: () => Number(PORT) || 3344,
+  log: record => console.log('[extension-bridge]', JSON.stringify(record)),
+});
+// Under the data home's lock: a replacement a stopped process left is finished or taken back, its leftovers removed, the
+// pinned extension's setup script set to this port from its own verified files, and a changed folder repaired from the
+// verified package the data home keeps (no network; otherwise the background refresh below downloads it).
+try { const prepared = extensionPackage.retarget(); if (prepared.changed) console.log(`[extension-bridge] extension folder ${prepared.reason === 'repair' ? 'repaired from the verified package' : "set to this server's port"} (${prepared.version}); reload the extension in the browser`); else if (prepared.state === 'other') console.warn('[extension-bridge] the extension folder is not the pinned extension; it is downloaded again after start-up'); }
+catch (error) { console.warn(`[extension-bridge] extension folder not checked (${error?.code || 'error'}${error?.code === 'EXTENSION_FOLDER_UNSAFE' && error.reason ? `: ${error.reason}` : ''})`); }
 // The one-button setup (Settings → Browser → "Connect your browser"; docs/browser-extension-bridge.md → One-button
 // setup). Programs are started with execFile/spawn and argument arrays, never a shell; reads time out.
 const extensionSetup = createExtensionSetup({
@@ -33117,13 +33301,15 @@ const extensionSetup = createExtensionSetup({
     exists: path => { try { return existsSync(path); } catch { return false; } },
     list: dir => { try { return readdirSync(dir); } catch { return []; } },
   }),
-  prepare: () => prepareOwnerExtensionFolder(),
+  prepare: ({ signal } = {}) => extensionPackage.ensure({ reason: 'setup', signal }),
+  packageStatus: () => extensionPackage.status(),
+  confirmReload: () => extensionPackage.confirmReload(),
   exec: (cmd, args) => new Promise((resolveExec, rejectExec) => {
     const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true, shell: false });
     child.once('error', rejectExec); child.once('spawn', () => { child.unref(); resolveExec(); });
   }),
   appOrigin: () => `http://127.0.0.1:${Number(PORT) || 3344}`,
-  folderVersion: () => extensionFolderState(DATA_HOME).version,
+  folderVersion: () => { const state = extensionFolderState(DATA_HOME); return state.present ? state.version : null; },
 });
 {
   const restored = extensionBridge.restore();
@@ -37387,9 +37573,12 @@ app.use('/api/browser/extension', extensionOwnerGuard, (req, res, next) => {
 });
 app.get('/api/browser/extension', (_req, res) => {
   const folderState = extensionFolderState(DATA_HOME), status = extensionBridge.status();
-  // `folder`: the folder the owner loads (the prepared copy; the bundled one only when none could be prepared).
-  res.json({ ...status, folder: folderState.prepared ? folderState.folder : EXTENSION_FOLDER, bundledFolder: EXTENSION_FOLDER, uploadFolder: extensionUploadRoot,
-    folderVersion: folderState.version, reloadNeeded: !!(status.connected && folderState.version && status.extensionVersion !== folderState.version),
+  // `folder`: the folder the owner loads, once it is there (null until "Connect your browser" downloaded the extension).
+  // `package`: the pinned package and its download (pinnedVersion, needs, phase, received, total, code).
+  const pkg = extensionPackage.status();
+  res.json({ ...status, folder: folderState.present ? folderState.folder : null, uploadFolder: extensionUploadRoot,
+    folderVersion: folderState.present ? folderState.version : null, pinnedVersion: pkg.pinnedVersion, package: pkg,
+    ...extensionVersions({ connected: status.connected, extensionVersion: status.extensionVersion, folderVersion: folderState.present ? folderState.version : null, pinnedVersion: pkg.pinnedVersion, reloadPending: pkg.reloadPending === true, reloadReason: pkg.reloadReason ?? null }),
     setup: extensionSetup.status().state });
 });
 // The one-button setup. Owner only: these sit under the guard above (ownerRouteGuard, the page secret, no automation
@@ -37402,6 +37591,20 @@ app.post('/api/browser/extension/setup/ticket', (_req, res) => { res.setHeader('
 app.post('/api/browser/extension/setup/cancel', (_req, res) => sendSetup(res, () => extensionSetup.cancel()));
 app.post('/api/browser/extension/setup/reveal', (_req, res) => sendSetup(res, () => extensionSetup.reveal()));
 app.post('/api/browser/extension/setup/reopen', (_req, res) => sendSetup(res, () => extensionSetup.reopen()));
+// The setup page saw the extension's content script on this port: the Reload a port change asked for is done. A
+// repair's Reload is not (the copy the browser still runs answers the page just the same): see reload/confirm.
+app.post('/api/browser/extension/setup/seen', (_req, res) => sendSetup(res, () => extensionSetup.seen()));
+// The owner's click in Settings ("I reloaded the extension"): the one way a repair's Reload is cleared. Behind the
+// guard above like `seen` (ownerRouteGuard with its own Origin required, this boot's page secret, no agent or guest),
+// and also refused here for a request from an extension's own origin, one the browser does not mark same-origin, or
+// one without the app's X-SynaBun-UI header. The body must say so (`reloaded: true`): nothing the page loads or polls
+// sends it.
+app.post('/api/browser/extension/reload/confirm', (req, res) => {
+  const origin = String(req.headers.origin || ''), site = req.headers['sec-fetch-site'];
+  if (/^[a-z-]*extension:/i.test(origin) || (site !== undefined && site !== 'same-origin') || req.headers['x-synabun-ui'] !== '1') return res.status(403).json({ code: 'OWNER_ROUTE', error: 'Only the owner\'s SynaBun Settings can confirm the Reload.' });
+  if (req.body?.reloaded !== true) return res.status(400).json({ code: 'INVALID_MESSAGE', error: 'Send { "reloaded": true } once the extension was reloaded in the browser.' });
+  return sendSetup(res, () => ({ cleared: extensionPackage.confirmRepairReload(), ...extensionSetup.status() }));
+});
 app.post('/api/browser/extension/:action', async (req, res) => {
   try {
     const action = req.params.action;
@@ -37413,6 +37616,8 @@ app.post('/api/browser/extension/:action', async (req, res) => {
     else if (action === 'revoke-site') await extensionBridge.revokeSite(req.body?.site);
     // The owner's mode: full control (any site and tab of the paired browser) or only what the owner shares.
     else if (action === 'mode') await extensionBridge.setMode(req.body?.fullControl);
+    // The owner's retry of an update that did not download (Settings): only for a folder that is already there.
+    else if (action === 'update') { if (extensionPackage.needs() === 'update') extensionPackage.ensure({ reason: 'update' }).catch(() => {}); }
     else return res.status(400).json({ code: 'INVALID_MESSAGE', error: 'Unknown extension action.' });
     return res.json({ ok: true, ...extensionBridge.status() });
   } catch (error) { return res.status(400).json(extensionSafeError(error)); }
@@ -39971,6 +40176,14 @@ const httpServer = app.listen(PORT, async () => {
   // The lists windows, menus and Settings wait for, read once in the background (see LAUNCH_TASKS above).
   startLaunchWarmup();
 
+  // The owner's extension folder, when it holds an older extension than this release pins: the pinned package is
+  // fetched and verified in the background (lib/browser-extension-package.js). Nothing is downloaded for somebody who
+  // never set the extension up, and a failure keeps the folder that is there.
+  setTimeout(() => {
+    try { markActivity('startup:extension-package'); extensionPackage.refreshInBackground(); }
+    catch (error) { console.warn(`[extension-bridge] extension update not started (${error?.code || 'error'})`); }
+  }, 4000).unref?.();
+
   // Windows: the Git Bash every Claude Code gets (lib/git-bash/). Looked for now (the settings of the user's own
   // claude follow it); a PC with none, and an app that carries none, gets SynaBun's copy, fetched in the background.
   setTimeout(() => {
@@ -40972,7 +41185,8 @@ process.on('exit', () => {
   try { _whatsapp?.killNow(); } catch {}
   try { tunnel.killNow(); } catch {}
   try { gitBash.cancel(); } catch {}
-  try { stopOpencodeServer(); } catch {}
+  try { stopOpencodeServer({ immediate: true }); } catch {}
+  try { _ocpServeEnds.killNow(); } catch {}
   try { editorCompletionServe.stop('exit'); } catch {}
   try { _claudeBridge?.shutdownAllBridges?.(); } catch {}
   try { antigravityPanel.closeAll(); } catch {}

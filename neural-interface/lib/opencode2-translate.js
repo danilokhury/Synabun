@@ -633,16 +633,50 @@ export function createEventTranslator({ version = '', directory: defaultDirector
   const inbox = new Map();        // inboxID → { sessionID, item }
   const permissions = new Map();  // requestID → sessionID
   const forms = new Map();        // formID → form
+  // The shell commands of tool calls (OpenCode 2 runs each as a "shell" with an
+  // id of its own): shellID → { id, sessionID, messageID, callID, command,
+  // started, ended, status, exit, linked, background, waited }. A command that
+  // outlives its tool call runs on "in the background": OpenCode ends the tool
+  // call (and, once the model has nothing else to do, the turn) while the
+  // command still runs, and starts the session again by itself when it exits.
+  const shells = new Map();
+  const detached = new Set();     // `${messageID}:${callID}` of calls the model itself sent to the background
   const MAX_MESSAGES = 400;
   const MAX_INBOX = 200;
+  const MAX_SHELLS = 200;
+  let released = 0;
 
   const sessionState = (sessionID) => {
     let state = sessions.get(sessionID);
     if (!state) {
-      state = { info: null, directory: '', lastUser: '', compacting: 0 };
+      state = { info: null, directory: '', lastUser: '', compacting: 0, executing: false, held: false };
       sessions.set(sessionID, state);
     }
     return state;
+  };
+
+  const shellView = (shell) => ({
+    id: shell.id,
+    sessionID: shell.sessionID,
+    messageID: shell.messageID,
+    callID: shell.callID,
+    command: shell.command,
+    status: shell.status,
+    background: shell.background,
+    waited: shell.waited,
+    time: shell.ended ? { started: shell.started, ended: shell.ended } : { started: shell.started },
+    ...(shell.exit != null ? { exit: shell.exit } : {}),
+  });
+  /** The commands of `sessionID` still running after their tool call ended; `waited`: only those the model did not send there itself. */
+  const backgroundShells = (sessionID, { waited = false } = {}) => [...shells.values()]
+    .filter((shell) => shell.sessionID === sessionID && shell.linked && shell.status === 'running' && shell.background && (!waited || shell.waited));
+  const trimShells = () => {
+    if (shells.size <= MAX_SHELLS) return;
+    // A command that ended goes first; one still running is never forgotten for a newer one.
+    for (const [id, shell] of shells) {
+      if (shells.size <= MAX_SHELLS) break;
+      if (shell.status !== 'running') shells.delete(id);
+    }
   };
   const directoryOf = (event, sessionID) => str(event?.location?.directory)
     || (sessionID ? sessions.get(sessionID)?.directory : '')
@@ -735,8 +769,23 @@ export function createEventTranslator({ version = '', directory: defaultDirector
       const { created, ...rest } = part;
       return rest;
     };
-    const turnEnd = (error = null) => {
+    const updateShell = (shell) => {
+      if (shell.linked && shell.sessionID) emit('shell.updated', { sessionID: shell.sessionID, shell: shellView(shell) });
+    };
+    // An execution that ended is the end of the turn, except one that succeeded
+    // while a command the model waits for still runs in the background: OpenCode
+    // starts the session again by itself when that command exits, so the session
+    // is still at work and nobody is told it went idle (`held`). A command the
+    // model sent to the background itself (a server it started) holds nothing.
+    const turnEnd = (error = null, { hold = false } = {}) => {
+      const state = sessionState(sessionID);
+      state.executing = false;
+      state.held = hold && backgroundShells(sessionID, { waited: true }).length > 0;
       if (error) emit('session.error', { sessionID, error });
+      if (state.held) {
+        emit('session.status', { sessionID, status: { type: 'busy', background: true } });
+        return;
+      }
       emit('session.status', { sessionID, status: { type: 'idle' } });
       emit('session.idle', { sessionID });
     };
@@ -802,6 +851,7 @@ export function createEventTranslator({ version = '', directory: defaultDirector
       case 'session.deleted': {
         const info = sessionInfo(sessionID);
         sessions.delete(sessionID);
+        for (const [id, shell] of shells) if (shell.sessionID === sessionID) shells.delete(id);
         emit('session.deleted', { sessionID, info });
         break;
       }
@@ -841,14 +891,18 @@ export function createEventTranslator({ version = '', directory: defaultDirector
       }
 
       // ── A turn ──
-      case 'session.execution.started':
+      case 'session.execution.started': {
+        const state = sessionState(sessionID);
+        state.executing = true;
+        state.held = false;
         emit('session.status', { sessionID, status: { type: 'busy' } });
         break;
+      }
       case 'session.retry.scheduled':
         emit('session.status', { sessionID, status: { type: 'retry', attempt: num(data.attempt), message: str(data.error?.message) || 'Retrying', next: num(data.at) } });
         break;
       case 'session.execution.succeeded':
-        turnEnd(null);
+        turnEnd(null, { hold: true });
         break;
       case 'session.execution.failed':
         turnEnd(errorToV1(data.error));
@@ -948,6 +1002,10 @@ export function createEventTranslator({ version = '', directory: defaultDirector
       case 'session.tool.called': {
         const part = toolOf(data);
         part.state = { status: 'running', input: obj(data.input), time: { start: at } };
+        if (obj(data.input).background === true) {
+          detached.add(`${part.messageID}:${part.callID}`);
+          trim(detached, MAX_SHELLS);
+        }
         updatePart(publicTool(part));
         break;
       }
@@ -956,6 +1014,21 @@ export function createEventTranslator({ version = '', directory: defaultDirector
         const start = num(part.state.time?.start, at);
         part.state = { ...part.state, status: 'running', metadata: { ...obj(part.state.metadata), ...obj(data.metadata) }, time: { start } };
         updatePart(publicTool(part));
+        // The shell tool says which command it started: from here on its output
+        // can be read while it runs (GET /api/shell/:id/output).
+        const shellID = str(obj(data.metadata).shellID);
+        if (shellID) {
+          let shell = shells.get(shellID);
+          if (!shell) {
+            shell = { id: shellID, sessionID, messageID: '', callID: '', command: '', started: at, ended: 0, status: 'running', exit: null, linked: false, background: false, waited: false };
+            shells.set(shellID, shell);
+            trimShells();
+          }
+          if (!shell.linked) {
+            Object.assign(shell, { linked: true, sessionID, messageID: part.messageID, callID: part.callID, command: shell.command || str(obj(part.state.input).command) });
+            updateShell(shell);
+          }
+        }
         break;
       }
       case 'session.tool.success':
@@ -965,8 +1038,40 @@ export function createEventTranslator({ version = '', directory: defaultDirector
         const state = event.type === 'session.tool.success'
           ? { status: 'completed', input: obj(part.state.input), content: data.content, metadata: data.metadata }
           : { status: 'error', input: obj(part.state.input), error: data.error, metadata: data.metadata };
+        const shellID = str(obj(data.metadata).shellID) || str(obj(part.state.metadata).shellID);
         part.state = toolStateToV1(state, { name: part.tool, times: { ran: start, completed: at }, base: { sessionID, messageID: part.messageID, callID: part.callID } });
+        // The call's command, for a reader of the part (a transcript read later has it only for a command that went
+        // to the background: OpenCode keeps no shell id on one that finished inside its call).
+        if (shellID && !part.state.metadata?.shellID) part.state = { ...part.state, metadata: { ...obj(part.state.metadata), shellID } };
         updatePart(publicTool(part));
+        const shell = shellID ? shells.get(shellID) : null;
+        // "Succeeded" with a command still running: the call is over, the command is not.
+        if (shell && shell.status === 'running' && event.type === 'session.tool.success' && obj(data.metadata).status === 'running') {
+          shell.background = true;
+          shell.waited = !detached.has(`${part.messageID}:${part.callID}`);
+          updateShell(shell);
+        }
+        detached.delete(`${part.messageID}:${part.callID}`);
+        break;
+      }
+
+      // ── Shell commands ──
+      case 'shell.created': {
+        const info = obj(data.info);
+        const id = str(info.id);
+        if (!id || shells.has(id)) break;
+        shells.set(id, { id, sessionID: str(obj(info.metadata).sessionID), messageID: '', callID: '', command: str(info.command), started: num(obj(info.time).started, at), ended: 0, status: 'running', exit: null, linked: false, background: false, waited: false });
+        trimShells();
+        break;
+      }
+      case 'shell.exited':
+      case 'shell.deleted': {
+        const shell = shells.get(str(data.id));
+        if (!shell || shell.status !== 'running') break;
+        shell.status = event.type === 'shell.deleted' ? 'killed' : (str(data.status) || 'exited');
+        shell.ended = at;
+        if (typeof data.exit === 'number') shell.exit = data.exit;
+        updateShell(shell);
         break;
       }
 
@@ -1051,6 +1156,58 @@ export function createEventTranslator({ version = '', directory: defaultDirector
     noteForm: (form) => { if (form?.id) { forms.set(str(form.id), form); trim(forms, MAX_INBOX); } },
     notePermission: (requestID, sessionID) => { if (requestID && sessionID) { permissions.set(str(requestID), str(sessionID)); trim(permissions, MAX_INBOX); } },
     sessionDirectory: (sessionID) => sessions.get(str(sessionID))?.directory || '',
+    /** The shell commands of a session's tool calls this stream has seen, oldest first (`{ id, status, command, callID, background, … }`). */
+    shells: (sessionID) => [...shells.values()].filter((shell) => shell.linked && shell.sessionID === str(sessionID)).map(shellView),
+    /** One of them by its id, or null. */
+    shell: (shellID) => { const shell = shells.get(str(shellID)); return shell?.linked ? shellView(shell) : null; },
+    /** The commands of a session that run on after their tool call ended. */
+    backgroundShells: (sessionID, options) => backgroundShells(str(sessionID), options).map(shellView),
+    /** The ids of the commands a held turn of `sessionID` waits for (still running, not sent to the background by the model). */
+    heldShellIds: (sessionID) => backgroundShells(str(sessionID), { waited: true }).map((shell) => shell.id),
+    /** A session whose execution ended while a command the model waits for still runs: reported busy, not idle. */
+    held: (sessionID) => sessions.get(str(sessionID))?.held === true,
+    heldSessions: () => [...sessions].filter(([, state]) => state.held).map(([id]) => id),
+    /**
+     * Commands a "Stop anyway" gave up on: still listed as running (they may be), but no turn of their session waits
+     * for them from now on. → the events that say so.
+     */
+    unhold(shellIDs = []) {
+      const out = [];
+      for (const id of shellIDs) {
+        const shell = shells.get(str(id));
+        if (!shell || !shell.waited) continue;
+        shell.waited = false;
+        const directory = sessions.get(shell.sessionID)?.directory || defaultDirectory;
+        out.push({ directory, payload: { id: `synabun-release-${++released}`, type: 'shell.updated', properties: { sessionID: shell.sessionID, shell: shellView(shell) } } });
+      }
+      return out;
+    },
+    /**
+     * End a held turn OpenCode will not end by itself (its commands were stopped, or the session never started
+     * again): the events of that end, none when the session is not held. `aborted`: as a stopped turn.
+     * `running`: the ids of commands a "Stop anyway" could not end. They stay listed as running (they may well be),
+     * and are left as they are (`unhold` says they hold nothing).
+     */
+    release(sessionID, { aborted = false, running = [] } = {}) {
+      const id = str(sessionID);
+      const state = sessions.get(id);
+      if (!state?.held) return [];
+      state.held = false;
+      const directory = state.directory || defaultDirectory;
+      const event = (type, properties) => ({ directory, payload: { id: `synabun-release-${++released}`, type, properties } });
+      const left = new Set((Array.isArray(running) ? running : []).map(str));
+      // A command still listed as running is not: OpenCode holds none of this session any more.
+      const ended = backgroundShells(id).filter((shell) => !left.has(shell.id)).map((shell) => {
+        Object.assign(shell, { status: aborted ? 'killed' : 'exited', ended: Date.now() });
+        return event('shell.updated', { sessionID: id, shell: shellView(shell) });
+      });
+      return [
+        ...ended,
+        ...(aborted ? [event('session.error', { sessionID: id, error: { name: 'MessageAbortedError', data: { message: 'The turn was stopped (user).' } } })] : []),
+        event('session.status', { sessionID: id, status: { type: 'idle' } }),
+        event('session.idle', { sessionID: id }),
+      ];
+    },
   };
 }
 
