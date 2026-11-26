@@ -36,7 +36,7 @@ const fail = (code, message = code) => { throw Object.assign(new Error(message),
  * wants (the pinned version, or a newer one a later release left there) and the browser runs something else. While
  * the folder itself is older than the pin a Reload changes nothing: that is `updateNeeded`, which SynaBun settles by
  * downloading the pinned package. `reloadPending`: the folder's marker asks for a Reload until the setup page saw the
- * extension running again; `reloadReason` says why. 'port': the setup port changed while the version stayed, and the
+ * extension running again; `reloadReason` says why. 'version': a verified upgrade awaits the new peer. 'port': the setup port changed while the version stayed, and the
  * browser still runs the old manifest (asked only while the extension is connected). 'repair': files that were not
  * the pinned extension were replaced, and the browser may still run them at the same version, connected or not (the
  * changed code may not connect at all): asked until the owner confirms the Reload in Settings, and said in its own
@@ -45,7 +45,7 @@ const fail = (code, message = code) => { throw Object.assign(new Error(message),
 export function extensionVersions({ connected, extensionVersion, folderVersion, pinnedVersion, reloadPending = false, reloadReason = null }) {
   const current = !!folderVersion && (!pinnedVersion || compareVersions(folderVersion, pinnedVersion) >= 0);
   const repaired = current && reloadPending === true && reloadReason === 'repair';
-  const reloadNeeded = repaired || !!(connected && current && (extensionVersion !== folderVersion || reloadPending === true));
+  const reloadNeeded = repaired || (current && reloadPending === true && reloadReason === 'version') || !!(connected && current && (extensionVersion !== folderVersion || reloadPending === true));
   return {
     reloadNeeded,
     updateNeeded: !!(folderVersion && pinnedVersion && compareVersions(folderVersion, pinnedVersion) < 0),
@@ -64,7 +64,7 @@ export function extensionVersions({ connected, extensionVersion, folderVersion, 
  * never clears a repair's Reload).
  */
 export function createExtensionSetup({ bridge, detect, prepare, exec, appOrigin, platform = process.platform, now = Date.now,
-  windowMs = SETUP_WINDOW_MS, ticketMs = TICKET_MS, maxTickets = MAX_TICKETS, folderVersion = () => null, packageStatus = () => ({}), confirmReload = () => false } = {}) {
+  windowMs = SETUP_WINDOW_MS, ticketMs = TICKET_MS, maxTickets = MAX_TICKETS, folderVersion = () => null, packageStatus = () => ({}), confirmReload = () => false, updateStatus } = {}) {
   let setup = null;
   // The latest start, from its first step: a cancel or a later start ends it before it prepares or opens anything.
   let attempt = null;
@@ -97,10 +97,12 @@ export function createExtensionSetup({ bridge, detect, prepare, exec, appOrigin,
   }
   function view() {
     const current = state(), bridgeStatus = bridge.status();
-    const version = folderVersion(), pkg = packageStatus() || {};
+    const pkg = packageStatus() || {};
+    const version = Object.hasOwn(pkg, 'folderVersion') ? pkg.folderVersion : folderVersion();
     const pinnedVersion = typeof pkg.pinnedVersion === 'string' ? pkg.pinnedVersion : null;
     return {
       state: current,
+      ...(updateStatus ? { update: updateStatus(bridgeStatus, pkg) } : {}),
       ...(setup ? { setupId: setup.id, browser: describe(setup.browser), defaultBrowser: describe(setup.defaultBrowser), installedBrowsers: setup.installed.map(describe),
         folder: setup.folder, extensionsUrl: setup.browser?.extensionsUrl || null, opened: setup.opened, revealed: setup.revealed, expiresAt: setup.until } : {}),
       ...(setup?.error ? { code: setup.error.code } : {}),
@@ -173,7 +175,7 @@ export function createExtensionSetup({ bridge, detect, prepare, exec, appOrigin,
       await present();
       return view();
     },
-    status: view,
+    status: view, state,
     /**
      * The setup page saw the extension's content script on this server's port (POST …/setup/seen): the browser runs
      * the folder's manifest for this port, so the Reload a port change asked for is done. A repair's Reload is not: the

@@ -214,6 +214,27 @@ function _ensureToastContainer(position) {
   return _toastContainer;
 }
 
+function mountToast(container, toast) {
+  container.appendChild(toast);
+  requestAnimationFrame(() => requestAnimationFrame(() => toast.classList.add('visible')));
+}
+
+// An owner action that stays in the existing notification stack until dismissed or resolved.
+export function showActionNotice({ title, action, closeLabel, onAction, onClose }) {
+  const toast = document.createElement('div');
+  toast.className = 'notif-toast'; toast.dataset.persistent = 'true';
+  toast.innerHTML = `<div class="notif-toast-accent"></div><div class="notif-toast-body">
+    <div class="notif-toast-provider" role="status"></div><button type="button" class="cli-detect-btn"></button>
+    </div><button type="button" class="notif-toast-close">&times;</button>`;
+  toast.querySelector('[role="status"]').textContent = title;
+  const button = toast.querySelector('.cli-detect-btn'); button.textContent = action;
+  button.addEventListener('click', onAction);
+  const close = toast.querySelector('.notif-toast-close'); close.setAttribute('aria-label', closeLabel);
+  close.addEventListener('click', onClose);
+  mountToast(_ensureToastContainer(getNotifSettings().toastPosition), toast);
+  return () => _dismissToast(toast);
+}
+
 function _showToast(type, title, body, source, opts) {
   const s = getNotifSettings();
   if (!s.toast) return;
@@ -254,16 +275,14 @@ function _showToast(type, title, body, source, opts) {
   toast.querySelector('.notif-toast-close').addEventListener('click', () => _dismissToast(toast));
 
   // Add to container
-  container.appendChild(toast);
-  // Trigger animation
-  requestAnimationFrame(() => requestAnimationFrame(() => toast.classList.add('visible')));
+  mountToast(container, toast);
 
   // Auto-dismiss
   const dur = s.toastDuration * 1000;
   toast._timeout = setTimeout(() => _dismissToast(toast), dur);
 
   // Enforce max toasts
-  const toasts = container.querySelectorAll('.notif-toast');
+  const toasts = container.querySelectorAll('.notif-toast:not([data-persistent])');
   if (toasts.length > MAX_TOASTS) {
     _dismissToast(toasts[0]);
   }

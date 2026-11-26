@@ -11,6 +11,8 @@
 //   - `isMeta` user lines are injected by the CLI, not typed by the user;
 //   - every line carries a `uuid`.
 
+import { parseTaskNotifications } from '../public/shared/bg-tasks/bg-tasks-model.js';
+
 const MAX_TEXT = 64_000;
 const MAX_RESULT_TEXT = 32_000;
 const MAX_STRING = 20_000;       // one string inside a structured result
@@ -192,7 +194,16 @@ export function historyRowsFromEntry(obj) {
   if (obj.type === 'attachment' && obj.attachment?.type === 'queued_command') {
     const a = obj.attachment;
     const kind = a.origin?.kind || (a.commandMode && a.commandMode !== 'prompt' ? a.commandMode : '');
-    if (kind && kind !== 'human') out.rows.push({ role: 'system', subtype: 'origin', origin: a.origin && typeof a.origin === 'object' ? a.origin : { kind } });
+    if (kind && kind !== 'human') {
+      const row = { role: 'system', subtype: 'origin', origin: a.origin && typeof a.origin === 'object' ? a.origin : { kind } };
+      // A background task's report, read into its fields (the panel draws a card linked to the task, never the markup).
+      const notifications = kind === 'task-notification' && typeof a.prompt === 'string' ? parseTaskNotifications(a.prompt).slice(0, 10) : [];
+      if (notifications.length) {
+        row.notifications = notifications;
+        if (obj.timestamp || a.timestamp) row.timestamp = obj.timestamp || a.timestamp;
+      }
+      out.rows.push(row);
+    }
     else if (typeof a.prompt === 'string' && a.prompt.trim()) out.rows.push({ role: 'user', text: a.prompt.slice(0, MAX_TEXT), queued: true });
     return out;
   }

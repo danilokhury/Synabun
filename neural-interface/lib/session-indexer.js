@@ -1,6 +1,7 @@
 import { captureMemoryFileBatch } from './memory-session-capture.js';
 import { withMemoryWrite } from '../../mcp-server/dist/services/sqlite-write.js';
 import { runSessionJob } from './session-cache-worker.js';
+import { fileIdentityOf, isSessionFileUnchanged, mtimeIsoOf } from './session-capture-gate.js';
 /**
  * Session Indexer — Pipeline orchestrator for indexing Claude Code session transcripts.
  * Queues local JSONL files through the shared, incremental memory event intake.
@@ -130,29 +131,28 @@ export async function startIndexing(options = {}) {
 
       if (options.sessionIds && !options.sessionIds.includes(sessionId)) continue;
 
+      let stat;
+      try {
+        stat = statSync(filePath, { bigint: true });
+      } catch { continue; }
+      const fileSize = Number(stat.size);
+      const fileMtime = mtimeIsoOf(stat);
+      const fileIdentity = fileIdentityOf(stat);
+
       if (!options.reindex && state.sessions[sessionId]) {
         const entry = state.sessions[sessionId];
-        if (entry.status === 'complete') {
-          try {
-            const stat = statSync(filePath);
-            if (stat.size === entry.file_size && stat.mtime.toISOString() === entry.file_mtime) {
-              continue;
-            }
-          } catch { continue; }
-        }
+        if (entry.status === 'complete' && isSessionFileUnchanged(entry, stat)) continue;
       }
 
-      try {
-        const stat = statSync(filePath);
-        if (stat.size === 0) continue;
-        sessionsToIndex.push({
-          sessionId,
-          filePath,
-          fileSize: stat.size,
-          fileMtime: stat.mtime.toISOString(),
-          projectDir: projDir.name,
-        });
-      } catch { continue; }
+      if (fileSize === 0) continue;
+      sessionsToIndex.push({
+        sessionId,
+        filePath,
+        fileSize,
+        fileMtime,
+        fileIdentity,
+        projectDir: projDir.name,
+      });
     }
   }
 
@@ -179,7 +179,14 @@ export async function startIndexing(options = {}) {
       // Preserve this entry point and its UI progress events for Claude hooks.
       const target = { host: 'claude-code', sessionId: session.sessionId };
       const project = detectProjectFromDir(session.projectDir);
-      await runSessionJob('queue-capture', { ...target, filePath: session.filePath, project });
+      await runSessionJob('queue-capture', {
+        ...target,
+        filePath: session.filePath,
+        project,
+        size: session.fileSize,
+        fileMtime: session.fileMtime,
+        fileIdentity: session.fileIdentity,
+      });
       let complete = false;
       while (!isCancelled?.()) {
         const outcome = await captureMemoryFileBatch(target, { reportProgress: true });
@@ -193,6 +200,7 @@ export async function startIndexing(options = {}) {
       const chunkIds = await runSessionJob('capture-chunks', target);
       totalChunks += chunkIds.length;
       state.sessions[session.sessionId]={session_id:session.sessionId,file_path:session.filePath,file_size:session.fileSize,file_mtime:session.fileMtime,
+        file_identity:session.fileIdentity,
         chunk_count:chunkIds.length,chunk_ids:chunkIds,indexed_at:new Date().toISOString(),project,
         status:complete ? 'complete' : 'partial',last_line_indexed:0};
       saveState(state);

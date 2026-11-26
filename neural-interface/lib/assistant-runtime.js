@@ -56,6 +56,8 @@ export function isDefaultSessionTitle(title) { return !title || /^(?:SynaBun|Ass
 // lib/coordination/service.js (RUN_EVENT_REASONS, MAILBOX_STOP_REASONS).
 /** The `[SynaBun Budget]` line: a change of the session budget reaches the brain as one line before its next turn. */
 export const BUDGET_HEADER = '[SynaBun Budget]';
+/** The line above a steer of the brain's own turn (steerBrain): its previous turn was cut on purpose. */
+export const STEER_BRAIN_LINE = '[SynaBun Steer] The user interrupted your current turn to change it:';
 /**
  * What the brain is told when the budget changed after its prompt was built (setting: { unlimited,
  * amountUsd }; money: the session's budget view, for what is spent and left). The key changes only
@@ -312,6 +314,8 @@ export function createAssistantRuntime({
     // Agents P2: there is no batch window any more. A critical event (a question, a permission, a failure, a stall)
     // starts its turn at once when the session is free. Other events wait this long first, so results that arrive
     // together go in one turn: 150 ms at most (`mailboxBatchMs`, the old 2 s window's name, is read as this).
+    // How long a steer of the brain waits for the cut turn to end before it sends the change (steerBrain).
+    steerSettleMs: Math.max(0, Number(config.steerSettleMs ?? 15_000) || 0),
     mailboxDebounceMs: Math.max(0, Math.min(150, Number(config.mailboxDebounceMs ?? config.mailboxBatchMs ?? 100) || 0)),
     // While the brain is busy the mailbox waits for its turn to end; this covers a brain that frees up without one.
     busyRecheckMs: Math.max(10, Number(config.busyRecheckMs ?? config.mailboxBatchMs ?? 1000) || 1000),
@@ -1249,6 +1253,44 @@ export function createAssistantRuntime({
       return { ok: false, status: Number(page?.status) >= 400 ? Number(page.status) : 502, code: Number(page?.status) === 404 ? 'SHELL_OUTPUT_GONE' : 'SHELL_OUTPUT_FAILED', error: page?.error || 'The output could not be read.' };
     }
     return { status: 200, data: page.data };
+  }
+  /**
+   * Where the session's background tasks are recorded (the Background tasks view, GET
+   * /api/assistant/sessions/:id/background-tasks): its Claude brain's conversation id, account and folder, and the
+   * live set its process reports now (null when no process runs). null for an unknown session or a brain that is
+   * not Claude Code's (its shells are `shells` above).
+   */
+  function backgroundTaskSource(sessionId) {
+    const live = sessions.get(String(sessionId || ''));
+    const record = live?.record || null;
+    if (!record) return null;
+    const provider = live?.brainProvider || record.brain?.provider || null;
+    if (provider && provider !== 'claude-code') return null;
+    let identity = null;
+    try { identity = live?.brain?.identity?.() || null; } catch { identity = null; }
+    const providerSessionId = identity?.providerSessionId || record.providerSessionId || null;
+    if (!providerSessionId) return { sessionId: String(sessionId), providerSessionId: null, accountId: record.brain?.accountId || 'default', cwd: record.brain?.cwd || null, live: null };
+    let tasks = null;
+    try { tasks = typeof live?.brain?.backgroundTasks === 'function' ? live.brain.backgroundTasks() : null; } catch { tasks = null; }
+    return {
+      sessionId: String(sessionId),
+      providerSessionId,
+      accountId: identity?.accountId || record.brain?.accountId || 'default',
+      cwd: identity?.cwd || record.brain?.cwd || null,
+      live: Array.isArray(tasks) ? tasks : null,
+    };
+  }
+  /** The owner's Stop of one background task of the session's brain (the SDK's stopTask). → { ok } or { ok: false, status, code, error }. */
+  async function stopBackgroundTask(sessionId, taskId) {
+    const live = sessions.get(String(sessionId || ''));
+    if (!live) return { ok: false, status: 404, code: 'SESSION_NOT_FOUND', error: `Unknown assistant session ${sessionId}` };
+    if (typeof live.brain?.stopTask !== 'function') return { ok: false, status: 409, code: 'NO_PROCESS', error: 'Nothing of this conversation runs now: the task has already ended.' };
+    try {
+      const out = await live.brain.stopTask(String(taskId));
+      return out && out.ok === false ? { status: 409, code: 'STOP_FAILED', ...out } : { ok: true };
+    } catch (error) {
+      return { ok: false, status: 409, code: 'STOP_FAILED', error: error?.message || String(error) };
+    }
   }
   /** `next`: a limitNotice() value. True when the session's notice changed (and the sockets heard). */
   function setLimit(live, next, { remember = true } = {}) {
@@ -3031,6 +3073,13 @@ export function createAssistantRuntime({
     try { userContext?.onDispatch(live.record, payload); } catch {}
     if (!live.record.dispatchRunIds?.includes(run.runId)) { live.record.dispatchRunIds = [...(live.record.dispatchRunIds || []), run.runId].slice(-100); touch(live); }
     sendToSockets(live, { type: 'assistant:dispatch', reason: payload.reason, run });
+    // A run's steer is part of the conversation: the journal keeps its notice, so a reload draws it where it was.
+    if (payload.reason === 'steered' && String(payload.text || '').trim()) {
+      appendTranscript(live.record.id, { at: iso(now()), packet: {
+        type: 'steered', target: 'run', runId: run.runId, title: String(run.title || '').slice(0, 120),
+        text: String(payload.text).slice(0, 500), at: payload.at || iso(now()), interruptedTurn: payload.interruptedTurn === true,
+      } });
+    }
     scheduleUsage(live.record.id);
     if (payload.reason === 'turn_completed' && (run.outcome === 'done' || run.outcome === 'blocked') && !run.memoryStored) live.obligations.add(run.runId);
     if (payload.reason === 'memory_stored' || run.memoryStored) live.obligations.delete(run.runId);
@@ -3551,6 +3600,41 @@ export function createAssistantRuntime({
     const abandoned = Array.isArray(stopped?.abandoned) ? stopped.abandoned.map((shell) => ({ id: String(shell?.id || ''), command: String(shell?.command || '') })) : [];
     if (abandoned.length) sendToSockets(live, { type: 'stop_abandoned', shells: abandoned });
     return { ok: true, ...(abandoned.length ? { abandoned } : {}) };
+  }
+  /**
+   * Steer the session's own brain (direct work done here): the user changed what its turn is doing. A turn in flight
+   * is stopped the way Stop stops it (its queued work, its open cards and a computer-use action in progress go; tool
+   * calls already done stay done), every panel hears a `steered` notice, and the steer is the next human prompt,
+   * under STEER_BRAIN_LINE so the model knows its previous turn was cut. An idle brain gets the text as a plain
+   * prompt. → { ok, target: { kind: 'brain' }, interruptedTurn } or { ok: false, code, message }.
+   */
+  async function steerBrain(id, { text = '', origin = 'ui', authority = null } = {}) {
+    const live = sessions.get(String(id || ''));
+    if (!live) return { ok: false, code: 'SESSION_NOT_FOUND', message: `Unknown assistant session ${id}` };
+    if (live.record.status === 'ended' || live.closing) return { ok: false, code: 'SESSION_ENDED', message: 'This assistant session was closed.' };
+    const message = String(text || '').trim();
+    if (!message) return { ok: false, code: 'MESSAGE_REQUIRED', message: 'text is required' };
+    const interruptedTurn = isBusy(live.record.id);
+    if (interruptedTurn) {
+      const stopped = await stopTurn(live.record.id, { origin: `steer:${origin}` });
+      if (!stopped.ok) return stopped;
+      // The cut turn must end before the next prompt can go (a Codex / OpenCode brain refuses one mid-turn).
+      const deadline = now() + settings.steerSettleMs;
+      while (now() < deadline && (live.running || live.prompting !== null || (Number(live.turnPending) || 0) > 0)) {
+        await new Promise((done) => { const timer = setTimeout(done, 25); timer.unref?.(); });
+      }
+    }
+    const at = iso(now());
+    const notice = { type: 'steered', target: 'brain', text: message.slice(0, 500), at, interruptedTurn };
+    sendToSockets(live, notice);
+    appendTranscript(live.record.id, { at, packet: notice });
+    log('assistant:steer', `${live.record.id}: brain steered from ${origin}${interruptedTurn ? ' (turn interrupted)' : ''}`);
+    const prompt = interruptedTurn ? `${STEER_BRAIN_LINE}\n${message}` : message;
+    let sent;
+    try { sent = await runQuery(live, { text: prompt, images: [], origin: String(origin || 'ui'), authority }); }
+    catch (error) { sent = { ok: false, code: error?.code || 'BRAIN_START_FAILED', message: error?.message || String(error) }; }
+    if (sent && sent.ok === false) return { ...sent, interruptedTurn };
+    return { ok: true, target: { kind: 'brain' }, interruptedTurn };
   }
   function controlResolved(live, requestId, origin) {
     sendToSockets(live, { type: 'control_resolved', request_id: requestId, origin: String(origin || 'ui') });
@@ -4525,8 +4609,10 @@ export function createAssistantRuntime({
     brainSpend, brainSpendByProvider, budgetSession, onBudgetChanged, onBudgetSplit, sendBudget, currentTask, usageView,
     // The shell commands of a session's OpenCode brain and a page of what one printed (the panel's terminal blocks).
     shellList, shellOutput,
+    // The Background tasks view of a Claude brain (assistant-api.js /sessions/:id/background-tasks).
+    backgroundTaskSource, stopBackgroundTask,
     // Programmatic surface (the WhatsApp bridge) and remote sessions.
-    observe, submit, stopTurn, answerControl, answerDispatchControl, pendingControls, isBusy, sessionPolicy, sessionChannel,
+    observe, submit, stopTurn, steerBrain, answerControl, answerDispatchControl, pendingControls, isBusy, sessionPolicy, sessionChannel,
     // whatsapp_send_file's caller identity (POST /api/assistant/whatsapp/send-file).
     sessionForBrainCredential,
     // Agents P2: the coordination service the mailbox reads from.

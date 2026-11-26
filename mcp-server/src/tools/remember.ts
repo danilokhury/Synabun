@@ -199,7 +199,12 @@ export async function handleRemember(args: {
       check,
     ]);
   } catch (error) {
-    if (error instanceof IdempotencyConflict) return { ...text(error.message), isError: true };
+    // Another save already holds this key (an automatic run memory, an
+    // earlier wording of the same save). Nothing new is stored and nothing
+    // failed: point at that memory so the caller can reflect on it.
+    if (error instanceof IdempotencyConflict) {
+      return text(`Already stored [${error.existingId}] under idempotency_key "${args.idempotency_key}" with other content; no new memory was created. Use \`reflect\` on [${error.existingId}] to add what is new.`);
+    }
     throw error;
   }
   const { id, pending } = result;

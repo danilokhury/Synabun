@@ -45,6 +45,8 @@ import { normalizeSession, changedStartSettings, sessionFlags, sessionRows, fast
 import { renderSessionSettingsCard } from './cp/cp-session-settings.js';
 import { describeOrigin, reconcileTasks, adoptLiveTasks, describeHistorySystemRow, workEndedByRestart, isTaskRunning, endRunningTasks, backgroundWaitLine } from './cp/cp-tasks-model.js';
 import { renderTasksCard } from './cp/cp-tasks.js';
+import { attachClaudeBgTasks, settleClaudeBgStop, historyNoticeCards, markClaudeStaleCards, wireNoticeCardClicks } from './cp/cp-bg-tasks.js';
+import { paintBgBadge } from './bg-tasks/bg-tasks-view.js';
 import { sessionListLabel, collectTags, tagSession as tagClaudeSession, sessionActionsAvailable, sessionOpsSupported, labelledSessionIds, mergeSessionSearch, writeSessionTitle, forkSession as forkClaudeSession, deleteSession as deleteClaudeSession, fetchSubagentMessages, forkTitle, entryBefore, promptText, removeFrom, sessionRowParts, fillSelectOptions } from './cp/cp-sessions.js';
 import { contextCard, usageCard, mcpRows, rewindPreviewText, rewindResultText } from './cp/cp-usage-model.js';
 import { permissionModesFor, isDefaultableMode, autoModeSupported, grantedRuleLine, permissionRuleSections, hasSessionRules, MODE_HINTS, TOOL_POLICIES, toolPolicyId, bypassOffer, modeControl, BYPASS_MODE, pickMode, leavePlanMode, statedMode, modeStatement, planExitTarget, sessionReport, sessionEnteredPlan, statementSent, statementDropped, connectionOpened, sessionForgotten, controlFacts, savedMode, restoredMode, runEvent, isPermissionsCommand, reportReceived, modeTooltip, settingsDefaultMode, settingsModeNote } from './cp/cp-permission-model.js';
@@ -361,6 +363,9 @@ function buildPanel() {
       <div class="cp-header-actions">
         <button class="cp-header-btn cp-new-btn" data-tooltip="New session">
           <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <button class="cp-header-btn cp-bg-btn" id="cp-bg-btn" type="button" data-tooltip="Background tasks" aria-label="Background tasks" aria-pressed="false" hidden>
+          <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         </button>
         <button class="cp-header-btn cp-cog-btn" id="cp-cog-btn" type="button" data-tooltip="Context settings" aria-label="Context settings" aria-haspopup="dialog" aria-expanded="false" aria-controls="cp-context-popover">
           <svg viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
@@ -1915,6 +1920,11 @@ function injectStyles() {
     .cp-header-btn:active { transform: scale(0.92); transition-duration: 0.06s; }
     .cp-header-btn svg { width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
     .cp-header-btn.cp-new-btn:hover { color: rgba(110,181,255,0.95); background: rgba(110,181,255,0.14); }
+    /* Background tasks toggle: a square like its neighbours; the view's count sits on its corner while tasks run
+       (bg-tasks-view.js, corner form), ringed in the header's background. */
+    .cp-header-btn.cp-bg-btn[hidden] { display: none; }
+    .cp-header-btn.cp-bg-btn { --sbt-badge-ring: rgb(22, 22, 26); }
+    .cp-header-btn.cp-bg-btn.active { color: var(--accent-gold); background: var(--accent-gold-bg); }
     .cp-header-btn.cp-minimize-btn:hover { color: rgba(255,200,50,0.95); background: rgba(255,200,50,0.14); }
     .cp-header-btn.cp-close-btn:hover { color: rgba(255,82,82,0.95); background: rgba(255,82,82,0.14); }
     .cp-header-btn.cp-close-btn svg { stroke-width: 2.5; }
@@ -2984,6 +2994,7 @@ function createTab(sessionId = null, label = 'New chat', { autoSwitch = true, id
   // shells and wakeups its session kept on the server).
   connectTab(tab);
   // Create pill (rendered in shared tray, not inside panel)
+  _attachBg(tab);
   tab.pillEl = _createTrayPill(tab);
   _paintTemporary(tab);
   _tabs.push(tab);
@@ -3078,6 +3089,7 @@ function switchTab(idx) {
   }
   _activeTabIdx = idx;
   const tab = activeTab();
+  _syncBgView(tab);
   tab.messagesEl._exitToken = (tab.messagesEl._exitToken || 0) + 1; // cancel pending exits
   _attachMessagesEl(tab);
   tab.messagesEl.style.display = '';
@@ -3220,6 +3232,7 @@ function closeTab(idx, { detachAutomation = false } = {}) {
   tab.rowWatcher?.disconnect();
   tab.rowWatcher = null;
   tab.messagesEl.remove();
+  try { tab.bg?.dispose({ forget: true }); } catch {}
   if (tab.pillEl) tab.pillEl.remove();
   _tabs.splice(idx, 1);
   if (_tabs.length === 0) {
@@ -3347,6 +3360,8 @@ function paintPillState(pill, tab) {
   pill.classList.toggle('cp-pill-attention', needsYou);
   pill.classList.toggle('cp-pill-running', !needsYou && tabWorking(tab));
   markAutoCloseKeep(pill, _autoCloseKeep(tab));
+  // "⟳ N" while background tasks run: a click opens the tab on its Background tasks view.
+  paintBgBadge(pill, tab.bg?.counts().running || 0, { t, onClick: () => _openBgFromPill(tab) });
 }
 
 /**
@@ -3360,6 +3375,7 @@ function _autoCloseKeep(tab) {
   if (!tab) return '';
   if (keepsNothing(tab)) return 'temporary';
   if (tab.queue?.length || tab._queueSending) return 'queue';
+  if (tab.bg?.counts().running) return 'background';
   const $input = tab === activeTab() ? _panel?.querySelector('#cp-input') : null;
   return composerHoldsDraft($input ? $input.value : tab.draft, tab.attachedImages, tab.attachedFiles) ? 'draft' : '';
 }
@@ -4928,6 +4944,11 @@ function _renderHistoryRow(tab, $msgs, m) {
     renderCompactBoundary({ messagesEl: $msgs }, m);
     return;
   }
+  // A background task's report, as the server read it: a card linked to its task.
+  if (m.role === 'system' && m.subtype === 'origin' && Array.isArray(m.notifications) && m.notifications.length) {
+    for (const card of historyNoticeCards(tab, m, t)) $msgs.appendChild(card);
+    return;
+  }
   // What started a turn nobody typed, a warning the CLI wrote, a command's output.
   const view = describeHistorySystemRow(m);
   if (!view) return;
@@ -5607,10 +5628,83 @@ function _onSessionState(tab, state) {
   }, IDLE_STATE_GRACE_MS);
 }
 
+// ── Background tasks view (public/shared/bg-tasks/, cp/cp-bg-tasks.js) ──
+// Per tab: a registry built from the session's own stream and rebuilt from its transcript, the view that takes
+// the transcript's place, the header toggle and the pill's "⟳ N".
+function _attachBg(tab) {
+  attachClaudeBgTasks(tab, {
+    storage, t,
+    project: () => _historyProject(tab),
+    onChange: () => {
+      if (tab.pillEl) paintPillState(tab.pillEl, tab);
+      if (tab === activeTab()) _paintBgButton(tab);
+      markClaudeStaleCards(tab);
+    },
+    // The view's own Back: the tab shows its conversation again.
+    onShownChange: (shown) => { if (!shown && tab === activeTab()) { tab._bgOpen = false; _paintBgButton(tab); } },
+  });
+  wireNoticeCardClicks(tab.messagesEl, (taskId) => _openBgView(tab, taskId));
+}
+function _bgHost() { return _panel?.querySelector('#cp-messages-container') || null; }
+function _openBgView(tab, taskId = null) {
+  if (!tab?.bg) return;
+  tab._bgOpen = true;
+  if (tab === activeTab()) tab.bg.show(_bgHost(), taskId);
+  _paintBgButton(tab);
+}
+function _toggleBgView(tab) {
+  if (!tab?.bg) return;
+  if (tab._bgOpen && tab.bg.isShown()) { tab._bgOpen = false; tab.bg.hide(); _paintBgButton(tab); return; }
+  _openBgView(tab);
+}
+// From a pill: the panel and the tab first, then the view.
+function _openBgFromPill(tab) {
+  const idx = _tabs.indexOf(tab);
+  if (idx < 0) return;
+  if (!_visible) toggleClaudePanel();
+  switchTab(idx);
+  focusSidepanel(PANEL_OWNER);
+  _openBgView(tab);
+}
+function _syncBgView(active) {
+  for (const t2 of _tabs) {
+    if (!t2.bg) continue;
+    if (t2 === active && t2._bgOpen) t2.bg.show(_bgHost());
+    else if (t2.bg.isShown()) { const keep = t2._bgOpen; t2.bg.hide(); t2._bgOpen = keep; }
+  }
+  _paintBgButton(active);
+}
+function _paintBgButton(tab) {
+  const btn = _panel?.querySelector('#cp-bg-btn');
+  if (!btn) return;
+  const counts = tab?.bg?.counts() || { running: 0, total: 0 };
+  const open = !!(tab?._bgOpen && tab.bg?.isShown());
+  btn.hidden = !counts.total && !open;
+  btn.classList.toggle('active', open);
+  btn.setAttribute('aria-pressed', String(open));
+  const label = t('bgTasks.toggle') !== 'bgTasks.toggle' ? t('bgTasks.toggle') : 'Background tasks';
+  btn.setAttribute('aria-label', label);
+  btn.dataset.tooltip = label;
+  paintBgBadge(btn, counts.running, { t, corner: true, onClick: () => _toggleBgView(tab) });
+}
+// The tab's session is known (a new one, a reattach): the list is that session's, rebuilt from its transcript.
+// Once per session from an init (every turn sends one), and again at every reattach (`force`: a reload, a restart).
+function _bgSessionSeen(tab, { force = false } = {}) {
+  if (!tab?.bg || !tab.sessionId || keepsNothing(tab)) return;
+  const same = tab._bgSession === tab.sessionId;
+  if (tab._bgSession && !same) tab.bg.reset(`claude:${tab.sessionId}`);
+  else tab.bg.setKey(`claude:${tab.sessionId}`);
+  tab._bgSession = tab.sessionId;
+  if (same && !force) return;
+  tab.bg.rebuild().then(() => markClaudeStaleCards(tab)).catch(() => {});
+}
+
 // Background tasks the CLI is running for this tab after their turn ended
 // (background_tasks_changed / reattach_result). Ambient ones — housekeeping,
 // watchers — keep the session alive but stay out of the indicator.
 function _setBackgroundWork(tab, tasks) {
+  // The Background tasks view: the live set says what still runs.
+  try { tab.bg?.onLive(tasks); } catch {}
   // A background command whose task id left the live list has ended.
   try { reconcileBgTasks(tab, tasks); } catch {}
   // The list is the authority: a task this tab has no entry for (the page was
@@ -5713,6 +5807,7 @@ function _processTabMsg(tab, msg) {
         // Prompts queued behind a Compact when the socket closed: the session is there.
         if (tab._queueWaits === 'session') _compactQueue.after(tab, 'reattached');
         _setBackgroundWork(tab, msg.backgroundTasks);
+        _bgSessionSeen(tab, { force: true });
         // The wakeups scheduled for the session, with their schedule and prompt.
         if (Array.isArray(msg.sessionCronList)) tab.sessionCrons = msg.sessionCronList;
         // What "Always" granted in this session (the bridge's record).
@@ -5724,6 +5819,7 @@ function _processTabMsg(tab, msg) {
         // has anything to finish — and not if a new turn already started on the
         // fresh socket. Idle tabs are left alone.
         _setBackgroundWork(tab, []);
+        _bgSessionSeen(tab, { force: true });
         // The session is gone and so is what was known of its mode. A pick made
         // while the socket was down is said to the new one first.
         sessionForgotten(tab);
@@ -5762,6 +5858,8 @@ function _processTabMsg(tab, msg) {
       break;
     }
     case 'task_control_result':
+      // A Stop from the Background tasks view hears its answer there (and says it there).
+      if (settleClaudeBgStop(tab, msg)) break;
       if (!msg.ok) appendStatus(tab, `${msg.action === 'stop_task' ? 'Could not stop the task' : 'Could not send it to the background'}: ${msg.error || 'unknown error'}`);
       else if (msg.action === 'background_tasks') appendStatus(tab, 'Sent to the background: it keeps running and reports back when done.');
       break;
@@ -5902,6 +6000,9 @@ function handleTabEvent(tab, ev) {
   // renderers below work unchanged.
   const _parentId = ev.parent_tool_use_id || ev.message?.parent_tool_use_id || null;
   const scope = _parentId ? ensureAgentScope(tab, _parentId) : tab;
+  // The Background tasks registry (public/shared/bg-tasks/): calls, results, notices, the live set.
+  let _bgCards = [];
+  try { _bgCards = tab.bg ? tab.bg.onEvent(ev) : []; } catch { _bgCards = []; }
 
   // ── New SDK-engine event types ──
   if (ev.type === 'mode_behind') {
@@ -5963,7 +6064,11 @@ function handleTabEvent(tab, ev) {
     }
     // A turn nobody typed: say what started it (a background task reporting
     // back, a scheduled wakeup, another session).
-    if (!_parentId && ev.origin && ev.origin.kind !== 'human') {
+    if (!_parentId && _bgCards.length) {
+      tab._lastOriginUuid = ev.uuid || tab._lastOriginUuid;
+      for (const { view } of _bgCards) { if (view) tab.messagesEl?.appendChild(tab.bg.card(view)); }
+      if (tab === activeTab()) scrollEnd();
+    } else if (!_parentId && ev.origin && ev.origin.kind !== 'human') {
       const from = describeOrigin(ev.origin);
       if (from && tab._lastOriginUuid !== (ev.uuid || from)) {
         tab._lastOriginUuid = ev.uuid || from;
@@ -6085,6 +6190,7 @@ function handleTabEvent(tab, ev) {
     if (ev.session_id) {
       if (!tab.sessionId) tab._freshSessionId = ev.session_id;
       tab.sessionId = ev.session_id;
+      _bgSessionSeen(tab);
       if (tab.pendingLabel && !keepsNothing(tab)) {
         storage.setItem(LABEL_PREFIX + ev.session_id, tab.pendingLabel);
         tab.label = tab.pendingLabel;
@@ -11044,6 +11150,7 @@ function _closeCutOffTools(tab) {
     if (task?.status === 'running') { task.status = 'stopped'; shells = true; }
   }
   if (shells) { try { renderBgTray(tab); } catch {} }
+  try { tab.bg?.ended(); } catch {}
   _setBackgroundWork(tab, []);
 }
 
@@ -11053,6 +11160,7 @@ function _closeCutOffTools(tab) {
 function _endRunBackgroundWork(tab) {
   let changed = false;
   try { changed = endRunningTasks(tab.tasks) > 0; } catch {}
+  try { tab.bg?.ended(); } catch {}
   let shells = false;
   for (const task of tab.bgTasks?.values?.() || []) {
     if (task?.status === 'running') { task.status = 'stopped'; shells = true; }
@@ -11853,6 +11961,7 @@ function wireEvents() {
     for (const t of _tabs) if (!msg?.accountId || serverAccountId(t.accountId) === msg.accountId) void t.terminalAuthView?.refresh();
   });
   const $new = _panel.querySelector('.cp-new-btn');
+  _panel.querySelector('#cp-bg-btn')?.addEventListener('click', () => { const tab = activeTab(); if (tab) _toggleBgView(tab); });
 
   const $brand = _panel.querySelector('.cp-brand');
   if ($brand) $brand.addEventListener('click', () => window.open('https://claude.ai/settings/usage', '_blank'));

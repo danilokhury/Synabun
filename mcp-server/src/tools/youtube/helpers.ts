@@ -31,9 +31,14 @@ export async function resolve(
   return { sessionId: r.sessionId, tabId: r.tabId };
 }
 
+/** The page's address. In the extension backend the fixed reader 'page.url' answers it (no page script). */
+export const PAGE_URL_SCRIPT = `location.href`;
+/** Studio redirected to /channel/<UC…>: the active channel resolved (the fixed reader 'youtube.channel_ready'). */
+export const STUDIO_CHANNEL_READY_SCRIPT = `(() => /\\/channel\\/UC/.test(location.href) ? true : null)()`;
+
 /** Returns an error string if the session is bounced to a Google sign-in page. */
 export async function ensureAuth(r: Resolved): Promise<string | null> {
-  const res = await ni.evaluate(r.sessionId, `location.href`, r.tabId);
+  const res = await ni.evaluate(r.sessionId, PAGE_URL_SCRIPT, r.tabId, { extractor: 'page.url' });
   const url = String(res.result || '');
   if (/accounts\.google\.com|\/signin|ServiceLogin/i.test(url)) {
     return 'Not authenticated. Sign into the YouTube/Google account that owns the channel in the open browser panel, then retry.';
@@ -50,11 +55,12 @@ export async function pollFor<T = unknown>(
   script: string,
   timeoutMs = 30000,
   interval = 400,
+  extractor?: string,
 ): Promise<T | null> {
   const start = Date.now();
   let last: T | null = null;
   while (Date.now() - start < timeoutMs) {
-    const res = await ni.evaluate(r.sessionId, script, r.tabId);
+    const res = await ni.evaluate(r.sessionId, script, r.tabId, extractor ? { extractor } : undefined);
     if (!res.error) {
       const v = res.result as T;
       if (v) return v;

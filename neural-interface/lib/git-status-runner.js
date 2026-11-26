@@ -77,13 +77,26 @@ export function createGitStatusRunner({
   timeoutMs = 15000, debounceMs = 150, minIntervalMs = 2000, cacheMs = 30000, maxConcurrent = 2, maxRepos = 64,
   backoffMs = 30000, maxBackoffMs = 300000, uncoveredCacheMs = 2000, killGraceMs = 1500, taskkillMs = 1000,
   watch = true, watchFactory = createTreeWatcher, watchdog = spawnImpl === spawn, now = Date.now,
+  binaryResolver = null,
 } = {}) {
   const binaries = new Map();
+  let defaultBinaryResolver = typeof binaryResolver === 'function' ? binaryResolver : null;
   const entries = new Map(), monitors = createMonitorMemo(), queue = [], children = new Set();
   let active = 0, closed = false, guard = null, guardReady = null;
   const nullDevice = platform === 'win32' ? String.raw`\\.\nul` : devNull;
   const keyOf = root => platform === 'win32' ? root.toLowerCase() : root;
   const directKill = child => { if (children.has(child) && live(child)) try { child.kill('SIGKILL'); } catch { /* already gone */ } };
+
+  async function resolveBinary(binary) {
+    if (binary && binary !== 'git') return binary;
+    if (typeof defaultBinaryResolver === 'function') {
+      try {
+        const resolved = await defaultBinaryResolver();
+        if (resolved) return resolved;
+      } catch { /* fall back to 'git' */ }
+    }
+    return binary || 'git';
+  }
 
   function killTree(child, sync = false) {
     if (!children.has(child) || !live(child)) return Promise.resolve();
@@ -226,6 +239,7 @@ export function createGitStatusRunner({
     });
   }
   async function run(args, { cwd, binary = 'git', env = process.env, ...options } = {}) {
+    const resolvedBin = await resolveBinary(binary);
     const clean = { ...env };
     for (const name of REDIRECTING) delete clean[name];
     const safeEnv = gitReadEnv(clean);
@@ -233,11 +247,15 @@ export function createGitStatusRunner({
     if (readsIndex(args)) {
       monitor = monitors.get(cwd);
       if (monitor === undefined) {
-        const probe = await execute(binary, ['--no-pager', '-c', `core.hooksPath=${nullDevice}`, 'config', '--type=bool', '--get', 'core.fsmonitor'], { ...options, timeoutMs: 3000, cwd, env: safeEnv });
+        const probe = await execute(resolvedBin, ['--no-pager', '-c', `core.hooksPath=${nullDevice}`, 'config', '--type=bool', '--get', 'core.fsmonitor'], { ...options, timeoutMs: 3000, cwd, env: safeEnv });
         monitor = monitors.set(cwd, probe.ok && String(probe.stdout).trim() === 'true');
       }
     }
-    return execute(binary, gitReadArgs(args, { monitor, nullDevice }), { ...options, cwd, env: safeEnv });
+    return execute(resolvedBin, gitReadArgs(args, { monitor, nullDevice }), { ...options, cwd, env: safeEnv });
+  }
+  async function runRaw(args, options = {}) {
+    const resolvedBin = await resolveBinary(options.binary);
+    return execute(resolvedBin, args, { ...options, env: withGitFallback(options.env) });
   }
   function drop(key, entry) {
     entry.controller?.abort(); entry.watcher?.close(); entries.delete(key);
@@ -371,7 +389,17 @@ export function createGitStatusRunner({
     for (const child of children) void killTree(child, sync);
     if (guard?.connected) guard.disconnect();
   }
-  return { read, run, runRaw: (args, options = {}) => execute(options.binary || 'git', args, { ...options, env: withGitFallback(options.env) }), ignored, invalidate, release, shutdown, stats: () => ({ active, queued: queue.length, children: children.size, repos: entries.size }) };
+  return {
+    read,
+    run,
+    runRaw,
+    setBinaryResolver: (fn) => { defaultBinaryResolver = typeof fn === 'function' ? fn : null; binaries.clear(); },
+    ignored,
+    invalidate,
+    release,
+    shutdown,
+    stats: () => ({ active, queued: queue.length, children: children.size, repos: entries.size }),
+  };
 }
 
 export function projectStatus(result, cwd, platform = process.platform) {

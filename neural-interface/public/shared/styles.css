@@ -4063,6 +4063,9 @@
     opacity: 0;
     transition: opacity 0.15s, color 0.15s;
   }
+  .notif-toast[data-persistent] { --notif-accent: var(--t-secondary); cursor: default; }
+  .notif-toast[data-persistent] .cli-detect-btn { margin-top: 8px; }
+  .notif-toast[data-persistent] .notif-toast-close { opacity: 1; }
   .notif-toast:hover .notif-toast-close {
     opacity: 1;
   }
@@ -16134,6 +16137,7 @@
      top to bottom, every row wraps, and nothing is positioned or given a height, so no paragraph can lie over another
      at any width or in any language. Colours are the panel's --stg-* tokens; controls keep Settings' 22 px geometry. */
   .settings-panel .stg-field.bc-extension { display: block; min-width: 0; }
+  .settings-panel #bc-update-progress { width: 100%; accent-color: var(--stg-accent-fill); }
   .settings-panel .bc-extension .bc-ext-label {
     display: block; margin: 0; min-width: 0;
     font-size: 13px; font-weight: 400; line-height: 1.4; color: var(--stg-text); overflow-wrap: anywhere;

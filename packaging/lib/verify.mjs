@@ -28,6 +28,7 @@ import { pathToFileURL } from 'node:url';
 import { externalToolPayloadReason, externalToolsInLock } from '../../lib/external-tools.js';
 import { bundledNpmrc } from '../../lib/packaged-runtime.js';
 import { mcpDistMissing } from '../../lib/mcp-dist.js';
+import { CONPTY_AGENT_REL, isConptyConsoleListPatched } from '../../neural-interface/scripts/patch-node-pty.mjs';
 import { npmRootIn, npmWrapperScript, WINDOWS_NPM_SHIMS } from './bundle.mjs';
 import { elfSymbols, unmetImports } from './cross.mjs';
 import { gitBashModulesOf } from './git-bash.mjs';
@@ -205,6 +206,14 @@ export async function auditBundle(ctx) {
   const ptyPrebuilt = join(neural, 'node-pty', 'prebuilds', `${platform}-${arch}`, 'pty.node');
   const ptyBuilt = join(neural, 'node-pty', 'build', 'Release', 'pty.node');
   need('node-pty', existsSync(ptyPrebuilt) ? ptyPrebuilt : ptyBuilt);
+  if (windows) {
+    const conptyAgent = join(neural, 'node-pty', CONPTY_AGENT_REL);
+    if (!existsSync(conptyAgent)) {
+      problems.push('missing: app/neural-interface/node_modules/node-pty/lib/conpty_console_list_agent.js (required Windows ConPTY helper)');
+    } else if (!isConptyConsoleListPatched(readFileSync(conptyAgent, 'utf8'))) {
+      problems.push('node-pty: lib/conpty_console_list_agent.js does not match the exact patched AttachConsole fallback helper');
+    }
+  }
 
   // What was compiled on another system was never loaded: read back what it
   // asks of the target, and of the Node that will load it.

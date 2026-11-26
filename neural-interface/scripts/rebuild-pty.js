@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { ensureVendoredExecutables } from '../lib/native-binary-runtime.js';
 import { pruneExternalTools } from '../../lib/external-tools.js';
 import { findInstalled } from '../../lib/runtime-dependencies.js';
+import { patchNodePtyDir } from './patch-node-pty.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const neuralRoot = resolve(__dirname, '..');
@@ -68,6 +69,15 @@ sweepVendoredBinaries();
 if (!existsSync(ptyDir)) {
   console.log('[rebuild-pty] node-pty not found, skipping rebuild');
   process.exit(0);
+}
+
+// Step 1a-bis: Apply SynaBun's Windows ConPTY AttachConsole fallback patch so
+// shutdown never prints uncaught AttachConsole stack traces or stalls 5 s.
+for (const candidate of new Set([ptyDir, resolve(neuralRoot, 'node_modules', 'node-pty'), resolve(packageRoot, 'node_modules', 'node-pty')])) {
+  const patched = patchNodePtyDir(candidate, { log: console.log });
+  if (patched.status === 'unmatched') {
+    console.warn(`[rebuild-pty] ${patched.reason || `node-pty conpty helper had unexpected contents: ${patched.path}`}`);
+  }
 }
 
 // Step 1b: Check if node-pty actually works (spawn test, not just module load)

@@ -42,22 +42,42 @@ export function getDbPath() {
   return envPath;
 }
 
-export function getDb() {
-  if (!db) {
-    const dbPath = getDbPath();
-    const dir = dirname(dbPath);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-
-    db = sharedDb();
-    try { db.exec(SESSION_CACHE_SQL); } catch { /* session_cache migration */ }
-    try {
-      const sessionCacheColumns = new Set(
-        db.prepare('PRAGMA table_info(session_cache)').all().map((column) => String(column?.name || '')),
-      );
-      if (!sessionCacheColumns.has('account_id')) db.exec('ALTER TABLE session_cache ADD COLUMN account_id TEXT');
-    } catch { /* additive session_cache migration */ }
-    try { db.exec(SESSION_FTS_SQL); } catch { /* FTS5 may already exist */ }
+function ensureSessionCacheSchema(d) {
+  d.exec(SESSION_CACHE_SQL);
+  const columns = () => new Set(d.prepare('PRAGMA table_info(session_cache)').all().map(c => c.name));
+  const required = ['account_id', 'file_identity', 'content_fingerprint'];
+  const existing = columns();
+  for (const name of required) {
+    if (existing.has(name)) continue;
+    // Another connection may finish the same additive migration first.
+    try { d.exec(`ALTER TABLE session_cache ADD COLUMN ${name} TEXT`); }
+    catch (err) { if (!columns().has(name)) throw err; }
   }
+  const verified = columns();
+  if (!required.every(name => verified.has(name))) throw new Error('Incomplete session_cache schema');
+  d.exec(SESSION_FTS_SQL);
+}
+
+export function getDb() {
+  if (db) return db;
+  const dir = dirname(getDbPath());
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+  const opened = sharedDb();
+  const { timeout } = opened.prepare('PRAGMA busy_timeout').get();
+  // A retry of these synchronous ALTERs must not stack two 5-second busy waits.
+  try {
+    opened.exec(`PRAGMA busy_timeout = ${Math.min(timeout, 50)}`);
+    try {
+      ensureSessionCacheSchema(opened);
+    } catch (err) {
+      if (![5, 6].includes(err.errcode & 0xff)) throw err; // SQLITE_BUSY / SQLITE_LOCKED
+      ensureSessionCacheSchema(opened);
+    }
+  } finally {
+    opened.exec(`PRAGMA busy_timeout = ${timeout}`);
+  }
+  db = opened;
   return db;
 }
 
@@ -75,6 +95,8 @@ CREATE TABLE IF NOT EXISTS session_cache (
   file_path     TEXT,
   file_size     INTEGER,
   file_mtime    TEXT,
+  file_identity TEXT,
+  content_fingerprint TEXT,
   body_size     INTEGER,
   deleted       INTEGER DEFAULT 0,
   account_id    TEXT,
@@ -817,13 +839,14 @@ export function upsertSessionCache(entry) {
   const d = getDb();
   d.prepare(`INSERT OR REPLACE INTO session_cache
     (session_id, provider, project, project_path, git_branch, first_prompt, message_count,
-     created, modified, file_path, file_size, file_mtime, body_size, deleted, account_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+     created, modified, file_path, file_size, file_mtime, file_identity, content_fingerprint, body_size, deleted, account_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     entry.session_id, entry.provider, entry.project || null, entry.project_path || null,
     entry.git_branch || null, entry.first_prompt || null, entry.message_count || 0,
     entry.created || null, entry.modified || null, entry.file_path || null,
-    entry.file_size || null, entry.file_mtime || null, entry.body_size || 0,
-    entry.deleted ? 1 : 0, entry.account_id || null,
+    entry.file_size || null, entry.file_mtime || null,
+    entry.file_identity || null, entry.content_fingerprint || null,
+    entry.body_size || 0, entry.deleted ? 1 : 0, entry.account_id || null,
   );
 }
 

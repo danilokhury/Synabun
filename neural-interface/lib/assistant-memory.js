@@ -391,7 +391,9 @@ export function createAssistantMemory({
       kind: 'note',
       related_files: files,
       source_ref: view.runId,
-      idempotency_key: `dispatch:${view.runId}`,
+      // Own namespace: the persona gives the Assistant `dispatch:<runId>` for
+      // its own summary in this same category, with other content.
+      idempotency_key: `auto:dispatch:${view.runId}`,
     };
     try {
       const stored = await rememberFn(args);

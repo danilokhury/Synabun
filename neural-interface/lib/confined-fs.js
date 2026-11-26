@@ -100,6 +100,31 @@ export function readConfinedFileWithMetadata(base, path, { maxBytes = MAX_FILE_B
 }
 
 /**
+ * At most `length` bytes of one regular file inside `base`, from byte `start`, with the file's size at the time
+ * of the read: opened and verified the same way (a link out of `base`, a FIFO or a folder is refused). For files
+ * read in pages while another process writes them (a background command's output).
+ * @returns {{ bytes: Buffer, size: number }}
+ */
+export function readConfinedRange(base, path, { start = 0, length = 0 } = {}) {
+  const real = canonicalInside(base, path);
+  const fd = openExisting(real, constants.O_RDONLY);
+  try {
+    const st = verifyOpened(fd, real);
+    if (!st.isFile()) throw new PathConfineError(400, 'Not a regular file.');
+    const from = Math.max(0, Math.floor(Number(start) || 0));
+    const want = Math.max(0, Math.min(Math.floor(Number(length) || 0), MAX_FILE_BYTES, Math.max(0, st.size - from)));
+    const buf = Buffer.allocUnsafe(want);
+    let got = 0;
+    while (got < want) {
+      const n = readSync(fd, buf, got, want - got, from + got);
+      if (n <= 0) break;
+      got += n;
+    }
+    return { bytes: got === want ? buf : buf.subarray(0, got), size: st.size };
+  } finally { try { closeSync(fd); } catch {} }
+}
+
+/**
  * A read stream of one regular file inside `base`, opened and verified the
  * same way (for files too large to read at once: transcripts).
  */

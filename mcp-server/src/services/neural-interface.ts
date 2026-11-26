@@ -15,6 +15,7 @@ import {
   terminalIdFor,
   terminalHeaders,
   callerBrainCredential,
+  callerTerminalToken,
   callerRole,
   setReleaseHook,
   peekStdioIdentity,
@@ -655,7 +656,7 @@ async function recordOwnRoute(id: CallerIdentity, listing: NiResponse, sessionId
 async function recoverRunBrowser(
   id: CallerIdentity,
   lost: { sessionId?: string; tabId?: string } | null,
-  reason?: 'create',
+  reason?: 'create' | 'initial',
   takeOverTab?: string,
 ): Promise<NiResponse> {
   const pins = effectivePins(id);
@@ -671,8 +672,8 @@ async function recoverRunBrowser(
     const tabId = typeof recovered.tabId === 'string' ? recovered.tabId : null;
     repin(id, recovered.sessionId, tabId);
     // A recovery (a new tab, or the route another process of the run moved to: `current`) serves this call; the
-    // run's own create is not a replacement it has to be told about.
-    if (reason === 'create') id.state.lostRoute = null;
+    // initial acquisition and the run's own create do not replace a lost tab.
+    if (reason) id.state.lostRoute = null;
     else announceReplacement(id, { sessionId: recovered.sessionId, tabId },
       id.state.lostRoute || (lost?.sessionId ? { sessionId: lost.sessionId, tabId: lost.tabId || null } : null));
   }
@@ -805,6 +806,8 @@ async function resolveFromAncestors(id: CallerIdentity): Promise<void> {
   } catch { /* best-effort */ }
 }
 
+const NOT_OWNED_TAB = 'NOT_OWNED: This is not an open tab owned by this caller.';
+
 /**
  * Resolve which session ID to use.
  * - If sessionId provided, return it immediately (server returns 404 if invalid).
@@ -821,7 +824,7 @@ async function resolveSessionUncached(
   // Per-caller identity: pins come from launch headers (HTTP) or live env
   // (stdio); all caches below live on the identity, never module-level.
   const id = getIdentity();
-  const pins = effectivePins(id);
+  let pins = effectivePins(id);
   // Every page tool runs in the default browser only. An explicit id the server
   // says does not serve it (managed Chrome, or another MoreLogin env while
   // MoreLogin is the default) is dropped for a navigation (localhost included)
@@ -830,8 +833,26 @@ async function resolveSessionUncached(
   // server refuses them too (NOT_DEFAULT_BROWSER).
   const wantsDefaultBrowser = platform || !!autoCreate;
   let namedListing: NiResponse | null = null;
+  // A dispatched worker with no launch tab asks its server for its own route before
+  // any interactive auto-selection (including fast mode). Only a proved worker has one.
+  if (!pins.browserSessionId && !id.state.ancestorPinnedSession && callerRole() !== 'assistant' && callerTerminalToken(pins.terminalSessionId)) {
+    namedListing = await request('GET', '/api/browser/sessions');
+    if (namedListing.error) return { error: namedListing.error };
+    const worker = namedListing.workerBrowser as BrowserRoute | undefined;
+    if (worker && !worker.sessionId) {
+      const opened = await recoverRunBrowser(id, null, 'initial');
+      if (isBrowserStarting(opened)) return { error: String(opened.error), starting: true };
+      if (opened.error || typeof opened.sessionId !== 'string') return userBlockedStart(opened) || { error: opened.error || 'The worker browser returned no session.' };
+      pins = { ...pins, browserSessionId: opened.sessionId, browserTabId: typeof opened.tabId === 'string' ? opened.tabId : null };
+      namedListing = null; // Ownership and eligibility must be checked against the listing after acquisition.
+      // Review round 3, I4a / I4b: the worker had no tab before this call, so a tab it names is not one of its own
+      // (unless it is a tab this process saw replaced). It is refused, in every browser mode, never redirected to the
+      // tab just opened: the call meant another page, and the new tab stays the worker's for its next call.
+      if (tabId && tabId !== pins.browserTabId && !id.state.replacedTabs.has(tabId)) return { error: NOT_OWNED_TAB };
+    } else if (worker?.sessionId) pins = { ...pins, browserSessionId: worker.sessionId, browserTabId: worker.tabId || null };
+  }
   if (sessionId && sessionId !== (pins.browserSessionId || id.state.ancestorPinnedSession)) {
-    const listed = await request('GET', '/api/browser/sessions');
+    const listed = namedListing || await request('GET', '/api/browser/sessions');
     namedListing = listed;
     const named = ((listed.sessions || []) as BrowserSessionInfo[]).find(s => s.id === sessionId);
     if (named && !servesDefault(named)) {
@@ -873,8 +894,11 @@ async function resolveSessionUncached(
     if (!pinnedSession || !tabId) return null;
     const targetSession = sessionId || id.state.recoveredSessionId || pinnedSession;
     const target = ((listing.sessions || []) as BrowserSessionInfo[]).find(s => s.id === targetSession);
+    // A (session, tab) pair the caller named in extension mode whose session is not listed (gone, or never its own)
+    // is refused like a tab it does not own, never moved to the run's own tab (review round 3, I4a).
+    if (!target && sessionId && (listing.defaultBrowser as { connectMode?: string } | undefined)?.connectMode === 'extension') return { error: NOT_OWNED_TAB };
     if (target?.profileMode !== 'extension' || target.ownTabsOnly !== true) return null;
-    if (!target.tabs?.some(t => t.id === tabId)) return { error: 'NOT_OWNED: This is not an open tab owned by this caller.' };
+    if (!target.tabs?.some(t => t.id === tabId)) return { error: NOT_OWNED_TAB };
     repin(id, targetSession, tabId);
     await recordOwnRoute(id, listing, targetSession, tabId);
     return { sessionId: targetSession, tabId };
@@ -1062,7 +1086,7 @@ async function resolveSessionUncached(
   }
 
   // List sessions (single GET used for both affinity check and auto-selection)
-  const data = await request('GET', '/api/browser/sessions');
+  const data = namedListing || await request('GET', '/api/browser/sessions');
   if (data.error) return { error: data.error };
   const allSessions = (data.sessions || []) as BrowserSessionInfo[];
 
@@ -1220,12 +1244,25 @@ export async function resolveBatchRoute(sessionId?: string, tabId?: string): Pro
 // ── Cache invalidation ──
 
 export async function invalidateCache(reason: string, id?: string): Promise<void> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5_000);
+  timer.unref?.();
   try {
     // Passing the changed memory id lets the NI patch its link cache
-    // incrementally instead of recomputing all pairwise links.
-    await request('POST', '/api/cache/invalidate', { reason, id });
+    // incrementally instead of recomputing all pairwise links. Sent directly
+    // without getIdentity(): /api/cache/invalidate reads no caller headers, and
+    // Neural Interface calls handleReflect / handleRemember in-process outside
+    // any MCP HTTP request ALS context.
+    await fetch(`${BASE_URL}/api/cache/invalidate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason, id }),
+      signal: controller.signal,
+    });
   } catch {
     // Fire-and-forget — don't block MCP tools if Neural Interface is down
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -1362,14 +1399,14 @@ export async function createSession(url?: string, takeOverTab?: string): Promise
   const pinned = pins.browserSessionId || id.state.ancestorPinnedSession;
   let created: NiResponse;
   let opened = false; // the new tab is already at `target`
-  if (pinned) {
+  const listed = pinned ? null : await request('GET', '/api/browser/sessions');
+  if (listed?.error) return listed;
+  if (pinned || listed?.workerBrowser) {
     created = await recoverRunBrowser(id, null, 'create', takeOverTab);
     if (created.error || isBrowserStarting(created) || typeof created.sessionId !== 'string') return created;
     created = { ...created, repinned: true };
   } else {
-    const listed = await request('GET', '/api/browser/sessions');
-    if (listed.error) return listed;
-    const all = (listed.sessions || []) as BrowserSessionInfo[];
+    const all = (listed?.sessions || []) as BrowserSessionInfo[];
     const lockRisk = all.some(s => s.persistent || s.loopOwned || s.agentOwned || s.interactiveOwned);
     let shared = lockRisk;
     created = {};
@@ -1548,9 +1585,9 @@ export async function snapshot(
   sessionId: string,
   selector?: string,
   tabId?: string,
-  opts?: { mode?: string; viewport?: boolean; depth?: number; diff?: boolean; force?: boolean; maxChars?: number; baselineId?: string; includeFullText?: boolean }
+  opts?: { mode?: string; viewport?: boolean; depth?: number; diff?: boolean; force?: boolean; maxChars?: number; offset?: number; baselineId?: string; includeFullText?: boolean }
 ): Promise<NiResponse> {
-  const hasOpts = !!(opts && (opts.mode || opts.viewport || opts.depth || opts.diff || opts.force || opts.maxChars || opts.baselineId || opts.includeFullText));
+  const hasOpts = !!(opts && (opts.mode || opts.viewport || opts.depth || opts.diff || opts.force || opts.maxChars || opts.offset !== undefined || opts.baselineId || opts.includeFullText));
   // Always POST when selector OR opts present (POST supports a body); GET only for bare defaults.
   if (selector || hasOpts) {
     return request('POST', `/api/browser/sessions/${sessionId}/snapshot`, {
@@ -1561,6 +1598,7 @@ export async function snapshot(
       ...(opts?.diff && { diff: true }),
       ...(opts?.force && { force: true }),
       ...(opts?.maxChars && { maxChars: opts.maxChars }),
+      ...(opts?.offset !== undefined && { offset: opts.offset }),
       ...(opts?.baselineId && { baselineId: opts.baselineId }),
       // Intent ranking parses every ref of this capture even when only a diff is shown; never a second capture.
       ...(opts?.includeFullText && { includeFullText: true }),
@@ -1648,13 +1686,17 @@ export interface SocialWritePace {
   maxWaitMs: number;
 }
 
-/** `recover: false`: a missing session or tab is reported, never retried on a replacement tab (see request()). */
-export async function evaluate(sessionId: string, script: string, tabId?: string, opts?: { pace?: SocialWritePace; recover?: boolean }): Promise<NiResponse> {
+/** `recover: false`: a missing session or tab is reported, never retried on a replacement tab (see request()).
+ *  `extractor`: the id of the fixed read-only reader that does what `script` does (browser-readers.ts). The Playwright
+ *  backend runs `script` and ignores it; the extension backend runs that reader instead and never `script`. */
+export async function evaluate(sessionId: string, script: string, tabId?: string, opts?: { pace?: SocialWritePace; recover?: boolean; extractor?: string }): Promise<NiResponse> {
   const pace = opts?.pace ? { platform: opts.pace.platform, maxWaitMs: Math.max(0, Math.floor(opts.pace.maxWaitMs || 0)) } : null;
-  return request('POST', `/api/browser/sessions/${sessionId}/evaluate`, { script, ...(tabId && { tabId }), ...(pace && { pace }) }, EVALUATE_TIMEOUT + (pace?.maxWaitMs || 0), { recover: opts?.recover });
+  return request('POST', `/api/browser/sessions/${sessionId}/evaluate`, { script, ...(tabId && { tabId }), ...(pace && { pace }), ...(opts?.extractor && { extractor: opts.extractor }) }, EVALUATE_TIMEOUT + (pace?.maxWaitMs || 0), { recover: opts?.recover });
 }
 
 export interface BrowserExtractOptions {
+  /** The fixed reader that does what the script does (the extension backend runs it instead of the script). */
+  extractor?: string;
   scrolls?: number;
   minItems?: number;
   maxItems?: number;
@@ -2202,6 +2244,11 @@ export async function assistantTranscript(runId: string, opts: { format?: string
 
 export async function assistantSend(runId: string, body: { text: string; queue?: boolean }): Promise<NiResponse> {
   return request('POST', assistantRunPath(runId, '/send'), body, LONG_TIMEOUT);
+}
+
+/** Steer a run mid-turn (POST /api/assistant/steer): its current turn is interrupted and the text follows at once. */
+export async function assistantSteer(runId: string, body: { text: string }): Promise<NiResponse> {
+  return request('POST', '/api/assistant/steer', { runId, text: body.text }, LONG_TIMEOUT);
 }
 
 export async function assistantPermission(runId: string, body: { requestId: string; behavior: 'allow' | 'deny'; answers?: Record<string, unknown>; message?: string }): Promise<NiResponse> {

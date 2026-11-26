@@ -417,20 +417,47 @@ function writeTree(dir, files) {
   if (files.some(f => f.rel.startsWith('icons/'))) syncDir(join(dir, 'icons'));
   syncDir(dir);
 }
+// Recognize an ordinary upgrade for the reload prompt only. Installation always verifies against the NEW pin.
+// If the old manifest, contents or recorded installation disagree, keep the manual repair confirmation.
+function previousInstall(paths, marker, previous, pin) {
+  if (!previous?.version || previous.version !== marker?.version || compareVersions(previous.version, pin.version) >= 0) return null;
+  const names = list(paths.folder);
+  if (!names || names.length > EXTENSION_MAX_FILES) return null;
+  const pathsInOrder = names.filter(name => name !== 'icons').sort();
+  if (names.includes('icons')) {
+    const icons = join(paths.folder, 'icons');
+    let info;
+    try { info = lstatOrNull(icons); } catch { return null; }
+    if (!info?.isDirectory() || !ownedSafely(info, paths.system)) return null;
+    const children = list(icons);
+    if (!children || children.length + pathsInOrder.length > EXTENSION_MAX_FILES) return null;
+    pathsInOrder.push(...children.sort().map(name => `icons/${name}`));
+  }
+  const digest = createHash('sha256');
+  for (const rel of pathsInOrder) {
+    if (!extensionFileAllowed(rel)) return null;
+    const bytes = readRegular(join(paths.folder, rel));
+    if (!bytes || (rel === 'manifest.json' && manifestOf(bytes)?.key !== pin.key)) return null;
+    digest.update(rel).update('\0').update(bytes).update('\0');
+  }
+  return digest.digest('hex') === marker.digest ? previous.version : null;
+}
 // The Reload the marker asks for after a replacement (`reload`), until the setup page sees the extension running again
-// (confirmExtensionReload), or for a repair until the owner confirms the Reload (confirmExtensionRepairReload).
+// (confirmExtensionReload), the new version authenticates (confirmExtensionVersion), or the owner confirms a repair.
 // `repair`: the folder held files that were not the pinned extension (changed, added or
-// deleted, another version) and they were replaced: the browser may still run them, at any version. `fromPort`: the
+// deleted, or an unrecognized version) and they were replaced: the browser may still run them, at any version. `fromPort`: the
 // same extension on another port, whose old manifest the browser keeps until a Reload. A Reload asked for before and
 // not yet seen is kept (a repair stays a repair). A first install (no folder) asks for none.
-function reloadAfter(pending, previous, port) {
+function reloadAfter(pending, previous, port, fromVersion) {
   const kept = pending && typeof pending === 'object' && !Array.isArray(pending) ? pending : null;
+  if (fromVersion && !kept?.repair) return { reload: { fromVersion } };
   const repair = previous?.state === 'other' || kept?.repair === true;
   const fromPort = previous?.state === 'pinned' && previous.port !== port ? previous.port : Number.isInteger(kept?.fromPort) ? kept.fromPort : null;
   if (!repair && fromPort === null && !kept) return {};
-  return { reload: { ...(fromPort !== null ? { fromPort } : {}), ...(repair ? { repair: true } : {}) } };
+  return { reload: { ...(fromPort !== null ? { fromPort } : {}), ...(repair ? { repair: true } : {}),
+    ...(!repair && kept?.fromVersion ? { fromVersion: kept.fromVersion } : {}) } };
 }
-const reloadReasonOf = reload => (!reload ? null : reload.repair === true ? 'repair' : 'port');
+const reloadReasonOf = reload => (!reload ? null : reload.repair === true ? 'repair' : reload.fromVersion ? 'version' : 'port');
 // The verified files into the browser's path for `port`, as one transaction. `previous`: what inspectTree said of the
 // folder that is there. Returns the marker written.
 function place(paths, { files, port, pin, now, io, previous }) {
@@ -442,8 +469,10 @@ function place(paths, { files, port, pin, now, io, previous }) {
   io.step('staged');
   const live = identity(paths.folder);
   const mode = live ? 'renames' : 'place';
+  const oldMarker = readJson(paths.marker);
+  const fromVersion = previous?.state === 'other' ? previousInstall(paths, oldMarker, previous, pin) : null;
   const marker = { v: 1, version: pin.version, digest: folderDigest(wanted), appPort: port, preparedAt: now(), package: pin.sha256,
-    ...reloadAfter(readJson(paths.marker)?.reload, previous, port) };
+    ...reloadAfter(oldMarker?.reload, previous, port, fromVersion) };
   const j = { v: 1, mode, staging: basename(staging), retired: mode === 'renames' ? `unpacked.${hex()}.old` : null, next: identity(staging), previous: live,
     previousVerified: previous?.state === 'pinned', marker };
   try { writeDurably(paths.journal, Buffer.from(JSON.stringify(j)), io); } catch (error) { unstage(error); }
@@ -582,7 +611,7 @@ export function cachedExtensionPackage({ home, pin = EXTENSION_PIN }) {
 export function extensionWorkDir(home) { return installRoot(home, { create: true }).root; }
 
 // The marker's pending Reload removed under the lock, when `clears(reload, marker)` says so. Returns whether it was.
-function clearReload(home, io, clears) {
+function clearReload(home, io, clears, remaining = () => null) {
   let paths;
   try { paths = installRoot(home); } catch { return false; }
   if (!paths) return false;
@@ -590,7 +619,9 @@ function clearReload(home, io, clears) {
     return withLock(paths, () => {
       const marker = readJson(paths.marker);
       if (!marker?.reload || !clears(marker.reload, marker)) return false;
-      const { reload: _done, ...rest } = marker;
+      const { reload, ...rest } = marker;
+      const pending = remaining(reload);
+      if (pending) rest.reload = pending;
       writeDurably(paths.marker, Buffer.from(JSON.stringify(rest)), io);
       return true;
     });
@@ -607,7 +638,14 @@ function clearReload(home, io, clears) {
  * (reconcileMarker carries it).
  */
 export function confirmExtensionReload({ home, appPort, io: given = {} }) {
-  return clearReload(home, ioOf(given), (reload, marker) => reload.repair !== true && marker.appPort === Number(appPort));
+  return clearReload(home, ioOf(given), (reload, marker) => !reload.fromVersion && reload.repair !== true && marker.appPort === Number(appPort));
+}
+
+// A newly authenticated browser reported the installed version. This clears only an ordinary version upgrade.
+export function confirmExtensionVersion({ home, version, io: given = {} }) {
+  // A same-version port change after this upgrade still needs the content script on the new port.
+  return clearReload(home, ioOf(given), (reload, marker) => !!reload.fromVersion && !reload.repair && marker.version === version,
+    reload => Number.isInteger(reload.fromPort) ? { fromPort: reload.fromPort } : null);
 }
 
 /**
@@ -622,7 +660,8 @@ export function confirmExtensionRepairReload({ home, io: given = {} }) {
 
 /**
  * What the folder's marker says, without writing or verifying: { folder, version, prepared, present, appPort,
- * preparedAt, package, reloadPending, reloadReason }. `reloadReason`: 'repair' (files that were not the pinned
+ * preparedAt, package, reloadPending, reloadReason, fromVersion? }. `reloadReason`: 'version' for an upgrade from an
+ * intact recorded installation, 'repair' (files that were not the pinned
  * extension were replaced) or 'port' (only the setup port changed), while a Reload is pending; else null. For display
  * only: whether the folder is the pinned extension is inspectExtensionFolder's answer, never this one.
  */
@@ -632,5 +671,5 @@ export function extensionFolderState(home) {
   try { const info = lstatSync(folder); present = info.isDirectory() && !info.isSymbolicLink() && lstatSync(join(folder, 'manifest.json')).isFile(); } catch { present = false; }
   return { folder, version: typeof marker?.version === 'string' ? marker.version : null, prepared: !!marker, present, appPort: marker?.appPort ?? null,
     preparedAt: marker?.preparedAt ?? null, package: typeof marker?.package === 'string' ? marker.package : null, reloadPending: !!marker?.reload,
-    reloadReason: reloadReasonOf(marker?.reload), root };
+    reloadReason: reloadReasonOf(marker?.reload), ...(marker?.reload?.fromVersion ? { fromVersion: marker.reload.fromVersion } : {}), root };
 }

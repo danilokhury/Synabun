@@ -64,6 +64,12 @@ export function initSettings() {
   // Launch: what Settings is built from, and its search index (the English names too), read and made once the
   // page has painted, so the first open and the first search wait for nothing. The index needs the window's module:
   // this step is what loads it in idle time.
+  registerLaunchPrefetch('browser-extension-update', async () => {
+    const [{ startExtensionUpdateNotices }, { showActionNotice }] = await Promise.all([
+      import('./browser-extension-updates.js'), import('./ui-notifications.js'),
+    ]);
+    return startExtensionUpdateNotices({ tx: t, showNotice: showActionNotice });
+  }, { order: 59, owner: true });
   registerLaunchPrefetch('settings-data', () => prefetchSettingsData(), { order: 60, owner: true });
   registerLaunchPrefetch('settings-search-index', () => settingsModule.call('prebuildSettingsSearchIndex', []), { order: 62 });
   // Changes other windows announce: the next open shows them.

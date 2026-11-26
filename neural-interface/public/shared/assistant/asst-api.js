@@ -65,6 +65,48 @@ export async function readAssistantShellOutput(sessionId, { shellId, cursor, tai
   return { status: res.status, data };
 }
 
+// ── Background tasks of a Claude brain (the Background tasks view) ─
+
+/** The brain's background shells and watches, rebuilt from its transcript, and its live set. Never throws: null. */
+export async function listAssistantBackgroundTasks(sessionId) {
+  try {
+    const res = await fetch(`/api/assistant/sessions/${enc(sessionId)}/background-tasks`, { credentials: 'same-origin' });
+    const body = await res.json().catch(() => null);
+    // A server from before this view has no such route (its 404 names no code): its output waits for a restart.
+    if (res.status === 404 && !body?.code) return { unsupported: true };
+    return res.ok && body?.ok ? body : null;
+  } catch { return null; }
+}
+
+/** One page of what a background task printed. → { status, data } or { ok: false, status, error }; never throws. */
+export async function readAssistantBackgroundOutput(sessionId, { taskId, cursor, tail, limit } = {}) {
+  const query = new URLSearchParams();
+  if (Number.isSafeInteger(cursor) && cursor >= 0) query.set('cursor', String(cursor));
+  if (Number.isSafeInteger(tail) && tail > 0) query.set('tail', String(tail));
+  if (Number.isSafeInteger(limit) && limit > 0) query.set('limit', String(limit));
+  const search = query.toString();
+  let res;
+  try {
+    res = await fetch(`/api/assistant/sessions/${enc(sessionId)}/background-tasks/${enc(taskId)}/output${search ? `?${search}` : ''}`, { credentials: 'same-origin' });
+  } catch (error) {
+    return { ok: false, error: error?.message || 'The output could not be read.' };
+  }
+  let body = null;
+  try { body = await res.json(); } catch { /* not JSON */ }
+  if (!res.ok || !body?.ok) return { ok: false, status: res.status, error: body?.error || `HTTP ${res.status}` };
+  const { ok: _ok, ...data } = body;
+  return { status: res.status, data };
+}
+
+/** The owner's Stop of one background task (the SDK's stopTask). → { ok, error }; never throws. */
+export async function stopAssistantBackgroundTask(sessionId, taskId) {
+  try {
+    const res = await fetch(`/api/assistant/sessions/${enc(sessionId)}/background-tasks/${enc(taskId)}/stop`, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-SynaBun-UI': '1' }, body: '{}' });
+    const body = await res.json().catch(() => null);
+    return res.ok && body?.ok ? { ok: true } : { ok: false, error: body?.error || `HTTP ${res.status}` };
+  } catch (error) { return { ok: false, error: error?.message || String(error) }; }
+}
+
 // ── Catalog ──────────────────────────────────
 
 export function fetchAssistantCatalog({ force = false } = {}) {

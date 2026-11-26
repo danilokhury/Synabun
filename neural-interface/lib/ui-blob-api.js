@@ -53,11 +53,19 @@ export function createUiBlobRouter({ namespaces, store, ownerNamespace = null, o
     return ns;
   }
 
-  router.get('/api/ui-blobs/:ns', (req, res) => {
+  router.get('/api/ui-blobs/:ns', async (req, res) => {
     const ns = namespaceOf(req, res);
     if (!ns) return;
-    try { res.json(store.getNamespace(ns)); }
-    catch (err) { res.status(500).json({ error: err.message }); }
+    try {
+      if (typeof store.getNamespaceJsonAsync === 'function') {
+        const json = await store.getNamespaceJsonAsync(ns);
+        res.type('application/json').send(json);
+      } else if (typeof store.getNamespaceAsync === 'function') {
+        res.json(await store.getNamespaceAsync(ns));
+      } else {
+        res.json(store.getNamespace(ns));
+      }
+    } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
   router.get('/api/ui-blobs/:ns/:id', (req, res) => {
@@ -83,8 +91,9 @@ export function createUiBlobRouter({ namespaces, store, ownerNamespace = null, o
       order.applied(ns, req.params.id, revision);
       const maxEntries = parseInt(req.query.maxEntries, 10) || 0;
       const maxChars = parseInt(req.query.maxChars, 10) || 0;
-      let evicted = [];
-      if (maxEntries || maxChars) evicted = store.prune(ns, { maxEntries, maxTotalChars: maxChars });
+      const evicted = maxEntries > 0 || maxChars > 0
+        ? store.prune(ns, { maxEntries, maxTotalChars: maxChars })
+        : [];
       res.json({ ok: true, evicted });
     } catch (err) { res.status(500).json({ error: err.message }); }
   }

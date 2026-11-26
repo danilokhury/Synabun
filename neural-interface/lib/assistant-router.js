@@ -2029,9 +2029,9 @@ export function createAssistantRouter({
     decided.set(routeId, route);
     noteBudgetTask(card.sessionId, { taskClass: card.taskClass, summary: card.summary }, target);
     // A remote session: the held run this card was for is its one dispatch.
-    if (heldRuns.length && session.remote === true) route.consumed = true;
+    const claim = heldRuns.length && session.remote === true ? claimRemote(route) : null;
     for (const runId of droppedRuns) call('declineHeld', runId, 'route_here');
-    for (const runId of heldRuns) call('startHeld', runId, target, { routeId, decidedBy: 'user', remembered, optionId, agentRequest: route.agentRequest });
+    for (const runId of heldRuns) call('startHeld', runId, target, { routeId, decidedBy: 'user', remembered, optionId, agentRequest: route.agentRequest, ...(claim && { claim }) });
     const view = routeView(route, { catalog: cat, brain, brainInfo });
     call('routeEvent', card.sessionId, 'decided', view);
     const inTurnWaiter = card.waiters.size > 0;
@@ -2122,12 +2122,11 @@ export function createAssistantRouter({
           }
           if (moved.correction) { runTarget = moved.target; budgetCorrection = moved.correction; }
         }
-        const claim = approved.plannedSplit ? claimSplit(approved, spec, team) : null;
-        if (remote && !approved.plannedSplit) approved.consumed = true;
+        const claim = approved.plannedSplit ? claimSplit(approved, spec, team) : remote ? claimRemote(approved) : null;
         const applied = { ...spec, provider: runTarget.provider, model: runTarget.model || null, effort: runTarget.effort ?? null, accountId: runTarget.accountId || null, codexAccountId: null, claudeAccountId: null };
         const meta = routeMeta(approved, cat, brain, brainInfo);
         const route = budgetCorrection ? { ...meta, target: describeTarget(runTarget, { catalog: cat, brain, brainInfo }), corrections: [...(meta.corrections || []), budgetCorrection] } : meta;
-        return { action: 'start', spec: applied, route: { ...route, requested: { provider: spec.provider || null, model: spec.model || null, effort: spec.effort || null } }, ...(claim ? { claimed: true, claim } : remote ? { claimed: true } : {}) };
+        return { action: 'start', spec: applied, route: { ...route, requested: { provider: spec.provider || null, model: spec.model || null, effort: spec.effort || null } }, ...(claim && { claimed: true, claim }) };
       }
       const pending = cards.get(routeId);
       if (pending?.plannedSplit && pending.sessionId === sessionId) throw routeError('ROUTE_NOT_APPROVED', 'Wait for the whole task approval; do not dispatch or route individual workers.', 409, { routeId });
@@ -2167,8 +2166,9 @@ export function createAssistantRouter({
         remembered: evaluation.source === 'remembered',
       };
       Object.assign(route, taskIdentity(sessionId, session, spec), { summary: request.summary, expiresAt: now() + DECIDED_TTL_MS });
-      if (route.taskId) decided.set(route.routeId, { ...route, status: 'approved', consumed: remote });
-      return { action: 'start', spec: applied, route: { ...routeMeta(route, cat, brain, brainInfo), requested: { provider: spec.provider || null, model: spec.model || null, effort: spec.effort || null } } };
+      const claim = route.taskId && remote ? claimRemote(route) : null;
+      if (route.taskId) decided.set(route.routeId, { ...route, status: 'approved' });
+      return { action: 'start', spec: applied, ...(claim && { claimed: true, claim }), route: { ...routeMeta(route, cat, brain, brainInfo), requested: { provider: spec.provider || null, model: spec.model || null, effort: spec.effort || null } } };
     }
     assertCurrentTask(sessionId, request.taskId);
     const raced = existingTaskResult(request, sessionId, { cat, brain, brainInfo });
@@ -2230,13 +2230,22 @@ export function createAssistantRouter({
     return { slot, token, previous };
   }
 
+  function claimRemote(route) {
+    if (route.consumed) throw routeError('ROUTE_NOT_APPROVED', 'This task route is already used.', 409);
+    const token = randomBytes(12).toString('hex');
+    route.consumed = true;
+    route.consumedBy = token;
+    return { token };
+  }
+
   function releaseRoute(routeId, claim = null) {
     const route = decided.get(String(routeId || ''));
     if (claim && route?.claims?.get(claim.slot)?.token === claim.token) {
       if (claim.previous) route.claims.set(claim.slot, claim.previous); else route.claims.delete(claim.slot);
       return true;
     }
-    if (!route?.consumed) return false;
+    if (!route?.consumed || !claim || route.consumedBy !== claim.token) return false;
+    delete route.consumedBy;
     route.consumed = false;
     return true;
   }
@@ -2245,6 +2254,7 @@ export function createAssistantRouter({
   function holdRuns(routeId, runIds = []) {
     const card = cards.get(routeId);
     if (!card || card.status !== 'pending') return false;
+    if (getSession(card.sessionId)?.remote && new Set([...card.runIds, ...runIds.filter(Boolean).map(String)]).size > 1) return false;
     for (const runId of runIds) if (runId) card.runIds.add(String(runId));
     card.mailboxOnDecision = true;
     refreshPacketRuns(card);

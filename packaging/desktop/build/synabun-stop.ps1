@@ -21,9 +21,12 @@
 #                  marker, and the supervisor never starts again a server that
 #                  was asked to stop; it starts again only one that crashed,
 #                  which the force step's loop below also catches).
-#   2. force     - end whatever still runs from the folder(s), whole process
-#                  trees (taskkill /T), in a loop that defeats a respawn and
-#                  catches a process that started while we were killing.
+#   2. force     - end whatever still runs from the folder(s), one process at a
+#                  time (taskkill /PID /F, never /T: a child outside the folders,
+#                  such as a terminal shell, an AI CLI or MoreLogin, is not
+#                  SynaBun's own executable and is left running), in a loop that
+#                  defeats a respawn and catches a process that started while we
+#                  were killing.
 #   3. wait free - until nothing runs from the folder(s) AND the window
 #                  executable can be opened for exclusive write (a handle can
 #                  linger a moment after the process ends, and a file can be held
@@ -35,9 +38,13 @@
 # it is given (the install folder, and any earlier desktop install folder the
 # registry names), compared after both sides are resolved to their final
 # filesystem path (so 8.3 short names, \\?\ prefixes and junction aliases do not
-# hide a running install). A SynaBun installed by npm or Git runs from another
-# folder, so it is never asked to stop and never killed; an unrelated process
-# holding a file is reported, never killed.
+# hide a running install). A process whose image path cannot be resolved (an
+# elevated process we may not read) is reported as unverified, never killed.
+# Right before each kill the PID is looked up again and must still have the same
+# creation time and executable, so a PID reused by another program is never
+# ended. A SynaBun installed by npm or Git runs from another folder, so it is
+# never asked to stop and never killed; an unrelated process holding a file is
+# reported, never killed.
 #
 # Everything is bounded by SYNABUN_STOP_BUDGET seconds: each shutdown request is
 # capped by the time left (with time reserved for the force step), and every wait
@@ -96,14 +103,19 @@ public static extern uint GetFinalPathNameByHandleW(IntPtr h, StringBuilder buf,
 public static extern bool CloseHandle(IntPtr h);
 public static string Final(string p) {
   if (String.IsNullOrEmpty(p)) return p;
+  string r = TryFinal(p);
+  return r == null ? p : r;
+}
+public static string TryFinal(string p) {
+  if (String.IsNullOrEmpty(p)) return null;
   const uint BACKUP = 0x02000000; const uint OPEN_EXISTING = 3; const uint SHARE = 0x7;
   IntPtr h = CreateFileW(p, 0, SHARE, IntPtr.Zero, OPEN_EXISTING, BACKUP, IntPtr.Zero);
-  if (h == IntPtr.Zero || h.ToInt64() == -1) return p;
+  if (h == IntPtr.Zero || h.ToInt64() == -1) return null;
   try {
     var sb = new StringBuilder(1024);
     uint n = GetFinalPathNameByHandleW(h, sb, (uint)sb.Capacity, 0);
-    if (n == 0) return p;
-    if (n > sb.Capacity) { sb = new StringBuilder((int)n + 1); n = GetFinalPathNameByHandleW(h, sb, (uint)sb.Capacity, 0); if (n == 0) return p; }
+    if (n == 0) return null;
+    if (n > sb.Capacity) { sb = new StringBuilder((int)n + 1); n = GetFinalPathNameByHandleW(h, sb, (uint)sb.Capacity, 0); if (n == 0) return null; }
     string r = sb.ToString();
     if (r.StartsWith(@"\\?\UNC\")) return @"\\" + r.Substring(8);
     if (r.StartsWith(@"\\?\")) return r.Substring(4);
@@ -142,6 +154,16 @@ if ($roots.Count -eq 0) {
 }
 Write-StopLog ('stop: folders ' + ($roots -join ' ; ') + "  budget ${budget}s")
 
+# The final path of an executable, or $null when it cannot be resolved (no
+# lexical fallback: an unresolved path is never trusted for a kill).
+function Resolve-Verified([string]$path) {
+  if ([string]::IsNullOrWhiteSpace($path) -or -not $script:canonType) { return $null }
+  $r = $null
+  try { $r = [SynaBun.SynaBunPath]::TryFinal($path) } catch { $r = $null }
+  if ([string]::IsNullOrWhiteSpace($r)) { return $null }
+  return $r
+}
+
 function Under-Roots([string]$path) {
   if ([string]::IsNullOrEmpty($path)) { return $false }
   $full = Resolve-Final $path
@@ -152,21 +174,56 @@ function Under-Roots([string]$path) {
   return $false
 }
 
+# True only when the image resolves to its final path AND that path is inside a
+# folder: the rule for SynaBun's own executables, the only ones ever killed.
+function Verified-Under-Roots([string]$path) {
+  $full = Resolve-Verified $path
+  if ([string]::IsNullOrEmpty($full)) { return $false }
+  foreach ($root in $roots) {
+    if ($full.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  }
+  return $false
+}
+
 # Every SynaBun process that runs from one of the folders, by executable path.
 # Win32_Process.ExecutablePath is the real image path, so this never matches by a
 # bare image name like node.exe or bash.exe; both sides are resolved first.
+# verified = the image resolved to its final path inside a folder (killable);
+# the others are only reported. created = the CIM creation time, kept so a kill
+# can check the PID still names the same process.
 function Get-Found() {
   $out = @()
   try {
     foreach ($proc in (Get-CimInstance Win32_Process -ErrorAction Stop)) {
       if ($proc.ExecutablePath -and (Under-Roots $proc.ExecutablePath)) {
-        $out += [pscustomobject]@{ pid = [int]$proc.ProcessId; name = [string]$proc.Name; path = [string]$proc.ExecutablePath }
+        $out += [pscustomobject]@{
+          pid = [int]$proc.ProcessId; name = [string]$proc.Name; path = [string]$proc.ExecutablePath
+          created = $proc.CreationDate; verified = (Verified-Under-Roots $proc.ExecutablePath)
+        }
       }
     }
   } catch {
     return $null
   }
   return ,$out
+}
+
+# End one verified process. The PID is looked up again first and must still
+# carry the same creation time and executable; a missing creation time, a reused
+# PID or a changed image skips the kill. One process only (no /T). A race is
+# left between this check and taskkill: Windows can reuse the PID in between,
+# which needs the process to exit and a new one to take its number within
+# milliseconds; the next loop pass rechecks whatever is then running.
+function Stop-Verified($proc) {
+  if (-not $proc.verified) { return 'unverified' }
+  if ($null -eq $proc.created) { return 'no-creation-time' }
+  $now = $null
+  try { $now = Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f [int]$proc.pid) -ErrorAction Stop } catch { return 'lookup-failed' }
+  if ($null -eq $now) { return 'gone' }
+  if ($null -eq $now.CreationDate -or $now.CreationDate -ne $proc.created) { return 'pid-reused' }
+  if ([string]$now.ExecutablePath -ne $proc.path) { return 'image-changed' }
+  & $taskkill /PID ([int]$proc.pid) /F *> $null
+  return 'killed'
 }
 
 function Describe($list) {
@@ -250,12 +307,18 @@ if ($initial.Count -gt 0) {
     if ($null -ne $after -and $after.Count -eq 0) { Write-StopLog 'stop: SynaBun closed itself cleanly' }
   }
 
-  # --- 2. force: end whatever still runs, whole trees, until nothing does ------
+  # --- 2. force: end our own executables, one at a time, until none runs ------
   while ((Seconds-Left) -gt 0) {
     $running = Get-Found
     if ($null -eq $running -or $running.Count -eq 0) { break }
-    foreach ($proc in $running) { & $taskkill /PID $proc.pid /T /F *> $null }
-    Write-StopLog ('stop: ended ' + (Describe $running))
+    $killable = @($running | Where-Object { $_.verified })
+    foreach ($proc in $running) {
+      $outcome = Stop-Verified $proc
+      Write-StopLog ("stop: {0}({1}) {2}: {3}" -f $proc.name, $proc.pid, $proc.path, $outcome)
+    }
+    # Only unverified processes are left: killing is not ours to do; wait for
+    # them (or the deadline) in the file-free step instead of spinning here.
+    if ($killable.Count -eq 0) { break }
     Start-Sleep -Milliseconds 500
   }
 }
@@ -278,7 +341,11 @@ if ($left.Count -eq 0 -and $free) {
   Write-Output 'SYNABUN_STOP ok'
   exit 0
 }
-$desc = (($left | ForEach-Object { "$($_.name)($($_.pid)) $($_.path)" }) -join ' ; ')
+$desc = (($left | ForEach-Object {
+  $tag = ''
+  if (-not $_.verified) { $tag = ' [unverified: not killed]' }
+  "$($_.name)($($_.pid)) $($_.path)$tag"
+}) -join ' ; ')
 if (-not $desc) { $desc = "a file in $probe is still in use (by a process not under the install folder)" }
 Write-StopLog ('stop: still busy: ' + $desc)
 Write-Output ('SYNABUN_STOP busy: ' + $desc)

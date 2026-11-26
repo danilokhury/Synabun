@@ -15,6 +15,12 @@ const STATUS_MARKS = {
 };
 const initialized = new WeakSet();
 
+// How many background tasks (shells, Monitors: the provider-independent registry, bg-tasks/bg-tasks-model.js) a
+// pill's session still runs, written on the pill by the shared "⟳ N" badge (bg-tasks-view.js paintBgBadge). A turn
+// that ended with work still running in the background is not done: its pill stays in Running until the last task
+// ends, is stopped or expires.
+export const BG_RUNNING_ATTR = 'data-bg-running';
+
 export function trayColumnOf(el) {
   if (el.classList.contains(GROUP)) {
     let parent = el.previousElementSibling;
@@ -30,7 +36,8 @@ export function trayColumnOf(el) {
   if (status === 'action' || badgeStatus === 'action' || classes.some(name => /-pill-(attention|waiting)$/.test(name))) {
     return 'waiting';
   }
-  if (status === 'working' || badgeStatus === 'working' || classes.some(name => name.endsWith('-pill-running'))) {
+  if (status === 'working' || badgeStatus === 'working' || classes.some(name => name.endsWith('-pill-running')) ||
+      Number(el.getAttribute?.(BG_RUNNING_ATTR)) > 0) {
     return 'running';
   }
   return 'done';
@@ -364,7 +371,7 @@ export function initTrayColumns(tray, preferences = globalThis.localStorage) {
     })) schedule();
   }).observe(tray, {
     childList: true, characterData: true, subtree: true, attributes: true, attributeOldValue: true,
-    attributeFilter: ['class', 'data-status', 'style', 'hidden'],
+    attributeFilter: ['class', 'data-status', 'style', 'hidden', BG_RUNNING_ATTR],
   });
   if (globalThis.ResizeObserver) {
     const resize = new ResizeObserver(schedule);

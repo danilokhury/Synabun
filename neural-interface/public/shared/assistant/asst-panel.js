@@ -30,7 +30,7 @@ import { fetchToolCatalog } from '../agent-runtime-options.js';
 import { emit, on, state as appState } from '../state.js';
 import { storage } from '../storage.js';
 import { KEYS } from '../constants.js';
-import { t } from '../i18n.js';
+import { getLocale, t } from '../i18n.js';
 // The account words of the brain picker and the accounts manager (account-view.js) in the page's language.
 // Here, not in those modules: node tests load them, and i18n.js reads the page's storage.
 import '../account-i18n.js';
@@ -60,6 +60,9 @@ import { createRovingToolbar } from './asst-roving.js';
 import { openAccountsManager } from './asst-accounts.js';
 import { createAgentsDock } from './asst-agents-dock.js';
 import { activityOf } from './asst-scenes.js';
+import { steerBreakBefore, steerNoticeText, steerTranslator } from './asst-state.js'; // steer's boot part (asst-steer.js loads on demand: steerModule)
+import { registerLaunchPrefetch } from '../launch-prefetch.js';
+import { createLazyModule } from '../lazy-module.js';
 import { createUsageGauge } from './asst-usage.js';
 import { closeMenu, currentMenuAnchor, isMenuOpen, openMenu } from './asst-menu.js';
 import { createRouteModeControl, openModelsManager, openRoutesEditor, refreshModelsManager, renderRouteCard, routeModeLabel } from './asst-route.js';
@@ -67,11 +70,12 @@ import { prewarmRoutesEditor } from './asst-route-models.js';
 import { budgetChipText, budgetSpendText, budgetTone, closeBudgetEditor, createBudgetController, mountBudgetChip, openBudgetEditor } from './asst-budget.js';
 import { computerRemoteView, createComputerPanel, createComputerToggle, normalizeComputerRemote, openFrameLightbox, closeFrameLightbox, requestDesktopStatus, requestDesktopStop } from './asst-computer.js';
 import {
-  applyLimit, applyLimitPacket, applyUsagePacket, BRAIN_PROVIDERS, brainLabel, createRenameWriter, createTabState, DEFAULT_ROUTE_MODE, deserializeTabState, fmtCost, fmtRunLine, limitExpiresIn, limitNoticeText, modelShortName,
+  applyLimit, applyLimitPacket, applyUsagePacket, usagePacketValid, BRAIN_PROVIDERS, brainLabel, createRenameWriter, createTabState, DEFAULT_ROUTE_MODE, deserializeTabState, fmtCost, fmtRunLine, limitExpiresIn, limitNoticeText, modelShortName,
   brainModePatch, isBrainProvider, normalizeBrain, normalizeComputerMode, permissionModeLabel, normalizeRouteMode, normalizeTestDensity, projectLabel, providerMeta, providerShortLabel, readStoredBrain, runFromPayload,
   serializeTabState, sessionStatus, slashBrainEffort, tabStorageKey, userSessionTitle, conversationCanWait,
 } from './asst-state.js';
 import { idleQueue } from '../idle-queue.js';
+import { listAssistantBackgroundTasks, readAssistantBackgroundOutput, stopAssistantBackgroundTask } from './asst-api.js';
 import { watchTranscriptRows } from '../transcript-rows.js';
 import { createMarkSettle } from './asst-motion-gate.js';
 import {
@@ -89,6 +93,17 @@ const ICON_COMPUTER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 const ICON_CLOSE = '<svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
 const ICON_TRASH = '<svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4.5A1.5 1.5 0 0 1 9.5 3h5A1.5 1.5 0 0 1 16 4.5V6M18.5 6l-.8 13a2 2 0 0 1-2 1.9H8.3a2 2 0 0 1-2-1.9L5.5 6M10 11v6M14 11v6"/></svg>';
 const REPLAY_WAIT_MS = 1500; // a replay that stops short of its count is drawn after this long
+
+// Steer's controller and its POST (asst-steer.js) load in an idle moment after the page is shown or at the first
+// steer, whichever comes first (lazy-module.js), so the page does not wait for them at boot; what the panel draws
+// with from the first frame is in asst-state.js. A browser keeps a failed module address failed for the life of the
+// page (a server restart can refuse the idle load), so a later attempt asks under a new address.
+let steerAttempts = 0;
+const steerModule = createLazyModule(() => {
+  const attempt = steerAttempts++;
+  return attempt ? import(`./asst-steer.js?retry=${attempt}`) : import('./asst-steer.js');
+}, { name: 'Assistant steer' });
+if (typeof document !== 'undefined') registerLaunchPrefetch('assistant-steer', () => steerModule.load(), { order: 17 });
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -223,6 +238,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
         <div class="asst-bar-group" data-group="computer"></div>
       </div>
       <div class="asst-bar-right">
+        <button type="button" class="asst-iconbtn asst-act-bgtasks" hidden aria-pressed="false" data-tooltip="${esc(tt('bgTasks.toggle', 'Background tasks'))}" aria-label="${esc(tt('bgTasks.toggle', 'Background tasks'))}"><svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></button>
         <button type="button" class="asst-iconbtn asst-act-agents" hidden aria-pressed="false" data-tooltip="${esc(tt('assistant.topbar.agents', 'Dispatched agents'))}" aria-label="${esc(tt('assistant.topbar.agents', 'Dispatched agents'))}">${ICON_AGENTS}<span class="asst-count">0</span></button>
         <button type="button" class="asst-cost" hidden aria-label="${esc(tt('assistant.budget.title', 'Budget'))}"></button>
         <button type="button" class="asst-iconbtn asst-act-sessions" data-tooltip="${esc(tt('assistant.topbar.sessions', 'Sessions'))}" aria-label="${esc(tt('assistant.topbar.sessions', 'Sessions'))}" aria-haspopup="menu" aria-expanded="false">${ICON_SESSIONS}</button>
@@ -252,11 +268,87 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   const announcer = root.querySelector('.asst-announce');
   const agentsBtn = root.querySelector('.asst-act-agents');
   const agentsCount = agentsBtn.querySelector('.asst-count');
+  const bgBtn = root.querySelector('.asst-act-bgtasks');
   const sessionsBtn = root.querySelector('.asst-act-sessions');
   const newBtn = root.querySelector('.asst-act-new');
   const moreBtn = root.querySelector('.asst-act-more');
   // Every bar element is held above: from here on the bar may live outside the root.
   if (host.toolbarSlot) host.toolbarSlot.appendChild(barEl);
+
+  // ── Background tasks (public/shared/bg-tasks/): the Claude brain's background shells and watches ──
+  // The view takes the transcript's place in the panel; the bar's toggle and the host's pill carry "⟳ N".
+  // Its modules load on first use, for a Claude brain only: never before the page is shown
+  // (tests/boot-critical-path.test.mjs). Events that arrive while they load wait in order.
+  let bg = null;
+  let bgLoad = null;
+  let bgPending = [];
+  let bgScroll = 0;
+  let paintBadge = null;
+  const bgClaude = () => (st.brain?.provider || 'claude-code') === 'claude-code';
+  function ensureBg() {
+    if (bg || destroyed) return Promise.resolve(bg);
+    bgLoad ||= Promise.all([import('../bg-tasks/bg-tasks-panel.js'), import('../bg-tasks/bg-tasks-claude.js'), import('../bg-tasks/bg-tasks-view.js'), import('../cp/cp-bg-tasks.js')])
+      .then(([panelMod, claudeMod, viewMod, cpMod]) => {
+        if (destroyed) return null;
+        paintBadge = viewMod.paintBgBadge;
+        bg = panelMod.createBgTasksPanel({
+          key: `assistant:${sessionId}`,
+          factsOf: (ev) => (bgClaude() ? claudeMod.claudeFactsFromEvent(ev) : []),
+          liveFactOf: (tasks) => claudeMod.claudeLiveFact(tasks),
+          storage,
+          t,
+          overlay: false,
+          api: {
+            list: () => listAssistantBackgroundTasks(sessionId),
+            output: ({ taskId, cursor, tail, limit }) => readAssistantBackgroundOutput(sessionId, { taskId, cursor, tail, limit }),
+            stop: (taskId) => stopAssistantBackgroundTask(sessionId, taskId),
+          },
+          onChange: () => paintBgButton(),
+          onShownChange: (shown) => {
+            // In place of the transcript: the transcript keeps its place for when the view closes.
+            if (shown) { bgScroll = transcriptEl.scrollTop; transcriptEl.hidden = true; }
+            else { transcriptEl.hidden = false; transcriptEl.scrollTop = bgScroll; }
+            paintBgButton();
+          },
+        });
+        cpMod.wireNoticeCardClicks(transcriptEl, (taskId) => openBg(taskId));
+        const pending = bgPending;
+        bgPending = [];
+        for (const ev of pending) feedBg(ev);
+        return bg;
+      })
+      .catch(() => { bgLoad = null; return null; });
+    return bgLoad;
+  }
+  /** One live event of the brain: its facts, and a task's report as a card. */
+  function feedBg(ev) {
+    if (!bg) { if (bgPending.length < 500) bgPending.push(ev); ensureBg(); return; }
+    let cards = [];
+    try { cards = bg.onEvent(ev); } catch { cards = []; }
+    for (const { view } of cards) if (view) renderer.appendNode(bg.card(view));
+  }
+  const bgRelevant = (ev) => ev.type === 'assistant' || ev.type === 'user'
+    || (ev.type === 'system' && (String(ev.subtype || '').startsWith('task_') || ev.subtype === 'background_tasks_changed'));
+  function rebuildBg() { if (bgClaude()) ensureBg().then((b) => b?.rebuild()).catch(() => {}); }
+  function paintBgButton() {
+    if (destroyed || !bg) return;
+    const counts = bg.counts();
+    const open = bg.isShown();
+    bgBtn.hidden = !counts.total && !open;
+    bgBtn.classList.toggle('active', open);
+    bgBtn.setAttribute('aria-pressed', String(open));
+    paintBadge?.(bgBtn, counts.running, { t, corner: true, onClick: () => toggleBg() });
+    try { host.setBackgroundTasks?.(counts.running, () => openBg()); } catch { /* an older host */ }
+  }
+  function openBg(taskId = null) {
+    if (!bg) return;
+    bg.show(root, taskId);
+    // Right where the transcript is (the host appends it last).
+    const view = root.querySelector(':scope > .sbt-view');
+    if (view && view.previousElementSibling !== transcriptEl) transcriptEl.after(view);
+  }
+  function toggleBg() { if (!bg) return; if (bg.isShown()) bg.hide(); else openBg(); }
+  bgBtn.addEventListener('click', () => toggleBg());
 
   // ── Helpers ──
   // A worker-only provider provider-icons.js does not know yet keeps its own name (asst-state.js providerMeta).
@@ -563,6 +655,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   }
   const renderer = createRenderer(transcriptEl, {
     t,
+    // A steer read from the journal: "Interrupted.", the break and the notice, as the live view drew them.
+    onSteerEntry: (steer) => steerEntry(steer),
     shells: {
       forCall: (id) => shellTracker?.forCall(id) || null,
       view: (id) => shellTracker?.view(id) || null,
@@ -578,6 +672,10 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     onStopRun: (runId) => stopRun(runId),
     onReadRun: (runId) => readRun(runId),
     onEscalateRun: (runId, target) => escalateRun(runId, target),
+    // Steer (asst-steer.js): the card's one-line input, or the composer's target chip.
+    onSteerRun: (runId, text) => steerRunFromCard(runId, text),
+    onSteerRunInComposer: (runId, text) => steerTargetFromCard(runId, text),
+    locale: () => getLocale(),
     onMemoryClick: (id) => { if (id) emit('memory:open', { id }); },
     onMotionMark: (el) => { markSettle.hold(transcriptRowOf(el)); },
     onRackFolded: (row) => { rowWatcher.reconsider(row); },
@@ -679,6 +777,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     onToast: toast,
     onRemoveQueued: (idx) => { if (idx >= 0) { st.queue.splice(idx, 1); composer.setQueue(st.queue); } },
     onSubmit: (payload) => submit(payload),
+    locale: () => getLocale(),
     // Files that do not go inline: saved on the server, the prompt carries the path.
     uploadFile: (file, opts) => uploadAssistantAttachment(file, { ...opts, sessionId }),
   });
@@ -775,6 +874,9 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     onStop: (runId) => stopRun(runId),
     onRead: (runId) => readRun(runId),
     onEscalate: (runId, target) => escalateRun(runId, target),
+    onSteer: (runId, text) => steerRunFromCard(runId, text),
+    onSteerInComposer: (runId, text) => steerTargetFromCard(runId, text),
+    locale: () => getLocale(),
     onStopAll: () => stopAll(),
     onRemove: (runId) => removeRun(runId),
     onClearFinished: () => clearFinished(),
@@ -826,19 +928,20 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     }).catch(() => { /* older servers do not expose usage */ });
   }
   function applyUsage(packet) {
-    if (packet?.sessionId === sessionId && (!packet.task?.id || !Number.isSafeInteger(packet.task?.tokens?.total) || packet.task.tokens.total < 0)) {
+    if (packet?.sessionId === sessionId && !usagePacketValid(packet)) {
       if (!usageWarned) { console.warn('[assistant] invalid usage packet'); usageWarned = true; }
       return;
     }
     const was = st.usageView;
     if (!applyUsagePacket(st, packet)) return;
     if (!usage.apply(st.usageView)) { st.usageView = was; return; }
-    for (const agent of st.usageView.task.agents || []) {
+    for (const agent of st.usageView.task?.agents || []) {
       if (agent.scope !== 'run' || !agent.runId) continue;
       const tokens = agent.tokens || null;
       const fidelity = agent.fidelity || st.usageView.task.fidelity;
       dock.patchUsageRun(agent.runId, tokens, fidelity);
       renderer.patchRunUsage(agent.runId, tokens, fidelity);
+      if (Number.isSafeInteger(tokens?.total)) steer.onRunTokens(agent.runId, tokens.total);
     }
     persist();
   }
@@ -953,6 +1056,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
         lockControl(packet.request_id, resolvedLabel(packet.origin, tt('assistant.control.state.answered', 'Answered')));
         return;
       case 'reattach_result':
+        rebuildBg();
         // Whether a turn runs now: a route the journal left open is that turn's, or nobody's.
         renderer.reattached(!!(packet.ok && packet.running));
         if (packet.ok) {
@@ -970,6 +1074,11 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
         return;
       case 'stderr':
         if (packet.text?.trim()) renderer.appendStatus(packet.text.trim());
+        return;
+      case 'steered':
+        // The brain's turn was cut by a steer (lib/assistant-runtime.js: { target: 'brain', text, at }): one notice
+        // where it was cut (this window's own steer drew it already), from the journal too.
+        steer.onSteered(packet);
         return;
       case 'turn_started':
         // The CLI began a turn on its own (a background agent finished, a
@@ -1032,6 +1141,7 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
         applySessionMeta(packet.session || packet);
         return;
       case 'assistant:dispatch': {
+        steer.onSteered(packet); // a 'steered' run event rides here too
         const run = runFromPayload(packet);
         if (run) { dock.upsertRun(run); renderer.upsertRunCard(dock.getRun(run.runId) || run); tip('run', () => renderer.getRunCard(run.runId)); }
         return;
@@ -1073,6 +1183,8 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     if (!ev?.type) return;
     // One registry for what is on screen (the renderer's): the journal snapshot registers there too.
     if (!renderer.claimEvent(ev)) return;
+    // The Background tasks registry hears every live event; a replayed one is history (the rebuild reads it).
+    if (!replaying && bgClaude() && bgRelevant(ev)) feedBg(ev);
     const draw = (event) => renderer.handleEvent(event, replaying ? { replay: true } : undefined);
     switch (ev.type) {
       case 'synabun.dispatch': {
@@ -1116,6 +1228,11 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
         return;
       case 'synabun.cost':
         applyCost(ev);
+        return;
+      case 'steered':
+      case 'synabun.steered':
+        // The brain's turn was cut by a steer (this window's, another's, WhatsApp's): one notice where it was cut.
+        if (!replaying) steer.onSteered(ev);
         return;
       default:
         draw(ev);
@@ -1567,6 +1684,147 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     syncBlocked();
   }
 
+  // ── Steer: redirect work under way (asst-steer.js) ──
+  const steerT = steerTranslator(t, getLocale());
+  let steerAvailable = true; // an older server answers without the route: then Enter while busy queues
+  /** The kinds of the transcript rows above `row`, nearest first (steerBreakBefore reads them). */
+  function rowKindsAbove(row, max = 6) {
+    const kinds = [];
+    for (let node = row?.previousElementSibling; node && kinds.length < max; node = node.previousElementSibling) {
+      const c = node.classList;
+      // The cut turn's own rows under its reply (its usage / automation line, a route line) are 'route'.
+      kinds.push(c.contains('msg-assistant') ? 'assistant' : c.contains('asst-divider') ? 'divider' : c.contains('msg-user') ? 'user' : c.contains('asst-status') ? 'status' : c.contains('asst-route-line') ? 'route' : 'other');
+    }
+    return kinds;
+  }
+  /** "#2 Fix the login bug": the run as the tray numbers it. */
+  function runLabelOf(run) {
+    if (!run) return '';
+    const index = dock.getRuns().findIndex((r) => r.runId === run.runId);
+    const title = String(run.title || run.task || run.runId || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    return index >= 0 ? `#${index + 1} ${title}` : title;
+  }
+  function steerNotice(text, { kind = 'steer', action = null, cut = false, quiet = false } = {}) {
+    const row = renderer.appendStatus(text, kind === 'steer' ? 'info' : kind === 'error' ? 'error' : 'warn');
+    if (!row) return null;
+    // A steer that cut the Assistant's own reply: a break between that reply and what follows (asst-state.js).
+    if (steerBreakBefore({ kind, cut, prevKinds: rowKindsAbove(row) })) {
+      const rule = document.createElement('div');
+      rule.className = 'asst-divider asst-steer-break';
+      rule.setAttribute('role', 'separator');
+      row.before(rule);
+    }
+    row.classList.add('asst-steer-notice');
+    row.dataset.steer = kind;
+    if (action?.label && typeof action.run === 'function') {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'asst-btn asst-btn-secondary asst-steer-retry';
+      button.textContent = action.label;
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        const outcome = await action.run();
+        if (outcome === false) button.disabled = false;
+        else button.remove();
+      });
+      row.appendChild(button);
+    }
+    if (!quiet) announce(text);
+    return row;
+  }
+  /** A steer read from the journal (asst-render.js drawSteer): what the live view drew for it, in the same order. */
+  function steerEntry({ target = 'brain', runId = null, title = '', text = '', cut = false } = {}) {
+    if (!String(text).trim()) return;
+    if (target === 'run') {
+      const run = runId ? dock.getRun(runId) : null;
+      steerNotice(steerNoticeText(text, steerT, { run: runLabelOf(run) || String(title || runId || '').slice(0, 60) }), { kind: 'steer', quiet: true });
+      return;
+    }
+    // The cut turn ended "Interrupted." live (its 'aborted' is not journaled), above that turn's usage / route lines;
+    // a saved one there already is not drawn twice.
+    if (cut) {
+      const aborted = tt('assistant.status.aborted', 'Aborted.');
+      const row = renderer.appendStatus(aborted);
+      let above = row?.previousElementSibling || null;
+      let firstRoute = null;
+      while (above?.classList.contains('asst-route-line')) { firstRoute = above; above = above.previousElementSibling; }
+      if (row && above?.classList.contains('asst-status') && String(above.textContent || '').trim() === aborted) row.remove();
+      else if (row && firstRoute) firstRoute.before(row);
+    }
+    steerNotice(steerNoticeText(text, steerT), { kind: 'steer', cut, quiet: true });
+  }
+  // The controller is made once asst-steer.js has loaded (steerModule); until then `steer` waits for the load, and a
+  // load that fails leaves the plain path: the words are sent, or queued behind the turn that runs.
+  let steerCtl = null;
+  const makeSteer = ({ createSteerController, postSteer }) => (steerCtl ||= createSteerController({
+    t: steerT,
+    sessionId: () => sessionId,
+    isRunning: () => st.running,
+    steerable: () => steerAvailable,
+    setSteerable: (value) => { steerAvailable = value !== false; composer.setSteerable(steerAvailable); },
+    post: (body) => postSteer(body),
+    queue: (payload) => { st.queue.push(payload); composer.setQueue(st.queue); return 'queued'; },
+    send: (payload) => (sendQuery(payload) ? 'sent' : false),
+    promptText: (payload) => buildPromptText(payload),
+    getRun: (runId) => dock.getRun(runId),
+    runLabel: runLabelOf,
+    patchRun: (runId, patch) => { const run = dock.patchRun(runId, patch); if (run) renderer.syncRun(run); return run; },
+    setActivity: (runId, activity) => { renderer.setRunActivity(runId, activity); dock.setRunActivity(runId, activity); },
+    notice: steerNotice,
+    setTarget: (target, text = '') => {
+      composer.setSteerTarget(target);
+      if (target && text && !composer.getText().trim()) composer.setText(text);
+    },
+    focusComposer: () => composer.focus(),
+  }));
+  const steerNow = () => steerCtl || (steerModule.module ? makeSteer(steerModule.module) : null);
+  const steerLoaded = () => steerModule.load().then(makeSteer);
+  /** Run `fn(controller)` now when it is there, else after the load (in order); nothing when the load fails. */
+  const withSteer = (fn) => {
+    const ctl = steerNow();
+    if (ctl) return fn(ctl);
+    steerLoaded().then((c) => { if (!destroyed) fn(c); }, () => {});
+    return undefined;
+  };
+  const steerUnavailable = (err) => steerNotice(steerT('failed', { error: err?.message || String(err || '?') }), { kind: 'error' });
+  const steer = {
+    async submit(payload) {
+      let ctl = steerNow();
+      if (!ctl) {
+        try { ctl = await steerLoaded(); } catch (err) {
+          if (payload.steerTarget?.runId) { steerUnavailable(err); return false; } // the words stay in the composer
+          if (st.running) { st.queue.push(payload); composer.setQueue(st.queue); return 'queued'; }
+          return sendQuery(payload) ? 'sent' : false;
+        }
+      }
+      return ctl.submit(payload);
+    },
+    async steerRun(runId, text) {
+      let ctl = steerNow();
+      if (!ctl) { try { ctl = await steerLoaded(); } catch (err) { steerUnavailable(err); return false; } }
+      return ctl.steerRun(runId, text);
+    },
+    targetRun: (runId, text, opts) => withSteer((ctl) => ctl.targetRun(runId, text, opts)),
+    // Before the load nothing of this panel is marked steering: the packet is read once the controller is there.
+    onSteered: (packet) => withSteer((ctl) => ctl.onSteered(packet)) === true,
+    onTurnStarted: (runId) => withSteer((ctl) => ctl.onTurnStarted(runId)) === true,
+    // Only a loaded controller has marked a run: before the load there is nothing to take away.
+    onRunOutput: (runId, payload, activity) => steerNow()?.onRunOutput(runId, payload, activity) === true,
+    onRunTokens: (runId, total) => steerNow()?.onRunTokens(runId, total) === true,
+  };
+  /** The card's one-line input: true when the steer went (the input closes). */
+  async function steerRunFromCard(runId, text) {
+    const outcome = await steer.steerRun(runId, text);
+    const went = outcome === 'steered' || outcome === 'ended';
+    if (went) composer.focus(); // the input closes: focus goes back to the composer
+    return went;
+  }
+  /** The card hands its run to the composer: the next message steers it. */
+  function steerTargetFromCard(runId, text = '') {
+    const index = dock.getRuns().findIndex((r) => r.runId === runId);
+    return steer.targetRun(runId, text, { index: index >= 0 ? index + 1 : null });
+  }
+
   // ── Sending ──
   function sendQuery(payload) {
     if (guestBlocked()) return false;
@@ -1615,11 +1873,9 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
       const handled = await runSlash(parsed, payload);
       return handled === false ? false : 'sent';
     }
-    if (st.running) {
-      st.queue.push(payload);
-      composer.setQueue(st.queue);
-      return 'queued';
-    }
+    // Steer (asst-steer.js): Enter while a turn runs cuts it and sends now, a targeted run is steered,
+    // Queue (Alt+Enter, or a server that cannot steer) waits for the turn as before.
+    if (payload.mode || payload.steerTarget || st.running) return steer.submit(payload);
     return sendQuery(payload) ? 'sent' : false;
   }
 
@@ -2309,6 +2565,10 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   surfaces.forEach((node) => node.addEventListener('focusin', onFocusIn));
 
   // ── Bus ──
+  // A panel banner has no transcript row, focus change, sound or effect on the running turn.
+  if (!isGuest()) void import('../browser-extension-updates.js').then(({ watchExtensionUpdateMention }) => {
+    if (!destroyed) unsubs.push(watchExtensionUpdateMention(t, (text, action) => banner('extension-update', text, { tone: 'info', action })));
+  }).catch(error => console.warn('[assistant] Browser extension notice unavailable:', error.message));
   unsubs.push(on('sync:assistant:session-updated', (msg) => { const s = msg?.session || msg; if (s?.id === sessionId) applySessionMeta(s); }));
   unsubs.push(on('sync:assistant:budget', (msg) => { if ((msg?.assistantSessionId || msg?.sessionId) === sessionId) budgetController.receiveSession(msg.budget); }));
   unsubs.push(on('sync:assistant:budget-changed', () => budgetController.load()));
@@ -2342,12 +2602,26 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
   unsubs.push(on('sync:sidepanel:provider-event', (msg) => {
     const runId = msg?.run?.runId;
     if (!runId || !dock.getRun(runId)) return;
+    // A steered run's next turn begins: "Steering…" goes, it works as usual.
+    const evType = msg.event?.type;
+    if (evType === 'turn_started' || evType === 'turn.started' || (evType === 'system' && msg.event?.subtype === 'init')) steer.onTurnStarted(runId);
+    if (steer.onSteered(msg.event ? { ...msg.event, runId } : null)) return;
     const activity = activityOf(msg.event);
+    // The steer's turn shows something (text, a call, thinking): "Steering…" goes.
+    steer.onRunOutput(runId, msg.event, activity);
     if (!activity) return;
     const stamped = { ...activity, at: Date.now() };
     renderer.setRunActivity(runId, stamped);
     dock.setRunActivity(runId, stamped);
   }));
+  // A run of this session steered (here, in another window, by the brain's agent_send steer:true): "Steering…" and
+  // the notice, once. The run event may come on its own or inside a dispatch update.
+  for (const name of ['sync:assistant:steered', 'sync:assistant:run-steered', 'sync:assistant:dispatch']) {
+    unsubs.push(on(name, (msg) => {
+      const owned = !msg?.assistantSessionId || msg.assistantSessionId === sessionId;
+      if (owned) steer.onSteered(name === 'sync:assistant:dispatch' ? msg : { ...msg, type: 'steered' });
+    }));
+  }
   unsubs.push(on('sync:assistant:desktop', (msg) => computerPanel.applyDesktop(msg)));
   unsubs.push(on('sync:assistant:desktop-setup', (msg) => computerPanel.applySetup(msg)));
   // Models switched on/off elsewhere: the open Models manager reloads (the menus drop their cache on their own).
@@ -2517,13 +2791,14 @@ export function mountAssistant(viewport, { sessionId, brain, host = {}, session 
     /** The session's status as its host shows it: the brain's own with its dispatched agents' (sessionStatus). */
     getStatus: () => st.shownStatus || 'idle',
     focus: () => composer.focus(),
-    onShown: () => { loadConversation(); syncTabLabel(); renderer.scrollEnd(true); if (visible()) composer.focus(); director.touch(); },
+    onShown: () => { loadConversation(); syncTabLabel(); renderer.scrollEnd(true); if (visible()) composer.focus(); director.touch(); rebuildBg(); },
     /** The tab is wanted (shown, or about to be used): its conversation loads now instead of in idle time. */
     wake: () => loadConversation(),
     onHidden: () => { closeMenu(); picker.close(); director.stopTyping(); },
     counts: () => dock.counts(),
     destroy: ({ closeServer = false } = {}) => {
       if (destroyed) return;
+      try { bg?.dispose({ forget: closeServer }); } catch { /* ignore */ }
       destroyed = true;
       cancelIdleLoad?.();
       cancelIdleLoad = null;

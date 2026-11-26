@@ -58,6 +58,7 @@ import { STAGE_TIMING, createWorkerStage } from './asst-run-stage.js';
 import { SETTLE_FRAMES, createMotionGate } from './asst-motion-gate.js';
 import { createStyleCache } from './asst-style-cache.js';
 import { formatRunTokens } from './asst-usage.js';
+import { canSteerRun, isSteeredEnd, isSteering, steerPromptText, steerTranslator } from './asst-state.js'; // steer's boot part (asst-steer.js loads on demand)
 import { sanitizeHtmlString, sanitizeInto } from './asst-sanitize.js';
 import { decorateCodeBlocks } from '../ui-code-copy.js';
 import { decorateOutput } from '../ui-output.js';
@@ -129,6 +130,7 @@ const INTERRUPTED_RE = /\b(?:interrupted|aborted|cancell?ed)\b/i;
  */
 export function resultErrorText(ev, t = (_key, fallback) => fallback) {
   if (!ev || (!ev.is_error && !String(ev.subtype || '').startsWith('error'))) return '';
+  if (isSteeredEnd(ev)) return ''; // a turn a steer cut is never a failure (asst-steer.js)
   if (String(ev.terminal_reason || '').startsWith('aborted')) return '';
   if (typeof ev.result === 'string' && ev.result.trim()) return ev.result.trim();
   const errors = Array.isArray(ev.errors) ? ev.errors.filter((x) => typeof x === 'string' && x.trim()) : [];
@@ -167,6 +169,74 @@ function memoryTitle(memory) {
   return String(raw || '').replace(/^#+\s*/, '').slice(0, 60) || memory?.id || 'memory';
 }
 
+// ── Steer (asst-steer.js) ───────────────────────────────────────────────────
+// A turning arrow: the run goes on, another way.
+const ICON_STEER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18v-5a5 5 0 0 1 5-5h11"/><path d="m16 4 4 4-4 4"/></svg>';
+const ICON_CLOSE_SMALL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+
+/**
+ * The one-line steer input under a run card: Enter (its form's submit) sends it to the run (onSubmit(runId, text) →
+ * truthy when it went), Esc or Cancel closes it; "Write it in the composer" hands the run (and what was typed) to
+ * the composer's target chip instead. Focus goes into the input, and back to the card's Steer button when it closes
+ * without sending.
+ */
+export function openRunSteerInput(card, { t: pageT = null, locale = null, onSubmit = null, onUseComposer = null } = {}) {
+  if (!card) return null;
+  const existing = card.querySelector(':scope > .asst-run-steer');
+  if (existing) { existing.querySelector('input')?.focus(); return existing; }
+  const st8 = steerTranslator(pageT, typeof locale === 'function' ? locale() : locale);
+  const box = el('form', 'asst-run-steer');
+  box.setAttribute('role', 'group');
+  box.setAttribute('aria-label', st8('runSteer'));
+  box.innerHTML = `<input type="text" class="asst-run-steer-input" autocomplete="off" spellcheck="true" aria-label="${esc(st8('runSteerPlaceholder'))}" placeholder="${esc(st8('runSteerPlaceholder'))}">`
+    + `<button type="submit" class="asst-btn asst-run-steer-send">${esc(st8('runSteerSend'))}</button>`
+    + (typeof onUseComposer === 'function' ? `<button type="button" class="asst-tb-btn asst-run-steer-composer" aria-label="${esc(st8('useComposer'))}" data-tooltip="${esc(st8('useComposer'))}">${ICON_STEER}</button>` : '')
+    + `<button type="button" class="asst-tb-btn asst-run-steer-cancel" aria-label="${esc(st8('runSteerCancel'))}" data-tooltip="${esc(st8('runSteerCancel'))}">${ICON_CLOSE_SMALL}</button>`;
+  const input = box.querySelector('input');
+  const close = ({ refocus = true } = {}) => {
+    box.remove();
+    if (refocus) card.querySelector('[data-action="steer"]')?.focus();
+  };
+  let sending = false;
+  const send = async () => {
+    const text = input.value.trim();
+    if (!text || sending) return;
+    sending = true;
+    input.disabled = true;
+    let ok = false;
+    try { ok = await onSubmit?.(card.dataset.runId, text); } catch { ok = false; }
+    sending = false;
+    input.disabled = false;
+    if (ok) close({ refocus: false });
+    else input.focus();
+  };
+  box.addEventListener('submit', (e) => { e.preventDefault(); send(); });
+  // Enter is read here, on the input itself, never left to the form's implicit submission: a handler of the page
+  // that cancels Enter (a capture-phase keydown of the document, the panel's) would stop that submission silently.
+  input.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229 || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    send();
+  });
+  box.addEventListener('keydown', (e) => {
+    e.stopPropagation(); // single-letter global keybinds stay out of the input
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+  });
+  box.addEventListener('click', (e) => e.stopPropagation());
+  box.querySelector('.asst-run-steer-cancel').addEventListener('click', () => close());
+  box.querySelector('.asst-run-steer-composer')?.addEventListener('click', () => {
+    const text = input.value;
+    close({ refocus: false });
+    onUseComposer(card.dataset.runId, text);
+  });
+  box._send = send; // tests
+  const meta = card.querySelector(':scope > .asst-run-meta');
+  if (meta) meta.after(box); else card.appendChild(box);
+  input.focus();
+  return box;
+}
+
 // ── Run cards (shared with the agents dock) ────────────────────────────────
 
 /**
@@ -201,6 +271,11 @@ export function buildRunCard(run, opts = {}) {
   };
   mk('focus', t('assistant.run.focus', 'Focus in sidepanel'), '<svg viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>', opts.onFocus);
   mk('read', t('assistant.run.read', 'Read result'), '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8M16 17H8"/></svg>', opts.onRead);
+  // Steer: a one-line input under the card, sent to this run (asst-steer.js; only while the run is not over).
+  if (typeof opts.onSteer === 'function') {
+    const st8 = steerTranslator(opts.t, opts.locale);
+    mk('steer', st8('runSteer'), ICON_STEER, () => openRunSteerInput(card, { t: opts.t, locale: opts.locale, onSubmit: opts.onSteer, onUseComposer: opts.onSteerInComposer }));
+  }
   mk('stop', t('assistant.run.stop', 'Stop run'), '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>', opts.onStop);
   // The agents tray only: a finished run can be removed from it.
   if (typeof opts.onRemove === 'function') mk('remove', t('assistant.run.remove', 'Remove from list'), '<svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>', opts.onRemove).hidden = true;
@@ -287,6 +362,14 @@ export function updateRunCard(card, run, opts = {}) {
   if (removeBtn) { removeBtn.hidden = !removable; removeBtn.disabled = !removable; }
   const readBtn = card.querySelector('[data-action="read"]');
   if (readBtn) readBtn.disabled = run.status === 'queued';
+  const steerBtn = card.querySelector('[data-action="steer"]');
+  if (steerBtn) {
+    const steerable = canSteerRun(run);
+    steerBtn.hidden = !steerable;
+    steerBtn.disabled = !steerable;
+    if (!steerable) card.querySelector(':scope > .asst-run-steer')?.remove();
+  }
+  card.classList.toggle('is-steering', isSteering(run));
 
   // A provider's usage limit stopped it: the waiting card, whose Retry now stands in for "Retry on" the same model.
   const limitShown = syncRunLimit(card, run, opts, t);
@@ -506,6 +589,7 @@ const SUGGESTION_KINDS = { computer: 'computer', web: 'web', fix: 'edit', skill:
 /**
  * createRenderer(transcriptEl, hooks)
  * hooks: { t, providerIcon(provider), providerColor(provider), onFocusRun, onStopRun, onReadRun, onEscalateRun,
+ *          onSteerRun(runId, text) → truthy when sent, onSteerRunInComposer(runId, text), locale() (asst-steer.js),
  *          onMemoryClick(id), onResult(ev), onInit(ev), onModeChanged(mode), copy(text),
  *          emptySuggestions() → [{ id, label, template }], onSuggestion(template),
  *          brainLabel() → string, onChangeRoutes(), onRouteEvent(ev) → bool (true = handled by an open card),
@@ -584,6 +668,16 @@ export function createRenderer(transcriptEl, hooks = {}) {
   const askCards = new Set(); // { el, presenter, isOpen(), onChange, seq }
   let askSeq = 0;
   let lastTextRow = null; // the newest root message since the user's last prompt: the one a guess reads
+  // Streamed rows a turn's end sealed, by message id: the message they are can still arrive after that end (a steer
+  // or a Stop cut the reply; Claude Code sends the cut message late) and then takes the row's place, never the end.
+  const sealedRows = new Map();
+  // A steer of the brain read from the journal: drawn where its prompt is (after what the cut turn still sent).
+  let pendingSteer = null;
+  // The journal's own sealedRows (a replay streams nothing): where each message of the turn being read was drawn, by
+  // id, and the messages of the turn a steer cut, whose final can still come after the steer's prompt.
+  let journalMsgs = new Map();
+  let cutMsgs = new Map();
+  let lastAssistantRow = null; // what the newest assistant event drew (the journal keeps where each message is)
 
   // ── Activity racks ──
   // Every burst of agent work (tool calls, thinking, short narration) is one
@@ -1174,6 +1268,11 @@ export function createRenderer(transcriptEl, hooks = {}) {
     if (!s?.row || !s.bodyEl || !s.textBuf.trim()) return;
     s.row.classList.remove('streaming');
     paintMessage(s.row, s.bodyEl, s.textBuf, { scope });
+    s.row._turnSealed = true; // its turn ended: what is drawn after it belongs below the reply
+    if (s.msgId) {
+      sealedRows.set(s.msgId, { row: s.row, bodyEl: s.bodyEl, scope });
+      while (sealedRows.size > 20) sealedRows.delete(sealedRows.keys().next().value);
+    }
   }
 
   /** The stream's text row goes (the final message renders the text again). */
@@ -1358,14 +1457,31 @@ export function createRenderer(transcriptEl, hooks = {}) {
     const texts = content.filter(b => b?.type === 'text' && typeof b.text === 'string');
     const tools = content.filter(b => b?.type === 'tool_use' && b.name !== 'AskUserQuestion'); // AskUserQuestion: a control card
     const ctx = { msgId: message?.id || scope.msgId || null, claude: !!ev?.uuid };
+    // The final message of a reply a turn's end already sealed (a steer cut it): its text goes into that row, where
+    // the reply was, whatever was drawn after it and whatever streams now.
+    const sealed = message?.id && scope.stream?.msgId !== message.id ? sealedRows.get(message.id) : null;
+    if (sealed && sealed.scope === scope && sealed.row.isConnected && texts.length && !tools.length && !thinks.length) {
+      const rawText = texts.map(b => b.text).join('\n');
+      if (rawText.trim()) {
+        sealed.row._text = rawText;
+        paintMessage(sealed.row, sealed.bodyEl, rawText, { scope });
+        (scope.kept ||= new Set()).add(textKey(rawText));
+      }
+      return sealed.row;
+    }
     // Text and thinking replace what was streamed for them. A tool-only message
     // (Codex/OpenCode send each call mid-stream; the SDK one per block) keeps the
     // streamed text as a row and closes it, so later deltas start below.
     const s = scope.stream;
     const liveText = !!s?.textBuf.trim();
     const streamedThink = s?.think || null;
+    // The streamed row's place: the message's text row takes it (rows drawn after it, such as a status, stay below).
+    // A reply whose turn already ended (a steer or a Stop cut it, its final message came late): the message takes the
+    // streamed row's place, above what the end drew ("Interrupted.", the usage line, the steer's notice).
+    let slot = null;
     if (s) {
       flushStream(scope);
+      if (texts.length && s.row?.isConnected && s.row._turnSealed) slot = s.row.nextElementSibling || null;
       if (texts.length) dropStreamText(scope);
       else if (s.row) {
         s.row.classList.remove('streaming');
@@ -1394,6 +1510,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
         foldNarration(rack, null, rawMd.trim());
       } else row = textRow(scope, rawMd, ctx);
     }
+    if (slot && row && slot.isConnected && slot.parentNode === row.parentNode && slot !== row) slot.before(row);
     const fresh = [];
     for (const block of tools) {
       const known = block.id ? stepsById.get(block.id) : null;
@@ -3413,6 +3530,9 @@ export function createRenderer(transcriptEl, hooks = {}) {
       onStop: hooks.onStopRun,
       onRead: hooks.onReadRun,
       onEscalate: hooks.onEscalateRun,
+      onSteer: hooks.onSteerRun,
+      onSteerInComposer: hooks.onSteerRunInComposer,
+      locale: hooks.locale,
       onLimitWait: (run, limit) => limitDock.set(`run:${run.runId}`, limit ? {
         resetsAt: limit.resetsAt || null,
         since: Date.parse(limit.detectedAt || run.completedAt || '') || nowMs(),
@@ -4125,6 +4245,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
         return true;
       case 'assistant': {
         const row = ev.message ? renderAssistant(ev.message, scope, ev) : null;
+        lastAssistantRow = row;
         if (row && ev.error && row.classList.contains('asst-msg')) { // a synthetic API-error message
           row.classList.add('asst-msg-error');
           const content = Array.isArray(ev.message.content) ? ev.message.content : [];
@@ -4208,7 +4329,7 @@ export function createRenderer(transcriptEl, hooks = {}) {
         if (ev.run) upsertRunCard(ev.run, { result: ev.result ?? null });
         return true;
       case 'synabun.user_prompt':
-        if ((!silent || replayDraw) && ev.text) appendUser(ev.text, { origin: ev.origin || null, imageCount: ev.images });
+        if ((!silent || replayDraw) && ev.text) userPrompt(String(ev.text), { origin: ev.origin || null, imageCount: ev.images });
         return true;
       case 'synabun.error':
         appendError(ev.message);
@@ -4308,12 +4429,14 @@ export function createRenderer(transcriptEl, hooks = {}) {
     let firstError = null;
     // The replay a reattach sends next repeats part of this window: planReplay leaves it out.
     snapshot = { keys: new Set(), at: -Infinity, seq: -Infinity };
+    pendingSteer = null;
     for (const entry of list) {
       if (!entry || typeof entry !== 'object') continue;
       // An entry that cannot be drawn costs that entry, never the rest of the history.
       try { renderEntry(entry); } catch (err) { failed += 1; firstError ||= err; }
     }
     if (failed) console.warn(`[assistant] ${failed} of ${list.length} transcript entries could not be drawn`, firstError);
+    { const was = muted; muted = true; try { flushPendingSteer(); } finally { muted = was; } }
     flushStream(rootScope);
     sealStreamRow(rootScope);
     if (rootScope.stream?.row) rootScope.stream.row.classList.remove('streaming');
@@ -4335,20 +4458,96 @@ export function createRenderer(transcriptEl, hooks = {}) {
     finally { muted = was.muted; clockAt = was.clockAt; }
   }
 
+  /**
+   * A steer read from the journal or a prompt that carries one, drawn as the live view drew it: the cut turn's
+   * "Interrupted.", the break and the notice (hooks.onSteerEntry, the panel's), never the model's [SynaBun Steer] line.
+   */
+  function drawSteer(steer) {
+    if (!steer) return;
+    try { hooks.onSteerEntry?.(steer); } catch { /* the panel is gone */ }
+  }
+  function flushPendingSteer() {
+    const steer = pendingSteer;
+    pendingSteer = null;
+    drawSteer(steer);
+  }
+  /** A user prompt row, or the steer it is (its words in the notice). */
+  function userPrompt(text, opts = {}) {
+    const steered = steerPromptText(text);
+    if (steered === null) { flushPendingSteer(); appendUser(text, opts); return; }
+    // Live (and in a reattach's replay) the 'steered' packet drew the notice already; from the journal
+    // (renderTranscript) it waits here (pendingSteer).
+    if (!muted || replayDraw) { pendingSteer = null; return; }
+    const steer = pendingSteer || { target: 'brain', text: steered, cut: true };
+    // The cut reply's final message can still follow (Claude Code sends it late): the steer is drawn once it is in.
+    if (cutMsgs.size) { pendingSteer = { ...steer, prompted: true }; return; }
+    pendingSteer = null;
+    drawSteer(steer);
+  }
+
+  /** The message an assistant journal entry carries, or null. */
+  function journalMessage(packet, role) {
+    if (packet.type === 'event') return packet.event?.type === 'assistant' ? packet.event.message || null : null;
+    if (role === 'assistant') return packet.message || (packet.content ? packet : null);
+    return null;
+  }
+
+  /**
+   * A late final of a reply a steer cut, read from the journal: it takes the place of what that message drew (its
+   * partial text row goes, a thinking rack stays above it), as renderAssistant's sealed rows do live.
+   */
+  function drawCutFinal(msg, draw) {
+    const anchor = cutMsgs.get(msg.id)?.anchor;
+    const row = draw();
+    if (!row || !anchor?.isConnected || row === anchor) return;
+    anchor.after(row);
+    if (anchor._msgId === msg.id && anchor.classList.contains('msg-assistant') && row._text) anchor.remove();
+    // The cut turn's usage / route lines (journaled before this late final; a partial that drew no row anchors on
+    // its own automation row) go under the reply, as live: the panel's steerEntry then puts "Interrupted." above them.
+    const trailing = [];
+    for (let above = row.previousElementSibling; above?.classList.contains('asst-route-line'); above = above.previousElementSibling) trailing.unshift(above);
+    if (trailing.length) row.after(...trailing);
+    cutMsgs.set(msg.id, { anchor: row });
+  }
+
   function drawEntry(entry) {
     const packet = entry.packet && typeof entry.packet === 'object' ? entry.packet : entry;
     const role = packet.role || packet.type;
+    const msg = journalMessage(packet, role);
+    if (msg?.id && cutMsgs.has(msg.id)) { drawCutFinal(msg, () => drawEntryRow(packet, role)); return; }
+    // Anything else after the steer's prompt: the cut turn is over, its steer is drawn first.
+    if (pendingSteer?.prompted) { cutMsgs = new Map(); flushPendingSteer(); }
+    const row = drawEntryRow(packet, role);
+    if (msg?.id) journalMsgs.set(msg.id, { anchor: row || $msgs.lastElementChild || null });
+  }
+
+  /** One journal entry drawn; an assistant message gives back the row it drew. */
+  function drawEntryRow(packet, role) {
+    // A steer (lib/assistant-runtime.js steerBrain, a worker run's 'steered' event): the brain's waits for its prompt,
+    // so what the cut turn still sent is drawn above it; a run's is drawn where it is.
+    if (packet.type === 'steered' || packet.type === 'synabun.steered') {
+      const text = String(packet.text ?? '').trim();
+      if (!text) return;
+      if (packet.target === 'run' || packet.runId) { flushPendingSteer(); drawSteer({ target: 'run', runId: packet.runId || null, title: packet.title || '', text, cut: false }); return; }
+      flushPendingSteer();
+      pendingSteer = { target: 'brain', text, cut: packet.interruptedTurn !== false };
+      cutMsgs = pendingSteer.cut ? journalMsgs : new Map();
+      journalMsgs = new Map();
+      return;
+    }
     if (role === 'query' || role === 'user' || role === 'prompt') {
       const text = packet.prompt ?? packet.text ?? (typeof packet.content === 'string' ? packet.content : null);
-      if (text != null && !packet.event) { appendUser(String(text), { images: Array.isArray(packet.images) ? packet.images : [] }); return; }
+      if (text != null && !packet.event) { userPrompt(String(text), { images: Array.isArray(packet.images) ? packet.images : [] }); journalMsgs = new Map(); return; }
     }
     // The runtime journals the user's prompts only as `synabun.user_prompt` events.
     if (packet.type === 'event' && packet.event?.type === 'synabun.user_prompt') {
-      if (packet.event.text) appendUser(String(packet.event.text), { origin: packet.event.origin || null, imageCount: packet.event.images });
+      if (packet.event.text) userPrompt(String(packet.event.text), { origin: packet.event.origin || null, imageCount: packet.event.images });
+      journalMsgs = new Map();
       return;
     }
+    if (packet.type === 'event' && packet.event?.type === 'assistant') { lastAssistantRow = null; handleEvent(packet.event, { silent: true }); return lastAssistantRow; }
     if (packet.type === 'event' && packet.event) { handleEvent(packet.event, { silent: true }); return; }
-    if (role === 'assistant' && (packet.message || packet.content)) { renderAssistant(packet.message || packet); return; }
+    if (role === 'assistant' && (packet.message || packet.content)) return renderAssistant(packet.message || packet);
     if (packet.type && handleEvent(packet, { silent: true })) return;
     if (role === 'system' && packet.text) appendStatus(packet.text);
   }
@@ -4374,6 +4573,8 @@ export function createRenderer(transcriptEl, hooks = {}) {
     offers.clear();
     dropAsks();
     lastTextRow = null;
+    sealedRows.clear();
+    pendingSteer = null;
     for (const card of runCards.values()) { try { card._limitWait?.destroy(); } catch { /* gone */ } }
     runActivity.clear();
     runCards.clear();

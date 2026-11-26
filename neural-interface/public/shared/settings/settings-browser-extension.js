@@ -14,6 +14,9 @@
 // The dropdown is the app's .cc-dropdown (Settings wires every .stg-dropdown, wireStgDropdowns); a server from before
 // the mode existed reports no `fullControl` and the section stays hidden. Disconnect and Revoke pairing are confirmed
 // too; Take back is immediate and never closes the tab.
+import { beginExtensionUpdateRead } from '../browser-extension-updates.js';
+import { extensionUpdateHTML, wireExtensionUpdate } from './settings-extension-update.js';
+
 const SYMBOL = {
   ok: '<path d="m5 12 4 4 10-10"></path>',
   warn: '<path d="M9 5v14M15 5v14"></path>',
@@ -29,7 +32,7 @@ export function extensionSettingsHTML(kit) {
   const button = (action, key, extra = '') => `<button type="button" class="cli-detect-btn" data-extension-action="${action}"${extra}>${t(key)}</button>`;
   const modes = [['full', t('modeFull')], ['restricted', t('modeRestricted')]];
   const symbols = Object.entries(SYMBOL).map(([name, path]) => `<svg class="bc-ext-sym" data-sym="${name}" viewBox="0 0 24 24">${path}</svg>`).join('');
-  return `<div class="stg-field bc-extension" id="bc-extension" data-card-state="loading" hidden>
+  return `${extensionUpdateHTML(kit)}<div class="stg-field bc-extension" id="bc-extension" data-card-state="loading" hidden>
     <div class="bc-ext-head" id="bc-extension-head" data-tone="">
       <div class="bc-ext-status-row">
         <span class="bc-ext-symbol" aria-hidden="true">${symbols}</span>
@@ -197,6 +200,7 @@ const CONFIRMS = {
 };
 
 export function wireExtensionSettings(root, { tx, signal }) {
+  wireExtensionUpdate(root, { tx, signal });
   const pane = root.querySelector('#bc-extension'); if (!pane) return;
   const t = (key, params) => tx(`browserExtension.${key}`, params);
   const c = (key, params) => tx(`browserExtension.card.${key}`, params);
@@ -345,13 +349,13 @@ export function wireExtensionSettings(root, { tx, signal }) {
     // extension were replaced, and the browser may still run them). Said until the setup page sees the extension (a port change) or
     // the owner confirms the Reload below (a repair).
     const reload = query('reload'), reloadText = data.reloadRepaired === true ? reload.dataset.repairedText : reload.dataset.reloadText;
-    reload.hidden = !(data.reloadNeeded === true);
+    reload.hidden = !!data.update || !(data.reloadNeeded === true);
     if (reloadText && reload.textContent !== reloadText) reload.textContent = reloadText;
     // A repair's Reload ends only by the owner's click here (POST reload/confirm): the copy the browser still runs
     // would answer the setup page just the same, so nothing it says, nor any refresh of this card, clears it.
-    query('reload-actions').hidden = !(data.reloadNeeded === true && data.reloadRepaired === true);
+    query('reload-actions').hidden = !!data.update || !(data.reloadNeeded === true && data.reloadRepaired === true);
     // The folder's own update (never while a setup shows its own download): on its way, or failed with Try again.
-    const update = active ? null : updateNote(data), note = query('update');
+    const update = active || data.update ? null : updateNote(data), note = query('update');
     note.hidden = !update; note.textContent = update ? (update === 'failed' ? note.dataset.failedText : note.dataset.updatingText) : '';
     query('update-actions').hidden = update !== 'failed';
   }
@@ -395,10 +399,12 @@ export function wireExtensionSettings(root, { tx, signal }) {
     showTabs(data, connected && !error);
   }
   async function refresh() {
+    const accept = beginExtensionUpdateRead();
     const data = await api();
     let setup = null;
     if (typeof data.setup === 'string' && data.setup !== 'idle') { try { setup = await api('setup/status'); } catch { setup = null; } }
     last = data; lastSetup = setup;
+    if (!signal.aborted) accept(data.update || null);
     render();
   }
   async function takeBack(handle) {

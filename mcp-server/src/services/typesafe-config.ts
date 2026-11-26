@@ -15,7 +15,7 @@
  * never break `judge()`.
  */
 
-import { getDb } from './sqlite.js';
+import { getDb, onDatabaseClose } from './sqlite.js';
 import { withMemoryWrite, writeNowOrSoon } from './sqlite-write.js';
 import { autoHealGate, readTargetBench, DEFAULT_BROWSER_ASSIST, BROWSER_TARGET_DEFAULTS, type BrowserAssistConfig } from './browser-assist-gate.js';
 export type { BrowserAssistConfig, BrowserTargetBench } from './browser-assist-gate.js';
@@ -439,6 +439,7 @@ let cachedAt = 0;
 
 function readStored(): Partial<TypeSafeConfig> | null {
   try {
+    ensureCloseHook();
     const row = getDb().prepare('SELECT value FROM kv_config WHERE key=?').get(CONFIG_KEY) as { value?: string } | undefined;
     if (!row?.value) return null;
     const parsed = JSON.parse(String(row.value)) as unknown;
@@ -528,8 +529,27 @@ export interface TypeSafeLogRow {
 
 /** Rows kept. ~1 KB each; 2,000 covered two minutes of a backfill, 20,000 covers a few hours. */
 export const LOG_KEEP = 20000;
-const PRUNE_EVERY = 25;
+export const LOG_PRUNE_EVERY = 25;
+export const LOG_PRUNE_BATCH_SIZE = 100;
+export const LOG_PRUNE_TICK_MS = 10;
+interface PruneCycle {
+  generation: number;
+  targetKeep: number;
+  batchSize: number;
+  tickMs: number;
+  maxSparseChunk: number | undefined;
+  timer: ReturnType<typeof setTimeout> | null;
+  running: boolean;
+  recomputeRequested: boolean;
+  cachedPlan: { db: ReturnType<typeof getDb>; keep: number; cutoff: number; partial: boolean } | null;
+  deleted: number;
+  promise: Promise<number>;
+  resolve: (deleted: number) => void;
+  settled: boolean;
+}
 let insertsSincePrune = 0;
+let pruneGeneration = 0;
+let activePrune: PruneCycle | null = null;
 const OUTCOME_MAX_CHARS = 4096;
 const SESSION_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
 
@@ -549,7 +569,232 @@ export function logSessionFromRef(ref: unknown): string | null {
   return cleanSessionId(compaction ? compaction[1] : ref);
 }
 
+/**
+ * Compute the highest `id` to delete so at most `keep` newest rows remain.
+ * Work is strictly bounded by the retention window (never a full-table COUNT(*)):
+ *   1. MIN(id) / MAX(id) rowid edge seeks (O(log N)): if `maxId - minId + 1 <= keep`, nothing to delete.
+ *   2. Bounded reverse rowid seek (`ORDER BY id DESC LIMIT 1 OFFSET keep`): traverses at most
+ *      `keep + 1` rows regardless of total table size, returning the exact cutoff for dense and sparse
+ *      tables alike. Scheduled prune ticks run this OUTSIDE the writer transaction so WAL writers never wait.
+ *   3. Optional `maxSparseChunk` caps a single plan to at most that many oldest excess rows (`partial: true`).
+ */
+export function computeTypeSafeLogCutoff(
+  d: ReturnType<typeof getDb>,
+  keep = LOG_KEEP,
+  options?: { maxSparseChunk?: number },
+): { cutoff: number; partial: boolean } | null {
+  const limit = Number.isFinite(Number(keep)) ? Math.max(0, Math.floor(Number(keep))) : LOG_KEEP;
+  // Separate ASC/DESC LIMIT 1 subqueries hit the rowid B-tree edge directly (O(log N));
+  // a single SELECT MIN(id), MAX(id) falls back to scanning an index in SQLite.
+  const bounds = d.prepare(
+    'SELECT (SELECT id FROM typesafe_log ORDER BY id ASC LIMIT 1) AS minId, (SELECT id FROM typesafe_log ORDER BY id DESC LIMIT 1) AS maxId',
+  ).get() as { minId: number | null; maxId: number | null } | undefined;
+  if (bounds?.minId == null || bounds?.maxId == null) return null;
+  const minId = Number(bounds.minId);
+  const maxId = Number(bounds.maxId);
+  if (limit === 0) return { cutoff: maxId, partial: false };
+  const span = maxId - minId + 1;
+  if (span <= limit) return null;
+  const row = d.prepare('SELECT id FROM typesafe_log ORDER BY id DESC LIMIT 1 OFFSET ?').get(limit) as { id?: number } | undefined;
+  if (row?.id == null) return null;
+  const exactCutoff = Number(row.id);
+  const maxChunk = options?.maxSparseChunk != null && Number.isFinite(Number(options.maxSparseChunk))
+    ? Math.max(1, Math.floor(Number(options.maxSparseChunk)))
+    : null;
+  if (maxChunk != null) {
+    const chunkRow = d.prepare('SELECT id FROM typesafe_log WHERE id <= ? ORDER BY id ASC LIMIT 1 OFFSET ?').get(exactCutoff, maxChunk - 1) as { id?: number } | undefined;
+    if (chunkRow?.id != null && Number(chunkRow.id) < exactCutoff) {
+      return { cutoff: Number(chunkRow.id), partial: true };
+    }
+  }
+  return { cutoff: exactCutoff, partial: false };
+}
+
+function deleteTypeSafeLogBatch(d: ReturnType<typeof getDb>, cutoff: number, batchSize = LOG_PRUNE_BATCH_SIZE): number {
+  const limit = Math.max(1, Math.floor(batchSize));
+  const result = d.prepare('DELETE FROM typesafe_log WHERE id IN (SELECT id FROM typesafe_log WHERE id <= ? ORDER BY id ASC LIMIT ?)').run(cutoff, limit);
+  return Number(result.changes);
+}
+
+function finishPruneCycle(cycle: PruneCycle): void {
+  if (cycle.timer) { clearTimeout(cycle.timer); cycle.timer = null; }
+  cycle.cachedPlan = null;
+  cycle.recomputeRequested = false;
+  if (activePrune === cycle) activePrune = null;
+  if (!cycle.settled) {
+    cycle.settled = true;
+    cycle.resolve(cycle.deleted);
+  }
+}
+
+/**
+ * Cancel any pending background prune timer and drop the cached cutoff.
+ * Called on real DB close/reopen/teardown — decoupled from config cache invalidation.
+ */
+export function resetTypeSafeLogPrune(): void {
+  pruneGeneration++;
+  insertsSincePrune = 0;
+  const prev = activePrune;
+  activePrune = null;
+  if (prev) {
+    if (prev.timer) { clearTimeout(prev.timer); prev.timer = null; }
+    prev.cachedPlan = null;
+    prev.recomputeRequested = false;
+    if (!prev.settled) {
+      prev.settled = true;
+      prev.resolve(prev.deleted);
+    }
+  }
+}
+
+function armPruneTimer(cycle: PruneCycle, delayMs: number): void {
+  if (cycle !== activePrune || cycle.timer) return;
+  cycle.timer = setTimeout(() => {
+    cycle.timer = null;
+    void runScheduledPruneTick(cycle);
+  }, Math.max(0, delayMs));
+  cycle.timer.unref?.();
+}
+
+async function runScheduledPruneTick(cycle: PruneCycle): Promise<void> {
+  if (cycle !== activePrune || cycle.running) return;
+  cycle.running = true;
+  const gen = cycle.generation;
+  let scheduleNext = false;
+  try {
+    const d = getDb();
+    const keep = cycle.targetKeep;
+    const batch = cycle.batchSize;
+    const maxSparseChunk = cycle.maxSparseChunk;
+    // Compute the cutoff OUTSIDE the writer transaction so SQLite WAL writers are never blocked.
+    let plan = cycle.cachedPlan && cycle.cachedPlan.db === d && cycle.cachedPlan.keep === keep ? cycle.cachedPlan : null;
+    if (!plan) {
+      // Any recompute request queued before this fresh cutoff computation is covered by it.
+      cycle.recomputeRequested = false;
+      const computed = computeTypeSafeLogCutoff(d, keep, maxSparseChunk != null ? { maxSparseChunk } : undefined);
+      if (!computed) {
+        // The cutoff read is synchronous. No rows remain for this cycle to delete.
+        finishPruneCycle(cycle);
+        return;
+      }
+      plan = { db: d, keep, cutoff: computed.cutoff, partial: computed.partial };
+      cycle.cachedPlan = plan;
+    }
+    const activePlan = plan;
+    const deleted = await withMemoryWrite(d, () => {
+      // A retention change while queued for the writer invalidates the old cutoff.
+      if (cycle !== activePrune || cycle.generation !== gen || cycle.cachedPlan !== activePlan || cycle.targetKeep !== activePlan.keep) return 0;
+      return deleteTypeSafeLogBatch(d, activePlan.cutoff, batch);
+    });
+    if (cycle !== activePrune || cycle.generation !== gen) return;
+    cycle.deleted += deleted;
+    const drained = deleted < batch;
+    if (drained) cycle.cachedPlan = null;
+    if (!drained) {
+      scheduleNext = true;
+    } else if (activePlan.partial) {
+      // Recompute the cutoff after every drained partial plan (including a 0-delete final batch).
+      scheduleNext = true;
+    } else if (cycle.recomputeRequested) {
+      cycle.recomputeRequested = false;
+      scheduleNext = true;
+    }
+  } catch {
+    // Database closed or unavailable during shutdown: stop quietly without throwing.
+    if (cycle === activePrune && cycle.generation === gen) {
+      cycle.cachedPlan = null;
+      scheduleNext = false;
+    }
+  } finally {
+    cycle.running = false;
+  }
+  if (cycle !== activePrune || cycle.generation !== gen) return;
+  if (scheduleNext) {
+    armPruneTimer(cycle, cycle.tickMs);
+  } else {
+    finishPruneCycle(cycle);
+  }
+}
+
+/**
+ * Schedule retention pruning off the write path in small bounded batches spread across ticks.
+ * Coalesces repeated triggers per generation and returns a promise resolving to rows deleted when the cycle finishes.
+ */
+export function scheduleTypeSafeLogPrune(
+  keep = LOG_KEEP,
+  options: { batchSize?: number; tickMs?: number; delayMs?: number; maxSparseChunk?: number } = {},
+): Promise<number> {
+  const target = Number.isFinite(Number(keep)) ? Math.max(0, Math.floor(Number(keep))) : LOG_KEEP;
+  const batch = options.batchSize != null && Number.isFinite(Number(options.batchSize)) ? Math.max(1, Math.floor(Number(options.batchSize))) : LOG_PRUNE_BATCH_SIZE;
+  const tickMs = options.tickMs != null && Number.isFinite(Number(options.tickMs)) ? Math.max(0, Math.floor(Number(options.tickMs))) : LOG_PRUNE_TICK_MS;
+  const delayMs = options.delayMs != null && Number.isFinite(Number(options.delayMs)) ? Math.max(0, Math.floor(Number(options.delayMs))) : tickMs;
+  const maxSparseChunk = options.maxSparseChunk != null && Number.isFinite(Number(options.maxSparseChunk))
+    ? Math.max(1, Math.floor(Number(options.maxSparseChunk)))
+    : undefined;
+
+  if (activePrune) {
+    if (target !== activePrune.targetKeep || maxSparseChunk !== activePrune.maxSparseChunk) {
+      activePrune.cachedPlan = null;
+    }
+    activePrune.targetKeep = target;
+    activePrune.batchSize = batch;
+    activePrune.tickMs = tickMs;
+    if (maxSparseChunk !== undefined) activePrune.maxSparseChunk = maxSparseChunk;
+    // Mark pending recompute whether a tick is currently running OR the timer is currently armed.
+    activePrune.recomputeRequested = true;
+    if (!activePrune.running && !activePrune.timer) {
+      armPruneTimer(activePrune, delayMs);
+    }
+    return activePrune.promise;
+  }
+
+  let resolve!: (deleted: number) => void;
+  const promise = new Promise<number>((res) => { resolve = res; });
+  const cycle: PruneCycle = {
+    generation: pruneGeneration,
+    targetKeep: target,
+    batchSize: batch,
+    tickMs,
+    maxSparseChunk,
+    timer: null,
+    running: false,
+    recomputeRequested: false,
+    cachedPlan: null,
+    deleted: 0,
+    promise,
+    resolve,
+    settled: false,
+  };
+  ensureCloseHook();
+  activePrune = cycle;
+  armPruneTimer(cycle, delayMs);
+  return cycle.promise;
+}
+
+/** Await any scheduled/in-flight background retention prune (returns 0 if none is pending). */
+export function flushTypeSafeLogPrune(): Promise<number> {
+  return activePrune?.promise ?? Promise.resolve(0);
+}
+
+// Register the DB close/teardown hook lazily on first use (keeps partial sqlite mocks in unit tests working).
+let closeHookRegistered = false;
+function ensureCloseHook(): void {
+  if (closeHookRegistered) return;
+  closeHookRegistered = true;
+  try {
+    if (typeof onDatabaseClose === 'function') {
+      onDatabaseClose(() => {
+        cached = null;
+        cachedAt = 0;
+        statsCache = null;
+        resetTypeSafeLogPrune();
+      });
+    }
+  } catch { /* partial sqlite mock in isolated unit tests */ }
+}
+
 function insertTypeSafeLog(d: ReturnType<typeof getDb>, row: TypeSafeLogRow): number {
+    ensureCloseHook();
     const result = d.prepare(`INSERT INTO typesafe_log(created_at,surface,origin,entity_id,model,question_count,state_preview,answers,latency_ms,input_tokens,output_tokens,cached,error,session_id,project,surfaces)
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       row.created_at ?? new Date().toISOString(), row.surface, row.origin, row.entity_id, row.model, row.question_count,
@@ -558,7 +803,10 @@ function insertTypeSafeLog(d: ReturnType<typeof getDb>, row: TypeSafeLogRow): nu
       cleanSessionId(row.session_id), typeof row.project === 'string' && row.project ? row.project.slice(0, 200) : null,
       row.surfaces?.length ? JSON.stringify(row.surfaces) : null,
     );
-    if (++insertsSincePrune >= PRUNE_EVERY) { insertsSincePrune = 0; pruneTypeSafeLog(); }
+    if (++insertsSincePrune >= LOG_PRUNE_EVERY) {
+      insertsSincePrune = 0;
+      scheduleTypeSafeLogPrune(LOG_KEEP);
+    }
     return Number(result.lastInsertRowid);
 }
 
@@ -600,11 +848,24 @@ export function relinkTypeSafeLog(fromEntity: string, toEntity: string): void {
   try { const d = getDb(); writeNowOrSoon(d, () => d.prepare('UPDATE typesafe_log SET entity_id=? WHERE entity_id=?').run(toEntity, fromEntity)); } catch { /* diagnostics */ }
 }
 
-/** Keep only the newest `keep` rows. Returns the number deleted. */
-export function pruneTypeSafeLog(keep = LOG_KEEP): number {
+/** Keep only the newest `keep` rows synchronously in bounded batches. Returns the number deleted. */
+export function pruneTypeSafeLog(keep = LOG_KEEP, batchSize = LOG_PRUNE_BATCH_SIZE): number {
   try {
-    const result = getDb().prepare('DELETE FROM typesafe_log WHERE id <= (SELECT id FROM typesafe_log ORDER BY id DESC LIMIT 1 OFFSET ?)').run(keep);
-    return Number(result.changes);
+    const d = getDb();
+    let total = 0;
+    for (;;) {
+      const plan = computeTypeSafeLogCutoff(d, keep);
+      if (!plan) break;
+      let drained = false;
+      while (!drained) {
+        const deleted = deleteTypeSafeLogBatch(d, plan.cutoff, batchSize);
+        total += deleted;
+        if (deleted < Math.max(1, Math.floor(batchSize))) drained = true;
+      }
+      if (!plan.partial) break;
+    }
+    if (total > 0 && activePrune) activePrune.cachedPlan = null;
+    return total;
   } catch { return 0; }
 }
 

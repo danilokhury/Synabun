@@ -11,6 +11,7 @@
 
 import { spawn as nodeSpawn } from 'node:child_process';
 import { request } from 'node:http';
+import { inspectProcessesUnder, killVerifiedProcessWindows, queryWindowsProcess } from './updater/win-swap.mjs';
 
 /** Every line the helper writes is one of these, as JSON: what the window shows while it waits. */
 export const HELPER_EVENTS = Object.freeze(['plan', 'existing', 'step', 'supervisor', 'ready', 'conflict', 'failed']);
@@ -126,83 +127,85 @@ export function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error?.code === 'EPERM'; }
 }
 
-/**
- * Stop the server the app started (or one of this install the app has to
- * replace): ask it to shut down, wait for it and its supervisor to be gone,
- * and only then end what is left by force. The launcher process of a
- * background start leads its own process group (POSIX) or job object
- * (Windows), so ending it ends everything it started.
- *
- * A server that does not take the request while its supervisor lives is
- * between a crash and the start that replaces it (or still starting): it is
- * asked again as soon as it answers, so quitting then is a graceful stop of the
- * new server, not a wait for the deadline. So is a server that answers after
- * the one that took the request went away, or under another boot id: that stop
- * did not hold (a restart was under way, or it crashed on its way out and was
- * started again). A supervisor whose record says it gave up (`supervisorEnded`)
- * has no server to bring back: with its server gone, that is stopped, even
- * while it takes a moment more to write its logs.
- */
-export async function stopBackend({
-  port, launcherPid = null, supervisorPid = null, timeoutMs = 20000, platform = process.platform,
-  health = fetchHealth, shutdown = requestShutdown, alive = pidAlive, kill = process.kill.bind(process), spawn = nodeSpawn,
-  supervisorEnded = () => false,
-  sleep = (ms) => new Promise(done => setTimeout(done, ms)), now = () => Date.now(), log = () => {},
+/** At attach, bind the OS listener between two health reads of the same server boot. */
+export async function attachBackend({ port, entry, instDir, platform = process.platform,
+  health = fetchHealth, query = queryWindowsProcess, realpath, log = () => {},
 }) {
-  const bootOf = (answer) => (answer && typeof answer.bootId === 'string' && answer.bootId ? answer.bootId : null);
-  // Which server took the request (its boot id, when it says one), and whether it has been seen gone since.
-  let askedBoot = port ? bootOf(await health(port, { timeoutMs: 700 })) : null;
-  let asked = port ? await shutdown(port) : false;
+  const answer = await health(port);
+  const key = value => platform === 'win32' ? value?.replaceAll('\\', '/').toLowerCase() : value;
+  const ours = answer?.ok === true && entry && typeof answer.installEntry === 'string' && key(answer.installEntry) === key(entry);
+  const bootId = ours && typeof answer.bootId === 'string' ? answer.bootId : null;
+  let listener = null;
+  if (bootId && platform === 'win32') {
+    const proc = await query({ port });
+    if (proc) {
+      const { verified } = inspectProcessesUnder([proc], instDir, { realpath, backendOnly: true });
+      if (verified.length && (await health(port))?.bootId === bootId) listener = verified[0];
+      else log(`backend attach: leaving unverified listener ${proc.name} (pid ${proc.pid}) running`);
+    }
+  }
+  return { bootId, listener };
+}
+
+/** Request a graceful shutdown first. Windows force is limited to the OS listener bound at attach. */
+export async function stopBackend({
+  port, launcherPid = null, supervisorPid = null, bootId = null, listener = null, instDir = null,
+  timeoutMs = 20000, platform = process.platform, health = fetchHealth, shutdown = requestShutdown,
+  alive = pidAlive, kill = process.kill.bind(process), exec, realpath, supervisorEnded = () => false,
+  sleep = ms => new Promise(done => setTimeout(done, ms)), now = Date.now, log = () => {},
+}) {
+  const windows = platform === 'win32';
+  const readHealth = () => port ? health(port, { timeoutMs: 700 }) : null;
+  const initial = await readHealth();
+  const sameBoot = answer => !!bootId && answer?.ok === true && answer.bootId === bootId;
+  let asked = port && (!bootId || sameBoot(initial)) ? await shutdown(port) : false;
   let askedAt = now();
-  let away = false;
   log(`backend stop: shutdown request ${asked ? 'accepted' : 'not answered'} (port ${port})`);
+  const gone = (answer, allowGaveUp = false) => {
+    if (answer?.ok || (listener && alive(listener.pid))) return false;
+    if (!alive(supervisorPid) && !alive(launcherPid)) return true;
+    try { return allowGaveUp && supervisorEnded() === true; } catch { return false; }
+  };
   const deadline = now() + timeoutMs;
-  const ended = () => { try { return supervisorEnded() === true; } catch { return false; } };
-  const gone = async () => !(await health(port, { timeoutMs: 700 })) && !alive(supervisorPid) && !alive(launcherPid);
   while (now() < deadline) {
-    const answer = port ? await health(port, { timeoutMs: 700 }) : null;
-    if (!answer) {
-      if (asked) away = true;
-      if (!alive(supervisorPid) && !alive(launcherPid)) { log('backend stop: stopped'); return { stopped: true, forced: false }; }
-      if (ended()) { log('backend stop: stopped (its supervisor had given up)'); return { stopped: true, forced: false }; }
-    } else {
-      const boot = bootOf(answer);
-      // Another server than the one that took the request: by its boot id, or (a server that says none) by having
-      // been seen gone in between.
-      if (asked && (boot && askedBoot ? boot !== askedBoot : away)) {
-        asked = false;
-        log(`backend stop: a server answers again after the stop (port ${port}); asking it too`);
-      }
-      if (!asked && now() - askedAt >= 1000) {
-        // Back after a crash or a restart, or done starting: now it can take the request.
-        asked = await shutdown(port);
-        askedAt = now();
-        askedBoot = boot;
-        away = false;
-        log(`backend stop: shutdown request ${asked ? 'accepted' : 'not answered'} on a new try (port ${port})`);
-      }
+    const answer = await readHealth();
+    if (gone(answer, true)) return { stopped: true, forced: false };
+    if (!asked && sameBoot(answer) && now() - askedAt >= 1000) {
+      asked = await shutdown(port);
+      askedAt = now();
     }
-    await sleep(300);
+    await sleep(Math.min(300, Math.max(0, deadline - now())));
   }
-  log('backend stop: still running after the graceful stop; ending it');
-  for (const pid of [launcherPid, supervisorPid].filter(pid => alive(pid))) {
-    if (platform === 'win32') {
-      try { spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch {}
-    } else {
-      try { kill(-pid, 'SIGTERM'); } catch { try { kill(pid, 'SIGTERM'); } catch {} }
+
+  const force = async (signal, until) => {
+    if (windows) {
+      if (listener && instDir) {
+        await killVerifiedProcessWindows(listener, { instDir, backendOnly: true, realpath, exec, now, timeoutMs: until - now(), log });
+      } else {
+        log('backend stop: no verified Windows listener to force');
+      }
+      return;
     }
-  }
+    for (const pid of new Set([launcherPid, supervisorPid])) {
+      if (!Number.isInteger(pid) || pid <= 0 || !alive(pid)) continue;
+      try { kill(-pid, signal); } catch { try { kill(pid, signal); } catch {} }
+    }
+  };
+  const waitForExit = async until => {
+    while (now() < until) {
+      if (gone(await readHealth())) return true;
+      await sleep(Math.min(250, Math.max(0, until - now())));
+    }
+    return false;
+  };
+  log('backend stop: still running after the graceful stop');
   const hard = now() + 5000;
-  while (now() < hard) {
-    if (await gone()) return { stopped: true, forced: true };
-    await sleep(250);
-  }
-  if (platform !== 'win32') {
-    for (const pid of [launcherPid, supervisorPid].filter(pid => alive(pid))) {
-      try { kill(-pid, 'SIGKILL'); } catch { try { kill(pid, 'SIGKILL'); } catch {} }
-    }
-  }
-  return { stopped: await gone(), forced: true };
+  await force('SIGTERM', hard);
+  if (await waitForExit(hard)) return { stopped: true, forced: true };
+  const retryUntil = now() + 2000;
+  await force('SIGKILL', retryUntil);
+  if (windows && await waitForExit(retryUntil)) return { stopped: true, forced: true };
+  return { stopped: gone(await readHealth()), forced: true };
 }
 
 /**

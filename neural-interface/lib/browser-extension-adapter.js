@@ -1,20 +1,41 @@
+import { connectionAdvice } from './browser-connection-state.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { basename, extname, isAbsolute, resolve } from 'node:path';
 import express from 'express';
 import { readConfinedFileWithMetadata } from './confined-fs.js';
-import { EVALUATE_SCRIPT_MAX, EVALUATE_TIMEOUT_MAX, EVALUATE_WORLDS, fail, handle, HISTORY, LOAD_STATES, MAX_FILE, NETWORK_IDLE_TIMEOUT_MAX, safeError } from './browser-extension-protocol.js';
+import { errorDetail, EVALUATE_SCRIPT_MAX, EVALUATE_TIMEOUT_MAX, EVALUATE_WORLDS, fail, handle, HISTORY, LOAD_STATES, MAX_FILE, NETWORK_IDLE_TIMEOUT_MAX, PAGED_READERS, READER_IDS, READS_SINCE, safeError, uploadType } from './browser-extension-protocol.js';
 import sharp from 'sharp';
 import { parseScreenshotOptions, screenshotPathRefusal, defaultScreenshotPath, writeScreenshotFile } from './browser-screenshot.js';
 import { ownerOnlyCreateFields } from './browser-automation-routes.js';
+import { budgetExtractionItems, EXTRACTION_TIMEOUT_MS } from './browser-extraction.js';
+import { compareVersions } from './browser-extension-folder.js';
 
-// Use the server's static-file MIME table. Its bundled table predates these image formats.
+// The extension's fixed type table first (protocol.js UPLOAD_TYPES: the type the extension gives the File anyway),
+// then the server's static-file MIME table for a name it does not know.
 export function uploadMimeType(name) {
+  const named = uploadType(name);
+  if (named !== 'application/octet-stream') return named;
   const ext = extname(name).toLowerCase();
-  if (['.heic', '.heif', '.avif'].includes(ext)) return 'image/' + ext.slice(1);
-  return express.static.mime.lookup(ext);
+  return (ext && express.static.mime.lookup(ext)) || named;
 }
 const aliases = { 'screenshot-base64': 'screenshot' };
-const supported = new Set(['navigate', 'back', 'forward', 'reload', 'snapshot', 'click', 'hover', 'fill', 'type', 'press', 'select', 'scroll', 'wait', 'content', 'screenshot', 'upload', 'evaluate']);
+const supported = new Set(['navigate', 'back', 'forward', 'reload', 'snapshot', 'click', 'hover', 'fill', 'type', 'press', 'select', 'scroll', 'wait', 'content', 'markdown', 'extract', 'screenshot', 'upload', 'evaluate']);
+// The Playwright routes' reading contract (server.js /content and /markdown), which the extension's readers answer to
+// as well: the default page size of each, and the note a cut page ends with (the same words, the same next offset).
+export const TEXT_PAGE_DEFAULT = 50000;
+export const MARKDOWN_PAGE_DEFAULT = 80000;
+export function pageOf(whole, query = {}, defaultMax, separator) {
+  const totalChars = whole.length;
+  const offset = Math.max(0, parseInt(query.offset, 10) || 0);
+  const maxChars = Math.max(1, parseInt(query.maxChars, 10) || defaultMax);
+  let text = whole;
+  if (offset > 0 || totalChars > offset + maxChars) {
+    const slice = whole.slice(offset, offset + maxChars), more = totalChars > offset + maxChars;
+    text = slice + (more ? `${separator}... (truncated — ${totalChars} chars total, pass offset=${offset + maxChars} to continue)` : '');
+  }
+  return { text, totalChars };
+}
+const SELECTOR_ONE = 'Content selector must match exactly one element.';
 const argumentKeys = ['url', 'ref', 'selector', 'nthMatch', 'value', 'text', 'key', 'direction', 'distance', 'maxChars', 'offset', 'timeout', 'state'];
 const unsupported = reason => Object.assign(new Error(reason), { code: 'UNSUPPORTED_IN_EXTENSION_MODE' });
 // A whole number of milliseconds from a request body, 1 to `most`; undefined when none (or nothing usable) was given.
@@ -48,7 +69,10 @@ const HISTORY_DESTINATION = 'The page this history step reached is not on an app
 // `refusal({ session, req, tabId, script })` answers the X publish gate's refusal (or null), `run({ session, req, execute })`
 // spaces a social write (`pace` in the body) and answers { result } or { paced } with it. Without one, nothing is gated
 // (tests of the adapter alone).
-export function createExtensionAdapter({ bridge, sessions, uploadRoot, caller, ownerPage, selected, dataHome, log = () => {}, evaluateGate = null }) {
+// `htmlToMarkdown(html)` is the Playwright Markdown route's converter (server.js nhm.translate), so both backends turn a
+// page into the same Markdown; `now` / `sleep` are the paged extraction's clock (tests pass their own).
+export function createExtensionAdapter({ bridge, sessions, uploadRoot, caller, ownerPage, selected, dataHome, log = () => {}, evaluateGate = null,
+  htmlToMarkdown = null, now = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
   const salt = randomBytes(32).toString('hex');
   const agent = owner => createHash('sha256').update(`${salt}:${owner}`).digest('hex');
   let sessionId = null, chain = Promise.resolve();
@@ -100,7 +124,8 @@ export function createExtensionAdapter({ bridge, sessions, uploadRoot, caller, o
       const status = bridge.status();
       const shared = target || (status.fullControl ? null : status.tabs.find(t => t.owner === null && !t.created));
       const result = await bridge.request(shared ? 'claim' : 'create', shared?.handle || null, opaque);
-      if (!result.ok) throw Object.assign(new Error(result.error), { code: result.code });
+      // What the browser said when it refused (protocol.js errorDetail) stays with the code, to the agent and the log.
+      if (!result.ok) throw Object.assign(new Error(result.error), { code: result.code, detail: errorDetail(result) });
       const tab = result.tab;
       const now = bridge.status(), reading = now.tabs.find(t => t.handle === tab && t.owner === opaque);
       if (!reading) fail('TAB_NOT_APPROVED');
@@ -202,13 +227,166 @@ export function createExtensionAdapter({ bridge, sessions, uploadRoot, caller, o
     if (outcome.paced?.pending) return { ok: true, paced: outcome.paced };
     return { ok: true, result: outcome.result === undefined ? null : outcome.result, ...(cut || {}), ...(outcome.paced ? { paced: outcome.paced } : {}) };
   }
+  // ── The extension's fixed readers (1.5.0): protocol.js READER_IDS, run by id, never a script ──
+  const readsReaders = () => compareVersions(bridge.status().extensionVersion, READS_SINCE) >= 0;
+  const coded = result => Object.assign(new Error(result?.code || 'OPERATION_FAILED'), { code: result?.code || 'OPERATION_FAILED', detail: errorDetail(result), answer: worded(result) });
+  async function read(s, owner, tab, args) {
+    const result = finish(s, tab, await bridge.request('read', tab, agent(owner), args));
+    if (!result.ok) throw coded(result);
+    return result;
+  }
+  // A reader's JSON answer (what an extractor returned), parsed; one cut for length is a refusal, never half an answer.
+  function valueOf(result) {
+    if (result.truncated) throw Object.assign(new Error('READER_FAILED'), { code: 'READER_FAILED', answer: { ok: false, code: 'READER_FAILED', error: `READER_FAILED: what the page shows is larger than one answer (${result.valueLength} characters of JSON). Read fewer items, or narrow the page first.` } });
+    try { return JSON.parse(result.value); } catch { fail('OPERATION_FAILED'); }
+  }
+  // browser_content format "text" (GET /content): the page's innerText, paged as the Playwright route pages it.
+  async function contentText(s, owner, tab, body) {
+    if (!readsReaders()) {
+      // An extension from before the readers: its own content command, as it always answered.
+      const args = {};
+      for (const k of ['selector', 'maxChars', 'offset']) if (body[k] !== undefined && body[k] !== null && body[k] !== '') args[k] = k === 'selector' ? String(body[k]) : Number(body[k]);
+      return finish(s, tab, await bridge.request('content', tab, agent(owner), args));
+    }
+    const selector = typeof body.selector === 'string' && body.selector ? body.selector : undefined;
+    let result;
+    try { result = await read(s, owner, tab, { reader: 'page.text', ...(selector ? { selector } : {}) }); }
+    catch (error) { if (['NO_MATCH', 'AMBIGUOUS_TARGET', 'INVALID_SELECTOR'].includes(error.code)) return { ok: false, code: error.code, error: SELECTOR_ONE }; throw error; }
+    const page = pageOf(result.text || '', body, TEXT_PAGE_DEFAULT, '\n');
+    return { ok: true, url: result.url, title: result.title ?? '', text: page.text, totalChars: page.totalChars, ...(selector ? { selector } : {}),
+      ...(result.truncated ? { sourceTruncated: true, sourceChars: result.valueLength } : {}) };
+  }
+  // browser_content format "markdown" (GET /markdown): the page's main content as HTML, read by the same page function
+  // the Playwright route runs (lib/browser-extraction.js contentHtmlOf, shipped as the reader 'page.html'), turned into
+  // Markdown by the same converter, paged the same way.
+  async function contentMarkdown(s, owner, tab, body) {
+    if (!readsReaders()) fail('EXTENSION_RELOAD_REQUIRED');
+    if (typeof htmlToMarkdown !== 'function') throw unsupported('Markdown is unavailable in this server build.');
+    const selector = typeof body.selector === 'string' && body.selector ? body.selector : undefined;
+    let result;
+    try { result = await read(s, owner, tab, { reader: 'page.html', ...(selector ? { selector } : {}) }); }
+    catch (error) { if (['NO_MATCH', 'AMBIGUOUS_TARGET', 'INVALID_SELECTOR'].includes(error.code)) return { ok: false, code: error.code, error: SELECTOR_ONE }; throw error; }
+    const html = result.text || '';
+    if (!html) return { ok: true, url: result.url, title: result.title ?? '', markdown: '', tokens: 0 };
+    const markdown = htmlToMarkdown(html);
+    const page = pageOf(markdown, body, MARKDOWN_PAGE_DEFAULT, '\n\n');
+    return { ok: true, url: result.url, title: result.title ?? '', markdown: page.text, tokens: Math.ceil(page.totalChars / 4), totalChars: page.totalChars, ...(selector ? { selector } : {}),
+      ...(result.truncated ? { sourceTruncated: true, sourceChars: result.valueLength } : {}) };
+  }
+  // The paged extraction (POST /extract), as lib/browser-extraction.js runBrowserExtraction runs it on a Playwright
+  // page: read, merge and dedupe, scroll, wait until the feed shows something new (or its loading marker ends), read
+  // again; the same options, limits, stop reasons and answer. Here the reads and the scroll are the extractor's fixed
+  // reader (`body.extractor`, one of protocol.js PAGED_READERS); the `script` and `scrollTarget` the request also
+  // carries are for the Playwright backend and are never sent anywhere.
+  async function extract(s, owner, tab, body, req) {
+    const id = body.extractor;
+    if (typeof id !== 'string' || !PAGED_READERS.includes(id)) {
+      return { ok: false, actionStarted: false, code: 'UNSUPPORTED_IN_EXTENSION_MODE',
+        error: `UNSUPPORTED_IN_EXTENSION_MODE: the extension backend runs only its own fixed extractors, named by id (${PAGED_READERS.join(', ')}); this request names ${typeof id === 'string' ? JSON.stringify(id.slice(0, 64)) : 'none'}. No script was run.` };
+    }
+    const opts = {};
+    for (const name of ['scrolls', 'minItems', 'maxItems', 'maxChars', 'timeoutMs', 'settleMs', 'scrollDistance']) {
+      if (body[name] === undefined || body[name] === null) continue;
+      const v = body[name];
+      if (!Number.isInteger(v) || v < (name === 'scrolls' ? 0 : name === 'maxChars' ? 2 : 1)) return { ok: false, actionStarted: false, error: `${name} must be a ${name === 'scrolls' ? 'nonnegative' : 'positive'} integer` };
+      opts[name] = v;
+    }
+    for (const name of ['fields', 'dedupeKeys']) {
+      if (body[name] === undefined) continue;
+      if (!Array.isArray(body[name]) || body[name].some(key => typeof key !== 'string' || !key)) return { ok: false, actionStarted: false, error: `${name} must be an array of nonempty strings` };
+      opts[name] = body[name];
+    }
+    opts.scrollDirection = body.scrollDirection === -1 ? -1 : 1;
+    opts.scrollIfEmpty = body.scrollIfEmpty === true;
+    if (!readsReaders()) fail('EXTENSION_RELOAD_REQUIRED');
+    bridge.authorize('read', tab, agent(owner), { reader: id });
+    const scrolls = Math.min(Math.max(Math.trunc(opts.scrolls ?? 0), 0), 10), maxItems = Math.max(1, Math.trunc(opts.maxItems || 50));
+    const dedupeKeys = opts.dedupeKeys || [], timeoutMs = Math.min(Math.max(opts.timeoutMs || EXTRACTION_TIMEOUT_MS, 1), 30000);
+    const deadline = Math.min(now() + timeoutMs, Number.isFinite(req?.browserRequest?.deadline) ? req.browserRequest.deadline : Infinity);
+    const signal = req?.browserRequest?.signal;
+    const keyOf = item => { for (const key of dedupeKeys) if (item[key] !== null && item[key] !== undefined && item[key] !== '') return `${key}:${item[key]}`; return JSON.stringify(item); };
+    const stop = (message, code) => Object.assign(new Error(message), { code, stopCode: code });
+    const active = () => {
+      if (signal?.aborted) throw stop('Extraction cancelled; collected items are preserved.', 'cancelled');
+      if (now() >= deadline) throw stop('Extraction deadline reached; collected items are preserved.', 'deadline');
+    };
+    const readOnce = async () => {
+      active();
+      const result = await read(s, owner, tab, { reader: id });
+      const items = valueOf(result);
+      if (!Array.isArray(items) || items.some(item => !item || typeof item !== 'object' || Array.isArray(item))) throw new Error('Extractor must return an array of objects.');
+      return { items, loading: result.loading === true };
+    };
+    const collected = new Map();
+    let raw = 0, scrollsUsed = 0, stopReason = 'scroll_limit', failureReason, dryRounds = 0, bonusRounds = 0;
+    const merge = items => { raw += items.length; const before = collected.size; for (const item of items) collected.set(keyOf(item), item); return collected.size - before; };
+    try {
+      let { items } = await readOnce();
+      for (let round = 0; ; round++) {
+        active();
+        const added = merge(items);
+        const budget = budgetExtractionItems([...collected.values()], opts);
+        if (budget.budgetReason) { stopReason = budget.budgetReason; break; }
+        if (collected.size >= maxItems) { stopReason = 'max_items'; break; }
+        if (opts.minItems && collected.size >= opts.minItems) { stopReason = 'min_items'; break; }
+        if (opts.scrollIfEmpty && round === 0 && collected.size === 0) bonusRounds = 1;
+        dryRounds = added ? 0 : dryRounds + 1;
+        if (dryRounds >= 2) { stopReason = 'end_of_feed'; break; }
+        if (round >= scrolls + bonusRounds) break;
+        active();
+        const distance = (opts.scrollDistance ?? 1200) * opts.scrollDirection;
+        const scrolled = await read(s, owner, tab, { reader: id, step: 'scroll', distance: Math.min(100000, Math.abs(distance)), direction: distance < 0 ? 'up' : 'down' });
+        let loadingBefore = scrolled.loading === true;
+        scrollsUsed++;
+        // Wait, within settleMs, for the feed to show an item not seen yet (or for its loading marker to end).
+        const until = Math.min(now() + Math.min(opts.settleMs ?? 3000, Math.max(1, deadline - now())), deadline);
+        let next = null;
+        for (;;) {
+          await sleep(Math.max(1, Math.min(150, until - now())));
+          const seen = await readOnce();
+          loadingBefore ||= seen.loading;
+          const fresh = seen.items.some(item => !collected.has(keyOf(item)));
+          if (!seen.loading && (fresh || loadingBefore)) { next = seen.items; break; }
+          if (now() >= until) {
+            if (seen.loading) throw stop('Feed is still loading after the readiness deadline; collected items are preserved.', 'readiness_timeout');
+            next = seen.items; break;
+          }
+        }
+        items = next;
+      }
+    } catch (error) {
+      if (error?.code === 'NOT_OWNED' || error?.code === 'TAB_CLOSED' && !collected.size) throw error;
+      stopReason = ['deadline', 'cancelled', 'readiness_timeout'].includes(error?.stopCode) ? error.stopCode : 'extraction_error';
+      failureReason = error?.answer?.error || (error?.code && !error.stopCode ? safeError(error).error : error?.message) || 'Extraction failed.';
+    }
+    const budget = budgetExtractionItems([...collected.values()], opts);
+    const outcome = { ...budget, raw, scrollsUsed, stopReason: budget.budgetReason || stopReason, partial: !!failureReason && collected.size > 0,
+      ...(failureReason ? { failureReason, ...(collected.size === 0 ? { error: failureReason } : {}) } : {}) };
+    return { ok: !outcome.error, url: s.tabs.get(tab)?.url || '', ...outcome };
+  }
+  // A read-only script the MCP tools tagged with the id of the extension's fixed reader that does the same
+  // (`body.extractor`; mcp-server/src/tools/browser-readers.ts): that reader runs, and the script never does. An id the
+  // extension does not have is refused (never "run the script instead"). Only an extension from before the readers
+  // gets the script, as browser_evaluate, exactly as before (Allow User Scripts and the publish gate apply).
+  async function evaluateReader(s, owner, tab, body) {
+    const id = body.extractor;
+    if (typeof id !== 'string' || !READER_IDS.includes(id) || PAGED_READERS.includes(id) || ['page.text', 'page.html'].includes(id)) {
+      return { ok: false, code: 'INVALID_MESSAGE', error: `INVALID_MESSAGE: ${typeof id === 'string' ? JSON.stringify(id.slice(0, 64)) : 'This value'} is not one of the extension's one-shot readers. Nothing was run.` };
+    }
+    try { return { ok: true, result: valueOf(await read(s, owner, tab, { reader: id })) }; }
+    catch (error) { if (error?.answer) return error.answer; throw error; }
+  }
   async function operation(s, owner, tab, action, body = {}, req = null) {
     if (!bridge.status().connected) fail('EXTENSION_NOT_CONNECTED');
     if (!s || !tab || !s.tabs.has(tab)) fail('TAB_CLOSED');
     if (!ownsTab(s, owner, tab)) fail('NOT_OWNED');
     const op = aliases[action] || action;
     if (!supported.has(op)) throw unsupported('This operation is not supported by the extension backend. No debugger is attached; page JavaScript runs through browser_evaluate only.');
+    if (op === 'evaluate' && body.extractor !== undefined && body.extractor !== null && readsReaders()) return evaluateReader(s, owner, tab, body);
     if (op === 'evaluate') return evaluate(s, owner, tab, body, req);
+    if (op === 'content') return contentText(s, owner, tab, body);
+    if (op === 'markdown') return contentMarkdown(s, owner, tab, body);
+    if (op === 'extract') return extract(s, owner, tab, body, req);
     let shot;
     if (op === 'screenshot') {
       shot = parseScreenshotOptions(body);
@@ -216,9 +394,9 @@ export function createExtensionAdapter({ bridge, sessions, uploadRoot, caller, o
       if (shot.path && screenshotPathRefusal(shot.path, { dataHome })) fail('SCREENSHOT_PATH_REFUSED');
     }
     if (op === 'wait' && body.loadState) {
-      // A load-state wait (extension 1.4.0 and later): 'load' and 'networkidle', for the tab, not for an element (as in
-      // the Playwright route, a selector sent with it is not used). The extension has no DOMContentLoaded signal.
-      if (body.loadState === 'domcontentloaded') throw unsupported('Extension waits support loadState "load" and "networkidle" (and selectors and fixed delays), not "domcontentloaded".');
+      // A load-state wait (extension 1.4.0 and later): 'load' and 'networkidle', and from 1.5.0 'domcontentloaded' (the
+      // document's readyState, read by a fixed function), for the tab, not for an element (as in the Playwright route,
+      // a selector sent with it is not used). None of them needs "Allow User Scripts".
       if (!LOAD_STATES.includes(body.loadState)) return { ok: false, error: 'Invalid loadState. Use: load, domcontentloaded, networkidle' };
       const timeout = milliseconds(body.timeout, NETWORK_IDLE_TIMEOUT_MAX);
       return worded(finish(s, tab, await bridge.request('wait', tab, agent(owner), { loadState: body.loadState, ...(timeout ? { timeout } : {}) })));
@@ -232,6 +410,15 @@ export function createExtensionAdapter({ bridge, sessions, uploadRoot, caller, o
     }
     const args = {};
     for (const k of argumentKeys) if (body[k] !== undefined && body[k] !== null) args[k] = ['nthMatch', 'distance', 'maxChars', 'offset', 'timeout'].includes(k) ? Number(body[k]) : body[k];
+    if (op === 'snapshot') {
+      // An extension with the readers pages its snapshot (offset, default 0) and says how long it is; an older one
+      // never gets an offset (it would not know what to answer with).
+      if (readsReaders()) args.offset = Number.isSafeInteger(args.offset) && args.offset > 0 ? args.offset : 0; else delete args.offset;
+      const result = finish(s, tab, await bridge.request('snapshot', tab, agent(owner), args));
+      if (!result.ok || result.snapshotTotal === undefined) return result;
+      const { snapshotTotal, snapshotNext, ...rest } = result, more = snapshotNext < snapshotTotal;
+      return { ...rest, snapshotBudgetApplied: true, snapshotOffset: args.offset, snapshotTotalChars: snapshotTotal, ...(more ? { snapshotTruncated: true, snapshotNextOffset: snapshotNext } : {}) };
+    }
     let upload;
     if (op === 'upload') {
       bridge.authorize(op, tab, agent(owner), args);
@@ -272,8 +459,23 @@ export function createExtensionAdapter({ bridge, sessions, uploadRoot, caller, o
     }
     return result;
   }
-  function denied(res, error) {
+  async function describeError(error) {
     const body = safeError(error);
+    if (body.code === 'EXTENSION_NOT_CONNECTED' || body.code === 'NOT_CONNECTED') {
+      // The handshake carries no paired browser/profile identity. Only the connection can be checked live. An unpaired
+      // or paused bridge is fixed in SynaBun, not from the extension's popup (which a paused bridge refuses): the advice
+      // says so (review round 3, I7b).
+      const status = bridge.status();
+      const advice = status.connected ? 'The extension has reconnected. Retry the browser tool.'
+        : status.paired === false ? 'The SynaBun browser extension is not paired. Pair it in SynaBun Settings → Browser (Start pairing), then retry the browser tool.'
+        : status.paused === true ? 'The browser extension bridge is paused: it was disconnected in SynaBun Settings → Browser. Resume it there (Reconnect), then retry the browser tool.'
+        : connectionAdvice();
+      body.error = `${body.code}: ${advice}`;
+    }
+    return body;
+  }
+  async function denied(res, error) {
+    const body = await describeError(error);
     if (body.code === 'UNSUPPORTED_IN_EXTENSION_MODE') body.error = `${body.code}: ${error.message}`;
     else if (body.code === 'SITE_NOT_APPROVED' && typeof error.reason === 'string') body.error = `${body.code}: ${error.reason}`;
     return res.status(body.code === 'TAB_CLOSED' ? 410 : body.code === 'EXTENSION_NOT_CONNECTED' || body.code === 'NOT_CONNECTED' ? 503 : 403).json(body);
@@ -300,11 +502,11 @@ export function createExtensionAdapter({ bridge, sessions, uploadRoot, caller, o
           let nav, failure = null;
           try { nav = await operation(created, owner, acq.browserTabId, 'navigate', { url: req.body.url }); } catch (error) { failure = error; }
           if (failure || !nav?.ok) {
-            const body = failure ? safeError(failure) : { ...safeError(nav), ...(typeof nav?.error === 'string' ? { error: nav.error } : {}) };
+            const body = failure ? await describeError(failure) : { ...safeError(nav), ...(typeof nav?.error === 'string' ? { error: nav.error } : {}) };
             let released = false;
             if (!acq.reused) { try { await release(acq.browserSessionId, owner, acq.browserTabId); released = true; } catch {} }
             const closing = acq.reused ? 'Your tab stays as it was.' : released ? (adopt ? 'The taken-over tab went back to the owner, open; you hold no tab from this create.' : 'The tab this create opened was closed; nothing was left open.') : 'The tab this create opened could not be closed (the extension did not answer); it stays yours: close it with browser_session close.';
-            try { log({ command: 'create', tab: null, code: body.code }); } catch {}
+            try { log({ command: 'create', tab: null, code: body.code, ...(errorDetail(body) ? { detail: errorDetail(body) } : {}) }); } catch {}
             return res.status(body.code === 'EXTENSION_NOT_CONNECTED' || body.code === 'NOT_CONNECTED' ? 503 : 403)
               .json({ ...body, error: `${body.error} ${closing}`, tabReleased: released, ...(acq.reused || !released ? { sessionId: acq.browserSessionId, tabId: acq.browserTabId } : {}) });
           }
@@ -332,7 +534,11 @@ export function createExtensionAdapter({ bridge, sessions, uploadRoot, caller, o
       const result = await operation(s, owner, tab, match[2], body, req);
       // 409: the publish gate's refusal, as the Playwright routes answer it.
       return res.status(result.ok ? 200 : result.code === 'TAB_CLOSED' ? 410 : result.quoteGuard ? 409 : 400).json(result);
-    } catch (error) { try { log({ command: supported.has(match?.[2]) ? match[2] : 'session', tab: null, code: safeError(error).code }); } catch {} return denied(res, error); }
+    } catch (error) {
+      const command = supported.has(match?.[2]) ? match[2] : req.method === 'POST' && ['/sessions', '/acquire'].includes(req.path) ? 'create' : 'session', said = safeError(error);
+      try { log({ command, tab: null, code: said.code, ...(errorDetail(said) ? { detail: errorDetail(said) } : {}) }); } catch {}
+      return denied(res, error);
+    }
   }
-  return { acquire, release, destroy, sync, operation, middleware, agent, session, ownerTabs, ownsTab };
+  return { acquire, describeError, release, destroy, sync, operation, middleware, agent, session, ownerTabs, ownsTab };
 }

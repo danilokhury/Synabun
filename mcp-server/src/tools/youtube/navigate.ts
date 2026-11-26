@@ -8,7 +8,7 @@
 import { z } from 'zod/v3';
 import * as ni from '../../services/neural-interface.js';
 import { text } from '../response.js';
-import { STUDIO_BASE, resolve, ensureAuth, wait, pollFor, safeNavigate, type Resolved } from './helpers.js';
+import { STUDIO_BASE, resolve, ensureAuth, wait, pollFor, STUDIO_CHANNEL_READY_SCRIPT, safeNavigate, type Resolved } from './helpers.js';
 
 const tabId = z.string().optional().describe('Target a specific tab. Auto-resolved if omitted.');
 
@@ -27,13 +27,12 @@ const SECTION_PATH: Record<Section, string> = {
   customization: '/editing/channel',
 };
 
+/** The active Studio channel id (UC…) from the URL, if present (the fixed reader 'youtube.channel_id'). */
+export const CHANNEL_ID_SCRIPT = `(() => { const m = location.href.match(/\\/channel\\/(UC[\\w-]+)/); return m ? m[1] : null; })()`;
+
 /** Read the active Studio channel id (UC…) from the URL, if present. */
 export async function channelId(r: Resolved): Promise<string | null> {
-  const res = await ni.evaluate(
-    r.sessionId,
-    `(() => { const m = location.href.match(/\\/channel\\/(UC[\\w-]+)/); return m ? m[1] : null; })()`,
-    r.tabId,
-  );
+  const res = await ni.evaluate(r.sessionId, CHANNEL_ID_SCRIPT, r.tabId, { extractor: 'youtube.channel_id' });
   if (res.error) return null;
   return (res.result as string | null) || null;
 }
@@ -64,7 +63,7 @@ export async function handleYoutubeNavigate(args: { section: Section; sessionId?
     if (nav.error) return text(`Navigation failed: ${nav.error}`);
     const authErr = await ensureAuth(r);
     if (authErr) return text(authErr);
-    await pollFor(r, `(() => /\\/channel\\/UC/.test(location.href) ? true : null)()`, 15000, 400);
+    await pollFor(r, STUDIO_CHANNEL_READY_SCRIPT, 15000, 400, 'youtube.channel_ready');
     cid = await channelId(r);
   }
   if (!cid) return text('Could not resolve the active channel. Make sure you are signed into a Google account that owns a YouTube channel.');

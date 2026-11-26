@@ -626,6 +626,9 @@ export class NativeLoopRuntime {
           await cleanupCandidate(adapter, 'invalid_adapter');
           throw new Error(`${state.profile} native provider did not return a runnable adapter`);
         }
+        // An adapter whose factory returns before its provider proved it runs (Claude Code: the CLI and its MCP scope)
+        // finishes its startup here, inside the same startup window and cancellation, before the run reads as started.
+        if (typeof adapter.ready === 'function') await Promise.race([adapter.ready(), startupTimeout, startupCancelled]);
         if (record.status !== 'starting' || record.stopping) {
           await cleanupCandidate(adapter, record.stoppedReason || 'startup_cancelled');
           const cancelled = new Error(`${state.profile} native loop was stopped during provider startup`);

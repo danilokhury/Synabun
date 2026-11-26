@@ -309,8 +309,8 @@ export function createOpencodeCompletionEngine({
     // An OpenCode SynaBun does not drive (OpenCode 1, an OpenCode 2 older than the minimum) never starts; a version
     // not known here (a command line in Settings) is told by what answers.
     const detected = await detectOpencode();
-    if (detected && typeof detected === 'object' && detected.supported === false && detected.major != null) {
-      throw new Error(detected.reason || `OpenCode ${detected.major} is not supported`);
+    if (detected && typeof detected === 'object' && detected.supported === false && (detected.major != null || (!detected.path && !detected.commandLine))) {
+      throw new Error(detected.reason || (detected.major != null ? `OpenCode ${detected.major} is not supported` : 'OpenCode is not installed.'));
     }
     if (mine !== epoch) throw new Error('The completion server was stopped while it was starting');
     const password = passwordFrom === 'stdout' ? null : newPassword();

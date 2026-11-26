@@ -38,9 +38,10 @@
  * packaging/tests/desktop-updater.test.mjs runs every path on any system.
  */
 
-import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { execFile, spawn, spawnSync } from 'node:child_process';
+import { appendFileSync, closeSync, existsSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, relative, win32 } from 'node:path';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 export const SWAP_ENV = Object.freeze({
@@ -61,7 +62,7 @@ export const SWAP_ENV = Object.freeze({
 /** The file the installer writes its unpacking progress to ("<done bytes> <total bytes>"; installer.nsh SynaProgress). */
 export const PROGRESS_ENV = 'SYNABUN_INSTALL_PROGRESS';
 
-export const SWAP_LIMITS = Object.freeze({ quitMs: 2 * 60 * 1000, stopMs: 15 * 1000, moveMs: 20 * 1000, installMs: 15 * 60 * 1000, startMs: 3 * 60 * 1000, upMs: 30 * 1000 });
+export const SWAP_LIMITS = Object.freeze({ quitMs: 2 * 60 * 1000, stopMs: 15 * 1000, moveMs: 20 * 1000, diagMs: 5 * 1000, installMs: 15 * 60 * 1000, startMs: 3 * 60 * 1000, upMs: 30 * 1000 });
 
 /** What the installer is told: an update (keeps the user's data), silent, into exactly this folder. */
 export function installerArgs(instDir) {
@@ -186,7 +187,8 @@ export async function runWindowsSwap(params, ops) {
   const openApp = (args = []) => {
     try {
       const opened = ops.open(join(instDir, exe), args);
-      say(`opened ${exe}${args.length ? ` ${args.join(' ')}` : ''}${opened ? ` (pid ${opened})` : ''}`);
+      const launchPid = opened?.pid ?? opened;
+      say(`opened ${exe}${args.length ? ` ${args.join(' ')}` : ''}${launchPid ? ` (pid ${launchPid})` : ''}`);
       return opened;
     } catch (error) {
       say(`could not open ${exe}: ${error?.message || error}`);
@@ -201,37 +203,119 @@ export async function runWindowsSwap(params, ops) {
       await ops.sleep(every);
     }
   };
-  const holders = (folder) => {
-    const found = ops.listUnder(folder);
-    return Array.isArray(found) ? found : null;
+  const formatHolder = (item) => {
+    const base = `${item?.name || '?'} (${item?.pid ?? '?'})`;
+    return item?.detail ? `${base} [${item.detail}]` : base;
   };
-  /** Stop everything that runs from `folder`; true once nothing does (or nothing can tell). */
-  const stopUnder = async (folder) => {
-    let running = holders(folder);
-    if (!running) return true;
+  // Keep every observed identity for the failure report, including ones stopped on earlier ticks.
+  const observed = new Map();
+  const holderKey = proc => JSON.stringify([proc.pid, proc.created ?? null, proc.name]);
+  const record = (proc, label) => {
+    observed.set(holderKey(proc), { proc, label });
+  };
+  const scan = (folder, deadline) => {
+    const timeoutMs = deadline - ops.now();
+    if (timeoutMs <= 0) return null;
+    try {
+      const found = ops.listUnder(folder, {
+        timeoutMs,
+        onSuspected: list => {
+          for (const proc of list) {
+            if (!observed.has(holderKey(proc))) say(`${formatHolder(proc)}: ${proc.label}`);
+            record(proc, proc.label);
+          }
+        },
+      });
+      if (!Array.isArray(found)) return null;
+      for (const proc of found) record(proc, 'suspected');
+      return found;
+    } catch { return null; }
+  };
+  const stopTick = async (folder, deadline) => {
+    const running = scan(folder, deadline);
+    if (running === null) {
+      say(`could not list processes under ${folder}; retrying`);
+      return false;
+    }
     if (!running.length) return true;
-    say(`stopping what runs from ${folder}: ${running.map(item => `${item.name || '?'} (${item.pid})`).join(', ')}`);
-    for (const item of running) { try { ops.kill(item.pid); } catch {} }
-    const done = await waitUntil(() => { running = holders(folder); return !running || running.length === 0; }, limits.stopMs, 500);
-    if (!done) say(`still running from ${folder}: ${(running || []).map(item => `${item.name || '?'} (${item.pid})`).join(', ')}`);
-    return done;
+    say(`stopping what runs from ${folder}: ${running.map(formatHolder).join(', ')}`);
+    for (const proc of running) {
+      const timeoutMs = deadline - ops.now();
+      if (timeoutMs <= 0) break;
+      try {
+        const result = await ops.kill(proc.pid, proc, { instDir: folder, timeoutMs });
+        if (result?.killed) record(proc, 'killed');
+      } catch {}
+    }
+    return false;
   };
-  const move = async (from, to) => {
-    let lastError = null;
-    const moved = await waitUntil(() => {
-      try { ops.rename(from, to); return true; } catch (error) { lastError = error; return false; }
-    }, limits.moveMs, 500);
-    return { moved, error: lastError };
+  const waitTick = async deadline => {
+    const ms = Math.min(500, deadline - ops.now());
+    if (ms > 0) await ops.sleep(ms);
   };
-  /** The old copy back in place: whatever the installer left is removed first. */
-  const restore = async () => {
+  const stopUnder = async folder => {
+    const deadline = ops.now() + limits.stopMs;
+    while (ops.now() < deadline) {
+      if (await stopTick(folder, deadline)) return;
+      await waitTick(deadline);
+    }
+    say(`stop before move timed out for ${folder}; rescanning on rename retries`);
+  };
+  const diagnose = async folder => {
+    // Cap all final diagnostics under one separate deadline so a slow CIM never delays relaunching the old copy.
+    const diagUntil = ops.now() + limits.diagMs;
+    let busy = scan(folder, diagUntil);
+    if (busy === null && ops.now() + 200 < diagUntil) {
+      await ops.sleep(200);
+      busy = scan(folder, diagUntil);
+    }
+    let lockedFiles = [];
+    if (typeof ops.probeLockedFiles === 'function' && diagUntil - ops.now() > 0) {
+      try {
+        const probed = ops.probeLockedFiles(folder, { maxMs: Math.max(1, diagUntil - ops.now()) });
+        if (Array.isArray(probed)) lockedFiles = probed.filter(item => item && (typeof item === 'string' || typeof item.file === 'string'));
+      } catch {}
+    }
+    const formatLocked = (item) => (typeof item === 'string' ? item : `${item.file}${item.code ? ` (${item.code})` : ''}`);
+    if (busy === null) {
+      say(`final lock check for ${folder}: process enumeration failed`);
+    }
+    for (const { proc, label } of observed.values()) {
+      say(`final lock check for ${folder}: ${formatHolder(proc)}: ${label}`);
+    }
+    if (lockedFiles.length > 0) {
+      say(`final lock check for ${folder}: suspected locked files: ${lockedFiles.map(formatLocked).join(', ')}`);
+    }
+    return { busy, lockedFiles };
+  };
+  const move = async (from, to, { rescan = true } = {}) => {
+    const deadline = ops.now() + limits.moveMs;
+    for (;;) {
+      try {
+        ops.rename(from, to);
+        return { moved: true };
+      } catch (error) {
+        if (ops.now() >= deadline) {
+          const diagnostics = rescan ? await diagnose(from) : {};
+          return { moved: false, error, ...diagnostics };
+        }
+      }
+      if (rescan) await stopTick(from, deadline);
+      await waitTick(deadline);
+    }
+  };
+  const restore = async ({ replacement = null } = {}) => {
     if (!ops.exists(backup)) return ops.exists(join(instDir, exe));
+    if (replacement?.stop) {
+      say(`stopping hung replacement launch via process handle (pid ${replacement.pid})`);
+      try { replacement.stop(); } catch {}
+    }
     await stopUnder(instDir);
     if (ops.exists(instDir)) {
       const aside = await move(instDir, failedCopy);
       if (!aside.moved) { say(`the new copy could not be moved away: ${aside.error?.code || aside.error?.message || 'unknown'}`); return false; }
     }
-    const back = await move(backup, instDir);
+    const back = await move(backup, instDir, { rescan: false });
     if (!back.moved) { say(`the old copy could not be put back: ${back.error?.code || back.error?.message || 'unknown'}`); return false; }
     try { ops.remove(failedCopy); } catch {}
     return true;
@@ -266,14 +350,21 @@ export async function runWindowsSwap(params, ops) {
   await stopUnder(instDir);
   // An old copy a finished update could not remove: it is not needed, the copy in the folder runs.
   if (ops.exists(backup)) { say(`removing ${basename(backup)} from an earlier update`); try { ops.remove(backup); } catch {} }
-  const aside = await move(instDir, backup);
+  const aside = await move(instDir, backup, { rescan: true });
   if (!aside.moved) {
-    const busy = holders(instDir) || [];
-    const reason = `files in ${instDir} are in use${busy.length ? ` by ${[...new Set(busy.map(item => item.name || item.pid))].join(', ')}` : ''} (${aside.error?.code || 'unknown'}); nothing was installed`;
+    const { busy, lockedFiles } = aside;
+    const errCode = aside.error?.code || 'unknown';
+    const holderNames = Array.isArray(busy) && busy.length ? [...new Set(busy.map(item => item.name || item.pid))].join(', ') : '';
+    const lockedSummary = lockedFiles.length ? `suspected locked: ${lockedFiles.slice(0, 5).map(item => (typeof item === 'string' ? item : item.file)).join(', ')}` : '';
+    let detail = errCode;
+    if (!holderNames && lockedSummary) detail = `${errCode}, ${lockedSummary}`;
+    else if (!holderNames && busy === null) detail = `process enumeration failed, ${errCode}`;
+    const reason = `files in ${instDir} are in use${holderNames ? ` by ${holderNames}` : ''} (${detail}); nothing was installed`;
     const result = fail(reason);
     if (relaunch) openApp();
     return result;
   }
+  observed.clear();
   say(`the installed copy is aside: ${backup}`);
 
   show('installing');
@@ -304,7 +395,7 @@ export async function runWindowsSwap(params, ops) {
 
   show('restarting');
   unmark('started');
-  openApp(['--synabun-updated']);
+  const replacement = openApp(['--synabun-updated']);
   if (await waitUntil(() => ops.exists(join(stateDir, 'started')), limits.startMs)) {
     say('the new copy started');
     // The install window stays until the new copy's own window is up (it writes window-up), so there is no moment
@@ -319,7 +410,7 @@ export async function runWindowsSwap(params, ops) {
     return { ok: true, started: true };
   }
   say('the new copy did not start within three minutes: putting the old one back');
-  const restored = await restore();
+  const restored = await restore({ replacement });
   unmark('swapped');
   if (!restored) return fail('the new copy did not start, and the old copy could not be put back', 'broken');
   mark('rolled-back');
@@ -328,24 +419,258 @@ export async function runWindowsSwap(params, ops) {
   return { ok: false, rolledBack: true };
 }
 
-/** What runs from a folder, by executable path (PowerShell, the folder passed in the environment). Null when it cannot tell. */
-function listUnderWindows(folder) {
-  const script = '$root = [IO.Path]::GetFullPath($env:SYNABUN_SWAP_LIST).TrimEnd([char]92) + [char]92; '
-    + '@(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) } '
-    + '| ForEach-Object { [pscustomobject]@{ pid = [int]$_.ProcessId; name = [string]$_.Name } }) | ConvertTo-Json -Compress';
-  const powershell = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const result = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], {
-    env: { ...process.env, SYNABUN_SWAP_LIST: folder }, encoding: 'utf8', windowsHide: true, timeout: 30000,
-  });
-  if (result.status !== 0) return null;
-  const text = String(result.stdout || '').trim();
-  if (!text) return [];
+// Every process as one JSON array, written as base64 of its UTF-8 so Unicode user paths
+// never mangle through Windows console code pages, and no caller path ever reaches PowerShell.
+function processQuery(source) {
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    "$ProgressPreference = 'SilentlyContinue'",
+    '$rows = @(' + source + ' | ForEach-Object { $created = $null; '
+      + "if ($_.CreationDate) { $created = $_.CreationDate.ToUniversalTime().ToString('o') }; "
+      + '[pscustomobject]@{ pid = [int]$_.ProcessId; name = [string]$_.Name; '
+      + 'exe = [string]$_.ExecutablePath; cmd = [string]$_.CommandLine; created = $created } })',
+    '$json = ConvertTo-Json -InputObject $rows -Compress -Depth 2',
+    '[Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json)))',
+  ].join('; ');
+}
+
+export const PROCESS_LIST_SCRIPT = processQuery('Get-CimInstance -ClassName Win32_Process');
+
+/** Parse the base64-encoded UTF-8 JSON emitted by PROCESS_LIST_SCRIPT, or null on any failure. */
+export function parseProcessList(stdout) {
+  const raw = String(stdout || '').trim();
+  if (!raw) return null;
   try {
+    const text = Buffer.from(raw, 'base64').toString('utf8').replace(/^\uFEFF/, '');
+    if (!text) return null;
     const parsed = JSON.parse(text);
-    return (Array.isArray(parsed) ? parsed : [parsed]).filter(item => Number.isInteger(item?.pid) && item.pid !== process.pid);
+    if (!parsed || typeof parsed !== 'object') return null;
+    const rows = Array.isArray(parsed) ? parsed : [parsed];
+    return rows
+      .filter(row => Number.isInteger(row?.pid) && row.pid > 0)
+      .map(row => ({
+        pid: row.pid,
+        name: String(row.name || ''),
+        exe: String(row.exe || ''),
+        cmd: String(row.cmd || ''),
+        created: validCreationTime(row.created) ? row.created : null,
+      }));
   } catch {
     return null;
   }
+}
+
+// Keep the full CIM timestamp. JavaScript Date truncates it to milliseconds.
+const validCreationTime = value => typeof value === 'string'
+  && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?Z$/.test(value)
+  && Number.isFinite(Date.parse(value));
+
+function pathKey(path) {
+  if (!path) return '';
+  return win32.normalize(path).replace(/^\\\\\?\\UNC\\/i, '\\\\').replace(/^\\\\\?\\/, '').replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
+}
+
+function canonicalKey(path, realpath) {
+  if (typeof path !== 'string' || !/^(?:[a-z]:[\\/]|[\\/]{2}[^\\/])/i.test(path)) return '';
+  try { return pathKey(realpath(path)); } catch { return ''; }
+}
+
+const BUNDLED_NODE = 'resources/runtime/node.exe';
+// Current releases carry Git as an archive. Older installs have these pinned binaries in resources/git.
+const OWN_IMAGES = new Set([
+  'synabun.exe', BUNDLED_NODE, 'resources/cloudflared/cloudflared.exe',
+  'resources/git/bin/bash.exe', 'resources/git/usr/bin/bash.exe',
+  'resources/git/cmd/git.exe', 'resources/git/ucrt64/bin/git.exe',
+]);
+
+// Only accept a direct packaged script invocation. Unknown flags, eval, relative scripts and
+// arbitrary later arguments never establish ownership. These two flags are used by our launcher and forks.
+function bundledScript(cmd, root, realpath) {
+  const direct = /^\s*(?:"[^"]+"|[^\s"]+)\s+(?:(?:--disable-warning=ExperimentalWarning|--max-old-space-size=\d+)\s+)*(?:"([^"]+)"|([^\s"]+))(?=\s|$)/.exec(cmd || '');
+  const script = direct?.[1] ?? direct?.[2];
+  if (!script || !win32.isAbsolute(script)) return false;
+  // node-pty forks this extensionless module name. The shipped file is conpty_console_list_agent.js.
+  const file = /[\\/]node-pty[\\/]lib[\\/]conpty_console_list_agent$/i.test(script) ? script + '.js' : script;
+  const key = canonicalKey(file, realpath);
+  return key === root + '/resources/bootstrap.mjs'
+    || (key.startsWith(root + '/resources/app/') && /\.[cm]?js$/.test(key));
+}
+
+/** The CIM image must resolve in full to a shipped executable inside this installation. */
+export function inspectProcessesUnder(processes, folder, { selfPid = process.pid, realpath = realpathSync.native, backendOnly = false, deadline = Infinity } = {}) {
+  const resolved = canonicalKey(folder, realpath);
+  const root = resolved && win32.relative(win32.parse(resolved).root, resolved) ? resolved : '';
+  const references = [pathKey(folder), root].filter(Boolean);
+  const verified = [];
+  const suspected = [];
+  for (const proc of processes) {
+    if (Date.now() >= deadline) return null;
+    const image = canonicalKey(proc.exe, realpath);
+    const rel = root && image.startsWith(root + '/') ? image.slice(root.length + 1) : '';
+    const own = backendOnly ? rel === 'synabun.exe' || rel === BUNDLED_NODE : OWN_IMAGES.has(rel);
+    if (own && proc.pid > 4 && proc.pid !== selfPid && validCreationTime(proc.created)
+        && (rel !== BUNDLED_NODE || bundledScript(proc.cmd, root, realpath))) {
+      verified.push(proc);
+      continue;
+    }
+    const mentions = `${proc.exe}\n${proc.cmd}`.replace(/\\/g, '/').toLowerCase();
+    if (rel || references.some(ref => mentions.split(ref).slice(1).some(tail => !tail || /^[/'"\s,;)]/.test(tail)))) {
+      const label = !image || !root || own ? 'suspected' : "left running (not SynaBun's own executable)";
+      suspected.push({ ...proc, label });
+    }
+  }
+  return { verified, suspected };
+}
+
+const clampTimeout = (timeoutMs, fallback = 15000) => {
+  const n = Number(timeoutMs);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.min(30000, Math.floor(n)));
+};
+
+/** Full path to Windows taskkill.exe (never looked up on PATH). */
+export function windowsTaskkill(env = process.env) {
+  return join(env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe');
+}
+
+const execFileAsync = promisify(execFile);
+
+/** Read the owning process of the IPv4 loopback listener, or one recorded process by PID. */
+export async function queryWindowsProcess({ port, pid }, {
+  exec = execFileAsync, env = process.env, timeoutMs = 3000,
+} = {}) {
+  let source;
+  if (Number.isInteger(pid) && pid > 0) {
+    source = `Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}'`;
+  } else if (Number.isInteger(port) && port > 0 && port <= 65535) {
+    source = `Get-NetTCPConnection -State Listen -LocalPort ${port}`
+      + " | Where-Object { $_.LocalAddress -in @('127.0.0.1','0.0.0.0','::') }"
+      + ' | Select-Object -ExpandProperty OwningProcess -Unique'
+      + ' | ForEach-Object { Get-CimInstance Win32_Process -Filter "ProcessId = $_" }';
+  } else return null;
+  if (timeoutMs <= 0) return null;
+  try {
+    const { stdout } = await exec(windowsPowerShell(env), ['-NoProfile', '-NonInteractive', '-Command', processQuery(source)], {
+      env, encoding: 'utf8', windowsHide: true, timeout: clampTimeout(timeoutMs), maxBuffer: 4 * 1024 * 1024,
+    });
+    const rows = parseProcessList(stdout);
+    return rows?.length === 1 && (pid == null || rows[0].pid === pid) ? rows[0] : null;
+  } catch { return null; }
+}
+
+/** Recheck the executable and the full CIM creation timestamp immediately before each individual kill. */
+export async function killVerifiedProcessWindows(target, {
+  instDir, backendOnly = false, realpath = realpathSync.native, exec = execFileAsync, env = process.env,
+  timeoutMs = 15000, now = Date.now, log = () => {},
+} = {}) {
+  if (!target || !Number.isInteger(target.pid) || target.pid <= 4 || !validCreationTime(target.created)) return { killed: false };
+  const deadline = now() + timeoutMs;
+  const live = await queryWindowsProcess({ pid: target.pid }, { exec, env, timeoutMs: deadline - now() });
+  if (live?.created !== target.created) {
+    log(`skipping pid ${target.pid}: creation time changed or could not be verified`);
+    return { killed: false };
+  }
+  if (!inspectProcessesUnder([live], instDir, { backendOnly, realpath }).verified.length) {
+    log(`skipping pid ${target.pid}: live image could not be verified under ${instDir}`);
+    return { killed: false };
+  }
+  const remaining = deadline - now();
+  if (remaining <= 0) return { killed: false };
+  // taskkill takes a PID, not a process handle. PID reuse between this check and taskkill is still possible.
+  try {
+    await exec(windowsTaskkill(env), ['/PID', String(target.pid), '/F'], { env, windowsHide: true, timeout: clampTimeout(remaining) });
+    return { killed: true };
+  } catch { return { killed: false }; }
+}
+
+/**
+ * List verified SynaBun processes holding `folder` on Windows via PowerShell CIM within `timeoutMs`.
+ * Returns an array of verified targets on success, or null when enumeration failed or budget expired
+ * (caller must retry, never treat null as empty). Any non-verified `folder` references are reported
+ * via `onSuspected` for logging and never returned for killing.
+ */
+export function listUnderWindows(folder, {
+  spawn = spawnSync, env = process.env, selfPid = process.pid,
+  realpath = realpathSync.native, timeoutMs = SWAP_LIMITS.stopMs, onSuspected = null,
+} = {}) {
+  if (Number.isFinite(timeoutMs) && timeoutMs <= 0) return null;
+  // On non-Windows hosts running win-swap.mjs directly as a subprocess test, powershell.exe does not exist.
+  if (spawn === spawnSync && process.platform !== 'win32') return [];
+  const deadline = Date.now() + timeoutMs;
+  const powershell = windowsPowerShell(env);
+  const result = spawn(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', PROCESS_LIST_SCRIPT], {
+    env, encoding: 'utf8', windowsHide: true, timeout: clampTimeout(timeoutMs, SWAP_LIMITS.stopMs), maxBuffer: 64 * 1024 * 1024,
+  });
+  if (!result || result.error || result.status !== 0) return null;
+  const processes = parseProcessList(result.stdout);
+  if (!processes) return null;
+  const matches = inspectProcessesUnder(processes, folder, { selfPid, realpath, deadline });
+  if (!matches || Date.now() >= deadline) return null;
+  const { verified, suspected } = matches;
+  if (typeof onSuspected === 'function' && suspected.length > 0) {
+    try { onSuspected(suspected); } catch {}
+  }
+  return verified;
+}
+
+const LOCK_PROBE_PRIORITY = [
+  'SynaBun.exe',
+  'synabun-cli.exe',
+  join('resources', 'runtime', 'node.exe'),
+  join('resources', 'cloudflared', 'cloudflared.exe'),
+  join('resources', 'app.asar'),
+];
+const LOCK_PROBE_EXT = /\.(?:exe|dll|node|asar|cmd|bat|ps1|js|mjs|cjs)$/i;
+const LOCK_ERROR_CODES = new Set(['EPERM', 'EBUSY', 'EACCES', 'ETXTBSY']);
+
+/**
+ * Best-effort heuristic read-only probe to
+ * list suspected locked files inside `folder` on final rename failure. Every result is explicitly
+ * labeled `suspected: true`. Bounded by `maxFiles` and `maxMs`.
+ */
+export function probeLockedFiles(folder, {
+  maxFiles = 400, maxMs = 2500, maxFound = 15,
+  open = openSync, close = closeSync, readdir = readdirSync, exists = existsSync, now = () => Date.now(),
+} = {}) {
+  if (!folder || !exists(folder) || maxMs <= 0) return [];
+  const deadline = now() + maxMs;
+  const found = [];
+  const seen = new Set();
+  let checked = 0;
+  const testFile = (fullPath) => {
+    if (found.length >= maxFound || checked >= maxFiles || now() >= deadline) return;
+    if (seen.has(fullPath)) return;
+    seen.add(fullPath);
+    checked++;
+    let fd = null;
+    try {
+      fd = open(fullPath, 'r');
+    } catch (error) {
+      if (LOCK_ERROR_CODES.has(error?.code)) {
+        found.push({ file: relative(folder, fullPath).replace(/\\/g, '/'), code: error.code, suspected: true });
+      }
+    } finally {
+      if (fd !== null) { try { close(fd); } catch {} }
+    }
+  };
+  for (const rel of LOCK_PROBE_PRIORITY) {
+    if (now() >= deadline) break;
+    const full = join(folder, rel);
+    if (exists(full)) testFile(full);
+  }
+  const queue = [folder];
+  while (queue.length && found.length < maxFound && checked < maxFiles && now() < deadline) {
+    const dir = queue.shift();
+    let entries;
+    try { entries = readdir(dir, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (found.length >= maxFound || checked >= maxFiles || now() >= deadline) break;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) queue.push(full);
+      else if (entry.isFile() && LOCK_PROBE_EXT.test(entry.name)) testFile(full);
+    }
+  }
+  return found;
 }
 
 /** Windows PowerShell 5.1, by its full path (never a `powershell` looked up on PATH). */
@@ -473,6 +798,7 @@ export function runInstallerWithProgress({ installer, instDir, ms, onProgress = 
 /** The real system calls, on Windows. */
 export function windowsOps({ stateDir, env = process.env, windowDir = null }) {
   const logFile = join(stateDir, 'swap.log');
+  const writeLog = (line) => { try { appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch {} };
   return {
     now: () => Date.now(),
     sleep: (ms) => new Promise(done => setTimeout(done, ms)),
@@ -482,8 +808,9 @@ export function windowsOps({ stateDir, env = process.env, windowDir = null }) {
     remove: (path) => rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }),
     rename: (from, to) => renameSync(from, to),
     alive: (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error?.code === 'EPERM'; } },
-    listUnder: (folder) => listUnderWindows(folder),
-    kill: (pid) => spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 15000 }),
+    listUnder: (folder, opts = {}) => listUnderWindows(folder, { env, ...opts }),
+    probeLockedFiles: (folder, opts = {}) => probeLockedFiles(folder, opts),
+    kill: (_pid, target, opts = {}) => killVerifiedProcessWindows(target, { ...opts, env, log: writeLog }),
     runInstaller: (installer, instDir, ms, onProgress) => runInstallerWithProgress({
       installer, instDir, ms, onProgress, progressFile: join(stateDir, 'swap', 'install-progress.txt'), env,
     }),
@@ -492,12 +819,20 @@ export function windowsOps({ stateDir, env = process.env, windowDir = null }) {
     },
     open: (file, args) => {
       const child = spawn(file, args, { detached: true, stdio: 'ignore', cwd: dirname(file), env: appEnvironment(env) });
-      child.on('error', () => {});
+      let exited = false;
+      child.once('error', () => { exited = true; });
+      child.once('exit', () => { exited = true; });
       child.unref();
-      return child.pid || null;
+      return {
+        pid: child.pid || null,
+        stop: () => {
+          if (!exited && child.exitCode === null && child.signalCode === null) {
+            try { child.kill(); } catch {}
+          }
+        },
+      };
     },
-    openWindow: () => openInstallWindow({ windowDir, stateDir, env,
-      log: line => appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`) }),
+    openWindow: () => openInstallWindow({ windowDir, stateDir, env, log: writeLog }),
     writeView: (view) => {
       if (!windowDir) return;
       writeWhole(join(windowDir, 'install-view.json'), `${JSON.stringify(view)}\n`);

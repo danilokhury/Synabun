@@ -324,6 +324,12 @@ function mountTab({ sessionId, meta = null, brain = null, label = '', userRename
       renderPills();
     },
     setBrain(next) { tab.brain = next || null; renderPills(); },
+    // The Background tasks view (bg-tasks/): how many still run, and how to open it from the pill.
+    setBackgroundTasks(count, open) {
+      tab.bgRunning = Math.max(0, Number(count) || 0);
+      tab.openBg = typeof open === 'function' ? open : null;
+      renderPills();
+    },
     isVisible: () => isTabVisible(tab),
     toolbarSlot: toolbar,
     takeHeroOrigin() {
@@ -448,6 +454,16 @@ async function startSession(prompt = '') {
 
 // ── Tray pills ───────────────────────────────────────────────────────────────
 
+// The pill's "⟳ N" while background tasks run (bg-tasks-view.js), loaded once a tab has had one: never before the
+// page is shown (tests/boot-critical-path.test.mjs).
+let _paintBgBadge = null;
+function paintPillBadge(tab) {
+  if (!tab?.pill || (!tab.bgRunning && !_paintBgBadge)) return;
+  const paint = () => { if (tab.pill) _paintBgBadge(tab.pill, tab.bgRunning || 0, { t, onClick: () => { focusSession(tab.sessionId); tab.openBg?.(); } }); };
+  if (_paintBgBadge) { paint(); return; }
+  import('../bg-tasks/bg-tasks-view.js').then((m) => { _paintBgBadge = m.paintBgBadge; paint(); }).catch(() => {});
+}
+
 function createPill(tab) {
   const tray = document.getElementById('term-minimized-tray');
   if (!tray) return null;
@@ -489,7 +505,8 @@ function renderPills() {
     tab.pill.setAttribute('aria-label', `${tab.label} — ${statusLabel(tab.status)}`);
     tab.pill.classList.toggle('asp-pill-running', tab.status === 'working');
     tab.pill.classList.toggle('asp-pill-attention', tab.status === 'action');
-    tab.pill.classList.toggle('asp-pill-done', tab.status === 'done');
+    tab.pill.classList.toggle('asp-pill-done', tab.status === 'done' && !tab.bgRunning);
+    paintPillBadge(tab);
     tab.pill.style.display = (!_visible || tab !== active) ? '' : 'none';
   }
 }

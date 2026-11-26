@@ -63,6 +63,8 @@ export const RUN_EVENT_REASONS = Object.freeze({
   stopped: { kind: K.RUN_STOPPED, mailbox: true },
   completed: { kind: K.RUN_COMPLETED, mailbox: false },
   user_intervened: { kind: K.RUN_NOTICE, mailbox: true },
+  // A steer (assistant-dispatch.js steerRun): logged as a notice; the brain hears the user's own steer as user_intervened.
+  steered: { kind: K.RUN_NOTICE, mailbox: false },
   queue_started: { kind: K.RUN_PROGRESS, mailbox: true },
   suspended: { kind: K.RUN_PROGRESS, mailbox: true },
   resumed: { kind: K.RUN_PROGRESS, mailbox: true },

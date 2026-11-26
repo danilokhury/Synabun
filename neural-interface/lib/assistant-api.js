@@ -171,6 +171,9 @@ export function createAssistantApi({
   // The page secret (lib/page-session.js): a request without an agent pin is the owner's page only when it carries
   // this boot's cookie; a local process that merely sends no headers is nobody (never 'ui').
   pageSession = null,
+  // The Background tasks view of a Claude brain: lib/claude-bg-tasks.js over the brain's own transcript
+  // ({ list(identity), output(identity, q) } built in server.js). None: those routes answer 404.
+  backgroundTasks = null,
   // Whether a pin counts (lib/terminal-tokens.js verdict, server.js): (pin, req) → { accepted, code, error, httpStatus }.
   // A pin SynaBun gave a proof to (a run's terminal token, a brain's launch credential) counts only with it: a request
   // that names a worker's run, or a brain's id, without it is refused (403 TERMINAL_TOKEN_REQUIRED / _INVALID) instead
@@ -1046,6 +1049,43 @@ export function createAssistantApi({
       res.json(await dispatcher.sendTurn(req.params.runId, body.text ?? body.message, { origin, queue: body.queue !== false }));
     } catch (error) { sendError(res, error); }
   });
+  // Steer: the user changed work in flight. With runId, that run's current turn is interrupted and the steer follows
+  // (dispatcher.steerRun; the run must be this session's); without, the session's own brain is steered (the page only:
+  // a brain never steers itself). → { ok, target: { kind, runId? }, interruptedTurn }.
+  router.post('/steer', orchestrationGuard, async (req, res) => {
+    try {
+      const body = req.body || {};
+      const caller = req.assistantCaller;
+      const text = typeof body.text === 'string' ? body.text.trim() : '';
+      if (!text) return res.status(400).json({ ok: false, code: 'MESSAGE_REQUIRED', error: 'text is required' });
+      const runId = typeof (body.runId ?? body.run_id) === 'string' ? String(body.runId ?? body.run_id).trim() : '';
+      // A brain's session is the one its credential proves, whatever the body says.
+      const sessionId = caller.credentialed ? (caller.assistantSessionId || null) : (body.assistantSessionId || body.assistant_session_id || null);
+      if (runId) {
+        const run = dispatcher.get(runId);
+        if (!run) return res.status(404).json({ ok: false, code: 'RUN_NOT_FOUND', error: `Unknown run ${runId}` });
+        if (!sessionId && caller.kind !== 'ui') return res.status(404).json({ ok: false, code: 'SESSION_NOT_FOUND', error: 'The caller has no assistant session.' });
+        if (sessionId && String(run.assistantSessionId || '') !== String(sessionId)) {
+          return res.status(404).json({ ok: false, code: 'RUN_NOT_FOUND', error: `Run ${runId} does not belong to assistant session ${sessionId}` });
+        }
+        if (planRefusal(req, res, sessionId, 'steer a worker')) return;
+        if (planState(req, sessionId) === 'plan' && planSendRefusal(res, run)) return;
+        const from = caller.kind === 'ui' ? 'user' : 'assistant';
+        try { await dispatcher.coverFollowUp?.(runId); } catch { /* steerRun decides */ }
+        const steered = await dispatcher.steerRun(runId, text, { from, assistantSessionId: sessionId });
+        return res.json({ ok: true, target: steered.target, interruptedTurn: steered.interruptedTurn, followUpId: steered.followUpId, run: steered.run });
+      }
+      if (caller.kind !== 'ui') return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'Only the user\'s page steers the Assistant itself; a brain steers a worker with runId.' });
+      if (!sessionId) return res.status(400).json({ ok: false, code: 'SESSION_REQUIRED', error: 'assistantSessionId is required' });
+      if (typeof runtime?.steerBrain !== 'function') return res.status(503).json({ ok: false, code: 'STEER_UNAVAILABLE', error: 'This server cannot steer the Assistant yet; restart it.' });
+      const out = await runtime.steerBrain(String(sessionId), { text, origin: 'ui' });
+      if (!out?.ok) {
+        const status = out?.code === 'SESSION_NOT_FOUND' ? 404 : out?.code === 'MESSAGE_REQUIRED' ? 400 : 409;
+        return res.status(status).json({ ok: false, code: out?.code || 'STEER_FAILED', error: out?.message || 'The steer did not reach the Assistant.', interruptedTurn: !!out?.interruptedTurn });
+      }
+      res.json({ ok: true, target: { kind: 'brain' }, interruptedTurn: !!out.interruptedTurn });
+    } catch (error) { sendError(res, error); }
+  });
   router.post('/runs/:runId/permission', orchestrationGuard, (req, res) => {
     try {
       const body = req.body || {};
@@ -1200,6 +1240,56 @@ export function createAssistantApi({
       const page = await runtime.shellOutput(req.params.id, { shellId, cursor: number(req.query.cursor), tail: number(req.query.tail), limit: number(req.query.limit) });
       if (!page || page.ok === false) return res.status(Number(page?.status) >= 400 ? Number(page.status) : 502).json({ ok: false, code: page?.code || 'SHELL_OUTPUT_FAILED', error: page?.error || 'The output could not be read.' });
       res.json({ ok: true, ...page.data });
+    } catch (error) { sendError(res, error); }
+  });
+  // The background shells and watches of a session's Claude brain (the panel's Background tasks view), a page of
+  // what one printed, and the owner's Stop. The same reader as a command's output (shellReader): the owner's page
+  // alone, never a brain, a worker or the automation browser. The brain named in the path is the one asked, and its
+  // transcript is the only one read (lib/claude-bg-tasks.js: only the file it reported for a task it ran).
+  const bgTaskId = (value) => (/^[A-Za-z0-9_-]{1,128}$/.test(String(value || '')) ? String(value) : '');
+  function bgSource(req, res) {
+    if (!requireRuntime(res) || !shellReader(req, res)) return null;
+    const source = typeof runtime.backgroundTaskSource === 'function' ? runtime.backgroundTaskSource(req.params.id) : null;
+    if (source === null && typeof runtime.getSession === 'function' && !runtime.getSession(req.params.id, { transcript: false })) {
+      res.status(404).json({ ok: false, code: 'SESSION_NOT_FOUND', error: `Unknown assistant session ${req.params.id}` });
+      return null;
+    }
+    if (!source || !backgroundTasks) { res.json({ ok: true, tasks: [], live: null, supported: false }); return null; }
+    return source;
+  }
+  router.get('/sessions/:id/background-tasks', noStore, (req, res) => {
+    const source = bgSource(req, res);
+    if (!source) return;
+    try {
+      const listed = backgroundTasks.list(source);
+      res.json({ ok: true, supported: true, tasks: listed?.tasks || [], live: Array.isArray(source.live) ? source.live : null });
+    } catch (error) {
+      if (Number(error?.status) === 404) return res.json({ ok: true, supported: true, tasks: [], live: Array.isArray(source.live) ? source.live : null });
+      sendError(res, error);
+    }
+  });
+  router.get('/sessions/:id/background-tasks/:taskId/output', noStore, async (req, res) => {
+    const taskId = bgTaskId(req.params.taskId);
+    if (!taskId) { if (requireRuntime(res) && shellReader(req, res)) res.status(400).json({ ok: false, code: 'TASK_ID_INVALID', error: 'That is not a background task of this conversation.' }); return; }
+    const source = bgSource(req, res);
+    if (!source) return;
+    const number = (value) => (typeof value === 'string' && /^\d{1,15}$/.test(value) ? Number(value) : undefined);
+    try {
+      const running = Array.isArray(source.live) ? source.live.some((t) => t.task_id === taskId) : null;
+      const page = await backgroundTasks.output(source, { taskId, cursor: number(req.query.cursor), tail: number(req.query.tail), limit: number(req.query.limit), running });
+      if (!page || page.ok === false) return res.status(Number(page?.status) >= 400 ? Number(page.status) : 502).json({ ok: false, code: page?.code || 'OUTPUT_FAILED', error: page?.error || 'The output could not be read.' });
+      res.json({ ok: true, ...page.data });
+    } catch (error) { sendError(res, error); }
+  });
+  router.post('/sessions/:id/background-tasks/:taskId/stop', noStore, async (req, res) => {
+    if (!requireRuntime(res) || !shellReader(req, res)) return;
+    const taskId = bgTaskId(req.params.taskId);
+    if (!taskId) return res.status(400).json({ ok: false, code: 'TASK_ID_INVALID', error: 'That is not a background task of this conversation.' });
+    if (typeof runtime.stopBackgroundTask !== 'function') return res.status(404).json({ ok: false, code: 'NOT_SUPPORTED', error: 'Stopping a background task needs the SynaBun server restart.' });
+    try {
+      const out = await runtime.stopBackgroundTask(req.params.id, taskId);
+      if (!out || out.ok === false) return res.status(Number(out?.status) >= 400 ? Number(out.status) : 409).json({ ok: false, code: out?.code || 'STOP_FAILED', error: out?.error || 'The task could not be stopped.' });
+      res.json({ ok: true, taskId });
     } catch (error) { sendError(res, error); }
   });
   router.get('/sessions/:id', (req, res) => {

@@ -151,6 +151,20 @@ export function createGitBashManager({
     return out;
   }
 
+  // Prime the managed selection at manager creation. Requests keep using the
+  // cached result while an expired resolution waits for the next event-loop turn.
+  let managed = off || platform !== 'win32' ? null : copies().find(copy => copy.ok)?.git ?? null;
+  let managedCheckedAt = now();
+  let refreshTimer = null;
+  function scheduleRefresh() {
+    if (refreshTimer) return;
+    refreshTimer = setImmediate(() => {
+      refreshTimer = null;
+      try { refresh(); } catch (err) { log(`[git-bash] Refresh failed: ${err.message}`); }
+    });
+    refreshTimer.unref();
+  }
+
   function refresh() {
     let next;
     // macOS, Linux, the kill switch: nothing to look at (no settings read, no PATH walked).
@@ -160,7 +174,10 @@ export function createGitBashManager({
       try { settingsBash = settingsValue(); } catch { settingsBash = null; }
       let searchPath = '';
       try { searchPath = pathValue(); } catch { searchPath = pathEnvValue(env); }
-      next = resolveGitBash({ platform, env, settingsValue: settingsBash, pathValue: searchPath, copies: copies(), ownRoots, ...(isFile ? { isFile } : {}) });
+      const checked = copies();
+      managed = checked.find(copy => copy.ok)?.git ?? null;
+      managedCheckedAt = now();
+      next = resolveGitBash({ platform, env, settingsValue: settingsBash, pathValue: searchPath, copies: checked, ownRoots, ...(isFile ? { isFile } : {}) });
     }
     const changed = !same(current, next);
     current = next;
@@ -256,9 +273,16 @@ export function createGitBashManager({
     return gitBashChildEnv(base, r, { platform });
   }
 
-  function gitExecutable() {
+  function managedGitExecutable() {
+    if (off || platform !== 'win32') return null;
+    if (now() - managedCheckedAt > maxAgeMs) scheduleRefresh();
+    return managed;
+  }
+
+  function gitExecutable({ includeSystem = false } = {}) {
     const r = resolution();
-    return r.passToClaude && r.git ? r.git : null;
+    if (!r.git) return null;
+    return (includeSystem || r.passToClaude) ? r.git : null;
   }
 
   function status() {
@@ -297,6 +321,7 @@ export function createGitBashManager({
     resolution,
     refresh,
     childEnv,
+    managedGitExecutable,
     gitExecutable,
     ensure,
     whenReady,

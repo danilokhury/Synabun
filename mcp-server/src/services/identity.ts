@@ -141,6 +141,11 @@ export function runWithIdentity<T>(identity: CallerIdentity, fn: () => T): T {
   return als.run(identity, fn);
 }
 
+/** The ALS-bound identity of the current async execution context, or undefined when none is active. */
+export function currentIdentity(): CallerIdentity | undefined {
+  return als.getStore();
+}
+
 export function getIdentity(): CallerIdentity {
   const store = als.getStore();
   if (store) return store;

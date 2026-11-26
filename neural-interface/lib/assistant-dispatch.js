@@ -538,6 +538,7 @@ export function createAssistantDispatcher({
   /** A known task class, else null. */
   const knownClass = (value) => (Object.prototype.hasOwnProperty.call(TASK_CLASS_META, String(value || '')) ? String(value) : null);
   const entries = new Map();          // runId → entry (persisted shape)
+  const pendingSingleClaims = new WeakMap(); // Only until this route's worker starts (including time in the queue).
   const live = new Map();             // runId → live state (in-memory only)
   const listeners = new Set();
   const queue = [];                   // runIds in FIFO order (state 'queued')
@@ -779,6 +780,10 @@ export function createAssistantDispatcher({
       turnCount: Array.isArray(entry.turns) ? entry.turns.length : 0,
       // The turn whose result this view carries: what a brain has read once it sees it.
       resultTurn: (Array.isArray(entry.turns) ? entry.turns.at(-1)?.n : null) ?? 0,
+      // A steer (steerRun) waits for its turn: true from the steer to the start of the turn that carries it.
+      steering: !!(live.get(entry.runId)?.steer || live.get(entry.runId)?.earlySteer),
+      // How the last turn ended when it did not end with a result: 'steered' (a steer cut it), else null.
+      turnEndReason: (Array.isArray(entry.turns) ? entry.turns.at(-1)?.endReason : null) || null,
       pending: Array.isArray(entry.pending) ? entry.pending : [],
       runtime: runtimeRun ? {
         status: runtimeRun.status, turnState: runtimeRun.turnState, stoppedReason: runtimeRun.stoppedReason,
@@ -1559,22 +1564,49 @@ export function createAssistantDispatcher({
 
   // agents-p4: `team` (lib/teams/brief.js teamBrief) and `runId` are the team scheduler's own (lib/teams/scheduler.js):
   // the slice a run works and the id its claims were taken under. No request body reaches these options.
-  async function dispatch(rawSpec = {}, { assistantSessionId = null, origin = 'assistant', brief: carried = null, notes: callerNotes = null, agentOf = null, team = null, runId: givenRunId = null } = {}) {
-    const sessionId = assistantSessionId ? String(assistantSessionId) : null;
-    const idempotencyKey = rawSpec.idempotencyKey || rawSpec.idempotency_key ? String(rawSpec.idempotencyKey || rawSpec.idempotency_key).slice(0, 200) : null;
-    if (idempotencyKey && sessionId) {
-      const hit = idempotency.get(`${sessionId}:${idempotencyKey}`);
-      if (hit && now() - hit.at < limits.idempotencyTtlMs && entries.has(hit.runId)) {
-        const prior = entries.get(hit.runId);
-        return { ok: true, replayed: true, queued: WAITING_STATES.has(prior.state), awaitingRoute: prior.state === 'awaiting_route', run: view(prior) };
+  async function dispatch(rawSpec = {}, options = {}) {
+    const sessionId = options.assistantSessionId ? String(options.assistantSessionId) : null;
+    const key = String(rawSpec.idempotencyKey || rawSpec.idempotency_key || '').slice(0, 200);
+    if (!key || !sessionId) return dispatchOnce(rawSpec, options, sessionId);
+    const scope = `${sessionId}:${key}`;
+    const hit = idempotency.get(scope);
+    if (hit && (hit.pending || now() - hit.at < limits.idempotencyTtlMs)) {
+      // Always wait for the first call to settle (review round 3, I3): its run is registered before fitBudget and the
+      // queue rails, which may still refuse it and delete the entry, and its browser and ids are not known until
+      // start. Replaying it mid-flight returned a run that no longer existed, or a stale 'queued' / 'starting' view.
+      // dispatchOnce never re-enters dispatch with the same key, so this cannot wait on itself.
+      if (hit.pending) {
+        try { await hit.pending; } catch (error) { if (!entries.has(hit.runId)) throw error; }
       }
+      const prior = entries.get(hit.runId);
+      if (prior) return { ok: true, replayed: true, queued: WAITING_STATES.has(prior.state), awaitingRoute: prior.state === 'awaiting_route', run: view(prior) };
     }
+    // Reserve before async profile/catalog intake. Once registered, even a failed run is replayable.
+    const reservation = { runId: null, at: now() };
+    idempotency.set(scope, reservation);
+    try {
+      reservation.pending = dispatchOnce(rawSpec, options, sessionId, key, reservation);
+      return await reservation.pending;
+    } finally {
+      delete reservation.pending;
+      // Only this call's own reservation: never one a later call put under the same key.
+      if (!entries.has(reservation.runId) && idempotency.get(scope) === reservation) idempotency.delete(scope);
+    }
+  }
+
+  async function dispatchOnce(rawSpec, { origin = 'assistant', brief: carried = null, notes: callerNotes = null, agentOf = null, team = null, runId: givenRunId = null }, sessionId, idempotencyKey = null, reservation = null) {
     refreshLimits();
     refuseSessionOver(sessionId);
     // agents-p1: the agent the dispatch names (agent_ref) is applied before anything else reads the spec: what the
     // dispatch says itself wins, the definition fills the rest and never widens it (lib/agents/resolve.js). The very
     // same object comes back for a dispatch that names none.
     const original = rawSpec;
+    const profile = original.moreloginProfile ?? original.morelogin_profile ?? original.moreloginEnvId ?? original.morelogin_env_id;
+    const requestedBrowser = String(profile ?? '').trim() ? 'profile' : [true, 'true'].includes(original.usesBrowser) ? 'explicit' : null;
+    // Escalations copy the effective flag. An older parent's record cannot distinguish its source.
+    const browserSource = agentOf?.usesBrowser
+      ? (agentOf.browserRequiredBy === undefined ? 'saved' : agentOf.browserRequiredBy)
+      : requestedBrowser;
     const agentContext = { assistantSessionId: sessionId, origin, desktop, resolveExternalTools };
     rawSpec = agentIntake(agents, rawSpec, agentContext);
     // "true" (a string) is computer use too: normalizeSpec reads it so, and so must the gate.
@@ -1661,17 +1693,18 @@ export function createAssistantDispatcher({
       if (routed?.spec) refuseBrowserConflict(input);
       // agents-p4: a team's slices start on a route that is approved already; none waits on a card of its own.
       if (team && routed?.action === 'hold') throw new DispatchError('TEAM_ROUTE_REQUIRED', 'A team slice starts on an approved route: route the team\'s task with agent_route first and start the team with that route_id.', { status: 409, routeId: routed.routeId || null });
+      const taskClass = routeClass || knownClass(input.taskClass);
+      const browserRequiredBy = browserSource || (taskClass === 'design' ? 'design' : null);
       if (routed?.action === 'hold') {
-        return holdForRoute(input, routed, { sessionId, origin, idempotencyKey, brief, remoteNotes, agentNote, heldAgent });
+        return holdForRoute(input, routed, { sessionId, origin, idempotencyKey, reservation, brief, remoteNotes, agentNote, heldAgent, browserRequiredBy });
       }
       // The run's class: its route's (the brain may omit task_class with a route_id), else the spec's.
       // Its capability backstop runs in normalizeSpec on the final target, however that was chosen.
-      const taskClass = routeClass || knownClass(input.taskClass);
       const spec = normalizeSpec(input, { catalogValue, taskClass, builtin });
       const queuedCount = [...entries.values()].filter((e) => e.state === 'queued' && e.assistantSessionId === sessionId).length;
       if (givenRunId && entries.has(String(givenRunId))) throw new DispatchError('RUN_EXISTS', `Run ${givenRunId} exists already.`, { status: 409 }); // agents-p4
       runId = givenRunId ? String(givenRunId) : randomId();
-      const entry = { ...baseEntry(runId, sessionId, origin), ...specFields(spec), notes: [...(spec.notes || []), ...remoteNotes] };
+      const entry = { ...baseEntry(runId, sessionId, origin), ...specFields(spec), ...(spec.usesBrowser ? { browserRequiredBy } : {}), notes: [...(spec.notes || []), ...remoteNotes] };
       stampAgentRun(entry, input); // agents-p1: agentRef, agentRevision, agentPin (nothing for a dispatch without an agent)
       // agents-p4: a team slice's run names its team and slice from its first event on (the durable log files it under
       // the team), and keeps the slice's brief for its prompt. Its worker is confined by its worktree (worker-confinement.js).
@@ -1687,9 +1720,10 @@ export function createAssistantDispatcher({
       if (taskClass) entry.taskClass = taskClass;
       if (brief) { entry.brief = brief; entry.notes.push(`carries the user's brief ${brief.briefId || ''}`.trim()); }
       if (routed?.route) entry.route = routed.route;
+      if (routed?.claimed && !team) pendingSingleClaims.set(entry, routed.claim);
       entries.set(runId, entry);
       // Before the budget check awaits (it may re-split): a retry with the same key replays this run.
-      if (spec.idempotencyKey && sessionId) idempotency.set(`${sessionId}:${spec.idempotencyKey}`, { runId, at: now() });
+      if (reservation) Object.assign(reservation, { runId, at: now() });
       let budgetCorrections = [];
       try { budgetCorrections = await fitBudget(entry, { routed: !!routed?.route }); } catch (error) { entries.delete(runId); throw error; }
       entry.taskId = routed?.route?.taskId || taskAtDispatch(sessionId);
@@ -1701,7 +1735,7 @@ export function createAssistantDispatcher({
         ? { ...withCorrections, next: 'The user picked this route while the dispatch was on its way, so this run started on it. Do not dispatch it again when the route_decided event for this route arrives.' }
         : withCorrections;
     } catch (error) {
-      // A run that exists (it failed or stopped at start) used the route; a refusal before one did not.
+      // A refusal before registration has no entry whose start could release the claim.
       if (routed?.claimed && !(runId && entries.has(runId))) router.releaseRoute?.(routed.route?.routeId, routed.claim);
       throw error;
     }
@@ -1756,6 +1790,7 @@ export function createAssistantDispatcher({
   }
 
   async function launchOrQueue(entry, spec, { queuedCount = 0, strict = false } = {}) {
+    if (TERMINAL_STATES.has(entry.state)) return { ok: true, queued: false, run: view(entry) };
     const block = railBlock(spec, entry.assistantSessionId);
     if (block) {
       if (strict && !spec.queueIfBusy) {
@@ -1777,7 +1812,7 @@ export function createAssistantDispatcher({
   }
 
   /** Accept a dispatch the router is holding for the user's model choice. */
-  function holdForRoute(input, routed, { sessionId, origin, idempotencyKey, brief = null, remoteNotes = [], agentNote = null, heldAgent = null }) {
+  function holdForRoute(input, routed, { sessionId, origin, idempotencyKey, reservation, brief = null, remoteNotes = [], agentNote = null, heldAgent = null, browserRequiredBy }) {
     const task = String(input.task || '').trim();
     if (!task) throw new DispatchError('TASK_REQUIRED', 'task is required');
     if (task.length > 20_000) throw new DispatchError('TASK_TOO_LONG', 'task must be at most 20000 characters');
@@ -1796,7 +1831,7 @@ export function createAssistantDispatcher({
       tags: Array.isArray(input.tags) ? input.tags.map((tag) => String(tag).trim()).filter(Boolean).slice(0, 10) : [],
       workflowId: input.workflowId ? String(input.workflowId) : null, parentRunId: input.parentRunId ? String(input.parentRunId) : null,
       usesBrowser: !!input.usesBrowser, usesComputer: input.usesComputer === true, capability: normalizeCapability(input.capability || 'full'),
-      idempotencyKey, rawSpec: { ...input }, route: routed.route,
+      idempotencyKey, browserRequiredBy, rawSpec: { ...input }, route: routed.route,
       ...(heldAgent ? { heldAgent } : {}),
       notes: ['awaiting the user\'s model choice on the route card', ...remoteNotes],
     };
@@ -1820,7 +1855,7 @@ export function createAssistantDispatcher({
       throw new DispatchError('ROUTE_CANCELLED', closed?.message || 'This route is no longer valid: its card closed before the run could wait on it. Nothing was started; ask the user how to proceed.', { status: 409, routeId: routed.routeId });
     }
     entries.set(runId, entry);
-    if (idempotencyKey && sessionId) idempotency.set(`${sessionId}:${idempotencyKey}`, { runId, at: now() });
+    if (reservation) Object.assign(reservation, { runId, at: now() });
     emit(entry, 'route_pending', { routeId: routed.routeId });
     return {
       ok: true, queued: true, awaitingRoute: true, routeId: routed.routeId, run: view(entry),
@@ -1878,15 +1913,21 @@ export function createAssistantDispatcher({
   }
 
   /** The user picked a target for a held run: validate, then start or queue it. */
-  async function resolveRoute(runId, { target, routeId = null, decidedBy = 'user', remembered = false, optionId = null, agentRequest } = {}) {
+  async function resolveRoute(runId, { target, routeId = null, decidedBy = 'user', remembered = false, optionId = null, agentRequest, claim = null } = {}) {
     const entry = entries.get(runId);
-    if (!entry || entry.state !== 'awaiting_route' || !target?.provider) return { ok: false, code: 'NOT_HELD' };
+    if (!entry || entry.state !== 'awaiting_route' || !target?.provider) {
+      if (claim) router?.releaseRoute?.(routeId, claim);
+      return { ok: false, code: 'NOT_HELD' };
+    }
+    if (claim) pendingSingleClaims.set(entry, claim);
     const catalogValue = await catalogSnapshot();
     let spec;
     const remoteNotes = [];
     try {
+      if (entry.state !== 'awaiting_route') return { ok: false, code: 'NOT_HELD' };
       const pick = workerForRoutePick(entry, target, agentRequest);
       let input = pick.input.moreloginProfile || pick.input.morelogin_profile ? await withBrowserProfile(pick.input) : pick.input;
+      if (entry.state !== 'awaiting_route') return { ok: false, code: 'NOT_HELD' };
       input = clampRemote(input, entry.assistantSessionId, remoteNotes);
       const pin = entry.heldAgent ? agentPinOf(input) : entry.agentPin;
       spec = normalizeSpec(input, { catalogValue, taskClass: entry.taskClass || null, builtin: pin?.source === 'builtin' || !!pin?.classDefault });
@@ -1898,6 +1939,8 @@ export function createAssistantDispatcher({
       }
     }
     catch (error) {
+      if (entry.state !== 'awaiting_route') return { ok: false, code: 'NOT_HELD' };
+      releaseStartupClaim(entry);
       entry.state = 'failed'; entry.completionReason = 'route_invalid'; entry.finishedAt = iso(now()); entry.turnState = 'terminal';
       entry.error = error?.message || String(error);
       entry.notes.push(`route target rejected: ${entry.error}`);
@@ -1907,6 +1950,7 @@ export function createAssistantDispatcher({
       return { ok: false, error };
     }
     Object.assign(entry, specFields(spec));
+    if (!entry.usesBrowser) delete entry.browserRequiredBy;
     entry.notes.push(...(spec.notes || []), ...remoteNotes.filter((note) => !entry.notes.includes(note)), `route decided by ${decidedBy}: ${spec.provider}/${spec.model || 'default'}`);
     entry.route = {
       ...(entry.route || {}), routeId: routeId || entry.route?.routeId || null, status: 'approved', decidedBy, remembered, optionId,
@@ -2110,18 +2154,55 @@ export function createAssistantDispatcher({
     }).catch(() => { if (entry.judging) done(); });
   }
 
+  // The native runtime accepts launch before its provider boots. Its started event commits
+  // the claim by removing it from this map. Only a terminal exit before that point gives it back.
+  function releaseStartupClaim(entry) {
+    if (!pendingSingleClaims.has(entry)) return;
+    const claim = pendingSingleClaims.get(entry);
+    pendingSingleClaims.delete(entry);
+    router?.releaseRoute?.(entry.route.routeId, claim);
+  }
+
   async function start(entry) {
+    if (entry.state !== 'queued') return;
+    entry.state = 'starting';
+    entry.turnState = 'starting';
+    try { return await startWorker(entry); }
+    catch (error) {
+      releaseStartupClaim(entry);
+      if (!TERMINAL_STATES.has(entry.state)) {
+        entry.state = 'failed'; entry.turnState = 'terminal'; entry.finishedAt = iso(now());
+        entry.completionReason = 'startup_error'; entry.error = error?.message || String(error);
+        emit(entry, 'failed');
+      }
+      if (!closing && queue.length) processQueue().catch(() => {});
+      throw error;
+    }
+  }
+
+  async function startWorker(entry) {
+    // Every failure exit gives the single route back FIRST (review round 3, I1c-a): before the run reads as failed and
+    // before anything is awaited, so a retry that sees the failure is never refused by the route this run still held.
     try { requireConfinementProvider(entry); } catch (error) {
+      releaseStartupClaim(entry);
       entry.state = 'failed'; entry.error = error.message; entry.completionReason = 'confinement_provider_mismatch';
       entry.finishedAt = iso(now()); entry.turnState = 'terminal';
       emit(entry, 'failed');
       throw error;
     }
     const runtime = safeRuntime();
-    if (!runtime) throw new DispatchError('RUNTIME_UNAVAILABLE', 'Native loop runtime is not available', { status: 503 });
+    if (!runtime) {
+      releaseStartupClaim(entry);
+      entry.state = 'failed'; entry.turnState = 'terminal'; entry.completionReason = 'runtime_unavailable'; entry.finishedAt = iso(now());
+      entry.error = 'Native loop runtime is not available';
+      emit(entry, 'failed');
+      throw new DispatchError('RUNTIME_UNAVAILABLE', entry.error, { status: 503 });
+    }
     // A queued or held run starts under the budget as it is now (its provider's share included).
     refreshLimits();
     try { await fitBudget(entry, { routed: true }); } catch (error) {
+      if (entry.state !== 'starting') throw error;
+      releaseStartupClaim(entry);
       entry.state = 'stopped';
       entry.completionReason = error?.code === 'BUDGET_UNPRICED' ? 'budget_unpriced' : error?.code === 'BUDGET_SHARE_EXHAUSTED' ? 'budget_share' : 'session_budget_cap';
       entry.finishedAt = iso(now()); entry.turnState = 'terminal'; entry.pending = [];
@@ -2129,19 +2210,30 @@ export function createAssistantDispatcher({
       emit(entry, 'stopped');
       throw error;
     }
+    if (entry.state !== 'starting') return;
     if (loopDir && !existsSync(loopDir)) mkdirSync(loopDir, { recursive: true });
     let browserSessionId = null;
     let browserTabId = null;
-    if (entry.usesBrowser && typeof acquireLoopBrowserAndTab === 'function') {
-      pinEntryBrowserProfile(entry);
-      const acq = await acquireLoopBrowserAndTab({ requestedBrowserSessionId: entry.requestedBrowserSessionId, terminalSessionId: entry.runId, logTag: 'assistant:browser' });
+    pinEntryBrowserProfile(entry);
+    // Older records have no source and keep their original browser requirement.
+    if (entry.usesBrowser && entry.browserRequiredBy !== null && typeof acquireLoopBrowserAndTab === 'function') {
+      let acq;
+      try { acq = await acquireLoopBrowserAndTab({ requestedBrowserSessionId: entry.requestedBrowserSessionId, terminalSessionId: entry.runId, logTag: 'assistant:browser' }); }
+      catch (error) { acq = { error: error?.message || String(error), code: error?.code }; }
+      if (entry.state !== 'starting') {
+        if (acq?.browserSessionId) await releaseSharedBrowserTab(acq.browserSessionId, entry.runId).catch(() => {});
+        return;
+      }
       if (acq?.error) {
-        entry.state = 'failed'; entry.completionReason = 'browser_unavailable'; entry.finishedAt = iso(now()); entry.notes.push(acq.error);
+        const source = { profile: `morelogin_profile "${entry.moreloginEnvName || entry.moreloginEnvId}" on this dispatch`, design: 'the design task class', explicit: 'uses_browser:true on this dispatch' }[entry.browserRequiredBy] || 'the saved browser requirement for this worker';
+        entry.error = `${acq.error} Browser required by ${source}.`;
+        releaseStartupClaim(entry);
+        entry.state = 'failed'; entry.turnState = 'terminal'; entry.completionReason = 'browser_unavailable'; entry.finishedAt = iso(now()); entry.notes.push(entry.error);
         // The native serve boundary's refusal keeps its own code and the serves it names, on the run and the error.
         const boundary = acq.code === 'NATIVE_SERVE_UNVERIFIED' ? { browserCode: acq.code, offenders: Array.isArray(acq.offenders) ? acq.offenders : [] } : null;
         if (boundary) entry.browserError = boundary;
         emit(entry, 'failed');
-        throw new DispatchError('PROVIDER_UNAVAILABLE', acq.error, { status: 500, ...(boundary || {}) });
+        throw new DispatchError('PROVIDER_UNAVAILABLE', entry.error, { status: 500, ...(boundary || {}) });
       }
       browserSessionId = acq.browserSessionId || null;
       browserTabId = acq.browserTabId || null;
@@ -2167,8 +2259,6 @@ export function createAssistantDispatcher({
     // The project's Style Guide, read now like the rules: its summary and file paths go to the
     // prompt only (never the loop state file). null without a saved guide, or for a class it keeps out.
     const styleGuide = styleGuideFor(entry);
-    entry.state = 'starting';
-    entry.turnState = 'starting';
     entry.startedAt = state.startedAt;
     try {
       const descriptor = await runtime.launch({
@@ -2187,7 +2277,9 @@ export function createAssistantDispatcher({
       reconcileKeepAwake();
       return descriptor;
     } catch (error) {
-      entry.state = 'failed'; entry.completionReason = 'launch_error'; entry.finishedAt = iso(now());
+      releaseStartupClaim(entry);
+      entry.state = 'failed'; entry.turnState = 'terminal'; entry.completionReason = 'launch_error'; entry.finishedAt = iso(now());
+      entry.error = error?.message || String(error);
       entry.notes.push(error?.message || String(error));
       if (browserSessionId) await releaseSharedBrowserTab(browserSessionId, entry.runId).catch(() => {});
       releaseDesktop(entry);
@@ -2494,7 +2586,27 @@ export function createAssistantDispatcher({
       // A queued follow-up is sent exactly here, as its prompt goes to the provider: a restart from now on continues
       // this turn (resumeInfo.inFlight) and never sends the text a second time.
       if (outboxId) { try { await coordination.followUps.markSent([outboxId]); } catch (error) { log(entry.runId, 'assistant:follow-up-error', error?.message || String(error)); } }
-      let raw = await inner.runTurn(prompt, { ...meta, turn: turnNumber, outputSchema: entry.outputSchema || undefined });
+      // A steer may land here (steerRun): it clears for the turn it interrupts, never one of its own.
+      if (liveState.steer && outboxId && liveState.steer.outboxId === outboxId) liveState.steer = null;
+      // A steer that came while the run was still starting (no turn open yet) rides this turn's prompt: the task and
+      // the change go together, in the first turn, and its outbox row is sent with it.
+      if (liveState.earlySteer && outboxId && liveState.earlySteer.outboxId === outboxId) liveState.earlySteer = null;
+      if (liveState.earlySteer && !liveState.steer) {
+        const early = liveState.earlySteer;
+        liveState.earlySteer = null;
+        prompt = `${prompt}\n\n${buildFollowUpPrompt(early.text, state, { turn: turnNumber, maxTurns: entry.maxTurns, origin: 'steer', testDensity: changedTestDensity(entry) })}`;
+        if (early.outboxId) { try { await coordination.followUps.markSent([early.outboxId]); } catch (error) { log(entry.runId, 'assistant:follow-up-error', error?.message || String(error)); } }
+      }
+      const turnInfo = { turnNumber, taskId, origin, label, startedAt, prompt };
+      let raw;
+      try { raw = await inner.runTurn(prompt, { ...meta, turn: turnNumber, outputSchema: entry.outputSchema || undefined }); }
+      catch (error) {
+        if (steeredAway(liveState)) return endSteeredTurn(entry, liveState, error, turnInfo);
+        throw error;
+      }
+      // The provider finished the turn although a steer cut it (the interrupt came as it ended, or before the
+      // provider had the prompt): the turn still ends as steered, and the steer's own turn follows.
+      if (steeredAway(liveState)) return endSteeredTurn(entry, liveState, raw, turnInfo);
       if (entry.provider === 'codex') settleCodexTurn(entry, liveState, raw);
       else if (entry.provider === 'antigravity') settleAntigravityTurn(entry, liveState, raw);
       let text = typeof raw?.text === 'string' ? raw.text : '';
@@ -2540,6 +2652,8 @@ export function createAssistantDispatcher({
           // turn_completed or follow-up after it. The first provider turn was paid for: book it first.
           // Suspended for a server restart during it: the turn stays in flight for the resume.
           if (liveState.abortReason || liveState.suspending) { accumulateCost(entry, raw); throw error; }
+          // Steered during the result-retry turn: the turn ends as steered (its first provider turn is booked here).
+          if (steeredAway(liveState)) { accumulateCost(entry, raw); return endSteeredTurn(entry, liveState, error, turnInfo); }
           retryCost = accumulateCost(entry, error);
           if (entry.provider === 'codex') settleCodexTurn(entry, liveState, error);
           else if (entry.provider === 'antigravity') settleAntigravityTurn(entry, liveState, error);
@@ -2616,6 +2730,23 @@ export function createAssistantDispatcher({
       checkSession(entry.assistantSessionId, { source: entry });
       return parsed;
     };
+    // A turn a steer interrupted (endSteeredTurn) is followed at once by the steer's own turn, in the same session;
+    // a steer of that turn again cuts it too. Its outbox row is marked sent as its prompt goes (runInnerTurn).
+    const runSteerable = async (prompt, meta, opts) => {
+      let out = await runInnerTurn(prompt, meta, opts);
+      while (out?.steered) {
+        const steer = liveState.steer;
+        if (!steer || liveState.abortReason || liveState.suspending || liveState.dead) return out;
+        // The provider's own interrupt must be over before the next prompt goes (OpenCode's session abort).
+        try { await steer.settled; } catch {}
+        if (liveState.abortReason || liveState.suspending || liveState.dead) return out;
+        liveState.steer = null;
+        const steerPrompt = buildFollowUpPrompt(steer.text, state, { turn: liveState.turnCounter + 1, maxTurns: entry.maxTurns, origin: 'steer', testDensity: changedTestDensity(entry) });
+        const followPrompt = out.notSent && out.prompt ? `${out.prompt}\n\n${steerPrompt}` : steerPrompt;
+        out = await runInnerTurn(followPrompt, meta, { origin: 'steer', label: clip(steer.text, 80), followUp: steer.text, taskId: steer.taskId || entry.taskId || null, outboxId: steer.outboxId || null });
+      }
+      return out;
+    };
     return {
       identity: () => (typeof inner.identity === 'function' ? inner.identity() : {}),
       isAlive: () => !liveState.dead && (typeof inner.isAlive === 'function' ? inner.isAlive() : true),
@@ -2628,7 +2759,7 @@ export function createAssistantDispatcher({
         liveState.resume = null;
         if (resume?.mode !== 'idle') {
           try {
-            await runInnerTurn(prompt, meta, resume?.mode === 'mid_turn'
+            await runSteerable(prompt, meta, resume?.mode === 'mid_turn'
               ? { origin: 'resume', label: 'resumed after a server restart', taskId: resume.taskId || entry.taskId || null }
               : { origin: 'dispatch' });
           } catch (error) {
@@ -2691,7 +2822,7 @@ export function createAssistantDispatcher({
           }
           try {
             const followPrompt = buildFollowUpPrompt(next.text, state, { turn: liveState.turnCounter + 1, maxTurns: entry.maxTurns, origin: next.origin, testDensity: changedTestDensity(entry) });
-            await runInnerTurn(followPrompt, meta, { origin: next.origin, label: clip(next.text, 80), followUp: next.text, taskId: next.taskId || entry.taskId || null, outboxId: next.id || null });
+            await runSteerable(followPrompt, meta, { origin: next.origin, label: clip(next.text, 80), followUp: next.text, taskId: next.taskId || entry.taskId || null, outboxId: next.id || null });
           } catch (error) {
             pauseWork(entry, liveState);
             return handleTurnError(error, liveState, entry, ctx);
@@ -2777,6 +2908,92 @@ export function createAssistantDispatcher({
     };
   }
 
+  // ── steer (a change of the work mid-run) ───────────────────────────────────
+  /** The turn's provider call ended because a steer interrupted it (and nothing stronger: a stop, a shutdown). */
+  function steeredAway(liveState) {
+    return !!liveState.steer?.interrupting && !liveState.abortReason && !liveState.suspending && !liveState.dead;
+  }
+  /**
+   * The end of a turn a steer cut: what it spent is booked, its record says `endReason: 'steered'` with no result
+   * (never a failure, never a completion: lastResult, the escalation and the worker-end card stay as they were), its
+   * work time stops, and the turn loop goes on with the steer's own turn (runSteerable).
+   */
+  function endSteeredTurn(entry, liveState, error, { turnNumber, taskId, origin, label, startedAt, prompt }) {
+    liveState.turnOpen = false;
+    stopUsagePolling(liveState);
+    const booked = accumulateCost(entry, error);
+    if (entry.provider === 'codex') settleCodexTurn(entry, liveState, error);
+    else if (entry.provider === 'opencode') bookOpenCodeTurn(entry, liveState, { reconciled: false });
+    else if (entry.provider === 'antigravity') settleAntigravityTurn(entry, liveState, error);
+    const turn = {
+      n: turnNumber, taskId, origin, label, startedAt, endedAt: iso(now()), promptPreview: clip(prompt, 200), text: '',
+      usage: liveState.turnUsage || error?.usage || null, tokens: withTotal(liveState.turnTokens || zeroTokens()),
+      costUsd: Number(Math.max(0, (Number(booked) || 0) + (Number(liveState.turnMeteredUsd) || 0)).toFixed(8)),
+      result: null, endReason: 'steered',
+    };
+    liveState.turnTokens = null;
+    entry.turns = [...(entry.turns || []), turn].slice(-50);
+    if (entry.resumeInfo) delete entry.resumeInfo.inFlight;
+    entry.steeredTurns = (Number(entry.steeredTurns) || 0) + 1;
+    pauseWork(entry, liveState);
+    if (liveState.steer) liveState.steer.interrupting = false;
+    entry.notes.push(`turn ${turnNumber} interrupted by a steer`);
+    emit(entry, 'turn_steered', { turn: turnNumber });
+    announceUnpriced(entry);
+    checkSession(entry.assistantSessionId, { source: entry });
+    // The provider never had the cut turn's prompt (it was still starting): the steer's turn carries it again.
+    return { steered: true, turn: turnNumber, notSent: error?.notSent === true, prompt };
+  }
+  /**
+   * Steer a run: the user changed what it is doing. A turn in flight is interrupted at the provider (the session stays
+   * warm, its context kept, tool calls already done stay done), a pending permission or question is denied, and the
+   * steer follows at once as the next turn ("STEER from the user (mid-run): …"). An idle run takes it as a follow-up
+   * with the same wording; a run away for a restart gets it after its resume. The steer goes through the outbox like
+   * every follow-up, so a restart in between still delivers it. → { ok, target, interruptedTurn, run }.
+   */
+  async function steerRun(runId, text, { from = 'assistant', assistantSessionId = null } = {}) {
+    const entry = entries.get(String(runId || ''));
+    if (!entry || (assistantSessionId && String(entry.assistantSessionId || '') !== String(assistantSessionId))) {
+      throw new DispatchError('RUN_NOT_FOUND', `Unknown run ${runId}${entry ? ' in this assistant session' : ''}`, { status: 404 });
+    }
+    const message = String(text || '').trim();
+    if (!message) throw new DispatchError('MESSAGE_REQUIRED', 'text is required');
+    if (message.length > 20_000) throw new DispatchError('MESSAGE_TOO_LONG', 'text must be at most 20000 characters');
+    if (TERMINAL_STATES.has(entry.state) || finalizations.has(entry.runId)) {
+      throw new DispatchError('RUN_NOT_ACTIVE', `Run ${entry.runId} is ${TERMINAL_STATES.has(entry.state) ? entry.state : 'finishing'}: a run that ended cannot be steered; dispatch a new run with its result as context.`, { status: 409, resumable: false });
+    }
+    if (entry.state === 'queued') throw new DispatchError('RUN_NOT_STARTED', `Run ${entry.runId} is still queued`, { status: 409 });
+    const origin = from === 'user' ? 'user' : 'assistant';
+    const at = iso(now());
+    const away = entry.state === 'suspended' || entry.state === 'resuming';
+    const liveState = away ? null : live.get(entry.runId);
+    if (!away && !liveState) throw new DispatchError('RUN_NOT_ACTIVE', `Run ${entry.runId} has no live worker`, { status: 409 });
+    const item = { kind: 'follow-up', text: message, origin: 'steer', at, taskId: taskNow(entry.assistantSessionId) || entry.taskId || null };
+    const queued = await queueFollowUp(entry, item);
+    // Checked after the queueing: a turn that ended meanwhile leaves the steer to the turn loop, which takes it from
+    // the outbox like any follow-up.
+    const inFlight = !away && !!liveState.turnOpen && !liveState.waitResolve && !liveState.abortReason && !liveState.dead;
+    if (inFlight) {
+      let settle;
+      const settled = new Promise((done) => { settle = done; });
+      liveState.steer = { text: message, outboxId: queued.id || null, taskId: item.taskId, at, interrupting: true, settled };
+      // A permission or a question the turn waits on is cancelled first (its tool call is refused).
+      for (const requestId of [...liveState.pendingResolvers.keys()]) {
+        finishPending(entry.runId, requestId, { behavior: 'deny', message: 'The user steered this run: this request was cancelled and the change follows.', resolvedBy: 'steer' }, { origin: 'steer' });
+      }
+      try { await liveState.inner?.abort?.('steered'); } catch (error) { log(entry.runId, 'assistant:steer-error', error?.message || String(error)); }
+      settle();
+    }
+    else if (liveState?.waitResolve) liveState.waitResolve({ kind: 'follow-up' });
+    else if (liveState && !liveState.abortReason && !liveState.dead) {
+      // Still starting (no turn open, none awaited): the first turn takes it with the task (runInnerTurn).
+      liveState.earlySteer = { text: message, outboxId: queued.id || null, taskId: item.taskId, at };
+    }
+    entry.notes.push(`steered by ${origin}${inFlight ? ' (turn interrupted)' : ''}`);
+    await emit(entry, 'steered', { runId: entry.runId, text: clip(message, 500), at, interruptedTurn: inFlight, from: origin });
+    if (origin === 'user') emit(entry, 'user_intervened', { text: clip(message, 200) });
+    return { ok: true, target: { kind: 'run', runId: entry.runId }, interruptedTurn: inFlight, followUpId: queued.id || null, run: view(entry) };
+  }
   function handleTurnError(error, liveState, entry, ctx) {
     // Suspended for a server shutdown (suspendForShutdown): the turn the shutdown cut off is resumed on the next start
     // (its in-flight mark stays), and what it spent was settled when it was suspended. Nothing ends here.
@@ -3708,8 +3925,8 @@ export function createAssistantDispatcher({
     // Its browser session went with the server: a new one (the resume prompt names it).
     let browserSessionId = null;
     let browserTabId = null;
-    if (entry.usesBrowser && typeof acquireLoopBrowserAndTab === 'function') {
-      pinEntryBrowserProfile(entry);
+    pinEntryBrowserProfile(entry);
+    if (entry.usesBrowser && entry.browserRequiredBy !== null && typeof acquireLoopBrowserAndTab === 'function') {
       const acq = await acquireResumeBrowser(entry);
       if (acq?.cancelled) return null;
       if (acq?.error) return await notResumed(entry, `no browser tab: ${acq.error}`);
@@ -3802,7 +4019,7 @@ export function createAssistantDispatcher({
       if (!/EXTENSION_NOT_CONNECTED/.test(String(acq?.error || ''))) return acq;
       if (entry.state !== 'resuming' || closing) return { cancelled: true };
       const left = resumeBrowserDeadline - now();
-      if (left <= 0) return { error: `the browser extension did not reconnect within ${Math.round(resumeBrowserWaitMs / 1000)} seconds of the restart` };
+      if (left <= 0) return { ...acq, error: `the browser extension did not reconnect within ${Math.round(resumeBrowserWaitMs / 1000)} seconds of the restart. ${acq.error}` };
       await new Promise((done) => { const timer = setTimeout(done, Math.min(left, resumeBrowserPollMs)); timer.unref?.(); });
       if (entry.state !== 'resuming' || closing) return { cancelled: true };
     }
@@ -3943,7 +4160,9 @@ export function createAssistantDispatcher({
     const entry = requireEntry(runId);
     if (!TERMINAL_STATES.has(entry.state) && finalizations.has(runId)) await finalizations.get(runId);
     const provenance = stampStopProvenance(reason, stopProvenance, iso(now()));
-    if (WAITING_STATES.has(entry.state)) {
+    const beforeLaunch = entry.state === 'starting' && !entry.startedAt;
+    if (WAITING_STATES.has(entry.state) || beforeLaunch) {
+      releaseStartupClaim(entry);
       const held = entry.state === 'awaiting_route';
       const index = queue.indexOf(runId);
       if (index !== -1) queue.splice(index, 1);
@@ -3953,6 +4172,7 @@ export function createAssistantDispatcher({
       delete entry.heldAgent;
       if (held) { try { router?.cancelForRun?.(runId, 'run_stopped'); } catch {} }
       emit(entry, 'stopped');
+      if (beforeLaunch && !closing && queue.length) processQueue().catch(() => {});
       return { ok: true, run: view(entry) };
     }
     if (TERMINAL_STATES.has(entry.state)) return { ok: true, run: view(entry), alreadyTerminal: true };
@@ -4050,6 +4270,7 @@ export function createAssistantDispatcher({
     // agent_wait reads this entry directly, and a registry flush can happen at any await.
     // Stage a successful completion until its log write returns. Failures can be visible while their cause is judged.
     const completion = terminal.state === 'completed' ? terminal : null;
+    releaseStartupClaim(entry);
     if (!completion) Object.assign(entry, terminal);
     entry.completionReason = entry.completionReason || runtimeRun?.stoppedReason || (status === 'completed' ? 'complete' : status);
     if (runtimeRun?.stopProvenance) entry.stopProvenance = runtimeRun.stopProvenance;
@@ -4208,10 +4429,13 @@ export function createAssistantDispatcher({
     if (run.providerThreadId) entry.providerThreadId = run.providerThreadId;
     if (run.antigravityHome) entry.antigravityHome = run.antigravityHome;
     if (newIdentity) persist({ force: true });
-    if (message.type === 'sidepanel:run-updated' && message.reason === 'started' && entry.state === 'starting') {
-      entry.state = 'running';
-      entry.turnState = 'running';
-      emit(entry, 'running');
+    if (message.type === 'sidepanel:run-updated' && message.reason === 'started') {
+      pendingSingleClaims.delete(entry);
+      if (entry.state === 'starting') {
+        entry.state = 'running';
+        entry.turnState = 'running';
+        emit(entry, 'running');
+      }
       return;
     }
     if (['sidepanel:run-completed', 'sidepanel:run-failed', 'sidepanel:run-stopped'].includes(message.type) || TERMINAL_STATES.has(run.status)) {
@@ -4228,15 +4452,17 @@ export function createAssistantDispatcher({
   async function processQueue() {
     refreshLimits();
     for (const runId of [...queue]) {
+      const index = queue.indexOf(runId);
+      if (index === -1) continue; // another drain or stop already took it
       const entry = entries.get(runId);
       // A run a restart cut off and a lowered limit held back (resumeOnBoot) waits at the head of the queue.
       const resuming = entry?.state === 'resuming';
-      if (!entry || (entry.state !== 'queued' && !resuming)) { queue.splice(queue.indexOf(runId), 1); continue; }
+      if (!entry || (entry.state !== 'queued' && !resuming)) { queue.splice(index, 1); continue; }
       const spec = { provider: entry.provider, accountId: entry.accountId, workflowId: entry.workflowId, usesComputer: !!entry.usesComputer };
       if (railBlock(spec, entry.assistantSessionId, resuming ? { except: runId } : {})) continue;
-      queue.splice(queue.indexOf(runId), 1);
+      queue.splice(index, 1);
       if (resuming) { try { await resumeRun(entry); } catch (error) { await notResumed(entry, error?.message || String(error)); } continue; }
-      try { await start(entry); emit(entry, 'queue_started'); } catch (error) { entry.notes.push(`queue start failed: ${error?.message || error}`); }
+      try { if (await start(entry)) emit(entry, 'queue_started'); } catch (error) { entry.notes.push(`queue start failed: ${error?.message || error}`); }
     }
   }
   function checkStalled() {
@@ -4434,6 +4660,7 @@ export function createAssistantDispatcher({
       if (entry.state === 'resuming') continue;
       if (ACTIVE_STATES.has(entry.state)) {
         pauseWork(entry);
+        releaseStartupClaim(entry);
         entry.state = 'interrupted'; entry.completionReason = reason; entry.finishedAt = iso(now()); entry.turnState = 'terminal'; entry.pending = [];
         delete entry.rawSpec;
         delete entry.heldAgent;
@@ -4464,11 +4691,18 @@ export function createAssistantDispatcher({
   }
 
   return {
-    dispatch, sendTurn, complete, completeClosedTab, stop, killAll, get, peek, teamRuns, activeRouteRuns, hasRunAwaitingOwner, list, totals, wait, transcript, pendingPermissions,
+    dispatch, sendTurn, steerRun, complete, completeClosedTab, stop, killAll, get, peek, teamRuns, activeRouteRuns, hasRunAwaitingOwner, list, totals, wait, transcript, pendingPermissions,
     respondPermission, subscribe, shutdown, limits, suspendForShutdown, drainFinalizations,
     sessionBudget, checkSession, refreshLimits, providerSpend, coverFollowUp, budget,
     resolveRoute, declineRoute, heldRouteRefusal, escalate,
     markDelivered, deliveryState, markEventsDelivered, noteBrowserRoute, noteBrowserProfile,
+    // A worker launched without a tab still has its own route. Keep a closed tab's id so an
+    // extension revocation cannot be mistaken for the first use of this browser.
+    optionalBrowserRoute(runId) {
+      const entry = entries.get(runId);
+      if (!entry?.usesBrowser || entry.browserRequiredBy !== null || !entry.startedAt || !ACTIVE_STATES.has(entry.state)) return null;
+      return { sessionId: entry.browserSessionId, tabId: entry.browserTabId, requestedBrowserSessionId: entry.requestedBrowserSessionId };
+    },
     remove, removeFinished,
     mediaFile,
     scratchReleased(runId, isTask, finishedMs) {

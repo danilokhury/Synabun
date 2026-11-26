@@ -1,3 +1,22 @@
+# SynaBun v.2.4.4
+
+You can now redirect an Assistant or worker mid-task and follow background commands as they run. This release also improves Windows updates and brings built-in page readers to the Browser Bridge.
+
+## ✨ New
+
+- **Steer an Assistant or worker.** Press Enter while the Assistant is working to send a new direction immediately. Use Alt+Enter to queue a message for later. A running worker has its own Steer action, and the conversation shows where you redirected it.
+- **Follow background tasks.** In the Claude Code panel and in Assistant tabs running Claude Code, open the activity counter to see background commands and watches, read live output, or stop a task. You can reopen the tab to see how a task finished.
+- **Read pages through Browser Bridge 1.5.0.** Assistants and scheduled runs can read text and Markdown, continue through long articles, and extract supported feeds with Allow User Scripts turned off. The bridge can open a tab even when the browser has no normal window open.
+
+## 🛠 Fixed
+
+- **More responsive Windows sessions.** Saving panel state and reading long conversations now cause fewer pauses that could make the server appear offline. Large Codex conversations are captured again.
+- **More reliable Windows updates.** The updater retries when files are still in use, identifies processes holding the installation folder, and reopens the previous version if the replacement hangs.
+- **Coding workers can start with the browser closed.** A worker that needs a page later opens a tab when it first uses the browser. Connection messages explain how to reconnect the selected browser or profile.
+- **Clearer memory-save results.** Retrying an automatic memory save after a worker finishes now recognizes an existing save and returns its memory ID.
+
+---
+
 # SynaBun v.2.4.3
 
 This release fixes OpenCode turns that ended too early and sessions that came back to life after a stop, makes OpenCode updates take effect without a restart, and stops the auto-close toggle from losing your drafts and queued prompts. The browser extension is now downloaded when you connect your browser.

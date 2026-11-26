@@ -2,6 +2,7 @@
 // this reads the server's setup status, renders, and does the page's few actions. The one-time token goes into
 // #synabun-setup-ticket only while the extension's content script is on this page and the server waits for it, and is
 // taken out again as soon as the setup moves on.
+import { extensionUpdateView } from '../extension-update-view.js';
 import { makeTranslator, pageLocale, revealKey, setupView, wantsTicket } from './es-view.js';
 
 const $ = id => document.getElementById(id);
@@ -36,18 +37,21 @@ function fixedText() {
 }
 function render() {
   const view = setupView(status, { extensionVersion: extensionSeen(), pairAnswer: pairAnswer() });
+  const update = extensionUpdateView(status.update, t);
+  const updating = update && ['idle', 'connected'].includes(view.state);
   const main = $('es-setup');
   main.dataset.state = view.state; main.dataset.layout = view.layout; main.setAttribute('aria-busy', 'false');
-  put($('es-title'), tx(view.title));
+  put($('es-title'), updating ? update.title : tx(view.title));
+  $('es-lead').hidden = !!updating;
   put($('es-lead'), tx(view.lead, { browser: view.browser }));
   $('es-eyebrow').hidden = !view.eyebrow; put($('es-eyebrow'), view.eyebrow ? tx(view.eyebrow, { browser: view.browser }) : '');
-  const live = $('es-live'); put(live, tx(view.live, view.liveParams)); live.dataset.tone = view.tone;
-  $('es-status').dataset.tone = view.tone || 'idle';
-  put($('es-status-title'), tx(view.statusTitle));
-  $('es-help').hidden = !view.help; put($('es-help'), view.help ? tx(view.help) : '');
+  const live = $('es-live'); put(live, updating ? update.message : tx(view.live, view.liveParams)); live.dataset.tone = updating ? (update.due ? 'warn' : 'ok') : view.tone;
+  $('es-status').dataset.tone = live.dataset.tone || 'idle';
+  put($('es-status-title'), updating ? t('browserExtension.statusTitle') : tx(view.statusTitle));
+  $('es-help').hidden = !!updating || !view.help; put($('es-help'), view.help ? tx(view.help) : '');
   $('es-progress').hidden = !view.progress; put($('es-progress'), view.progress ? tx('downloadProgress', view.progress) : '');
   $('es-browser').hidden = !view.browser; put($('es-browser-name'), view.browser);
-  $('es-steps').hidden = !view.showSteps;
+  $('es-steps').hidden = !!updating || !view.showSteps;
   for (const step of view.steps) {
     const id = { stepOpenTitle: 'open', stepDeveloperTitle: 'developer', stepLoadTitle: 'load', stepPairTitle: 'pair' }[step.title];
     put($(`es-step-${id}-title`), tx(step.title));
@@ -68,11 +72,14 @@ function render() {
       list.append(button);
     }
   }
-  $('es-reload').hidden = !view.reloadNeeded && !view.updateNeeded; put($('es-reload'), tx(view.updateNeeded ? 'updateNeeded' : view.reloadRepaired ? 'reloadRepaired' : 'reloadNeeded', { browser: view.browser }));
-  $('es-restart').hidden = !view.restart; put($('es-restart'), tx(view.restartLabel));
-  $('es-back').hidden = !view.back; $('es-pin').hidden = !view.pinTip;
+  const note = update ? (!updating && update.due ? [update.title, update.message].join(' ') : '')
+    : view.reloadNeeded || view.updateNeeded ? tx(view.updateNeeded ? 'updateNeeded' : view.reloadRepaired ? 'reloadRepaired' : 'reloadNeeded', { browser: view.browser }) : '';
+  $('es-reload').hidden = !note; put($('es-reload'), note);
+  $('es-update-flow').hidden = !update?.due; put($('es-update-flow'), t('browserExtension.updateFlow.review'));
+  $('es-restart').hidden = !!updating || !view.restart; put($('es-restart'), tx(view.restartLabel));
+  $('es-back').hidden = updating ? update.due : !view.back; $('es-pin').hidden = !!updating || !view.pinTip;
   // The row is hidden by the code that fills it (never found by a :has(), which every hidden toggle re-checks).
-  $('es-actions').hidden = !view.restart && !view.back;
+  $('es-actions').hidden = $('es-restart').hidden && $('es-back').hidden && $('es-update-flow').hidden;
   if (!['waiting-for-extension', 'extension-found'].includes(view.state)) clearTicket();
 }
 
@@ -85,7 +92,7 @@ async function poll() {
     // the Reload a port change asked for is done (the server keeps saying "reload" until then). Never for a repair: the
     // copy the browser still runs would answer the same, so this page only says to confirm in SynaBun Settings (and the
     // server ignores `seen` for it anyway).
-    if (status.reloadNeeded && !status.reloadRepaired && extensionSeen() && extensionSeen() === status.folderVersion) status = await call('seen', {});
+    if (status.reloadNeeded && !status.reloadRepaired && (!status.update || status.update.reason === 'port') && extensionSeen() && extensionSeen() === status.folderVersion) status = await call('seen', {});
     if (wantsTicket(status, { extensionVersion: extensionSeen(), pairAnswer: pairAnswer(), offeredAt, tickets })) {
       tickets++;
       const ticket = await call('ticket', {});

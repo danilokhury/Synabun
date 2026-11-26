@@ -220,6 +220,8 @@ export function injectAssistantStyles() {
     /* Icon-only actions: bare squares with their row's corners until hovered, the glyph grid-centred. */
     :is(.asst-iconbtn, .asst-tb-btn.asst-attach) { display: grid; place-items: center; width: var(--cap-h); padding: 0; background: transparent; box-shadow: none; color: var(--asst-text-3); }
     .asst-iconbtn:has(> .asst-count:not([hidden])) { display: inline-flex; width: auto; gap: 4px; padding: 0 2px 0 calc(var(--cap-px) - 2px); }
+    /* Background tasks: its "⟳ N" count sits on the icon's corner (bg-tasks-view.js), ringed in the bar's background. */
+    .asst-act-bgtasks { --sbt-badge-ring: var(--asst-card); }
     /* States */
     :is(.asst-dd, .asst-tb-btn, .asst-iconbtn, .asst-btn, .asst-cost):hover:not(:disabled) {
       background: var(--asst-fill-2);
@@ -2069,6 +2071,24 @@ export function injectAssistantStyles() {
     /* ── System notices ─────────────────────────────────────────────── */
     .asst-status { white-space: pre-wrap; overflow-wrap: anywhere; }
     .asst-status.warn { color: var(--asst-warn); }
+
+    /* ── Steer (asst-steer.js): Queue · Steer beside Stop, the target chip, the notice, the card's input ── */
+    .asst-steer-actions { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+    .asst-steer-actions[hidden] { display: none; }
+    .asst-composer-actions .asst-steer-actions:not([hidden]) + .asst-send { margin-left: 0; }
+    .asst-steer-actions .asst-queue-btn { width: auto; padding: 0 8px; color: var(--asst-text-2); font-size: 12px; }
+    .asst-steer-actions .asst-steer-btn { height: var(--cap-h); padding: 0 10px; font-size: 12px; font-weight: 500; }
+    .asst-composer-target { display: flex; padding: 10px 12px 0; }
+    .asst-composer-target[hidden] { display: none; }
+    .asst-composer-target .asst-steer-target { max-width: 100%; color: var(--asst-text); box-shadow: inset 0 0 0 1px var(--asst-line-2); }
+    .asst-status.asst-steer-notice[data-steer="steer"] { padding-left: 8px; border-left: 2px solid var(--asst-line-2); color: var(--asst-text-2); }
+    .asst-divider.asst-steer-break { gap: 0; margin: 4px 0; }
+    .asst-status.asst-steer-notice .asst-steer-retry { margin-left: 8px; vertical-align: baseline; }
+    .asst-run-steer { --cap-h: var(--asst-pill-h-sm); --cap-r: var(--asst-pill-r-sm); grid-column: 1 / -1; display: flex; align-items: center; gap: 4px; margin-top: 6px; min-width: 0; }
+    .asst-run-steer-input { flex: 1; min-width: 0; height: var(--cap-h); padding: 0 8px; border: 0; border-radius: var(--cap-r); outline: none; background: transparent; box-shadow: inset 0 0 0 1px var(--asst-line-2); color: var(--asst-text); font: inherit; font-size: 12.5px; }
+    .asst-run-steer-input:focus-visible { box-shadow: inset 0 0 0 1px var(--asst-text-2); }
+    .asst-run-steer-input::placeholder { color: var(--asst-text-3); }
+    .asst-run-steer .asst-tb-btn svg { width: 14px; height: 14px; }
     .asst-msg.asst-msg-error .asst-msg-content { padding: 6px 10px; border-radius: var(--asst-r-field); box-shadow: inset 2px 0 0 var(--asst-live), inset 0 0 0 1px color-mix(in srgb, var(--asst-live) 28%, transparent); }
     .asst-local-output { padding-left: 12px; border-left: 2px solid var(--asst-line-2); }
     .asst-local-output .asst-md { --sbo-text: var(--asst-text-2); --sbo-size: 13px; }

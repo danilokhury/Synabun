@@ -709,6 +709,12 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
   let alive = true;
   let sessionId = null;
   let activeTurn = null;
+  // Results the CLI still owes for turns a steer cut (abort('steered')): each interrupted prompt ends with one result
+  // of its own, which must not settle the turn sent after it.
+  let staleResults = 0;
+  // A turn still waiting to start (the MCP scope check) has no prompt at the CLI yet: an abort then ends it before
+  // the prompt goes ({ reason } while it waits, read once runTurn may send).
+  let startingTurn = null;
   // The session's live background tasks (shells, Monitors, agents): what a turn of this run waits for.
   const bgTasks = createBackgroundTasks();
   const holdLimits = backgroundHold && typeof backgroundHold === 'object' ? { ...BACKGROUND_HOLD_DEFAULTS, ...backgroundHold } : BACKGROUND_HOLD_DEFAULTS;
@@ -1087,6 +1093,7 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
         }
         emitEvent(event);
         bgTasks.apply(event, Date.now());
+        if (event?.type === 'result' && staleResults > 0) { staleResults -= 1; continue; }
         if (event?.type === 'result' && activeTurn) {
           const turn = activeTurn;
           const cost = turnCost(event);
@@ -1158,24 +1165,50 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
     });
   });
 
+  // The MCP scope check (only the servers this run may use are connected) before a prompt goes to the CLI. A CLI that
+  // exited at once fails it too, with the CLI's own reason when it gave one.
+  const scopeCheck = async () => {
+    if (held) return;
+    try { await waitForClaudeMcpScope(q, externalScopeNames); }
+    catch {
+      input.close(); q.close?.(); await endProcess();
+      // A CLI that ended by itself said why: a resumed session with nothing saved is that, not an MCP problem.
+      const ended = await Promise.race([pump.then(() => null, (error) => error), new Promise((done) => { const timer = setTimeout(done, 1000, null); timer.unref?.(); })]);
+      const noConversation = /No conversation found with session ID[^\n]*/i.exec(`${ended?.message || ''}\n${stderrTail}`);
+      if (noConversation) throw new Error(`Claude Code returned an error result: ${noConversation[0].trim()}`);
+      throw Object.assign(new Error('Claude MCP scope could not be enforced before the first turn'), { code: 'MCP_SCOPE_UNENFORCED' });
+    }
+  };
+  // ready()'s check, which the first turn takes instead of checking again (every later turn checks as before).
+  let readyCheck = null;
+
   return {
     identity: () => ({ providerSessionId: sessionId }),
     isAlive: () => alive,
+    // Review round 3, I1c-b: the runtime awaits this inside its startup window before it reports the run started
+    // (NativeLoopRuntime._bootstrap), as the Codex, OpenCode and Antigravity factories finish their own startup before
+    // they return. Without it a Claude worker read as started before its CLI had proved it runs with its MCP scope,
+    // and a boot failure came only with the first turn, after the dispatcher had committed its single route.
+    ready() {
+      if (!readyCheck) { readyCheck = scopeCheck(); readyCheck.catch(() => {}); }
+      return readyCheck;
+    },
     // The CLI's process while it runs ({ pid }), else null.
     processInfo: () => (child?.pid && !processEnded() ? { pid: child.pid } : null),
     describe: () => ({ provider: 'claude-code', permissionPolicy, capability, askMode, ...(held ? { confinement: held.kind, root: held.root, ...(evaluated ? { role: evaluated.role, skills: [...evalOptions.skills], plugins: evalOptions.plugins.map((plugin) => plugin.path) } : {}) } : {}), ...(guard ? { guard: { mode: guard.mode, capability: guard.capability, writable: [...guard.writable] } } : {}) }),
     async runTurn(prompt, meta = {}) {
-      if (!held) {
-        try { await waitForClaudeMcpScope(q, externalScopeNames); }
-        catch {
-          input.close(); q.close?.(); await endProcess();
-          // A CLI that ended by itself said why: a resumed session with nothing saved is that, not an MCP problem.
-          const ended = await Promise.race([pump.then(() => null, (error) => error), new Promise((done) => { const timer = setTimeout(done, 1000, null); timer.unref?.(); })]);
-          const noConversation = /No conversation found with session ID[^\n]*/i.exec(`${ended?.message || ''}\n${stderrTail}`);
-          if (noConversation) throw new Error(`Claude Code returned an error result: ${noConversation[0].trim()}`);
-          throw Object.assign(new Error('Claude MCP scope could not be enforced before the first turn'), { code: 'MCP_SCOPE_UNENFORCED' });
-        }
+      const starting = { reason: null };
+      startingTurn = starting;
+      const check = readyCheck || scopeCheck();
+      readyCheck = null;
+      try { await check; }
+      catch (error) {
+        if (startingTurn === starting) startingTurn = null;
+        throw error;
       }
+      if (startingTurn === starting) startingTurn = null;
+      // Aborted while it waited to start: the prompt never went to the CLI (no result is owed for it).
+      if (starting.reason) throw Object.assign(asAbortError(starting.reason), { notSent: true });
       if (!alive) return Promise.reject(new Error('Claude native loop is closed'));
       if (activeTurn) return Promise.reject(new Error('Claude native loop already has an active turn'));
       onEvent({
@@ -1201,10 +1234,13 @@ export async function createClaudeNativeLoopAdapter(options = {}) {
       });
     },
     async abort(reason = 'aborted') {
+      if (startingTurn && !activeTurn) { startingTurn.reason = reason; return true; }
       if (activeTurn) {
         const turn = activeTurn; activeTurn = null;
         turn.hold?.cancel();
         turn.reject(asAbortError(reason));
+        // A steer keeps the session for the next prompt: the cut prompt's own result is not that one's.
+        if (reason === 'steered' && alive) staleResults += 1;
       }
       if (!alive) return true;
       try {
@@ -1338,6 +1374,12 @@ export async function createOpenCodeNativeLoopAdapter(options = {}) {
   let alive = true;
   let activeAbort = null;
   let activeTurn = null;
+  // The serve's end of a turn a steer cut, still owed ({ until, error }): see the event handler.
+  let steerEcho = null;
+  const isAbortEcho = (event) => {
+    const error = event?.error || event?.info?.error || event?.data?.error || {};
+    return /abort/i.test(String(error?.name || '')) || /turn was stopped/i.test(String(error?.data?.message || error?.message || ''));
+  };
   const eventSource = client.onEvent ? client : client.event;
   let sessionId = null;
   // Assistant text assembled from the SSE stream (message.updated gives roles,
@@ -1501,6 +1543,20 @@ export async function createOpenCodeNativeLoopAdapter(options = {}) {
     // synchronous fetch open and misclassifying a long, healthy turn as
     // `native:iteration-error | fetch failed`.
     const ownsTurnEvent = !!sid && sid === sessionId;
+    // A steer's abort (abort('steered')) ends the cut turn at the serve with "The turn was stopped (user)" and an
+    // idle, which can arrive after the steer's own turn was sent: they are that cut turn's end, never this one's.
+    if (ownsTurnEvent && steerEcho && Date.now() > steerEcho.until) steerEcho = null;
+    if (ownsTurnEvent && steerEcho && /^session[.:]error$/i.test(eventType) && isAbortEcho(event)) {
+      steerEcho.error = true;
+      steerEcho.until = Math.min(steerEcho.until, Date.now() + 2000);
+      onEvent({ provider: 'opencode', runId, eventType, event, steerEcho: true });
+      return;
+    }
+    if (ownsTurnEvent && steerEcho?.error && /^session[.:]idle$/i.test(eventType)) {
+      steerEcho = null;
+      onEvent({ provider: 'opencode', runId, eventType, event, steerEcho: true });
+      return;
+    }
     if (ownsTurnEvent && /^session[.:]idle$/i.test(eventType)) finishTurnWithText();
     if (ownsTurnEvent && /^session[.:]error$/i.test(eventType)) {
       const detail = providerErrorMessage(
@@ -1568,7 +1624,7 @@ export async function createOpenCodeNativeLoopAdapter(options = {}) {
       activeAbort = controller;
       const checkReady = async () => {
         await client.waitUntilConnected?.(10_000);
-        if (!alive || controller.signal.aborted) throw asAbortError('aborted');
+        if (!alive || controller.signal.aborted) throw Object.assign(asAbortError('aborted'), { notSent: true });
         const ready = await waitForSynabunTools(client, {
           ...(options.mcpWait || {}), directory: cwd || undefined,
           expected: options.synabunExpected !== false && !held, signal: controller.signal,
@@ -1579,7 +1635,7 @@ export async function createOpenCodeNativeLoopAdapter(options = {}) {
             onEvent({ provider: 'opencode', runId, eventType: 'synabun.mcp.status', event: { sessionID: sessionId, text } });
           },
         });
-        if (!ready || controller.signal.aborted || !alive) throw asAbortError('aborted');
+        if (!ready || controller.signal.aborted || !alive) throw Object.assign(asAbortError('aborted'), { notSent: true });
       };
       const request = {
         sessionID: sessionId,
@@ -1653,6 +1709,9 @@ export async function createOpenCodeNativeLoopAdapter(options = {}) {
       }
     },
     async abort(reason = 'aborted') {
+      // Only a turn the serve already has ends there with an echo (a prompt not sent yet has nothing to stop).
+      const sentTurn = !!activeTurn && (activeTurn.mode === 'sync' || activeTurn.sent);
+      steerEcho = reason === 'steered' && sentTurn ? { until: Date.now() + 10_000, error: false } : null;
       if (activeAbort) activeAbort.abort(asAbortError(reason));
       settleActiveTurn(asAbortError(reason));
       try {
@@ -1661,7 +1720,8 @@ export async function createOpenCodeNativeLoopAdapter(options = {}) {
         // background, and its end wakes no model turn in a session nobody owns any more.
         // What it gave up on goes back to the runtime (lib/native-loop-runtime.js stop), which keeps it on the run:
         // its result, its tab and the brain then say that the command may still be running (review 29cd51fe).
-        const answer = await settleWithin(client.session.abort({ sessionID: sessionId, directory: cwd || undefined, force: true }));
+        // A steer cuts the turn only: the session goes on, so a command in the background is left to it (no force).
+        const answer = await settleWithin(client.session.abort({ sessionID: sessionId, directory: cwd || undefined, ...(reason === 'steered' ? {} : { force: true }) }));
         const abandoned = Array.isArray(answer?.data?.abandoned) ? answer.data.abandoned : [];
         if (abandoned.length) {
           return { stopped: true, abandoned: abandoned.map((shell) => ({ id: String(shell?.id || ''), command: String(shell?.command || '').slice(0, 200) })) };

@@ -228,12 +228,14 @@ async function readJson(res) {
  *   'error'       something answered, but not OpenCode 2's API
  * Never throws.
  */
-export async function checkOpencodeServer({ port, password = null, fetchImpl = globalThis.fetch, timeoutMs = 2000, host = '127.0.0.1' } = {}) {
+export async function checkOpencodeServer({ port, password = null, fetchImpl = globalThis.fetch, timeoutMs = 2000, host = '127.0.0.1', signal = null } = {}) {
   let res;
   try {
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const reqSignal = signal ? AbortSignal.any([timeout, signal]) : timeout;
     res = await fetchImpl(`http://${host}:${port}/api/info`, {
       headers: { accept: 'application/json', ...(password ? { authorization: basicAuthHeader(password) } : {}) },
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: reqSignal,
     });
   } catch (error) {
     return { ok: false, version: null, state: 'down', error: String(error?.message || error) };

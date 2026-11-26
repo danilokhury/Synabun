@@ -19,6 +19,7 @@ export const browserSnapshotSchema = {
   force: coerceBoolean().optional().describe('Return the full snapshot even if the page is unchanged since your last snapshot.'),
   viewport: coerceBoolean().optional().describe('Drop off-screen nodes (legacy modes only; ignored for mode="ai" — use depth/selector instead).'),
   maxChars: z.coerce.number().int().positive().optional().describe('Cap snapshot text in characters, excluding brief metadata (default 30000). Truncates at complete lines.'),
+  offset: z.coerce.number().int().nonnegative().optional().describe('mode="ai", extension backend (SynaBun Browser Bridge 1.5.0+): continue a long snapshot from this character offset (the "pass offset=N" a cut snapshot ends with). To read an article, prefer browser_content format="markdown".'),
   intent: z.string().max(300).optional().describe('What you want to do on this page, in words (e.g. "open account settings"). mode="ai" only: the refs of THIS snapshot are ranked against it and the best one is named in a "Jev target:" line. Advisory — nothing is clicked, and no ref is invented.'),
   format: z.enum(['text', 'json']).optional().describe('Only meaningful with mode="interactive": "json" = compact array.'),
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
@@ -55,7 +56,8 @@ export function formatAiSnapshotBody(
   if (result.snapshotId) {
     body = `Snapshot: ${result.snapshotId}${result.baselineId ? `; baseline: ${result.baselineId}` : ''}\n${body}`;
   }
-  if (result.snapshotTruncated || clientTruncated) body += '\n(truncated; narrow selector/depth or raise maxChars)';
+  if (typeof result.snapshotNextOffset === 'number') body += `\n(truncated — ${result.snapshotTotalChars} chars total, pass offset=${result.snapshotNextOffset} to continue)`;
+  else if (result.snapshotTruncated || clientTruncated) body += '\n(truncated; narrow selector/depth or raise maxChars)';
   if (result.aiDepth) body += `\n(depth ${result.aiDepth}; set depth to override)`;
   return body;
 }
@@ -198,6 +200,7 @@ export async function handleBrowserSnapshot(args: {
   force?: boolean;
   viewport?: boolean;
   maxChars?: number;
+  offset?: number;
   intent?: string;
   format?: SnapshotFormat;
   sessionId?: string;
@@ -220,6 +223,7 @@ export async function handleBrowserSnapshot(args: {
     baselineId: args.baselineId,
     force: args.force,
     ...(mode === 'ai' && { maxChars }),
+    ...(mode === 'ai' && args.offset !== undefined && { offset: args.offset }),
     // Ranking needs every ref of this capture even when only a diff or "unchanged" is shown.
     ...(rank && { includeFullText: true }),
   });
@@ -229,6 +233,7 @@ export async function handleBrowserSnapshot(args: {
     let msg = `Page: ${result.url}\nTitle: "${result.title}"\n`;
     if (args.selector) msg += `Scope: ${args.selector}\n`;
     msg += '\n' + formatAiSnapshotBody(result, maxChars);
+    if (args.offset && result.snapshotOffset === undefined) msg += '\n(offset is not supported by this browser backend: the snapshot starts at the top. Narrow it with selector, or read the page with browser_content.)';
     if (rank) {
       // The refs ranked are the ones this capture minted; a second capture would replace them.
       const delivered = typeof result.snapshotFullText === 'string' ? result.snapshotFullText : typeof result.snapshotText === 'string' && !result.snapshotIsDiff ? result.snapshotText : '';
@@ -479,6 +484,7 @@ const pagedExtractorFields = {
 interface PagedArgs { scrolls?: number; minItems?: number; maxItems?: number; fields?: string[]; maxChars?: number; timeoutMs?: number }
 
 interface PagedOpts extends PagedArgs {
+  extractor?: string;         // the extension's fixed reader for this script (EXTENSION_READER_SOURCES)
   dedupeKeys: string[];       // first non-null field is the item identity
   scrollTarget?: string;      // JS expression resolving the scroll container (default: window)
   scrollDistance?: number;    // default 1200
@@ -688,7 +694,7 @@ export async function handleBrowserExtractTweets(args: PagedArgs & { sessionId?:
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, TWEET_EXTRACTOR_SCRIPT, {
+  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, TWEET_EXTRACTOR_SCRIPT, { extractor: 'x.tweets',
     ...args, dedupeKeys: ['url'],
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
@@ -766,7 +772,7 @@ export async function handleBrowserExtractFbPosts(args: PagedArgs & { sessionId?
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, FB_POST_EXTRACTOR_SCRIPT, {
+  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, FB_POST_EXTRACTOR_SCRIPT, { extractor: 'fb.posts',
     ...args, dedupeKeys: ['postUrl'], scrollIfEmpty: true,
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
@@ -967,7 +973,7 @@ export async function handleBrowserFbComposerState(args: { sessionId?: string; t
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, FB_COMPOSER_STATE_SCRIPT, resolved.tabId);
+  const result = await ni.evaluate(resolved.sessionId, FB_COMPOSER_STATE_SCRIPT, resolved.tabId, { extractor: 'fb.composer_state' });
   if (result.error) return text(`Composer state probe failed: ${result.error}`);
 
   // Only when the probe could not decide (unknown state or action, no submit button, or a heuristic match).
@@ -1050,7 +1056,7 @@ export async function handleBrowserExtractFbGroups(args: PagedArgs & { sessionId
 
   // Full-scroll the virtualized joins list, accumulating + deduping by url. Defaults harvest the
   // whole list in one call; the caller can override scrolls/maxItems.
-  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, FB_GROUPS_EXTRACTOR_SCRIPT, {
+  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, FB_GROUPS_EXTRACTOR_SCRIPT, { extractor: 'fb.groups',
     scrolls: args.scrolls ?? 10,
     minItems: args.minItems,
     maxItems: args.maxItems ?? 1000,
@@ -1171,7 +1177,7 @@ export async function handleBrowserExtractTiktokVideos(args: PagedArgs & { sessi
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, TIKTOK_FEED_EXTRACTOR_SCRIPT, {
+  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, TIKTOK_FEED_EXTRACTOR_SCRIPT, { extractor: 'tiktok.feed',
     ...args, dedupeKeys: ['videoUrl', 'handle'], scrollIfEmpty: true,
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
@@ -1217,7 +1223,7 @@ export async function handleBrowserExtractTiktokSearch(args: PagedArgs & { sessi
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, TIKTOK_SEARCH_EXTRACTOR_SCRIPT, {
+  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, TIKTOK_SEARCH_EXTRACTOR_SCRIPT, { extractor: 'tiktok.search',
     ...args, dedupeKeys: ['videoUrl'], scrollIfEmpty: true,
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
@@ -1265,7 +1271,7 @@ export async function handleBrowserExtractTiktokStudio(args: PagedArgs & { sessi
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, TIKTOK_STUDIO_EXTRACTOR_SCRIPT, {
+  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, TIKTOK_STUDIO_EXTRACTOR_SCRIPT, { extractor: 'tiktok.studio',
     ...args, dedupeKeys: ['url', 'title'],
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
@@ -1298,7 +1304,44 @@ const TIKTOK_PROFILE_EXTRACTOR_SCRIPT = `
 })()
 `.trim();
 
+// The signed-in account, from what any TikTok or TikTok Studio page shows of it: the navigation's profile link (its
+// /@handle), the account name next to it, and whether a log-in button is shown instead. Read-only, DOM only.
+export const TIKTOK_ACCOUNT_SCRIPT = `
+(() => {
+  const clean = value => (value || '').replace(/\\s+/g, ' ').trim() || null;
+  const handleOf = href => { const m = /\\/@([A-Za-z0-9._-]{1,64})(?:[/?#]|$)/.exec(href || ''); return m ? m[1] : null; };
+  const loginShown = !!document.querySelector('[data-e2e="top-login-button"], [data-e2e="nav-login-button"], #header-login-button, [data-e2e="login-button"]');
+  const candidates = [
+    ['nav-profile', document.querySelector('[data-e2e="nav-profile"]')],
+    ['profile-icon', document.querySelector('[data-e2e="profile-icon"]')],
+    ['studio-header', document.querySelector('header a[href*="/@"], [class*="AccountInfo"] a[href*="/@"], [class*="account-info"] a[href*="/@"]')],
+    ['menu', document.querySelector('nav a[href*="/@"], aside a[href*="/@"]')],
+  ];
+  let handle = null, source = null, anchor = null;
+  for (const [name, el] of candidates) {
+    const link = el ? (el.matches('a[href]') ? el : el.closest('a[href]') || el.querySelector('a[href]')) : null;
+    const found = handleOf(link ? link.getAttribute('href') : '');
+    if (found) { handle = found; source = name; anchor = link; break; }
+  }
+  const nameEl = anchor && (anchor.querySelector('[data-e2e="nav-profile-name"], [class*="UserName"], [class*="Nickname"]') || null);
+  const avatar = anchor ? anchor.querySelector('img[alt]') : null;
+  const ownProfile = !!document.querySelector('[data-e2e="edit-profile-entrance"], [data-e2e="edit-profile-button"]');
+  const pageHandle = clean(document.querySelector('[data-e2e="user-title"]')?.innerText);
+  return {
+    signedIn: !!handle && !loginShown,
+    handle: handle ? '@' + handle : null,
+    name: clean(nameEl?.innerText) || clean(avatar?.getAttribute('alt')),
+    source,
+    loginShown,
+    onOwnProfile: ownProfile,
+    profileTitle: ownProfile ? pageHandle : null,
+    page: location.origin + location.pathname,
+  };
+})()
+`.trim();
+
 export const browserExtractTiktokProfileSchema = {
+  signedIn: coerceBoolean().optional().describe('Read the SIGNED-IN account (handle, name, whether a log-in button shows) from any TikTok or TikTok Studio page instead of a profile page. Read-only.'),
   sessionId: z.string().optional().describe('Browser session ID. If omitted, auto-selects the only open session.'),
   tabId: tabIdField,
 };
@@ -1307,13 +1350,24 @@ export const browserExtractTiktokProfileDescription =
   'Extract profile info and video grid from a TikTok profile page as structured JSON ' +
   '(name, handle, bio, followers, following, likes, videos[{videoUrl, views}]). ' +
   'Navigate to tiktok.com/@username first. Scroll down to load more videos in the grid. ' +
-  'Use this to audit a creator profile or collect video URLs for further processing.';
+  'Use this to audit a creator profile or collect video URLs for further processing. ' +
+  'signedIn=true reads which account is signed in instead (an identity check; works on any TikTok page).';
 
-export async function handleBrowserExtractTiktokProfile(args: { sessionId?: string; tabId?: string }) {
+export async function handleBrowserExtractTiktokProfile(args: { signedIn?: boolean; sessionId?: string; tabId?: string }) {
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, TIKTOK_PROFILE_EXTRACTOR_SCRIPT, resolved.tabId);
+  if (args.signedIn) {
+    const account = await ni.evaluate(resolved.sessionId, TIKTOK_ACCOUNT_SCRIPT, resolved.tabId, { extractor: 'tiktok.account' });
+    if (account.error) return text(`Extract failed: ${account.error}`);
+    const value = account.result as Record<string, unknown> | null;
+    if (!value || !value.handle) {
+      return emptyExtraction(resolved, 'browser_extract_tiktok_profile', 'a TikTok page that shows the signed-in account', `No signed-in TikTok account is shown on this page${value?.loginShown ? ' (a log-in button is shown)' : ''}. Open tiktok.com or tiktok.com/tiktokstudio, then retry.`);
+    }
+    return text(`Signed-in account:\n\n${JSON.stringify(value)}`);
+  }
+
+  const result = await ni.evaluate(resolved.sessionId, TIKTOK_PROFILE_EXTRACTOR_SCRIPT, resolved.tabId, { extractor: 'tiktok.profile' });
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const profile = result.result as Record<string, unknown>;
@@ -1363,9 +1417,9 @@ export async function handleBrowserExtractWaChats(args: PagedArgs & { sessionId?
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, WA_CHATS_EXTRACTOR_SCRIPT, {
+  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, WA_CHATS_EXTRACTOR_SCRIPT, { extractor: 'wa.chats',
     ...args, dedupeKeys: ['name'],
-    scrollTarget: `document.querySelector('#pane-side')`,
+    scrollTarget: WA_CHATS_SCROLL_TARGET,
     scrollDistance: 600,
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
@@ -1413,9 +1467,9 @@ export async function handleBrowserExtractWaMessages(args: PagedArgs & { session
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, WA_MESSAGES_EXTRACTOR_SCRIPT, {
+  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, WA_MESSAGES_EXTRACTOR_SCRIPT, { extractor: 'wa.messages',
     ...args, dedupeKeys: ['dataId'],
-    scrollTarget: SCROLLABLE_ANCESTOR('div.copyable-text[data-pre-plain-text]'),
+    scrollTarget: WA_MESSAGES_SCROLL_TARGET,
     scrollDirection: -1, // history loads upward
     scrollDistance: 800,
   });
@@ -1465,7 +1519,7 @@ export async function handleBrowserExtractIgFeed(args: PagedArgs & { sessionId?:
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, IG_FEED_EXTRACTOR_SCRIPT, {
+  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, IG_FEED_EXTRACTOR_SCRIPT, { extractor: 'ig.feed',
     ...args, dedupeKeys: ['postUrl'], scrollIfEmpty: true,
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
@@ -1528,7 +1582,7 @@ export async function handleBrowserExtractIgProfile(args: { sessionId?: string; 
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, IG_PROFILE_EXTRACTOR_SCRIPT, resolved.tabId);
+  const result = await ni.evaluate(resolved.sessionId, IG_PROFILE_EXTRACTOR_SCRIPT, resolved.tabId, { extractor: 'ig.profile' });
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const profile = result.result as Record<string, unknown>;
@@ -1605,7 +1659,7 @@ export async function handleBrowserExtractIgPost(args: { sessionId?: string; tab
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, IG_POST_EXTRACTOR_SCRIPT, resolved.tabId);
+  const result = await ni.evaluate(resolved.sessionId, IG_POST_EXTRACTOR_SCRIPT, resolved.tabId, { extractor: 'ig.post' });
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const post = result.result as Record<string, unknown>;
@@ -1672,7 +1726,7 @@ export async function handleBrowserExtractIgReels(args: PagedArgs & { sessionId?
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, IG_REELS_EXTRACTOR_SCRIPT, {
+  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, IG_REELS_EXTRACTOR_SCRIPT, { extractor: 'ig.reels',
     ...args, dedupeKeys: ['profileUrl', 'caption'],
     scrollDistance: 900, // reels advance roughly one viewport per scroll
   });
@@ -1709,7 +1763,7 @@ export async function handleBrowserExtractIgSearch(args: PagedArgs & { sessionId
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, IG_SEARCH_EXTRACTOR_SCRIPT, {
+  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, IG_SEARCH_EXTRACTOR_SCRIPT, { extractor: 'ig.search',
     ...args, dedupeKeys: ['url'], scrollIfEmpty: true,
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
@@ -1773,7 +1827,7 @@ export async function handleBrowserExtractLiFeed(args: PagedArgs & { sessionId?:
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, LI_FEED_EXTRACTOR_SCRIPT, {
+  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, LI_FEED_EXTRACTOR_SCRIPT, { extractor: 'li.feed',
     ...args, dedupeKeys: ['postUrl'], scrollIfEmpty: true,
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
@@ -1829,7 +1883,7 @@ export async function handleBrowserExtractLiProfile(args: { sessionId?: string; 
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, LI_PROFILE_EXTRACTOR_SCRIPT, resolved.tabId);
+  const result = await ni.evaluate(resolved.sessionId, LI_PROFILE_EXTRACTOR_SCRIPT, resolved.tabId, { extractor: 'li.profile' });
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const profile = result.result as Record<string, unknown>;
@@ -1886,7 +1940,7 @@ export async function handleBrowserExtractLiPost(args: { sessionId?: string; tab
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, LI_POST_EXTRACTOR_SCRIPT, resolved.tabId);
+  const result = await ni.evaluate(resolved.sessionId, LI_POST_EXTRACTOR_SCRIPT, resolved.tabId, { extractor: 'li.post' });
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const post = result.result as Record<string, unknown>;
@@ -1928,7 +1982,7 @@ export async function handleBrowserExtractLiNotifications(args: PagedArgs & { se
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, LI_NOTIFICATIONS_EXTRACTOR_SCRIPT, {
+  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, LI_NOTIFICATIONS_EXTRACTOR_SCRIPT, { extractor: 'li.notifications',
     ...args, dedupeKeys: ['url', 'text'],
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
@@ -1979,7 +2033,7 @@ export async function handleBrowserExtractLiMessages(args: { sessionId?: string;
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, LI_MESSAGES_EXTRACTOR_SCRIPT, resolved.tabId);
+  const result = await ni.evaluate(resolved.sessionId, LI_MESSAGES_EXTRACTOR_SCRIPT, resolved.tabId, { extractor: 'li.messages' });
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const data = result.result as Record<string, unknown>;
@@ -2049,7 +2103,7 @@ export async function handleBrowserExtractLiSearchPeople(args: PagedArgs & { ses
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, LI_SEARCH_PEOPLE_EXTRACTOR_SCRIPT, {
+  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, LI_SEARCH_PEOPLE_EXTRACTOR_SCRIPT, { extractor: 'li.search_people',
     ...args, dedupeKeys: ['profileUrl'],
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
@@ -2123,7 +2177,7 @@ export async function handleBrowserExtractLiNetwork(args: { sessionId?: string; 
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const result = await ni.evaluate(resolved.sessionId, LI_NETWORK_EXTRACTOR_SCRIPT, resolved.tabId);
+  const result = await ni.evaluate(resolved.sessionId, LI_NETWORK_EXTRACTOR_SCRIPT, resolved.tabId, { extractor: 'li.network' });
   if (result.error) return text(`Extract failed: ${result.error}`);
 
   const data = result.result as Record<string, unknown>;
@@ -2252,7 +2306,7 @@ export async function handleBrowserExtractLiJobs(args: PagedArgs & { sessionId?:
   const resolved = await ni.resolveSession(args.sessionId, undefined, args.tabId);
   if ('error' in resolved) return text(resolved.error);
 
-  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, LI_JOBS_EXTRACTOR_SCRIPT, {
+  const res = await runPagedExtractor(resolved.sessionId, resolved.tabId, LI_JOBS_EXTRACTOR_SCRIPT, { extractor: 'li.jobs',
     ...args, dedupeKeys: ['jobId', 'jobUrl'], scrollIfEmpty: true,
   });
   if ('error' in res) return text(`Extract failed: ${res.error}`);
@@ -2262,3 +2316,38 @@ export async function handleBrowserExtractLiJobs(args: PagedArgs & { sessionId?:
 
   return text(formatExtraction('job', res));
 }
+
+// ── The extension backend's fixed readers ──
+// The extension (SynaBun Browser Bridge) never runs these strings: it ships each one as a fixed function, generated
+// from this table (scripts/extension/build-browser-readers.mjs → browser-extension/readers-generated.js; a test keeps
+// the two equal), and runs it by its id in the isolated world. The Playwright backend runs the strings themselves,
+// unchanged. A scroll target is the expression of the container a paged extractor scrolls (window when absent).
+export const WA_CHATS_SCROLL_TARGET = `document.querySelector('#pane-side')`;
+export const WA_MESSAGES_SCROLL_TARGET = SCROLLABLE_ANCESTOR('div.copyable-text[data-pre-plain-text]');
+
+export const BROWSER_EXTRACTOR_SOURCES: Readonly<Record<string, { script: string; scrollTarget?: string }>> = Object.freeze({
+  'x.tweets': { script: TWEET_EXTRACTOR_SCRIPT },
+  'fb.posts': { script: FB_POST_EXTRACTOR_SCRIPT },
+  'fb.groups': { script: FB_GROUPS_EXTRACTOR_SCRIPT },
+  'fb.composer_state': { script: FB_COMPOSER_STATE_SCRIPT },
+  'tiktok.feed': { script: TIKTOK_FEED_EXTRACTOR_SCRIPT },
+  'tiktok.search': { script: TIKTOK_SEARCH_EXTRACTOR_SCRIPT },
+  'tiktok.studio': { script: TIKTOK_STUDIO_EXTRACTOR_SCRIPT },
+  'tiktok.profile': { script: TIKTOK_PROFILE_EXTRACTOR_SCRIPT },
+  'tiktok.account': { script: TIKTOK_ACCOUNT_SCRIPT },
+  'wa.chats': { script: WA_CHATS_EXTRACTOR_SCRIPT, scrollTarget: WA_CHATS_SCROLL_TARGET },
+  'wa.messages': { script: WA_MESSAGES_EXTRACTOR_SCRIPT, scrollTarget: WA_MESSAGES_SCROLL_TARGET },
+  'ig.feed': { script: IG_FEED_EXTRACTOR_SCRIPT },
+  'ig.profile': { script: IG_PROFILE_EXTRACTOR_SCRIPT },
+  'ig.post': { script: IG_POST_EXTRACTOR_SCRIPT },
+  'ig.reels': { script: IG_REELS_EXTRACTOR_SCRIPT },
+  'ig.search': { script: IG_SEARCH_EXTRACTOR_SCRIPT },
+  'li.feed': { script: LI_FEED_EXTRACTOR_SCRIPT },
+  'li.profile': { script: LI_PROFILE_EXTRACTOR_SCRIPT },
+  'li.post': { script: LI_POST_EXTRACTOR_SCRIPT },
+  'li.notifications': { script: LI_NOTIFICATIONS_EXTRACTOR_SCRIPT },
+  'li.messages': { script: LI_MESSAGES_EXTRACTOR_SCRIPT },
+  'li.search_people': { script: LI_SEARCH_PEOPLE_EXTRACTOR_SCRIPT },
+  'li.network': { script: LI_NETWORK_EXTRACTOR_SCRIPT },
+  'li.jobs': { script: LI_JOBS_EXTRACTOR_SCRIPT },
+});

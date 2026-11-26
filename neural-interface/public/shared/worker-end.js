@@ -97,6 +97,21 @@ export function isRunWorking(run, dispatch = null) {
   return run?.turnState !== 'idle' && run?.turnState !== 'terminal';
 }
 
+/**
+ * The run's last turn was cut by a steer and the run goes on: it is marked steering, or its last turn ended with the
+ * reason 'steered' while the run itself has not ended. A run that ended after all (stopped, failed) is not this.
+ */
+export function wasSteered(run, dispatch = null) {
+  const ended = TERMINAL.has(String(dispatch?.state || ''))
+    || (TERMINAL.has(String(run?.status || '')) && !(dispatch && run?.stoppedReason === 'steered'));
+  if (ended) return false;
+  const steered = (v) => !!v && typeof v === 'object' && (v.steering === true
+    || [v.turnEndReason, v.endReason, v.lastTurn?.reason, v.lastResult?.reason, v.stoppedReason].includes('steered')
+    // The dispatcher's record of the cut turn (lib/assistant-dispatch.js: endReason 'steered', result null).
+    || (Array.isArray(v.turns) && v.turns.length > 0 && v.turns[v.turns.length - 1]?.endReason === 'steered'));
+  return steered(dispatch) || steered(run);
+}
+
 /** The runtime descriptor says the run may have something to show: it ended, or it waits between turns. */
 export function mayHaveEnded(run) {
   return TERMINAL.has(String(run?.status || '')) || run?.turnState === 'idle';
@@ -204,6 +219,9 @@ export function workerEndView(run, dispatch = null, { t = fillWorkerEndCopy, bus
   if (!run && !dispatch) return null;
   if (!isDispatchedRun(run, dispatch)) return null;
   if (isRunWorking(run, dispatch)) return null;
+  // A turn a steer cut (assistant/asst-steer.js): the steer's turn follows, so nothing ended. Never "Task complete"
+  // from the turn before it, never a failure.
+  if (wasSteered(run, dispatch)) return null;
 
   const state = String(dispatch?.state || '');
   const status = String(run?.status || '');

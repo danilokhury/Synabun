@@ -95,7 +95,11 @@ const replyFailed = (res) => !res || res.ok === false || (typeof res.status === 
 export function createShellFollower({
   api, sessionId, shellId, cwd, isRunning = () => false, isCurrent = () => true, onUpdate = () => {},
   windowChars = SHELL_WINDOW_CHARS, setTimer = setTimeout, clearTimer = clearTimeout,
+  // How often a running command is asked again (a caller may ask less often: the Background tasks view, 1 s).
+  pollMinMs = SHELL_POLL_MIN_MS, pollMaxMs = SHELL_POLL_MAX_MS,
 } = {}) {
+  const POLL_MIN = Math.max(SHELL_POLL_MIN_MS, Number(pollMinMs) || SHELL_POLL_MIN_MS);
+  const POLL_MAX = Math.max(POLL_MIN, Number(pollMaxMs) || SHELL_POLL_MAX_MS);
   const buffer = createTerminalBuffer({ maxChars: windowChars });
   let cursor = null;        // null: nothing read yet (the first read asks for the tail)
   let from = 0;             // the byte the kept text starts at, as far as the server said
@@ -108,7 +112,7 @@ export function createShellFollower({
   let error = '';
   let full = false;
   let capped = false;
-  let delay = SHELL_POLL_MIN_MS;
+  let delay = POLL_MIN;
   let failures = 0;
   let generation = 0;       // a read begun before loadAll() belongs to the reading it replaced
 
@@ -148,7 +152,7 @@ export function createShellFollower({
       error = (typeof res?.error === 'string' && res.error) || 'The output could not be read.';
       if (failures >= 5 && !isRunning()) { done = true; publish(); return; }
       publish();
-      schedule(Math.min(SHELL_POLL_MAX_MS * 2, SHELL_POLL_MIN_MS * 2 ** failures));
+      schedule(Math.min(POLL_MAX * 2, POLL_MIN * 2 ** failures));
       return;
     }
     failures = 0;
@@ -168,8 +172,8 @@ export function createShellFollower({
     else if (!wasRunning && !isRunning() && !behind) { publish(); schedule(0); return; }
     publish();
     if (done) return;
-    if (behind) { delay = SHELL_POLL_MIN_MS; schedule(0); return; }
-    delay = moved && text ? SHELL_POLL_MIN_MS : Math.min(SHELL_POLL_MAX_MS, Math.round(delay * 1.5));
+    if (behind) { delay = POLL_MIN; schedule(0); return; }
+    delay = moved && text ? POLL_MIN : Math.min(POLL_MAX, Math.round(delay * 1.5));
     schedule(isRunning() ? delay : 0);
   }
 

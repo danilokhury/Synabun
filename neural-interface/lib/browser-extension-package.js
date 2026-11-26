@@ -25,7 +25,7 @@
 import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { downloadFile } from './cli-install.js';
-import { cachedExtensionPackage, confirmExtensionReload, confirmExtensionRepairReload, downloadWorkName, extensionFolderState, extensionWorkDir, inspectExtensionFolder, prepareExtensionFolder, retargetExtensionFolder, verifiedPackageFiles } from './browser-extension-folder.js';
+import { cachedExtensionPackage, confirmExtensionReload, confirmExtensionRepairReload, confirmExtensionVersion, downloadWorkName, extensionFolderState, extensionWorkDir, inspectExtensionFolder, prepareExtensionFolder, retargetExtensionFolder, verifiedPackageFiles } from './browser-extension-folder.js';
 import { EXTENSION_PACKAGE_HOST, EXTENSION_PIN, pinProblems } from './browser-extension-pin.js';
 
 /** What a failed download or check is called (the setup's error codes; lib/browser-extension-setup.js has the words). */
@@ -97,21 +97,21 @@ export function createExtensionPackage({ home, appPort, pin = EXTENSION_PIN, fet
    * version, or a file changed, added or deleted), 'unsafe' (its root is a link, another user's or writable by others:
    * nothing is done there), or null (the pinned extension; at most its port is set, with no download).
    */
-  function needs() {
-    const state = look().state;
+  function needs(state = look().state) {
     return state === 'missing' ? 'install' : state === 'other' ? 'update' : state === 'unsafe' ? 'unsafe' : null;
   }
   function status() {
-    const state = extensionFolderState(home), need = needs(), shown = state.present ? state : null;
+    const inspected = look(), state = extensionFolderState(home), need = needs(inspected.state), shown = state.present ? state : null;
     const failed = need === 'unsafe' ? { code: 'EXTENSION_FOLDER_UNSAFE', reason: 'check', at: null } : !job && last && !last.ok && need ? last : null;
     return {
-      pinnedVersion: pin.version, folderVersion: shown ? shown.version : null, folder: shown ? shown.folder : null, needs: need,
+      pinnedVersion: pin.version, folderVersion: shown ? inspected.version : null, folder: shown ? shown.folder : null, needs: need,
       phase: job ? 'downloading' : failed ? 'failed' : 'idle',
       ...(job ? { received: job.received, total: job.total, reason: job.reason } : {}),
       ...(!job && failed ? { code: failed.code, reason: failed.reason, at: failed.at } : {}),
       // A Reload the folder's marker asks for (a port change, or a repair: lib/browser-extension-folder.js), until the
       // setup page sees the extension running again (confirmReload), or for a repair until the owner confirms it in
       // Settings (confirmRepairReload).
+      ...(state.fromVersion ? { fromVersion: state.fromVersion } : {}),
       ...(state.reloadPending ? { reloadPending: true, reloadReason: state.reloadReason } : {}),
     };
   }
@@ -193,6 +193,7 @@ export function createExtensionPackage({ home, appPort, pin = EXTENSION_PIN, fet
      */
     retarget: settle,
     /** The setup page saw the extension on this port: a Reload a port change asked for is done (never a repair's). */
+    confirmVersion: version => confirmExtensionVersion({ home, version }),
     confirmReload: () => confirmExtensionReload({ home, appPort: port() }),
     /** The owner confirmed in Settings that they reloaded the extension after a repair: that Reload is done. */
     confirmRepairReload: () => confirmExtensionRepairReload({ home }),

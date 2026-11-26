@@ -1,4 +1,5 @@
 import { queueMemoryCapture } from './memory-session-capture.js';
+import { fileIdentityOf, isSessionFileUnchanged, mtimeIsoOf } from './session-capture-gate.js';
 import { normalizeMemoryEvents, ingestMemoryEvents, CAPTURE_TRANSACTION_MS, CAPTURE_PAUSE_MS } from '../../mcp-server/dist/services/memory-sessions.js';
 import { detectProject } from '../../mcp-server/dist/config.js';
 /**
@@ -200,20 +201,42 @@ function* scanClaudeCache({ project, onProgress }) {
       total++;
       const filePath = join(projDir.path, file);
       let stat;
-      try { stat = statSync(filePath); } catch { continue; }
-      if (stat.size > MAX_CLAUDE_FILE) continue;
-
+      try { stat = statSync(filePath, { bigint: true }); } catch { continue; }
+      const fileSize = Number(stat.size);
       const sessionId = file.replace('.jsonl', '');
-      queueMemoryCapture({host:'claude-code',sessionId,filePath,project:projDir.name});
       const existing = getSessionCacheEntry(sessionId, 'claude-code');
-      if (existing && existing.file_size === stat.size && existing.file_mtime === stat.mtime.toISOString()) {
-        continue;
-      }
+
+      // Decide memory capture from the capture checkpoint, independent of the search cache
+      // and its 50 MiB parser size limit.
+      queueMemoryCapture({
+        host: 'claude-code',
+        sessionId,
+        filePath,
+        cwd: existing?.project_path || undefined,
+        project: projDir.name,
+        size: fileSize,
+        stat,
+      });
+
+      if (fileSize > MAX_CLAUDE_FILE) continue;
+
+      if (isSessionFileUnchanged(existing, stat)) continue;
 
       const parsed = parseClaudeSession(filePath);
       if (!parsed) continue;
 
-      queueMemoryCapture({host:'claude-code',sessionId:parsed.sessionId,filePath,cwd:parsed.cwd,project:projDir.name});
+      if (parsed.sessionId !== sessionId || (parsed.cwd && parsed.cwd !== existing?.project_path)) {
+        queueMemoryCapture({
+          host: 'claude-code',
+          sessionId: parsed.sessionId,
+          filePath,
+          cwd: parsed.cwd,
+          project: projDir.name,
+          size: fileSize,
+          stat,
+        });
+      }
+
       const entry = {
         session_id: parsed.sessionId,
         provider: 'claude-code',
@@ -223,10 +246,12 @@ function* scanClaudeCache({ project, onProgress }) {
         first_prompt: parsed.firstPrompt,
         message_count: parsed.messageCount,
         created: parsed.earliest,
-        modified: parsed.latest || stat.mtime.toISOString(),
+        modified: parsed.latest || mtimeIsoOf(stat),
         file_path: filePath,
-        file_size: stat.size,
-        file_mtime: stat.mtime.toISOString(),
+        file_size: fileSize,
+        file_mtime: mtimeIsoOf(stat),
+        file_identity: fileIdentityOf(stat),
+
         body_size: parsed.body.length,
         deleted: 0,
       };
@@ -334,7 +359,7 @@ function* scanCodexCache({ project, projects, accounts, onProgress }) {
   const projLower = project ? String(project).toLowerCase() : null;
   const d = getDb();
   const probeStmt = d.prepare(
-    'SELECT session_id, file_size, file_mtime FROM session_cache WHERE file_path = ? AND provider = ?'
+    'SELECT session_id, file_size, file_mtime, file_identity FROM session_cache WHERE file_path = ? AND provider = ?'
   );
 
   let total = 0;
@@ -347,14 +372,25 @@ function* scanCodexCache({ project, projects, accounts, onProgress }) {
     if (!filePath) continue;
     total++;
     let stat;
-    try { stat = statSync(filePath); } catch { continue; }
+    try { stat = statSync(filePath, { bigint: true }); } catch { continue; }
+    const fileSize = Number(stat.size);
 
     if (projLower && session.cwd && !session.cwd.toLowerCase().includes(projLower)) continue;
     liveSessionIds.add(session.sessionId);
 
-    queueMemoryCapture({host:'codex',sessionId:session.sessionId,filePath,cwd:session.cwd || session.projectPath});
+    // Decide memory capture from the capture checkpoint, independent of session_cache hits
+    // and the 50 MiB search-cache parser limit (parseCodexSession rejects >50 MiB rollouts).
+    queueMemoryCapture({
+      host: 'codex',
+      sessionId: session.sessionId,
+      filePath,
+      cwd: session.cwd || session.projectPath,
+      size: fileSize,
+      stat,
+    });
+
     const probe = probeStmt.get(filePath, 'codex');
-    if (probe && probe.file_size === stat.size && probe.file_mtime === stat.mtime.toISOString()) {
+    if (isSessionFileUnchanged(probe, stat)) {
       const cached = getSessionCacheEntry(session.sessionId, 'codex');
       if (cached?.deleted || cached?.account_id !== session.accountId) {
         upsertSessionCache({
@@ -371,7 +407,17 @@ function* scanCodexCache({ project, projects, accounts, onProgress }) {
     const parsed = parseCodexSession(filePath);
     if (!parsed) continue;
 
-    queueMemoryCapture({host:'codex',sessionId:parsed.sessionId,filePath,cwd:parsed.cwd || session.cwd});
+    if (parsed.sessionId !== session.sessionId || (parsed.cwd && parsed.cwd !== (session.cwd || session.projectPath))) {
+      queueMemoryCapture({
+        host: 'codex',
+        sessionId: parsed.sessionId,
+        filePath,
+        cwd: parsed.cwd || session.cwd || session.projectPath,
+        size: fileSize,
+        stat,
+      });
+    }
+
     const entry = {
       session_id: parsed.sessionId,
       provider: 'codex',
@@ -383,8 +429,10 @@ function* scanCodexCache({ project, projects, accounts, onProgress }) {
       created: session.created || parsed.created,
       modified: session.modified || parsed.modified,
       file_path: filePath,
-      file_size: parsed.fileSize,
-      file_mtime: parsed.modified,
+      file_size: fileSize,
+      file_mtime: mtimeIsoOf(stat),
+      file_identity: fileIdentityOf(stat),
+
       body_size: parsed.body.length,
       deleted: 0,
       account_id: session.accountId,

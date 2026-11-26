@@ -1,7 +1,8 @@
 // ═══════════════════════════════════════════
 // SynaBun Assistant — composer
 // ═══════════════════════════════════════════
-// Enter sends, Shift+Enter inserts a newline, Esc aborts the running turn (or
+// Enter sends (while a turn runs: steers it, Alt+Enter queues instead; a run
+// targeted from its card is steered), Shift+Enter inserts a newline, Esc aborts the running turn (or
 // closes the slash menu). Attachments: images (paste / file picker / drop),
 // text files, memory chips (drag from the graph), and any other file — the
 // picker and drop upload it to the server and the prompt carries its path
@@ -13,6 +14,7 @@
 
 import { matchSlashCommands, SLASH_COMMANDS } from './asst-slash.js';
 import { isLongPaste, typedText } from './asst-automation.js';
+import { composerKeyIntent, steerTranslator, targetChipText } from './asst-state.js'; // steer's boot part (asst-steer.js loads on demand)
 
 const TEXT_EXTENSIONS = new Set([
   'txt', 'md', 'js', 'ts', 'jsx', 'tsx', 'json', 'html', 'css', 'scss', 'less', 'xml', 'svg',
@@ -121,15 +123,22 @@ export function createComposer(hostEl, hooks = {}) {
     return params ? String(fallback).replace(/\{(\w+)\}/g, (_, k) => (params[k] != null ? params[k] : `{${k}}`)) : fallback;
   };
 
+  // The steer sentences (asst-steer.js): the page's `assistant.steer.*`, else its own English / Portuguese.
+  const st8 = steerTranslator(hooks.t, typeof hooks.locale === 'function' ? hooks.locale() : hooks.locale);
   const root = el('div', 'asst-composer');
   root.innerHTML = `
     <div class="asst-slash-menu" role="listbox" id="asst-slash-${Math.random().toString(36).slice(2, 8)}" aria-label="${esc(t('assistant.composer.commands', 'Commands'))}" hidden></div>
     <div class="asst-composer-queue" hidden></div>
+    <div class="asst-composer-target" hidden></div>
     <div class="asst-composer-attachments" hidden></div>
     <textarea class="asst-input" rows="1" spellcheck="true" aria-label="${esc(t('assistant.composer.aria', 'Message the assistant'))}" aria-autocomplete="list"></textarea>
     <div class="asst-composer-actions">
       <button type="button" class="asst-tb-btn asst-attach" data-tooltip="${esc(t('assistant.composer.attach', 'Attach files'))}" aria-label="${esc(t('assistant.composer.attach', 'Attach files'))}">${ICON_ATTACH}</button>
       <div class="asst-composer-brain"></div>
+      <span class="asst-steer-actions" role="group" aria-label="${esc(st8('steer'))}" hidden>
+        <button type="button" class="asst-tb-btn asst-queue-btn" data-tooltip="${esc(st8('queueTip'))}" aria-label="${esc(st8('queueTip'))}">${esc(st8('queue'))}</button>
+        <button type="button" class="asst-btn asst-steer-btn" data-tooltip="${esc(st8('steerNow'))}" aria-label="${esc(st8('steerNow'))}">${esc(st8('steer'))}</button>
+      </span>
       <button type="button" class="asst-send" data-state="empty" aria-label="${esc(t('assistant.composer.send', 'Send'))}">${ICON_SEND}</button>
     </div>
     <input type="file" class="asst-file-input" multiple hidden tabindex="-1">
@@ -142,6 +151,10 @@ export function createComposer(hostEl, hooks = {}) {
   const fileInput = root.querySelector('.asst-file-input');
   const attachmentsEl = root.querySelector('.asst-composer-attachments');
   const queueEl = root.querySelector('.asst-composer-queue');
+  const targetEl = root.querySelector('.asst-composer-target');
+  const steerActions = root.querySelector('.asst-steer-actions');
+  const queueBtn = root.querySelector('.asst-queue-btn');
+  const steerBtn = root.querySelector('.asst-steer-btn');
   const slashMenu = root.querySelector('.asst-slash-menu');
   textarea.setAttribute('aria-controls', slashMenu.id);
 
@@ -160,6 +173,10 @@ export function createComposer(hostEl, hooks = {}) {
     // A composer under 300px says the short form, so the placeholder never wraps to three lines.
     placeholderShort: t('assistant.composer.placeholderShort', 'Ask SynaBun…'),
     narrow: false,
+    // The run the next message steers ({ runId, title, index }), set from its card; null: the Assistant.
+    target: null,
+    // The server can steer (an older one cannot: Enter while busy queues, as before).
+    steerable: hooks.steerable !== false,
   };
   const placeholderNow = () => (state.narrow ? state.placeholderShort : state.placeholder);
   textarea.placeholder = placeholderNow();
@@ -199,6 +216,42 @@ export function createComposer(hostEl, hooks = {}) {
     sendBtn.setAttribute('aria-label', label);
     sendBtn.setAttribute('data-tooltip', label);
     sendBtn.disabled = mode === 'empty';
+    // While a turn runs and there is something to send: Steer (Enter) and Queue (Alt+Enter) beside Stop.
+    // A targeted run while busy: Steer only (Queue is for the Assistant's own turn). Not busy with a target:
+    // the send button itself steers that run.
+    const ready = hasContent() && !state.disabled && !waiting;
+    steerActions.hidden = !(ready && state.running && (state.steerable || state.target));
+    queueBtn.hidden = !!state.target;
+    if (state.target && !state.running) {
+      const tip = st8('targetLabel', { title: state.target.title || state.target.runId });
+      sendBtn.setAttribute('aria-label', tip);
+      sendBtn.setAttribute('data-tooltip', tip);
+    }
+  }
+
+  function renderTarget() {
+    const target = state.target;
+    if (!target) {
+      targetEl.hidden = true;
+      targetEl.innerHTML = '';
+      if (!state.disabled) textarea.placeholder = placeholderNow();
+      return;
+    }
+    const label = st8('targetLabel', { title: target.title || target.runId });
+    targetEl.innerHTML = `<span class="asst-chip static asst-steer-target" data-run-id="${esc(target.runId)}" aria-label="${esc(label)}"><span class="asst-chip-text">${esc(targetChipText(target, st8))}</span><button type="button" class="asst-chip-x" aria-label="${esc(st8('targetClear'))}" data-tooltip="${esc(st8('targetClear'))}">${ICON_X}</button></span>`;
+    targetEl.hidden = false;
+    if (!state.disabled) textarea.placeholder = st8('targetPlaceholder', { title: target.title || target.runId });
+  }
+  targetEl.addEventListener('click', (e) => {
+    if (!e.target.closest('.asst-chip-x')) return;
+    setSteerTarget(null);
+    textarea.focus();
+  });
+  function setSteerTarget(target) {
+    state.target = target && target.runId ? { runId: String(target.runId), title: String(target.title || ''), index: target.index ?? null } : null;
+    renderTarget();
+    updateSendButton();
+    hooks.onTargetChange?.(state.target ? { ...state.target } : null);
   }
 
   function renderAttachments() {
@@ -316,7 +369,7 @@ export function createComposer(hostEl, hooks = {}) {
   });
 
   // ── Submit ──
-  async function submit() {
+  async function submit(mode = null) {
     if (state.disabled) return;
     if (uploading()) { hooks.onToast?.(t('assistant.composer.waitUploads', 'Wait for the upload to finish, then send')); return; }
     const text = textarea.value.trim();
@@ -331,20 +384,30 @@ export function createComposer(hostEl, hooks = {}) {
       uploads: state.uploads.map(({ name, size, mime, path }) => ({ name, size, mime, path })),
       memories: state.memories.slice(),
     };
+    // 'steer' / 'queue' only when the user chose one (Enter or Alt+Enter while busy, the buttons); a target always steers.
+    if (state.target) { payload.mode = 'steer'; payload.steerTarget = { ...state.target }; }
+    else if (mode === 'steer' || mode === 'queue') payload.mode = mode;
+    // What this send took, by reference: the send is awaited, and the user may type or attach the next message meanwhile.
+    const took = { images: state.images.slice(), files: state.files.slice(), uploads: state.uploads.slice(), memories: state.memories.slice(), pastes: state.pastes.slice() };
     let outcome;
     try { outcome = await hooks.onSubmit?.(payload); } catch { outcome = false; }
     if (outcome === false) return;
-    textarea.value = '';
-    state.images = [];
-    state.files = [];
-    state.uploads = [];
-    state.memories = [];
-    state.pastes = [];
+    // Clear only what went: words typed and attachments added while the send was on its way stay for the next one.
+    const textWent = textarea.value.trim() === text;
+    if (textWent) textarea.value = '';
+    const keep = (list, sent) => list.filter((item) => !sent.includes(item));
+    state.images = keep(state.images, took.images);
+    state.files = keep(state.files, took.files);
+    state.uploads = keep(state.uploads, took.uploads);
+    state.memories = keep(state.memories, took.memories);
+    state.pastes = textWent ? [] : keep(state.pastes, took.pastes);
     renderAttachments();
-    closeSlash();
+    if (textWent) closeSlash();
     autoResize();
     updateSendButton();
-    hooks.onDraftChange?.('');
+    hooks.onDraftChange?.(textWent ? '' : textarea.value);
+    // One steer per target: the next message goes to the Assistant again unless a card sets it once more.
+    if (outcome === 'steered' && state.target) setSteerTarget(null);
     if (outcome === 'queued') hooks.onToast?.(t('assistant.composer.queued', 'Queued — will send when the current turn finishes'));
   }
 
@@ -352,6 +415,9 @@ export function createComposer(hostEl, hooks = {}) {
     if (state.running) { hooks.onAbort?.(); return; }
     submit();
   });
+  // Focus stays in (and returns to) the composer after either choice.
+  steerBtn.addEventListener('click', () => { Promise.resolve(submit('steer')).finally(() => textarea.focus()); });
+  queueBtn.addEventListener('click', () => { Promise.resolve(submit('queue')).finally(() => textarea.focus()); });
 
   textarea.addEventListener('keydown', (e) => {
     if (state.slashOpen) {
@@ -366,9 +432,11 @@ export function createComposer(hostEl, hooks = {}) {
       }
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeSlash(); return; }
     }
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    // Enter: send, or Steer while a turn runs (or a run is targeted); Alt+Enter while busy: Queue (asst-steer.js).
+    const intent = composerKeyIntent(e, { running: state.running, targeted: !!state.target, steerable: state.steerable });
+    if (intent) {
       e.preventDefault();
-      submit();
+      submit(intent === 'send' ? null : intent);
       return;
     }
     if (e.key === 'Escape') {
@@ -643,6 +711,11 @@ export function createComposer(hostEl, hooks = {}) {
     clearAttachments() { abortUploads(); state.images = []; state.files = []; state.uploads = []; state.memories = []; renderAttachments(); },
     setQueue,
     hasContent,
+    /** The run the next message steers ({ runId, title, index }), or null for the Assistant. */
+    setSteerTarget,
+    getSteerTarget: () => (state.target ? { ...state.target } : null),
+    /** Whether the server can steer: without it Enter while busy queues, as before. */
+    setSteerable(value) { state.steerable = value !== false; updateSendButton(); },
     destroy() { abortUploads(); closeSlash(); resizeObserver?.disconnect(); root.remove(); },
   };
 }

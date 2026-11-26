@@ -87,6 +87,11 @@ export const LOOKUP_CAP_MS = 2500;
 /** How long a failed lookup is kept on its connection: a burst of requests is not looked up again each, an open tab
  *  is soon. */
 export const NEGATIVE_TTL_MS = 2000;
+/** The start probe's waits before it asks again after a failure that may pass (a timeout on a busy machine): only then
+ *  is the server reported degraded. A denial (EPERM) is never asked again. */
+export const PROBE_RETRY_DELAYS_MS = Object.freeze([250, 1000, 3000]);
+/** While degraded by a failure that may pass, the probe runs again this often until it answers (or a denial follows). */
+export const PROBE_RECHECK_MS = 5000;
 const PS_SNAPSHOT_TTL_MS = 2000;
 // A process's parents and command line do not change while it lives (a parent that exits leaves it to launchd, which
 // only ever takes an agent or a browser out of the chain, never puts one in): kept half an hour, checked against
@@ -647,6 +652,8 @@ function defaultRun(file, args, { timeout, stderr: withStderr = false }) {
   });
 }
 
+const defaultSleep = (ms) => new Promise((resolve) => { const t = setTimeout(resolve, ms); t.unref?.(); });
+
 function thisMachineAddresses() {
   const out = new Set(['127.0.0.1', '::1']);
   try {
@@ -669,8 +676,11 @@ function thisMachineAddresses() {
  * @param {(path:string) => string} [o.realpath] fs.realpathSync (tests inject one).
  * @param {number} [o.lookupCapMs] the cap of one attempt (LOOKUP_CAP_MS; tests shorten it).
  * @param {number} [o.negativeTtlMs] how long a failed lookup is kept on its connection (NEGATIVE_TTL_MS).
+ * @param {number[]} [o.probeRetryDelaysMs] waits between start-probe attempts after a failure that may pass.
+ * @param {number} [o.probeRecheckMs] how often a retryable-degraded server probes again (0: never).
+ * @param {(ms:number) => Promise<void>} [o.sleep] waits (tests inject one).
  */
-export function createPeerIdentity({ platform = process.platform, selfPid = process.pid, run = defaultRun, localAddresses = null, log = () => {}, now = Date.now, disabled = false, synabunRoots = [], realpath = realpathSync, debugClient = null, lookupCapMs = LOOKUP_CAP_MS, negativeTtlMs = NEGATIVE_TTL_MS } = {}) {
+export function createPeerIdentity({ platform = process.platform, selfPid = process.pid, run = defaultRun, localAddresses = null, log = () => {}, now = Date.now, disabled = false, synabunRoots = [], realpath = realpathSync, debugClient = null, lookupCapMs = LOOKUP_CAP_MS, negativeTtlMs = NEGATIVE_TTL_MS, probeRetryDelaysMs = PROBE_RETRY_DELAYS_MS, probeRecheckMs = PROBE_RECHECK_MS, sleep = defaultSleep } = {}) {
   const supported = platform === 'darwin' && !disabled;
   const capMs = Number.isFinite(lookupCapMs) && lookupCapMs > 0 ? lookupCapMs : LOOKUP_CAP_MS;
   const ttlMs = Number.isFinite(negativeTtlMs) && negativeTtlMs >= 0 ? negativeTtlMs : NEGATIVE_TTL_MS;
@@ -748,31 +758,67 @@ export function createPeerIdentity({ platform = process.platform, selfPid = proc
   function authorityState() {
     return { state: authority.state, reason: authority.reason, retryable: authority.retryable === true, since: authority.since };
   }
+  /** One sample of netstat and ps: `{ failures, retryable }` (retryable only when every failure may pass). */
+  async function probeOnce() {
+    const failures = [];
+    let transient = true;
+    try { await readNetstat(); } catch (error) {
+      failures.push(error?.netstatTable ? error.message : netstatFailure(error));
+      transient = transient && isTransientLookupError(error);
+    }
+    try {
+      const parents = parsePsParents(await run(PS, ['-Ao', 'pid=,ppid=,ucomm='], { timeout: PS_TIMEOUT_MS }));
+      if (!parents.size) { failures.push('ps listed no processes'); transient = false; }
+      else if (!parents.has(selfPid)) { failures.push('ps did not list this server'); transient = false; }
+    } catch (error) { failures.push(`ps: ${failureText(error)}`); transient = transient && isTransientLookupError(error); }
+    return { failures, retryable: failures.length > 0 && transient };
+  }
+  const retryDelays = (Array.isArray(probeRetryDelaysMs) ? probeRetryDelaysMs : PROBE_RETRY_DELAYS_MS).filter((ms) => Number.isFinite(ms) && ms >= 0);
+  const recheckMs = Number.isFinite(probeRecheckMs) && probeRecheckMs > 0 ? probeRecheckMs : 0;
+  let recheckTimer = null;
+  /** Probe again later while degraded by a failure that may pass; a later answer restores, a denial ends it. */
+  function scheduleRecheck() {
+    if (!recheckMs || recheckTimer) return;
+    recheckTimer = setTimeout(async () => {
+      recheckTimer = null;
+      if (authority.state !== 'degraded' || !authority.retryable) return;
+      let r;
+      try { r = await probeOnce(); } catch (error) { r = { failures: [`the probe failed (${error?.message || error})`], retryable: false }; }
+      if (authority.state !== 'degraded') return; // a lookup settled it meanwhile
+      if (!r.failures.length) restore('probe recheck');
+      else {
+        degrade(r.failures.join('; '), { retryable: r.retryable, source: 'probe recheck' });
+        if (authority.retryable) scheduleRecheck();
+      }
+    }, recheckMs);
+    recheckTimer.unref?.();
+  }
   /**
-   * The start probe (server.js runs it once, at start): netstat and ps, as a lookup runs them. A failure is the
-   * degraded state at once, with its reason in the log and in GET /api/health, before any owner's request meets it.
-   * Off macOS (or off) there is nothing to probe. Never rejects; asked twice, it runs once.
+   * The start probe (server.js runs it once, at start): netstat and ps, as a lookup runs them. A failure that may pass
+   * (a timeout under load) is asked again after each of `probeRetryDelaysMs`; only a failure that lasts is the degraded
+   * state, with its reason in the log and in GET /api/health, before any owner's request meets it; while it may still
+   * pass, the probe runs again every `probeRecheckMs` until it answers. A denial (EPERM) degrades at once and is never
+   * retried: the server keeps failing closed. Off macOS (or off) there is nothing to probe. Never rejects; asked
+   * twice, it runs once.
    */
   function probe() {
     if (!supported) return Promise.resolve(authorityState());
     if (probed) return probed;
     probed = (async () => {
-      const failures = [];
-      let retryable = false;
-      try { await readNetstat(); } catch (error) {
-        failures.push(error?.netstatTable ? error.message : netstatFailure(error));
-        retryable = retryable || isTransientLookupError(error);
+      let r = await probeOnce();
+      for (let i = 0; r.failures.length && r.retryable && i < retryDelays.length; i++) {
+        if (authority.state !== 'pending') break;
+        stats.retries++;
+        await sleep(retryDelays[i]);
+        r = await probeOnce();
       }
-      try {
-        const parents = parsePsParents(await run(PS, ['-Ao', 'pid=,ppid=,ucomm='], { timeout: PS_TIMEOUT_MS }));
-        if (!parents.size) failures.push('ps listed no processes');
-        else if (!parents.has(selfPid)) failures.push('ps did not list this server');
-      } catch (error) { failures.push(`ps: ${failureText(error)}`); retryable = retryable || isTransientLookupError(error); }
       // A request can finish its full lookup while this boot-time sample is in flight.
       // Its observed outcome takes precedence over the preflight in either direction.
       if (authority.state !== 'pending') return authorityState();
-      if (failures.length) degrade(failures.join('; '), { retryable, source: 'start probe' });
-      else {
+      if (r.failures.length) {
+        degrade(r.failures.join('; '), { retryable: r.retryable, source: 'start probe' });
+        if (r.retryable) scheduleRecheck();
+      } else {
         say('[peer-identity] start probe: netstat and ps answer; the owner\'s authority is checked against the calling process');
         restore('start probe');
       }

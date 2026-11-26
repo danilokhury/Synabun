@@ -7,7 +7,7 @@
 import { z } from 'zod/v3';
 import * as ni from '../../services/neural-interface.js';
 import { text } from '../response.js';
-import { STUDIO_BASE, resolve, ensureAuth, wait, pollFor, safeNavigate, clickStudio, fillStudio, DEEP_TEXT_SCRIPT, type Resolved } from './helpers.js';
+import { STUDIO_BASE, resolve, ensureAuth, wait, pollFor, STUDIO_CHANNEL_READY_SCRIPT, safeNavigate, clickStudio, fillStudio, DEEP_TEXT_SCRIPT, type Resolved } from './helpers.js';
 import { channelId } from './navigate.js';
 
 const tabId = z.string().optional().describe('Target a specific tab. Auto-resolved if omitted.');
@@ -28,7 +28,7 @@ async function gotoPlaylists(r: Resolved): Promise<string | null> {
   let cid = await channelId(r);
   if (!cid) {
     await safeNavigate(r, STUDIO_BASE);
-    await pollFor(r, `(() => /\\/channel\\/UC/.test(location.href) ? true : null)()`, 12000, 400);
+    await pollFor(r, STUDIO_CHANNEL_READY_SCRIPT, 12000, 400, 'youtube.channel_ready');
     cid = await channelId(r);
   }
   if (!cid) return 'Could not resolve the active channel.';

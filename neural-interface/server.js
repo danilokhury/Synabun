@@ -134,6 +134,7 @@ import * as fsp from 'fs/promises';
 import { createInterface as createReadlineInterface } from 'readline';
 import { jsonlLines } from './lib/jsonl-lines.js';
 import { createHistoryCache } from './lib/claude-history-cache.js';
+import { createClaudeBgTasks, claudeOutputRoots } from './lib/claude-bg-tasks.js';
 import { createRolloutReader } from './lib/codex-rollout-reader.js';
 import { randomBytes, randomUUID, createHash, pbkdf2Sync, createDecipheriv } from 'crypto';
 import { exec, execFile, execSync, spawn, spawnSync } from 'child_process';
@@ -317,8 +318,9 @@ import {
 import * as moreLogin from './lib/browser-profiles.js';
 import { createStyleGuideStore } from './lib/style-guide/store.js';
 import { registerStyleGuideRoutes } from './lib/style-guide/api.js';
-import { initBlobStore, blobGetNamespace, blobGet, blobPut, blobDelete, blobClearNamespace, blobPrune, closeBlobStore } from './lib/ui-blob-store.js';
+import { initBlobStore, blobGetNamespace, blobGetNamespaceJsonAsync, blobGet, blobPut, blobDelete, blobClearNamespace, blobPrune, closeBlobStore } from './lib/ui-blob-store.js';
 import { createUiBlobRouter } from './lib/ui-blob-api.js';
+import { createLoopInventoryScanner } from './lib/loop-inventory.js';
 import { memoCache, asyncPool } from './lib/memo-cache.js';
 import {
   buildAntigravityMcpEntry,
@@ -703,9 +705,11 @@ import { ownerRouteGuard } from './lib/http-guards.js';
 import { createBridgeStore, createExtensionBridge } from './lib/browser-extension-bridge.js';
 import { createExtensionAdapter } from './lib/browser-extension-adapter.js';
 import { detectBrowsers } from './lib/browser-default.js';
-import { extensionFolderState } from './lib/browser-extension-folder.js';
+import { compareVersions } from './lib/browser-extension-folder.js';
 import { createExtensionPackage } from './lib/browser-extension-package.js';
+import { createExtensionUpdate, ownerReloadHandler } from './lib/browser-extension-update.js';
 import { createExtensionSetup, extensionVersions, setupError as extensionSetupError } from './lib/browser-extension-setup.js';
+import { stoppedProfileAdvice } from './lib/browser-connection-state.js';
 import { safeError as extensionSafeError } from './lib/browser-extension-protocol.js';
 import { setUntrustedFileHeaders } from './lib/untrusted-file-headers.js';
 import { BUNDLED_LOGO_FILES, UPLOADED_IMAGE_PATH } from './lib/request-gate.js';
@@ -3809,8 +3813,12 @@ function claudeChildEnv(env = process.env) {
   try { return gitBash.childEnv(ordered); } catch { return ordered; }
 }
 // SynaBun's own git features (the terminal's branch and checkout, the File Explorer's and the code editor's git,
-// the git routes) run the copy's git.exe on a PC without git: its path for spawnGit, its folder for every read.
-setGitFallbackFolder(() => { const git = gitBash.gitExecutable(); return git ? dirname(git) : null; });
+// the git routes) resolve git through one resolver (bundled → managed → system) for both startup and the runner.
+setGitFallbackFolder(() => {
+  const git = gitBash.managedGitExecutable?.() || gitBash.gitExecutable({ includeSystem: true });
+  return git ? dirname(git) : null;
+});
+gitStatusRunner.setBinaryResolver(() => resolveGitPathInBackground());
 // The user's own `claude`, started in another terminal: ~/.claude/settings.json names SynaBun's copy while it is
 // the one in use and loses that value when it is not; a value of the user's own is never touched. Windows only.
 function syncGitBashSettings(resolution = gitBash.resolution()) {
@@ -4000,9 +4008,10 @@ async function detectOpencode({ force = false } = {}) {
 // OpenCode 2). Every start path throws it or answers with it: isolated serves, loops and schedules, workers.
 async function opencodeStartRefusal() {
   const detected = await detectOpencode();
-  if (detected.major == null || detected.supported) return null;
-  const refusal = new Error(detected.reason);
-  refusal.code = 'OPENCODE_UNSUPPORTED';
+  if (detected.supported) return null;
+  if (detected.major == null && (detected.path || detected.commandLine)) return null;
+  const refusal = new Error(detected.reason || 'OpenCode is not installed.');
+  refusal.code = detected.major == null ? 'OPENCODE_NOT_INSTALLED' : 'OPENCODE_UNSUPPORTED';
   return refusal;
 }
 
@@ -9922,7 +9931,7 @@ function handleOpencodeV2Ws(ws) {
 // `_ocpLastCheck` keeps the whole answer (what answered, and why it is not usable).
 let _ocpLastCheck = null;
 async function checkOpencodeHealth() {
-  const check = await checkOpencodeServer({ port: _ocpPort, password: _ocpPassword, timeoutMs: 3000 });
+  const check = await checkOpencodeServer({ port: _ocpPort, password: _ocpPassword, timeoutMs: 3000, signal: arguments[0]?.signal || null });
   _ocpLastCheck = check;
   if (check.ok) _ocpVersion = check.version || null;
   return check.ok;
@@ -10044,11 +10053,12 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
   if (_ocpSharedEnd) await _ocpSharedEnd;
 
   // 0. Which OpenCode is installed. One SynaBun does not drive (OpenCode 1, an OpenCode 2 older than the
-  // minimum) is refused here, with a sentence the panel and Settings show, instead of failing call by call later.
+  // minimum) or a missing CLI is refused here, with a sentence the panel and Settings show, instead of
+  // spawning a shell that exits immediately and waiting 15 s for health.
   const detected = await detectOpencode();
-  if (detected.major != null && !detected.supported) {
+  if (!detected.supported && (detected.major != null || (!detected.path && !detected.commandLine))) {
     _ocpStarting = false;
-    reportOpencodeProblem(detected.reason);
+    reportOpencodeProblem(detected.reason || 'OpenCode is not installed.');
     return false;
   }
   _ocpProblem = null;
@@ -10090,6 +10100,17 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
     outcome = await oneOpencodeStartAtATime(async () => {
       let proc = null;
       let tracked = null;
+      let procExited = false;
+      let procExitCode = null;
+      let procExitSignal = null;
+      let procError = null;
+      const exitWaiters = new Set();
+      const exitAbort = new AbortController();
+      const wakeExitWaiters = () => {
+        if (!exitAbort.signal.aborted) exitAbort.abort();
+        for (const fn of exitWaiters) fn();
+        exitWaiters.clear();
+      };
       try {
         // A token of this spawn in its environment: what tells its processes from any other (lib/opencode-serve-records.js).
         const token = opencodeServeRecords.newToken();
@@ -10120,7 +10141,21 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
         proc.stdout?.on('end', () => outLog.flush());
         proc.stderr?.on('end', () => errLog.flush());
         proc.on('close', () => { outLog.flush(); errLog.flush(); });
-        proc.on('exit', (code) => {
+        const childExited = () => proc.exitCode != null || proc.signalCode != null;
+        proc.on('error', (err) => {
+          // Match trackOpencodeServe's rule: a spawn that failed (no pid) may never exit,
+          // whereas an error on a live child (e.g. failed kill) leaves the process running.
+          if (!proc.pid || childExited()) {
+            procExited = true;
+            procError = err;
+            wakeExitWaiters();
+          }
+        });
+        proc.on('exit', (code, signal) => {
+          procExited = true;
+          procExitCode = code;
+          procExitSignal = signal;
+          wakeExitWaiters();
           console.log(`[opencode] Process exited with code ${code}`);
           // A serve stopped or replaced meanwhile says nothing about the one running now. (Its record goes with
           // its process either way: trackOpencodeServe.)
@@ -10140,9 +10175,19 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
         }
         return 'not-spawned';
       }
+      const isGone = () => procExited || proc.exitCode != null || proc.signalCode != null;
+      const waitStep = (ms) => new Promise((done) => {
+        if (isGone()) { done(); return; }
+        const onEnd = () => { clearTimeout(t); done(); };
+        const t = setTimeout(() => { exitWaiters.delete(onEnd); done(); }, ms);
+        exitWaiters.add(onEnd);
+      });
+      let exitedEarly = false;
       for (let i = 0; i < 30; i++) {
-        await new Promise(r => setTimeout(r, 500));
-        if (await checkOpencodeHealth()) {
+        await waitStep(500);
+        if (isGone()) { exitedEarly = true; break; }
+        if (await checkOpencodeHealth({ signal: exitAbort.signal })) {
+          if (isGone()) { exitedEarly = true; break; }
           // Only SynaBun's own process counts (the spawned one, or one it started): another server that took the
           // port meanwhile answers for itself.
           if (await tracked.answering({ password: _ocpPassword }) !== 'foreign') return 'ready';
@@ -10151,8 +10196,16 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
           await endOpencodeChild(proc);
           return 'collision';
         }
+        if (isGone()) { exitedEarly = true; break; }
         // Something answers, but not as SynaBun expects (a version it does not drive, a web page): no use waiting.
         if (_ocpLastCheck && ['unsupported', 'html', 'locked'].includes(_ocpLastCheck.state) && i >= 3) break;
+      }
+      if (exitedEarly) {
+        if (_ocpProc === proc) _ocpProc = null;
+        const detail = procError
+          ? (procError.code || procError.message || 'spawn error')
+          : (procExitCode != null ? `code ${procExitCode}` : (procExitSignal || 'exited'));
+        return `exited:${detail}`;
       }
       stopOpencodeServer();
       await endOpencodeChild(proc);
@@ -10178,11 +10231,14 @@ async function ensureOpencodeServer({ allowDuringHistoryClear = false } = {}) {
     return true;
   }
 
+  const exitedDetail = typeof outcome === 'string' && outcome.startsWith('exited:') ? outcome.slice('exited:'.length) : null;
   const why = outcome === 'collision'
     ? `Another server took port ${_ocpPort} while SynaBun's OpenCode serve was starting, on every port it tried; it is left running.`
-    : _ocpLastCheck && _ocpLastCheck.state !== 'down'
-      ? opencodeProblemText({ check: _ocpLastCheck, port: _ocpPort })
-      : 'OpenCode did not start within 15 seconds.';
+    : exitedDetail != null
+      ? `OpenCode exited before becoming healthy (${exitedDetail}).`
+      : _ocpLastCheck && _ocpLastCheck.state !== 'down'
+        ? opencodeProblemText({ check: _ocpLastCheck, port: _ocpPort })
+        : 'OpenCode did not start within 15 seconds.';
   console.error(`[opencode] Server did not become healthy: ${why}`);
   _ocpStarting = false;
   reportOpencodeProblem(why);
@@ -12338,7 +12394,7 @@ const editorOwnerGuard = ownerRouteGuard({ isGuestRequest, port: PORT, allowedOr
 // whatever order they arrive; the editor's namespace asks the owner's guard on every route.
 app.use(createUiBlobRouter({
   namespaces: BLOB_NS_ALLOWLIST,
-  store: { getNamespace: blobGetNamespace, get: blobGet, put: blobPut, delete: blobDelete, prune: blobPrune },
+  store: { getNamespace: blobGetNamespace, getNamespaceJsonAsync: blobGetNamespaceJsonAsync, get: blobGet, put: blobPut, delete: blobDelete, prune: blobPrune },
   ownerNamespace: EDITOR_BACKUP_NAMESPACE,
   ownerGuard: editorOwnerGuard,
 }));
@@ -14869,60 +14925,10 @@ app.get('/api/loop/active', (req, res) => {
 // Unlike /api/loop/active, this returns ALL loop files (active + inactive)
 // classified by state so the UI can show stale/finished/orphaned entries
 // alongside running ones. Does NOT delete anything (read-only).
-app.get('/api/loop/list', (_req, res) => {
+app.get('/api/loop/list', async (_req, res) => {
   try {
-    if (!existsSync(LOOP_DIR)) return res.json({ loops: [], staleCount: 0 });
-    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && f !== '.gitkeep' && !f.startsWith('pending-') && f !== 'active-pointer.json');
-    const now = Date.now();
-    const loops = [];
-    let staleCount = 0;
-    for (const f of files) {
-      try {
-        const filePath = resolve(LOOP_DIR, f);
-        const data = JSON.parse(readFileSync(filePath, 'utf-8'));
-        const startedAtMs = data.startedAt ? new Date(data.startedAt).getTime() : 0;
-        const lastIterAtMs = data.lastIterationAt ? new Date(data.lastIterationAt).getTime() : startedAtMs;
-        const elapsedMs = startedAtMs ? now - startedAtMs : 0;
-        const stalledMs = lastIterAtMs ? now - lastIterAtMs : 0;
-        const terminalAlive = isLoopRuntimeAlive(data);
-        const iterDone = (data.currentIteration || 0) >= (data.totalIterations || 0) && (data.totalIterations || 0) > 0;
-        let state;
-        if (data.active === false) {
-          state = 'stale-inactive';
-          staleCount++;
-        } else if (data.terminalSessionId && !terminalAlive) {
-          state = data.runtimeType === 'native' ? 'orphaned-native' : 'orphaned-pty';
-        } else if (iterDone) {
-          state = 'finished';
-        } else {
-          state = 'active';
-        }
-        loops.push({
-          sessionId: f.replace('.json', ''),
-          terminalSessionId: data.terminalSessionId || null,
-          terminalAlive,
-          runId: data.runId || null,
-          profile: data.profile || null,
-          runtimeType: data.runtimeType || 'pty',
-          surface: data.surface || 'terminal',
-          task: typeof data.task === 'string' ? data.task.slice(0, 200) : '',
-          currentIteration: data.currentIteration || 0,
-          totalIterations: data.totalIterations || 0,
-          startedAt: data.startedAt || null,
-          lastIterationAt: data.lastIterationAt || null,
-          elapsedMinutes: Math.round(elapsedMs / 60000),
-          stalledMinutes: Math.round(stalledMs / 60000),
-          stalledMs,
-          state,
-          browserSessionId: data.browserSessionId || null,
-          browserTabId: data.browserTabId || null,
-          usesBrowser: !!data.usesBrowser,
-        });
-      } catch { /* skip corrupt */ }
-    }
-    // Newest first
-    loops.sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || ''));
-    res.json({ loops, staleCount });
+    const inventory = await scanLoopInventory({ includeExtraFields: true });
+    res.json(inventory);
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message, ...(err.code ? { code: err.code, problems: err.problems } : {}) });
   }
@@ -15596,7 +15602,19 @@ app.post('/api/loop/recover-browser', async (req, res) => {
     const fresh = req.body?.reason === 'create';
     // A create that takes over one of the owner's tabs in the everyday browser (extension mode only).
     const takeOverTab = fresh && typeof req.body?.takeOverTab === 'string' && loadBrowserConfig().connectMode === 'extension' ? req.body.takeOverTab : null;
-    if (loadBrowserConfig().connectMode === 'extension' && !runMoreLoginPin(who.id) && !fresh) {
+    let requestedBrowserSessionId = null;
+    const initial = req.body?.reason === 'initial';
+    if (initial) {
+      const worker = who.status === 'verified' && named && _assistantDispatcher?.optionalBrowserRoute?.(named);
+      if (!worker) return res.status(403).json({ code: 'NOT_OWNED', error: 'Only the active worker can open its first browser tab.' });
+      requestedBrowserSessionId = worker.requestedBrowserSessionId || null;
+      if (worker.sessionId) {
+        const current = liveAutomationRoute(named);
+        if (!current) return res.status(410).json(extensionSafeError({ code: 'TAB_CLOSED' }));
+        return res.json({ ok: true, sessionId: current.browserSessionId, tabId: current.browserTabId, current: true });
+      }
+    }
+    if (loadBrowserConfig().connectMode === 'extension' && !runMoreLoginPin(who.id) && !fresh && !initial) {
       return res.status(410).json(extensionSafeError({ code: 'TAB_CLOSED' }));
     }
     const lost = req.body?.lost && typeof req.body.lost === 'object' ? req.body.lost : null;
@@ -15607,7 +15625,7 @@ app.post('/api/loop/recover-browser', async (req, res) => {
       }
     }
     const start = async () => {
-      const acq = await acquireLoopBrowserAndTab({ terminalSessionId: owner, logTag: fresh ? 'create:browser' : 'recover:browser', takeOverTab });
+      const acq = await acquireLoopBrowserAndTab({ requestedBrowserSessionId, terminalSessionId: owner, logTag: fresh ? 'create:browser' : 'recover:browser', takeOverTab });
       // Its profile was closed outside SynaBun under it and is not started again for it: the loop ends when its turn
       // ends, never asking again iteration after iteration.
       if (acq.code === 'MORELOGIN_CLOSED_OUTSIDE') finishBlockedLoop(owner, acq);
@@ -23899,6 +23917,86 @@ app.get('/api/claude-code/sessions/:sessionId/messages', async (req, res) => {
   }
 });
 
+// --- Background tasks of a session (the panels' Background tasks view, lib/claude-bg-tasks.js) ---
+// The session's background shells and watches, rebuilt from its own transcript, and a page of what one printed.
+// The owner's page alone reads them (this boot's page secret, no agent header, no guest, one of this server's
+// Hosts): what a command printed is display data, never a model's. A task's output is read only from the file the
+// session reported for it, inside Claude Code's own task folders of that session.
+const claudeBgTasks = createClaudeBgTasks({ roots: (found) => claudeOutputRoots({ configDirs: [found.configDir] }) });
+function bgTasksOwnerPage(req, res, next) {
+  if (AGENT_HEADERS.some((name) => req.headers[name] !== undefined) || req.headers['x-synabun-brain-token'] !== undefined) {
+    return res.status(403).json({ ok: false, code: 'UI_ONLY', error: 'A background task\'s output is shown in the owner\'s own panel only.' });
+  }
+  let owner = false;
+  try { owner = _pageSession.verify(req) === true; } catch { owner = false; }
+  if (!owner) return res.status(403).json({ ok: false, code: 'PAGE_SECRET_REQUIRED', error: 'A background task\'s output is shown in SynaBun\'s own page only. Reload the page and try again.' });
+  next();
+}
+// The transcript a Claude panel tab names (its project and account), found as GET …/messages finds it.
+function claudeBgTranscript(req, res) {
+  const homeDir = process.env.USERPROFILE || process.env.HOME;
+  let accountHome = null;
+  const wantedAccount = typeof req.query.account === 'string' ? req.query.account : '';
+  if (wantedAccount && wantedAccount !== 'default') {
+    try { accountHome = _panelClaudeAccounts().homeFor(wantedAccount); } catch { accountHome = null; }
+    if (!accountHome) { res.status(404).json({ ok: false, code: 'account_unavailable', error: 'That Claude account is no longer set up in SynaBun.' }); return null; }
+  }
+  const configDir = accountHome || join(homeDir, '.claude');
+  const project = typeof req.query.project === 'string' ? req.query.project : '';
+  const found = findSessionTranscript({ sessionId: req.params.sessionId, project, projects: loadHookProjects(), projectsDir: join(configDir, 'projects'), pathToKey: pathToClaudeKey });
+  if (!found) { res.status(404).json({ ok: false, code: 'TRANSCRIPT_NOT_FOUND', error: 'No transcript of that session was found.', tasks: [] }); return null; }
+  return { ...found, configDir };
+}
+const bgNumber = (value) => (typeof value === 'string' && /^\d{1,15}$/.test(value) ? Number(value) : undefined);
+// An Assistant Claude brain's transcript: its conversation id under its account, in the folder it runs in
+// (runtime.backgroundTaskSource). Nothing a request says is a path here.
+function assistantBgTranscript(source) {
+  if (!source?.providerSessionId) return null;
+  const homeDir = process.env.USERPROFILE || process.env.HOME;
+  let configDir = join(homeDir, '.claude');
+  if (source.accountId && source.accountId !== 'default') {
+    let home = null;
+    try { home = _panelClaudeAccounts().homeFor(source.accountId); } catch { home = null; }
+    if (!home) return null;
+    configDir = home;
+  }
+  const cwd = source.cwd || PACKAGE_ROOT;
+  let found = null;
+  try { found = findSessionTranscript({ sessionId: source.providerSessionId, project: cwd, projects: [{ path: cwd }], projectsDir: join(configDir, 'projects'), pathToKey: pathToClaudeKey }); } catch { found = null; }
+  return found ? { ...found, configDir } : null;
+}
+const assistantBackgroundTasks = {
+  list: (source) => { const found = assistantBgTranscript(source); return found ? claudeBgTasks.list(found) : { tasks: [] }; },
+  output: async (source, q) => {
+    const found = assistantBgTranscript(source);
+    if (!found) return { ok: false, status: 404, code: 'TRANSCRIPT_NOT_FOUND', error: 'No transcript of this conversation was found.' };
+    return claudeBgTasks.output(found, { ...q, sessionId: source.providerSessionId });
+  },
+};
+app.get('/api/claude-code/sessions/:sessionId/background-tasks', editorOwnerGuard, bgTasksOwnerPage, (req, res) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    const found = claudeBgTranscript(req, res);
+    if (!found) return;
+    res.json({ ok: true, ...claudeBgTasks.list(found) });
+  } catch (err) {
+    res.status(err instanceof PathConfineError ? err.status : 500).json({ ok: false, error: err.message, tasks: [] });
+  }
+});
+app.get('/api/claude-code/sessions/:sessionId/background-tasks/:taskId/output', editorOwnerGuard, bgTasksOwnerPage, async (req, res) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    const found = claudeBgTranscript(req, res);
+    if (!found) return;
+    const running = req.query.running === '1' ? true : (req.query.running === '0' ? false : null);
+    const page = await claudeBgTasks.output(found, { sessionId: req.params.sessionId, taskId: String(req.params.taskId || ''), cursor: bgNumber(req.query.cursor), tail: bgNumber(req.query.tail), limit: bgNumber(req.query.limit), running });
+    if (!page || page.ok === false) return res.status(Number(page?.status) >= 400 ? Number(page.status) : 502).json({ ok: false, code: page?.code || 'OUTPUT_FAILED', error: page?.error || 'The output could not be read.' });
+    res.json({ ok: true, ...page.data });
+  } catch (err) {
+    res.status(err instanceof PathConfineError ? err.status : 500).json({ ok: false, error: err.message });
+  }
+});
+
 // --- Session Indexing ---
 
 let _indexingJob = null; // { jobId, cancelled, promise }
@@ -30622,6 +30720,8 @@ function noteMoreLoginContextClose(session, sessionId, context = session?.contex
       automationBrowserOwnerAccess: _automationBrowserOwnerAccess,
       // A request without an agent pin is the owner's page only with this boot's page secret (lib/page-session.js).
       pageSession: _pageSession,
+      // The Background tasks view of a Claude brain: its own transcript (lib/claude-bg-tasks.js).
+      backgroundTasks: assistantBackgroundTasks,
       // A pin counts only with its proof (lib/terminal-tokens.js): a worker's run id, a brain's id.
       terminalVerdict: (pin, req) => _terminalTokens.verdict(pin, presentedTerminalProof(req)),
     }));
@@ -31308,7 +31408,7 @@ function syncRegistryFromTerminals() {
 
 // ── Leak Detection ──
 
-function scanForLeaks() {
+async function scanForLeaks({ loopInventory = null, cleanupSnapshots = null } = {}) {
   const leaks = [];
   const now = Date.now();
   const activeSessionIds = new Set(sessionRegistry.keys());
@@ -31316,42 +31416,37 @@ function scanForLeaks() {
     if (s.claudeSessionId) activeSessionIds.add(s.claudeSessionId);
   }
 
-  // 1. Orphaned pending-remember files
+  // 1. Orphaned pending-remember files (async off-main-thread FS I/O)
   try {
-    if (existsSync(PENDING_REMEMBER_DIR)) {
-      const files = readdirSync(PENDING_REMEMBER_DIR).filter(f => f.endsWith('.json') && !f.startsWith('test-'));
-      for (const f of files) {
-        const filePath = join(PENDING_REMEMBER_DIR, f);
-        try {
-          const fstat = statSync(filePath);
-          const ageMs = now - fstat.mtimeMs;
-          if (ageMs < 5 * 60 * 1000) continue;
-          const sid = f.replace('.json', '');
-          if (!activeSessionIds.has(sid)) {
-            leaks.push({ type: 'orphaned-state', severity: ageMs > 30 * 60 * 1000 ? 'warning' : 'info', description: `Orphaned pending-remember flag (${Math.round(ageMs / 60000)}m old)`, file: filePath, sessionId: sid, ageMs });
-          }
-        } catch { /* skip */ }
-      }
+    const files = (await fsp.readdir(PENDING_REMEMBER_DIR)).filter(f => f.endsWith('.json') && !f.startsWith('test-'));
+    for (const f of files) {
+      const filePath = join(PENDING_REMEMBER_DIR, f);
+      try {
+        const fstat = await fsp.stat(filePath);
+        const ageMs = now - fstat.mtimeMs;
+        if (ageMs < 5 * 60 * 1000) continue;
+        const sid = f.replace('.json', '');
+        if (!activeSessionIds.has(sid)) {
+          cleanupSnapshots?.set(filePath, fstat);
+          leaks.push({ type: 'orphaned-state', severity: ageMs > 30 * 60 * 1000 ? 'warning' : 'info', description: `Orphaned pending-remember flag (${Math.round(ageMs / 60000)}m old)`, file: filePath, sessionId: sid, ageMs });
+        }
+      } catch { /* skip */ }
     }
-  } catch { /* ok */ }
+  } catch { /* missing or unreadable directory */ }
 
-  // 2. Orphaned loop files
+  // 2. Orphaned loop files — share the async stat-cached loop inventory instead of re-reading loop files
   try {
-    if (existsSync(LOOP_DIR_MONITOR)) {
-      const files = readdirSync(LOOP_DIR_MONITOR).filter(f => f.endsWith('.json') && !f.startsWith('pending-'));
-      for (const f of files) {
-        const filePath = join(LOOP_DIR_MONITOR, f);
-        try {
-          const data = JSON.parse(readFileSync(filePath, 'utf-8'));
-          if (data.stopped || data.finishedAt) continue;
-          const fstat = statSync(filePath);
-          const ageMs = now - fstat.mtimeMs;
-          if (ageMs < 2 * 60 * 1000) continue;
-          const sid = f.replace('.json', '');
-          if (!activeSessionIds.has(sid) && data.active) {
-            leaks.push({ type: 'orphaned-loop', severity: 'warning', description: `Active loop with no session (${data.template || 'custom'}, ${Math.round(ageMs / 60000)}m stale)`, file: filePath, sessionId: sid, ageMs, loopData: { template: data.template, currentIteration: data.currentIteration, maxIterations: data.maxIterations } });
-          }
-        } catch { /* skip */ }
+    const inv = loopInventory?.rawEntries
+      ? loopInventory
+      : await scanLoopInventory({ includeRaw: true }).catch(() => ({ rawEntries: [] }));
+    for (const entry of inv.rawEntries || []) {
+      const { data, filePath, sessionId: sid, mtimeMs } = entry;
+      if (!data || data.stopped || data.finishedAt) continue;
+      const ageMs = now - mtimeMs;
+      if (ageMs < 2 * 60 * 1000) continue;
+      if (!activeSessionIds.has(sid) && data.active) {
+        cleanupSnapshots?.set(filePath, entry.stat);
+        leaks.push({ type: 'orphaned-loop', severity: 'warning', description: `Active loop with no session (${data.template || 'custom'}, ${Math.round(ageMs / 60000)}m stale)`, file: filePath, sessionId: sid, ageMs, loopData: { template: data.template, currentIteration: data.currentIteration, maxIterations: data.maxIterations } });
       }
     }
   } catch { /* ok */ }
@@ -31374,105 +31469,73 @@ function scanForLeaks() {
     }
   }
 
-  // 4. Stale precompact flags
+  // 4. Stale precompact flags (async off-main-thread FS I/O)
   const precompactDir = resolve(DATA_HOME, 'data', 'precompact');
   try {
-    if (existsSync(precompactDir)) {
-      const files = readdirSync(precompactDir).filter(f => f.endsWith('.json'));
-      for (const f of files) {
-        const filePath = join(precompactDir, f);
-        try {
-          const fstat = statSync(filePath);
-          const ageMs = now - fstat.mtimeMs;
-          if (ageMs > 10 * 60 * 1000) {
-            leaks.push({ type: 'stale-precompact', severity: 'info', description: `Stale precompact cache (${Math.round(ageMs / 60000)}m old)`, file: filePath, sessionId: f.replace('.json', ''), ageMs });
-          }
-        } catch { /* skip */ }
-      }
+    const files = (await fsp.readdir(precompactDir)).filter(f => f.endsWith('.json'));
+    for (const f of files) {
+      const filePath = join(precompactDir, f);
+      try {
+        const fstat = await fsp.stat(filePath);
+        const ageMs = now - fstat.mtimeMs;
+        if (ageMs > 10 * 60 * 1000) {
+          cleanupSnapshots?.set(filePath, fstat);
+          leaks.push({ type: 'stale-precompact', severity: 'info', description: `Stale precompact cache (${Math.round(ageMs / 60000)}m old)`, file: filePath, sessionId: f.replace('.json', ''), ageMs });
+        }
+      } catch { /* skip */ }
     }
-  } catch { /* ok */ }
+  } catch { /* missing or unreadable directory */ }
 
   return leaks;
 }
 
-let _lastLeakHash = '';
-setInterval(() => {
-  markActivity('timer:session-leaks');
-  syncRegistryFromTerminals();
-  const leaks = scanForLeaks();
-  // Strip ageMs AND description (which embeds age as "Xm old") to prevent
-  // broadcasts every ~60s when the minute counter ticks in descriptions
-  const hash = JSON.stringify(leaks.map(l => { const { ageMs, description, ...stable } = l; return stable; }));
-  if (hash !== _lastLeakHash) {
-    _lastLeakHash = hash;
-    if (leaks.length > 0) broadcastSessionEvent({ type: 'session:leaks', leaks });
-  }
-}, LEAK_SCAN_INTERVAL_MS);
-
-// Inline scan of LOOP_DIR matching the GET /api/loop/list shape. Used by both
-// the WS init payload and the periodic broadcast so the Session Monitor stays
-// in sync with the Loops tab without a separate fetch.
-function scanLoopInventory() {
-  const result = { loops: [], staleCount: 0 };
-  try {
-    if (!existsSync(LOOP_DIR)) return result;
-    const files = readdirSync(LOOP_DIR).filter(f => f.endsWith('.json') && f !== '.gitkeep' && !f.startsWith('pending-') && f !== 'active-pointer.json');
-    const now = Date.now();
-    for (const f of files) {
-      try {
-        const filePath = resolve(LOOP_DIR, f);
-        const data = JSON.parse(readFileSync(filePath, 'utf-8'));
-        const startedAtMs = data.startedAt ? new Date(data.startedAt).getTime() : 0;
-        const lastIterAtMs = data.lastIterationAt ? new Date(data.lastIterationAt).getTime() : startedAtMs;
-        const elapsedMs = startedAtMs ? now - startedAtMs : 0;
-        const stalledMs = lastIterAtMs ? now - lastIterAtMs : 0;
-        const terminalAlive = isLoopRuntimeAlive(data);
-        const iterDone = (data.currentIteration || 0) >= (data.totalIterations || 0) && (data.totalIterations || 0) > 0;
-        let state;
-        if (data.active === false) { state = 'stale-inactive'; result.staleCount++; }
-        else if (data.terminalSessionId && !terminalAlive) state = data.runtimeType === 'native' ? 'orphaned-native' : 'orphaned-pty';
-        else if (iterDone) state = 'finished';
-        else state = 'active';
-        result.loops.push({
-          sessionId: f.replace('.json', ''),
-          terminalSessionId: data.terminalSessionId || null,
-          terminalAlive,
-          task: typeof data.task === 'string' ? data.task.slice(0, 200) : '',
-          currentIteration: data.currentIteration || 0,
-          totalIterations: data.totalIterations || 0,
-          startedAt: data.startedAt || null,
-          lastIterationAt: data.lastIterationAt || null,
-          elapsedMinutes: Math.round(elapsedMs / 60000),
-          stalledMinutes: Math.round(stalledMs / 60000),
-          stalledMs,
-          state,
-          browserSessionId: data.browserSessionId || null,
-          browserTabId: data.browserTabId || null,
-          usesBrowser: !!data.usesBrowser,
-        });
-      } catch { /* skip corrupt */ }
-    }
-    result.loops.sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || ''));
-  } catch { /* ok */ }
-  return result;
+// Async, stat-identity-cached scan of LOOP_DIR matching the GET /api/loop/list shape.
+// Used by the route, leak detection, WS init payload and periodic broadcast so the
+// Session Monitor stays in sync with the Loops tab without blocking the event loop.
+const _loopInventoryScanner = createLoopInventoryScanner({
+  loopDir: () => LOOP_DIR,
+  isLoopRuntimeAlive,
+});
+function scanLoopInventory(options) {
+  return _loopInventoryScanner.scan(options);
 }
 
+let _lastLeakHash = '';
 let _lastLoopHash = '';
+let _loopInventoryInFlight = false;
 setInterval(() => {
-  markActivity('timer:loop-inventory');
-  const inventory = scanLoopInventory();
-  // Hash on stable fields only (drop minute counters that tick every poll)
-  const hash = JSON.stringify({
-    staleCount: inventory.staleCount,
-    loops: inventory.loops.map(l => ({
-      sessionId: l.sessionId, state: l.state, terminalAlive: l.terminalAlive,
-      currentIteration: l.currentIteration, totalIterations: l.totalIterations,
-    })),
+  if (_loopInventoryInFlight) return;
+  _loopInventoryInFlight = true;
+  const endActivity = beginActivity('timer:loop-inventory');
+  syncRegistryFromTerminals();
+  (async () => {
+    const inventory = await scanLoopInventory({ includeRaw: true }).catch(() => null);
+    if (inventory) {
+      // Hash on stable fields only (drop minute counters that tick every poll)
+      const loopHash = JSON.stringify({
+        staleCount: inventory.staleCount,
+        loops: inventory.loops.map(l => ({
+          sessionId: l.sessionId, state: l.state, terminalAlive: l.terminalAlive,
+          currentIteration: l.currentIteration, totalIterations: l.totalIterations,
+        })),
+      });
+      if (loopHash !== _lastLoopHash) {
+        _lastLoopHash = loopHash;
+        broadcastSessionEvent({ type: 'session:loops', loops: inventory.loops, staleCount: inventory.staleCount });
+      }
+    }
+    const leaks = await scanForLeaks({ loopInventory: inventory });
+    // Strip ageMs AND description (which embeds age as "Xm old") to prevent
+    // broadcasts every ~60s when the minute counter ticks in descriptions
+    const leakHash = JSON.stringify(leaks.map(l => { const { ageMs, description, ...stable } = l; return stable; }));
+    if (leakHash !== _lastLeakHash) {
+      _lastLeakHash = leakHash;
+      if (leaks.length > 0) broadcastSessionEvent({ type: 'session:leaks', leaks });
+    }
+  })().catch(() => {}).finally(() => {
+    _loopInventoryInFlight = false;
+    endActivity();
   });
-  if (hash !== _lastLoopHash) {
-    _lastLoopHash = hash;
-    broadcastSessionEvent({ type: 'session:loops', loops: inventory.loops, staleCount: inventory.staleCount });
-  }
 }, LEAK_SCAN_INTERVAL_MS);
 
 // ── Session Monitor API ──
@@ -31534,19 +31597,33 @@ app.get('/api/sessions/:id/state', (req, res) => {
   res.json({ session: entry, ownedFiles });
 });
 
-app.get('/api/sessions/leaks', (req, res) => {
+app.get('/api/sessions/leaks', async (req, res) => {
   syncRegistryFromTerminals();
-  res.json({ leaks: scanForLeaks(), scannedAt: Date.now() });
+  res.json({ leaks: await scanForLeaks(), scannedAt: Date.now() });
 });
 
-app.post('/api/sessions/cleanup', express.json(), (req, res) => {
+async function cleanInactiveFlag(leak, snapshot) {
+  if (!snapshot) return false;
+  const current = await fsp.stat(leak.file);
+  if (current.dev !== snapshot.dev || current.ino !== snapshot.ino || current.size !== snapshot.size
+      || current.mtimeMs !== snapshot.mtimeMs || current.ctimeMs !== snapshot.ctimeMs) return false;
+  if (sessionRegistry.has(leak.sessionId)) return false;
+  for (const session of terminalSessions.values()) {
+    if (session.claudeSessionId === leak.sessionId) return false;
+  }
+  await fsp.unlink(leak.file);
+  return true;
+}
+
+app.post('/api/sessions/cleanup', express.json(), async (req, res) => {
   const { types } = req.body || {};
   const allowedTypes = new Set(types || ['orphaned-state', 'stale-precompact']);
-  const leaks = scanForLeaks();
+  const snapshots = new Map();
+  const leaks = await scanForLeaks({ cleanupSnapshots: snapshots });
   let cleaned = 0;
   for (const leak of leaks) {
     if (!allowedTypes.has(leak.type) || !leak.file) continue;
-    try { unlinkSync(leak.file); cleaned++; } catch { /* skip */ }
+    try { if (await cleanInactiveFlag(leak, snapshots.get(leak.file))) cleaned++; } catch { /* skip */ }
   }
   res.json({ ok: true, cleaned, total: leaks.length });
 });
@@ -31554,9 +31631,9 @@ app.post('/api/sessions/cleanup', express.json(), (req, res) => {
 // GET /api/sessions/pending-remember-prompt — build the prompt that processes
 // orphaned pending-remember flags. The client routes this prompt to the
 // chosen provider sidepanel (Claude Code / Codex / OpenCode) — no agent spawn.
-app.get('/api/sessions/pending-remember-prompt', (req, res) => {
+app.get('/api/sessions/pending-remember-prompt', async (req, res) => {
   try {
-    const leaks = scanForLeaks().filter(l =>
+    const leaks = (await scanForLeaks()).filter(l =>
       l.type === 'orphaned-state' && l.file && l.file.includes('pending-remember') && l.sessionId
     );
     if (leaks.length === 0) return res.json({ ok: true, count: 0, prompt: '', message: 'No pending-remember flags to process.' });
@@ -31608,16 +31685,35 @@ app.get('/api/sessions/pending-remember-prompt', (req, res) => {
 // ── Session Monitor WebSocket ──
 
 function handleSessionMonitorWebSocket(ws) {
-  sessionMonitorClients.add(ws);
-  syncRegistryFromTerminals();
-  const sessions = [...sessionRegistry.values()].map(s => ({
-    ...s,
-    isAlive: s.terminalSessionId ? terminalSessions.has(s.terminalSessionId) : (Date.now() - s.lastActivity < 5 * 60 * 1000),
-  }));
-  const loopInv = scanLoopInventory();
-  ws.send(JSON.stringify({ type: 'session:init', sessions, leaks: scanForLeaks(), loops: loopInv.loops, staleCount: loopInv.staleCount }));
-  ws.on('close', () => sessionMonitorClients.delete(ws));
-  ws.on('error', () => sessionMonitorClients.delete(ws));
+  let closed = false;
+  const cleanup = () => {
+    closed = true;
+    sessionMonitorClients.delete(ws);
+  };
+  ws.on('close', cleanup);
+  ws.on('error', cleanup);
+  (async () => {
+    syncRegistryFromTerminals();
+    const loopInv = await scanLoopInventory({ includeRaw: true }).catch(() => ({ loops: [], staleCount: 0, rawEntries: [] }));
+    const leaks = await scanForLeaks({ loopInventory: loopInv }).catch(() => []);
+    if (closed || ws.readyState !== 1) return;
+    // Snapshot active sessions AFTER awaiting the async scans and subscribe in the same
+    // synchronous turn so session:init is always delivered first and never overwrites
+    // sessions registered while the inventory was being scanned.
+    syncRegistryFromTerminals();
+    const sessions = [...sessionRegistry.values()].map(s => ({
+      ...s,
+      isAlive: s.terminalSessionId ? terminalSessions.has(s.terminalSessionId) : (Date.now() - s.lastActivity < 5 * 60 * 1000),
+    }));
+    ws.send(JSON.stringify({
+      type: 'session:init',
+      sessions,
+      leaks,
+      loops: loopInv.loops,
+      staleCount: loopInv.staleCount,
+    }));
+    sessionMonitorClients.add(ws);
+  })().catch(() => {});
 }
 
 const providerPanelTerminalAuth = createProviderPanelTerminalAuth({
@@ -31785,13 +31881,21 @@ let _gitExePath = null;   // Cached absolute path — preferring .exe on Windows
 let _gitResolved = false;
 let _gitResolving = null; // the lookup resolveGitPathInBackground() runs, while it runs
 
-// Resolve git's absolute path at first use. On Windows, `where git` lists all matches;
-// prefer .exe so spawnSync works without cmd.exe quoting issues. On Unix, use `command -v`.
-// A Windows PC without git: the git.exe of SynaBun's copy of Git for Windows (lib/git-bash/), asked each time,
-// since a copy that is still being fetched at the first call arrives later.
+// Resolve git's absolute path for server Git operations in one unified order:
+// bundled → managed (downloaded) → system (PATH, then standard Windows install roots).
+// Never dumps raw OEM codepage stderr on Windows.
 function resolveGitPath() {
-  if (_gitResolved) return _gitExePath || gitBash.gitExecutable();
+  const managed = gitBash.managedGitExecutable?.() || null;
+  if (managed) {
+    if (!_gitResolved) {
+      _gitResolved = true;
+      console.log(`[git] resolved: ${managed}`);
+    }
+    return managed;
+  }
+  if (_gitResolved) return _gitExePath || gitBash.gitExecutable({ includeSystem: true });
   _gitResolved = true;
+  let resolveErr = null;
   try {
     const cmd = IS_WINDOWS ? 'where git' : 'command -v git';
     const out = execSync(cmd, { encoding: 'utf8', timeout: 3000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
@@ -31801,13 +31905,29 @@ function resolveGitPath() {
     } else {
       _gitExePath = lines[0] || null;
     }
-    if (_gitExePath) console.log(`[git] resolved: ${_gitExePath}`);
-    else console.warn('[git] resolver returned no paths');
   } catch (err) {
-    console.warn('[git] resolution failed:', err?.message || String(err));
+    resolveErr = err;
     _gitExePath = null;
   }
-  return _gitExePath || gitBash.gitExecutable();
+  if (_gitExePath) {
+    console.log(`[git] resolved: ${_gitExePath}`);
+  } else {
+    const fallback = gitBash.gitExecutable() || gitBash.gitExecutable({ includeSystem: true });
+    if (fallback) {
+      _gitExePath = fallback;
+      console.log(`[git] resolved: ${fallback}`);
+    } else {
+      const detail = resolveErr?.killed
+        ? 'timed out'
+        : typeof resolveErr?.code === 'string'
+          ? resolveErr.code
+          : typeof resolveErr?.code === 'number' || typeof resolveErr?.status === 'number'
+            ? `not found on PATH (exit ${resolveErr.code ?? resolveErr.status})`
+            : 'resolver returned no paths';
+      console.warn(`[git] resolution failed: ${detail}`);
+    }
+  }
+  return _gitExePath || gitBash.gitExecutable({ includeSystem: true });
 }
 
 // Cross-platform git invocation. Uses resolved absolute path when possible (spawnable
@@ -31823,22 +31943,40 @@ async function spawnGitRead(args, opts = {}) {
 }
 
 function logGitFailure(where, err) {
-  const msg = err?.stderr?.toString?.() || err?.message || String(err);
+  const redact = typeof redactSecrets === 'function' ? redactSecrets : (s) => s;
+  const rawStderr = redact(Buffer.isBuffer(err?.stderr)
+    ? err.stderr.toString('utf8')
+    : (typeof err?.stderr === 'string' ? err.stderr : ''));
+  const stderrLine = rawStderr.trim().split(/\r?\n/)[0]?.trim() || '';
+  const errMessage = typeof err?.message === 'string' ? redact(err.message).trim().split(/\r?\n/)[0]?.trim() : '';
+  const code = err?.code != null && err.code !== ''
+    ? String(err.code)
+    : (err?.status != null ? `exit ${err.status}` : '');
+  const fallback = typeof err === 'string' ? redact(err).trim().split(/\r?\n/)[0]?.trim() : '';
+  const msg = stderrLine || errMessage || (code ? `git failed (${code})` : '') || fallback;
   if (!msg || /not a git repository/i.test(msg)) return;
-  if (/ENOENT/i.test(msg) || /is not recognized/i.test(msg) || /command not found/i.test(msg)) {
+  if (code === 'ENOENT' || /ENOENT/i.test(msg) || /is not recognized/i.test(msg) || /command not found/i.test(msg)) {
     if (_gitMissingLogged) return;
     _gitMissingLogged = true;
     console.warn(`[git] '${where}' failed: git executable not found on PATH. Install Git and ensure it's on the Node process PATH.`);
     return;
   }
-  console.warn(`[git] '${where}' failed:`, msg.trim().split('\n')[0]);
+  const detail = (code && !msg.includes(code)) ? `${msg} (${code})` : msg;
+  console.warn(`[git] '${where}' failed:`, detail);
 }
 
-// resolveGitPath()'s lookup without blocking: `where git` (Windows) or `command -v git`, run once in the
-// background at start-up, so the first git call of a request finds the answer kept instead of running the
-// lookup itself (a synchronous spawn through cmd.exe holds every request on a Windows PC without git).
+// Unified non-blocking server Git resolver (bundled → managed → system). Shared by
+// startup probing, spawnGit/spawnGitRead, and gitStatusRunner (status, reads, stage/commit).
 function resolveGitPathInBackground() {
-  if (_gitResolved) return Promise.resolve(_gitExePath || gitBash.gitExecutable());
+  const managed = gitBash.managedGitExecutable?.() || null;
+  if (managed) {
+    if (!_gitResolved) {
+      _gitResolved = true;
+      console.log(`[git] resolved: ${managed}`);
+    }
+    return Promise.resolve(managed);
+  }
+  if (_gitResolved) return Promise.resolve(_gitExePath || gitBash.gitExecutable({ includeSystem: true }));
   if (_gitResolving) return _gitResolving;
   _gitResolving = new Promise((done) => {
     const [command, args] = IS_WINDOWS ? ['where', ['git']] : ['/bin/sh', ['-c', 'command -v git']];
@@ -31847,10 +31985,26 @@ function resolveGitPathInBackground() {
         _gitResolved = true;
         const lines = error ? [] : String(stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
         _gitExePath = (IS_WINDOWS ? lines.find((line) => /\.exe$/i.test(line)) : null) || lines[0] || null;
-        if (_gitExePath) console.log(`[git] resolved: ${_gitExePath}`);
-        else console.warn('[git] resolution failed:', error?.message || 'resolver returned no paths');
+        if (_gitExePath) {
+          console.log(`[git] resolved: ${_gitExePath}`);
+        } else {
+          const fallback = gitBash.gitExecutable() || gitBash.gitExecutable({ includeSystem: true });
+          if (fallback) {
+            _gitExePath = fallback;
+            console.log(`[git] resolved: ${fallback}`);
+          } else {
+            const detail = error?.killed
+              ? 'timed out'
+              : typeof error?.code === 'string'
+                ? error.code
+                : typeof error?.code === 'number'
+                  ? `not found on PATH (exit ${error.code})`
+                  : 'resolver returned no paths';
+            console.warn(`[git] resolution failed: ${detail}`);
+          }
+        }
       }
-      done(_gitExePath || gitBash.gitExecutable());
+      done(gitBash.managedGitExecutable?.() || _gitExePath || gitBash.gitExecutable({ includeSystem: true }));
     });
   }).finally(() => { _gitResolving = null; });
   return _gitResolving;
@@ -31862,8 +32016,8 @@ setImmediate(async () => {
   try {
     const gitPath = await resolveGitPathInBackground();
     const result = await gitStatusRunner.run(['--version'], { binary: gitPath || 'git', timeoutMs: 3000 });
-    if (result.ok) console.log(`[git] ${String(result.stdout).trim()} — OK`);
-    else console.warn(`[git] startup probe FAILED: ${String(result.stderr).trim() || result.code}. File explorer git UI will be hidden.`);
+    if (result.ok) console.log(`[git] ${redactSecrets(String(result.stdout)).trim()} — OK`);
+    else console.warn(`[git] startup probe FAILED: ${redactSecrets(String(result.stderr)).trim() || result.code}. File explorer git UI will be hidden.`);
   } catch { /* availability is reported on the first read */ }
 });
 
@@ -31981,7 +32135,7 @@ app.get('/api/terminal/branches', async (req, res) => {
 
   const inside = await spawnGitRead(['rev-parse', '--is-inside-work-tree'], { cwd: dir, timeout: 3000 });
   if (inside.status !== 0) {
-    logGitFailure('branches: rev-parse', inside.error || { stderr: inside.stderr });
+    logGitFailure('branches: rev-parse', inside.error || inside);
     return res.json({ branches: [], current: null });
   }
 
@@ -31990,7 +32144,7 @@ app.get('/api/terminal/branches', async (req, res) => {
     let current = '';
     const showCurrent = await spawnGitRead(['branch', '--show-current'], { cwd: dir, timeout: 3000 });
     if (showCurrent.status === 0) current = showCurrent.stdout.toString().trim();
-    else logGitFailure('branches: show-current', showCurrent.error || { stderr: showCurrent.stderr });
+    else logGitFailure('branches: show-current', showCurrent.error || showCurrent);
     if (!current) {
       const abbrev = await spawnGitRead(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir, timeout: 3000 });
       if (abbrev.status === 0) {
@@ -32002,7 +32156,7 @@ app.get('/api/terminal/branches', async (req, res) => {
     // All local branches — plain `git branch` parsed manually; avoids --format=%(refname:short)
     // which can get mangled by cmd.exe variable expansion on Windows even with proper quoting.
     const branchResult = await spawnGitRead(['branch'], { cwd: dir });
-    if (branchResult.status !== 0) logGitFailure('branch list', branchResult.error || { stderr: branchResult.stderr });
+    if (branchResult.status !== 0) logGitFailure('branch list', branchResult.error || branchResult);
     const raw = branchResult.status === 0 ? branchResult.stdout.toString() : '';
     // Plain `git branch` output: each line is "  branch" or "* branch" (current). Strip
     // marker + whitespace. Skip detached-HEAD lines like "* (HEAD detached at abc1234)".
@@ -32037,8 +32191,8 @@ app.post('/api/terminal/trust-workspace', async (req, res) => {
   const gitPath = normalizeGitPath(abs);
   const r = await spawnGit(['config', '--global', '--add', 'safe.directory', gitPath]);
   if (r.status !== 0) {
-    const stderr = r.stderr?.toString?.()?.trim() || r.error?.message || 'git config failed';
-    logGitFailure('config --add safe.directory', r.error || { stderr: r.stderr });
+    const stderr = r.stderr?.toString?.()?.trim() || r.error?.message || (r.code ? `git config failed (${r.code})` : 'git config failed');
+    logGitFailure('config --add safe.directory', r.error || r);
     return res.status(500).json({ ok: false, error: stderr });
   }
 
@@ -32059,7 +32213,7 @@ app.post('/api/terminal/checkout', async (req, res) => {
 
   const inside = await spawnGitRead(['rev-parse', '--is-inside-work-tree'], { cwd: dir, timeout: 3000 });
   if (inside.status !== 0) {
-    logGitFailure('checkout: rev-parse', inside.error || { stderr: inside.stderr });
+    logGitFailure('checkout: rev-parse', inside.error || inside);
     return res.status(400).json({ error: 'Not a git repository' });
   }
 
@@ -32070,7 +32224,7 @@ app.post('/api/terminal/checkout', async (req, res) => {
   const result = await spawnGit(['checkout', branch], { cwd: dir, timeout: 10000 });
   gitStatusRunner.invalidate(dir);
   if (result.status !== 0) {
-    const stderr = result.stderr?.toString?.()?.trim() || result.error?.message || 'Checkout failed';
+    const stderr = result.stderr?.toString?.()?.trim() || result.error?.message || (result.code ? `Checkout failed (${result.code})` : 'Checkout failed');
     return res.status(500).json({ error: stderr });
   }
 
@@ -32078,7 +32232,7 @@ app.post('/api/terminal/checkout', async (req, res) => {
   let current = '';
   const showCurrent = await spawnGitRead(['branch', '--show-current'], { cwd: dir, timeout: 3000 });
   if (showCurrent.status === 0) current = showCurrent.stdout.toString().trim();
-  else logGitFailure('checkout: show-current', showCurrent.error || { stderr: showCurrent.stderr });
+  else logGitFailure('checkout: show-current', showCurrent.error || showCurrent);
   const output = result.stderr?.toString?.()?.trim() || `Switched to branch '${current}'`;
   res.json({ ok: true, branch: current, output });
 });
@@ -33243,7 +33397,17 @@ function extensionSelfHosts() {
   try { for (const list of Object.values(os.networkInterfaces())) for (const entry of list || []) if (entry?.address) hosts.add(entry.address.split('%')[0]); } catch {}
   return [...hosts];
 }
+function extensionRunsActive() {
+  const { assistant, loop } = systemActivitySources();
+  return !collectActivity({ assistant, loop }).idle;
+}
 const extensionBridge = createExtensionBridge({
+  runsActive: extensionRunsActive,
+  onConnected: version => extensionUpdate.connected(version),
+  updateStatus: version => {
+    const disk = extensionPackage.status();
+    return { version: !disk.needs && disk.folderVersion && compareVersions(version, disk.folderVersion) < 0 ? disk.folderVersion : null };
+  },
   forbiddenOrigins: publicWebOrigins,
   blockedPorts: extensionBlockedPorts,
   selfHosts: extensionSelfHosts,
@@ -33272,7 +33436,10 @@ const extensionEvaluateGate = {
 };
 const extensionAdapter = createExtensionAdapter({
   bridge: extensionBridge, sessions: browserSessions, uploadRoot: extensionUploadRoot, dataHome: DATA_HOME,
+  // The bridge handshake identifies the connection. Local profile settings belong to mirror/attach.
   caller: browserCaller, ownerPage: browserOwnerPageOnly, evaluateGate: extensionEvaluateGate,
+  // browser_content markdown in extension mode: the Playwright route's own converter (nhm, below), called per request.
+  htmlToMarkdown: html => nhm.translate(html),
   selected: req => loadBrowserConfig().connectMode === 'extension' && !runMoreLoginPin(browserCaller(req).id),
 });
 // The extension folder the owner loads (DATA_HOME/browser-extension/unpacked). Its files are the one package this
@@ -33293,6 +33460,7 @@ try { const prepared = extensionPackage.retarget(); if (prepared.changed) consol
 catch (error) { console.warn(`[extension-bridge] extension folder not checked (${error?.code || 'error'}${error?.code === 'EXTENSION_FOLDER_UNSAFE' && error.reason ? `: ${error.reason}` : ''})`); }
 // The one-button setup (Settings → Browser → "Connect your browser"; docs/browser-extension-bridge.md → One-button
 // setup). Programs are started with execFile/spawn and argument arrays, never a shell; reads time out.
+const extensionUpdate = createExtensionUpdate({ bridge: extensionBridge, pkg: extensionPackage, runsActive: extensionRunsActive });
 const extensionSetup = createExtensionSetup({
   bridge: extensionBridge,
   detect: () => detectBrowsers({
@@ -33304,12 +33472,12 @@ const extensionSetup = createExtensionSetup({
   prepare: ({ signal } = {}) => extensionPackage.ensure({ reason: 'setup', signal }),
   packageStatus: () => extensionPackage.status(),
   confirmReload: () => extensionPackage.confirmReload(),
+  updateStatus: (peer, disk) => extensionUpdate.status(peer, disk),
   exec: (cmd, args) => new Promise((resolveExec, rejectExec) => {
     const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true, shell: false });
     child.once('error', rejectExec); child.once('spawn', () => { child.unref(); resolveExec(); });
   }),
   appOrigin: () => `http://127.0.0.1:${Number(PORT) || 3344}`,
-  folderVersion: () => { const state = extensionFolderState(DATA_HOME); return state.present ? state.version : null; },
 });
 {
   const restored = extensionBridge.restore();
@@ -33634,14 +33802,44 @@ function sessionServesMoreLoginEnv(session, envId) {
   return !!session && session._profileMode === 'morelogin' && String(session._mlEnvId || '') === String(envId);
 }
 
-/** Whether `session` is a browser run `ownerKey` may work in: its pinned profile's, else the default browser's. */
+/**
+ * Whether `session` is a browser run `ownerKey` may work in: its pinned profile's, else the default browser's.
+ * No session serves. An unpinned run gets a MoreLogin session only while MoreLogin is the default browser (and then
+ * only the default profile's), and a local session (clean, managed, direct, mirror, attach) only when it is the one
+ * Settings → Browser selects, by the rule findReusableBrowserSession reuses by. Before review round 3 any MoreLogin
+ * or local session served a run under a mirror / attach / clean default, so a requested session id reached another
+ * profile in strategy 0 of acquireSharedBrowserTab (which also destroys a requested session that fails its check).
+ */
 function sessionServesRun(session, cfg, ownerKey) {
+  if (!session) return false;
   const pin = runMoreLoginPin(ownerKey);
   // A pin that may not be used (an agent's, its profile off the owner's list) serves in no session at all: not its
   // profile's, and never the default browser's.
   if (pin) return !pinUseRefusal(pin, cfg) && sessionServesMoreLoginEnv(session, pin.envId);
-  if (cfg.connectMode === 'extension' || session?._profileMode === 'extension') return cfg.connectMode === 'extension' && session?._profileMode === 'extension';
-  return cfg.connectMode !== 'morelogin' || sessionServesMoreLoginDefault(session, cfg);
+  if (cfg.connectMode === 'extension' || session._profileMode === 'extension') return cfg.connectMode === 'extension' && session._profileMode === 'extension';
+  if (cfg.connectMode === 'morelogin' || session._profileMode === 'morelogin') return cfg.connectMode === 'morelogin' && sessionServesMoreLoginDefault(session, cfg);
+  return sessionServesLocalBrowser(session, cfg);
+}
+
+/**
+ * Whether a local session (not MoreLogin, not the extension) is the browser Settings → Browser selects: attach when
+ * attach is active and a launch otherwise, on the selected profile folder, or a clean session when none is selected.
+ * findReusableBrowserSession reuses by this rule, and sessionServesRun holds a requested or recorded session to it.
+ */
+function sessionServesLocalBrowser(session, cfg) {
+  if (!session || session._profileMode === 'morelogin' || session._profileMode === 'extension') return false;
+  if (isAttachConfigActive(cfg) !== (session._profileMode === 'cdp')) return false;
+  let selectedPath = cfg.userDataDir || '';
+  if (selectedPath && !selectedPath.startsWith('/') && !(/^[A-Z]:/i.test(selectedPath))) {
+    selectedPath = resolve(DATA_HOME, selectedPath);
+  }
+  const normalize = (p) => (p || '').replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
+  const selectedNorm = normalize(selectedPath);
+  if (!selectedNorm) return session._profileMode === 'clean';
+  const sessionSelected = normalize(session._selectedProfilePath);
+  const sessionRoot = normalize(session._launchUserDataDir);
+  const sessionActiveProfile = normalize(resolve(session._launchUserDataDir || '', session._launchProfileDirectory || 'Default'));
+  return selectedNorm === sessionSelected || selectedNorm === sessionRoot || selectedNorm === sessionActiveProfile;
 }
 
 function describeBrowserSessionForLog(session) {
@@ -33654,17 +33852,7 @@ function describeBrowserSessionForLog(session) {
 async function findReusableBrowserSession(opts = {}) {
   const { excludeAgentOwned = true, excludeLoopOwned = true, moreloginEnvId = null } = opts;
   const cfg = loadBrowserConfig();
-  // Don't reuse across connect modes: an attach (cdp) session and a mirror session
-  // are not interchangeable. Protects in-flight loops when the mode is switched.
-  // Use the same applicability test as session creation to avoid infinite re-spawn.
-  const wantAttach = isAttachConfigActive(cfg);
   const wantMoreLogin = cfg.connectMode === 'morelogin';
-  let selectedPath = cfg.userDataDir || '';
-  if (selectedPath && !selectedPath.startsWith('/') && !(/^[A-Z]:/i.test(selectedPath))) {
-    selectedPath = resolve(DATA_HOME, selectedPath);
-  }
-  const normalize = (p) => (p || '').replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
-  const selectedNorm = normalize(selectedPath);
   for (const [id, session] of browserSessions) {
     if (session._profileMode === 'extension' || cfg.connectMode === 'extension' && !moreloginEnvId) {
       if (session._profileMode === 'extension' && cfg.connectMode === 'extension' && extensionBridge.status().connected && !moreloginEnvId) return { id, session };
@@ -33689,19 +33877,11 @@ async function findReusableBrowserSession(opts = {}) {
       if (!sessionServesMoreLoginEnv(session, moreloginEnvId)) continue;
     } else if (wantMoreLogin || session._profileMode === 'morelogin') {
       if (!wantMoreLogin || !sessionServesMoreLoginDefault(session, cfg)) continue;
-    } else {
-      if (wantAttach && session._profileMode !== 'cdp') continue;
-      if (!wantAttach && session._profileMode === 'cdp') continue;
-      if (selectedNorm) {
-        const sessionSelected = normalize(session._selectedProfilePath);
-        const sessionRoot = normalize(session._launchUserDataDir);
-        const sessionActiveProfile = normalize(resolve(session._launchUserDataDir || '', session._launchProfileDirectory || 'Default'));
-        if (selectedNorm !== sessionSelected && selectedNorm !== sessionRoot && selectedNorm !== sessionActiveProfile) {
-          continue;
-        }
-      } else if (session._profileMode !== 'clean') {
-        continue;
-      }
+    } else if (!sessionServesLocalBrowser(session, cfg)) {
+      // Don't reuse across connect modes or profile folders: an attach (cdp) session and a mirror session are not
+      // interchangeable. Protects in-flight loops when the mode is switched. The same applicability test as session
+      // creation (isAttachConfigActive) avoids an infinite re-spawn.
+      continue;
     }
     try {
       // Do not probe only the mutable `session.page` alias here. A renderer can
@@ -33807,7 +33987,7 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
   if (loadBrowserConfig().connectMode === 'extension' && !runMoreLoginPin(ownerKey)) {
     // takeOverTab: one of the owner's open tabs in the everyday browser (full control), named by browser_session create.
     try { return await extensionAdapter.acquire(ownerKey, ownerType, { adopt: takeOverTab || undefined }); }
-    catch (error) { return extensionSafeError(error); }
+    catch (error) { return extensionAdapter.describeError(error); }
   }
   const lockKey = loopBrowserLockKey(ownerKey, requestedBrowserSessionId, loadBrowserConfig());
   const acquired = await withLoopBrowserLock(lockKey, async () => {
@@ -33878,6 +34058,7 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
     // createBrowserSession is strict: with MoreLogin as the default it either attaches
     // to MoreLogin (auto-launching the app) or throws — never a Chrome fallback.
     let createError = null;
+    let createdHere = false;
     if (!browserSessionId) {
       try {
         // The start guard: a profile closed outside SynaBun is not started again by this acquisition (an attach to the
@@ -33889,6 +34070,7 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
           ? { url: 'about:blank', connectMode: 'morelogin', moreloginEnvId: pin.envId, _mlPinned: true, moreloginStartGuard, moreloginAfterOutsideClose }
           : { url: 'about:blank', moreloginStartGuard, moreloginAfterOutsideClose });
         browserSessionId = result.sessionId;
+        createdHere = true;
         loopLog(ownerKey, logTag, 'strategy 2: created shared browser session', {
           browserSessionId, profileMode: result.profileMode, profileSource: result.profileSource,
         });
@@ -33908,9 +34090,14 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
       // The run's own profile (its pin, else the MoreLogin default) failed to start or connect in this run: from now on
       // it may not move to another profile (POST /api/morelogin/use answers 409 PROFILE_FAILED_NO_SWITCH) until that
       // profile connects again for it (below), the owner moves it, or it ends (lib/morelogin-profile-failures.js).
+      let profileAdvice = '';
       if (createError) {
         const own = pin || (moreLoginDefault && moreLoginDefaultEnvId(policyCfg) ? { envId: String(moreLoginDefaultEnvId(policyCfg)), name: null } : null);
         noteRunProfileFailure(ownerKey, own, createError);
+        if (own && !createError.code) {
+          profileAdvice = await stoppedProfileAdvice(own.envId, own.name || _moreLoginEnvNames.get(own.envId),
+            id => moreLogin.profileStatus(id, { savedCfg: policyCfg, timeout: 1500 }));
+        }
       }
       // The profile was closed outside SynaBun: the sentence says it all (which profile, when, that SynaBun does not
       // reopen it, how to go on); no "could not start" around it.
@@ -33930,9 +34117,9 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
               ? `this needs the user, not a retry: ${createError.planLimit ? 'wait for MoreLogin\'s daily reset, upgrade the MoreLogin plan, or keep the profile open so runs need no new start' : 'fix what MoreLogin names in the MoreLogin app'}.`
               : createError?.code === 'MORELOGIN_PROFILE_WINDOWLESS'
               ? 'this needs the user, not a retry: open the profile\'s window again in MoreLogin (or close it fully there and start it again).'
-              : 'check that MoreLogin is open and that the profile still exists, or pick another profile where this run is set up.'}`
+              : profileAdvice || 'check that MoreLogin is open and that the profile still exists, or pick another profile where this run is set up.'}`
           : createError
-          ? `Could not start the shared browser session: ${createError.error}`
+          ? `Could not start the shared browser session: ${createError.error}${profileAdvice ? `${/[.!?]$/.test(String(createError.error || '').trim()) ? '' : '.'} ${profileAdvice}` : ''}`
           : 'Could not start the shared browser session. Open Browser Settings and verify the selected profile can launch.',
         ...(createError?.code ? { code: createError.code, offenders: createError.offenders } : {}),
         ...(createError?.needsUser ? { needsUser: true } : {}),
@@ -33948,7 +34135,7 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
         browserSessionId, ...describeBrowserSessionForLog(chosenSession), wantMoreLoginEnvId: pin.envId,
       });
       return {
-        error: `Refusing browser session ${browserSessionId} (${chosenSession._profileMode || 'unknown'} mode${chosenSession._mlEnvId ? `, MoreLogin env ${chosenSession._mlEnvId}` : ''}): this run is set to ${describeMoreLoginPin(pin)} and never falls back to another profile or browser.`,
+        error: `Refusing browser session ${browserSessionId} (${chosenSession._profileMode || 'unknown'} mode${chosenSession._mlEnvId ? `, MoreLogin env ${chosenSession._mlEnvId}` : ''}): this run is set to ${describeMoreLoginPin(pin)} and never falls back to another profile or browser. Open the profile configured for this run.`,
       };
     }
     if (!pin && moreLoginDefault && chosenSession && !sessionServesMoreLoginDefault(chosenSession, policyCfg)) {
@@ -33956,7 +34143,18 @@ async function acquireSharedBrowserTab({ requestedBrowserSessionId = null, owner
         browserSessionId, ...describeBrowserSessionForLog(chosenSession),
       });
       return {
-        error: `Refusing browser session ${browserSessionId} (${chosenSession._profileMode || 'unknown'} mode): MoreLogin env ${moreLoginDefaultEnvId(policyCfg) || '(default)'} is the default browser, and automations never fall back to another browser.`,
+        error: `Refusing browser session ${browserSessionId} (${chosenSession._profileMode || 'unknown'} mode): MoreLogin env ${moreLoginDefaultEnvId(policyCfg) || '(default)'} is the default browser, and automations never fall back to another browser. Open the configured AI browser profile.`,
+      };
+    }
+    // A reused or requested session for a run on SynaBun's own browser (mirror, attach, clean) is the one its settings
+    // select, and never a MoreLogin profile or another local profile (sessionServesRun; review round 3, X1). The
+    // session this acquisition just created is that browser by construction.
+    if (!pin && !moreLoginDefault && chosenSession && !createdHere && !sessionServesRun(chosenSession, policyCfg, ownerKey)) {
+      loopLog(ownerKey, logTag, 'ABORT: acquired session is not the default browser', {
+        browserSessionId, ...describeBrowserSessionForLog(chosenSession),
+      });
+      return {
+        error: `Refusing browser session ${browserSessionId} (${chosenSession._profileMode || 'unknown'} mode${chosenSession._mlEnvId ? `, MoreLogin env ${chosenSession._mlEnvId}` : ''}): it is not the browser selected in Settings → Browser, and automations never fall back to another browser or profile.`,
       };
     }
 
@@ -37550,7 +37748,7 @@ app.use('/api/browser/sessions/:id', (req, res, next) => {
     }
     const envId = moreLoginDefaultEnvId(cfg);
     res.status(409).json({
-      error: `Session ${req.params.id} is not the default browser (${session._profileMode || 'unknown'} mode${session._mlEnvId ? `, MoreLogin env ${session._mlEnvId}` : ''}; the default is MoreLogin${envId ? ` env ${envId}` : ''}), so SynaBun's browser tools do not act on it. Leave sessionId out: browser_navigate opens the page in the default browser.`,
+      error: `Session ${req.params.id} is not the default browser (${session._profileMode || 'unknown'} mode${session._mlEnvId ? `, MoreLogin env ${session._mlEnvId}` : ''}; the default is ${cfg.connectMode === 'morelogin' ? `MoreLogin${envId ? ` env ${envId}` : ''}` : cfg.connectMode === 'extension' ? 'the SynaBun browser extension' : 'the browser selected in Settings → Browser'}), so SynaBun's browser tools do not act on it. Leave sessionId out: browser_navigate opens the page in the default browser.`,
       code: 'NOT_DEFAULT_BROWSER',
     });
   };
@@ -37572,15 +37770,18 @@ app.use('/api/browser/extension', extensionOwnerGuard, (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store'); next();
 });
 app.get('/api/browser/extension', (_req, res) => {
-  const folderState = extensionFolderState(DATA_HOME), status = extensionBridge.status();
+  const status = extensionBridge.status();
   // `folder`: the folder the owner loads, once it is there (null until "Connect your browser" downloaded the extension).
   // `package`: the pinned package and its download (pinnedVersion, needs, phase, received, total, code).
   const pkg = extensionPackage.status();
-  res.json({ ...status, folder: folderState.present ? folderState.folder : null, uploadFolder: extensionUploadRoot,
-    folderVersion: folderState.present ? folderState.version : null, pinnedVersion: pkg.pinnedVersion, package: pkg,
-    ...extensionVersions({ connected: status.connected, extensionVersion: status.extensionVersion, folderVersion: folderState.present ? folderState.version : null, pinnedVersion: pkg.pinnedVersion, reloadPending: pkg.reloadPending === true, reloadReason: pkg.reloadReason ?? null }),
-    setup: extensionSetup.status().state });
+  res.json({ ...status, folder: pkg.folder, uploadFolder: extensionUploadRoot,
+    folderVersion: pkg.folderVersion, pinnedVersion: pkg.pinnedVersion, package: pkg,
+    ...extensionVersions({ connected: status.connected, extensionVersion: status.extensionVersion, folderVersion: pkg.folderVersion, pinnedVersion: pkg.pinnedVersion, reloadPending: pkg.reloadPending === true, reloadReason: pkg.reloadReason ?? null }),
+    update: extensionUpdate.status(status, pkg), setup: extensionSetup.state() });
 });
+// A summary without paths, tab inventories or pairing data for the owner's proactive notices.
+app.get('/api/browser/extension/update/status', (_req, res) => res.json(extensionUpdate.status()));
+app.post('/api/browser/extension/reload', ownerReloadHandler({ update: extensionUpdate, isAutomationBrowser: req => _pageSession.isAutomationBrowser(req) }));
 // The one-button setup. Owner only: these sit under the guard above (ownerRouteGuard, the page secret, no automation
 // caller), like pairing and the mode. The token (ticket) goes to SynaBun's own setup page only, never into a log or URL.
 const sendSetup = (res, run) => Promise.resolve().then(run).then(value => res.json({ ok: true, ...value }),
@@ -37617,7 +37818,7 @@ app.post('/api/browser/extension/:action', async (req, res) => {
     // The owner's mode: full control (any site and tab of the paired browser) or only what the owner shares.
     else if (action === 'mode') await extensionBridge.setMode(req.body?.fullControl);
     // The owner's retry of an update that did not download (Settings): only for a folder that is already there.
-    else if (action === 'update') { if (extensionPackage.needs() === 'update') extensionPackage.ensure({ reason: 'update' }).catch(() => {}); }
+    else if (action === 'update') { if (extensionPackage.needs() === 'update') extensionPackage.ensure({ reason: 'update' }).then(() => extensionBridge.publishUpdate(), () => {}); }
     else return res.status(400).json({ code: 'INVALID_MESSAGE', error: 'Unknown extension action.' });
     return res.json({ ok: true, ...extensionBridge.status() });
   } catch (error) { return res.status(400).json(extensionSafeError(error)); }
@@ -37689,6 +37890,7 @@ app.get('/api/browser/sessions', (req, res) => {
   // A run's own route as the server last recorded it (a recovery or a browser_session create moved it): the MCP
   // follows it even after its process restarted and forgot (mcp-server neural-interface.ts resolveSessionUncached).
   const yourRoute = caller ? liveAutomationRoute(caller, { cfg: policyCfg }) : null;
+  const workerBrowser = who.status === 'verified' && _assistantDispatcher?.optionalBrowserRoute?.(caller);
   res.json({
     sessions,
     defaultBrowser: callerPin
@@ -37696,6 +37898,7 @@ app.get('/api/browser/sessions', (req, res) => {
       : moreLoginDefault
       ? { connectMode: 'morelogin', moreloginEnvId: moreLoginDefaultEnvId(policyCfg) }
       : { connectMode: policyCfg.connectMode || null },
+    ...(workerBrowser ? { workerBrowser } : {}),
     ...(yourRoute ? { yourRoute: { sessionId: yourRoute.browserSessionId, tabId: yourRoute.browserTabId } } : {}),
     // The MoreLogin profile this caller works in when it is not the default (its launch's, or its own choice: POST
     // /api/morelogin/use). The MCP reads it to move a run whose pinned tab is in a browser it left.
@@ -40180,7 +40383,7 @@ const httpServer = app.listen(PORT, async () => {
   // fetched and verified in the background (lib/browser-extension-package.js). Nothing is downloaded for somebody who
   // never set the extension up, and a failure keeps the folder that is there.
   setTimeout(() => {
-    try { markActivity('startup:extension-package'); extensionPackage.refreshInBackground(); }
+    try { markActivity('startup:extension-package'); extensionPackage.refreshInBackground()?.then(() => extensionBridge.publishUpdate(), () => {}); }
     catch (error) { console.warn(`[extension-bridge] extension update not started (${error?.code || 'error'})`); }
   }, 4000).unref?.();
 

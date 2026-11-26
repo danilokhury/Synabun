@@ -30,6 +30,7 @@ import { ToolListRefreshBarrier } from './services/tool-list-refresh-barrier.js'
 import { selectionFromList, unreadableSelection, type ToolMode, type ToolSelection } from './services/tool-runtime.js';
 import { TOOL_LIST_LIMITS } from './services/tool-catalog.js';
 import { runHasTeamContext, setTeamContextResolver } from './services/team-context.js'; // agents-p4
+import { bindServerIdentity, refreshMemoryClientRoots } from './services/memory-client.js';
 import {
   type CallerIdentity,
   markHttpMode,
@@ -406,7 +407,8 @@ export function createMcpRoutes(options: McpRoutesOptions = {}): Router {
           }
           mcpSessions.set(newSid, { transport, server, lastSeen: Date.now(), proof });
           revokeProof.set(newSid, proof && options.sessionProof ? options.sessionProof.revoke : null);
-          deriveIdentity(req, newSid, terminal);
+          const sessionIdentity = deriveIdentity(req, newSid, terminal);
+          bindServerIdentity(server, sessionIdentity);
           // The warm server was built role-less, on focus. The SDK awaits this
           // hook BEFORE dispatching the initialize request, so binding the
           // selection and the role here makes the handshake instructions and
@@ -473,6 +475,11 @@ export function createMcpRoutes(options: McpRoutesOptions = {}): Router {
       return jsonRpcError(res, sid ? 404 : 400, sid ? -32001 : -32000, sid ? 'Session not found' : 'Bad Request: no valid session ID provided');
     }
     entry.lastSeen = Date.now();
+    // On Streamable HTTP, clients open the standalone GET SSE stream right after `notifications/initialized`,
+    // so server→client requests like `roots/list` can only be delivered once GET attaches.
+    if (req.method === 'GET') {
+      setImmediate(() => { refreshMemoryClientRoots(entry.server).catch(() => {}); });
+    }
     try {
       await runRequest(req, sid, options, () =>
         entry.transport.handleRequest(req, res)

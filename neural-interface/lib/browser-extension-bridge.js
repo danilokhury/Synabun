@@ -5,7 +5,7 @@ import { compareVersions } from './browser-extension-folder.js';
 import { dirname } from 'node:path';
 import { lookup } from 'node:dns/promises';
 import { WebSocketServer } from 'ws';
-import { anyOrigin, channel, command, COMMAND_WAIT, commandWait as operationWait, CONTROL, controlSurface, equalMac, ERROR_TEXT, fail, handle, HISTORY, inventory, localHost, LONG_OPS_SINCE, longOp, mac, MAX_MESSAGE, nonce, object, pairingKey, parse, payload, portOf, publicOrigin, safeError, string } from './browser-extension-protocol.js';
+import { anyOrigin, channel, command, COMMAND_WAIT, commandWait as operationWait, CONTROL, controlSurface, equalMac, ERROR_TEXT, fail, handle, HISTORY, inventory, localHost, LONG_OPS_SINCE, longOp, mac, MAX_MESSAGE, nonce, object, pairingKey, parse, payload, portOf, publicOrigin, READS_SINCE, requiredVersion, safeError, SELF_RELOAD_SINCE, string, cleanDetail, errorDetail } from './browser-extension-protocol.js';
 import { EXTENSION_ID } from './browser-extension-pin.js';
 
 // The wire contract is the app's own copy of the extension's protocol.js (kept byte-identical by
@@ -62,7 +62,7 @@ export function createBridgeStore(path) {
 // SynaBun's own addresses stay out of reach in both modes: `forbiddenOrigins` (its public aliases, any port),
 // `blockedPorts` (its ports; the bridge's own is always added) on this computer, which is localhost, a loopback address
 // or one of `selfHosts` (its names and interface addresses) or a name that resolves to one (`lookupAddresses`).
-export function createExtensionBridge({ port = 3345, log = () => {}, onInventory = () => {}, resolvePublic = publicDestination, now = Date.now, forbiddenOrigins = () => [], revokedTabsKept = 1024,
+export function createExtensionBridge({ port = 3345, log = () => {}, onInventory = () => {}, onConnected = () => {}, updateStatus = () => null, runsActive = () => false, resolvePublic = publicDestination, now = Date.now, forbiddenOrigins = () => [], revokedTabsKept = 1024,
   commandWait = COMMAND_WAIT, clock = () => performance.now(), fullControl = true, store = null, blockedPorts = () => [], selfHosts = () => [],
   lookupAddresses = host => lookup(host, { all: true }) } = {}) {
   if (!Number.isSafeInteger(commandWait) || commandWait < 1 || commandWait > COMMAND_WAIT) fail('INVALID_MESSAGE');
@@ -126,7 +126,12 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
   }
   const pending = new Map();
   const sockets = new Set();
-  const note = (op, tab, code) => { try { log({ command: op, tab: typeof tab === 'string' && /^[a-f0-9]{32}$/.test(tab) ? tab : null, code: code === 'OK' || Object.hasOwn(ERROR_TEXT, code) ? code : 'OPERATION_FAILED' }); } catch {} };
+  // One log line per command: its op, the tab's opaque handle, the outcome's code and, when the browser refused it,
+  // what the browser said (`detail`, a chrome.* error message: cleanDetail; never a page's content or a credential).
+  const note = (op, tab, code, detail) => {
+    const said = cleanDetail(detail);
+    try { log({ command: op, tab: typeof tab === 'string' && /^[a-f0-9]{32}$/.test(tab) ? tab : null, code: code === 'OK' || Object.hasOwn(ERROR_TEXT, code) ? code : 'OPERATION_FAILED', ...(said ? { detail: said } : {}) }); } catch {}
+  };
   const coded = code => () => Object.assign(new Error(code), { code });
   const notConnected = coded('NOT_CONNECTED'), cancelled = coded('CANCELLED');
   // Rejects pending requests at once. `keepControl` spares the owner's own revocations, which must still reach the extension.
@@ -152,11 +157,24 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
     to.pushedMode = key;
     void request('mode', null, 'owner', { fullControl: mode.fullControl, version: mode.version }).catch(() => { if (to.pushedMode === key) to.pushedMode = null; });
   }
+  // Read-only hint for the popup. Older peers reject unknown payloads. Never send a reload from here.
+  function publishUpdate() {
+    const to = peer;
+    if (!to?.ready || compareVersions(to.version, SELF_RELOAD_SINCE) < 0) return;
+    const status = updateStatus(to.version);
+    if (!status) return;
+    const message = { type: 'updateStatus', version: status.version, runsActive: runsActive() };
+    const key = JSON.stringify(message);
+    if (key === to.updateKey) return;
+    to.updateKey = key;
+    void to.send(payload(message)).catch(() => { if (to.updateKey === key) to.updateKey = null; });
+  }
   function update(value, from = null) {
     const { versions, fullControl: fullControlNow, modeVersion, ...next } = inventory(value);
     if (from && modeVersion !== undefined) peerMode(from, fullControlNow, modeVersion);
     if (from && !from.ready) {
       from.ready = true;
+      onConnected(from.version); publishUpdate();
       // Only an extension that knows `reset` (it reports a mode) is sent one; an older one keeps what it holds.
       if (resetDue && modeVersion !== undefined) { resetDue = false; void request('reset', null, 'owner').catch(() => { resetDue = true; }); }
     }
@@ -239,7 +257,13 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
     };
     const timer = setTimeout(() => ws.close(), 10000); timer.unref?.();
     let lastSeen = Date.now();
-    const heartbeat = setInterval(() => { if (Date.now() - lastSeen > 65000) ws.close(); else if (wire) void send({ type: 'ping' }).catch(() => ws.close()); }, 20000); heartbeat.unref?.();
+    const heartbeat = setInterval(() => {
+      if (Date.now() - lastSeen > 65000) { ws.close(); return; }
+      if (!wire) return;
+      if (peer?.ws === ws) publishUpdate();
+      void send({ type: 'ping' }).catch(() => ws.close());
+    }, 20000);
+    heartbeat.unref?.();
     ws.send(JSON.stringify({ type: 'challenge', session }));
     ws.on('message', raw => {
       chain = chain.then(async () => {
@@ -302,10 +326,17 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
   }
   function authorize(op, tab, owner, args = {}) {
     authorizeAccess(op, tab, owner, args);
+    if (op === 'selfReload') {
+      if (compareVersions(peer.version, SELF_RELOAD_SINCE) < 0) fail('EXTENSION_RELOAD_REQUIRED');
+      if (!args.allowBusy && (state.tabs.some(tab => tab.owner) || runsActive())) fail('RELOAD_BUSY');
+    }
     if (op === 'upload' && compareVersions(peer.version, '1.3.0') < 0) fail('UPLOAD_RELOAD_REQUIRED');
     // An extension from before the long operations ends the connection on a command it does not know (its payload()
     // throws while it authenticates the message): it is never sent one. The owner reloads the extension instead.
     if (longOp(op, args) && compareVersions(peer.version, LONG_OPS_SINCE) < 0) fail('EXTENSION_RELOAD_REQUIRED');
+    // The fixed readers, a snapshot's `offset` and the domcontentloaded wait (1.5.0) likewise.
+    const needs = requiredVersion(op, args);
+    if (needs && compareVersions(peer.version, needs) < 0) fail('EXTENSION_RELOAD_REQUIRED');
   }
   function authorizeAccess(op, tab, owner, args) {
     if (!enabled || !peer || peer.ws.readyState !== 1) fail('EXTENSION_NOT_CONNECTED');
@@ -375,11 +406,11 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
         if (stale()) fail('CANCELLED');
         authorize(op, tab, owner, args);
       }
-      note(op, tab || result.tab, result.code || 'OK'); return result;
+      note(op, tab || result.tab, result.code || 'OK', result.ok === false ? errorDetail(result) : ''); return result;
     } catch (error) { note(op, tab, safeError(error).code); throw error; }
   }
   return {
-    request, authorize,
+    request, authorize, publishUpdate,
     // Whether an agent may be shown or given this page in full control (the session listing): never a browser page
     // or SynaBun's own.
     openable: url => { try { openable(url); return true; } catch { return false; } },
@@ -438,7 +469,9 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
     setupPairing: () => ({ active: !!pair?.setup && pair.until >= now() && pairingAttempts <= 5, attempted: pair?.setup ? pair.attempted === true : false }),
     // Diagnostics: how many revocation records the bridge keeps (counts only).
     records: () => ({ revokedTabs: revokedTabs.size, revokedSites: revokedSites.size, siteVersions: siteVersions.size }),
-    status: () => ({ connected: !!peer && enabled && peer.ready === true, paired: !!credential, port: server?.address()?.port || port, extensionId: EXTENSION_ID,
+    // `paused`: the owner's Disconnect in Settings → Browser holds (kept across a restart until Reconnect / Resume);
+    // the extension's own popup cannot reconnect then (AUTH_FAILED).
+    status: () => ({ connected: peer?.ws.readyState === 1 && enabled && peer.ready === true, paired: !!credential, paused: !enabled, port: server?.address()?.port || port, extensionId: EXTENSION_ID,
       fullControl: mode.fullControl, pairedAt: credential ? pairedAt : 0, extensionVersion: peer?.ready ? peer.version : null, ...structuredClone(state) }),
     disconnect,
     resume: () => { enabled = true; persist(); },

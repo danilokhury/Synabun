@@ -34,9 +34,10 @@ export const EVALUATE_RESULT_MAX = 1000000;
 // 'MAIN' is the page's own JavaScript world (its globals are visible); 'USER_SCRIPT' is Chrome's separate world for
 // user scripts (the DOM, none of the page's globals, exempt from the page's CSP).
 export const EVALUATE_WORLDS = ['MAIN', 'USER_SCRIPT'];
-// wait with loadState: 'load' (the tab finished loading) or 'networkidle' (also no request of the tab in flight for
-// NETWORK_IDLE_QUIET ms, as Playwright counts it), within args.timeout (default, most).
-export const LOAD_STATES = ['load', 'networkidle'];
+// wait with loadState: 'load' (the tab finished loading), 'networkidle' (also no request of the tab in flight for
+// NETWORK_IDLE_QUIET ms, as Playwright counts it) or, from READS_SINCE, 'domcontentloaded' (the document was parsed:
+// its readyState is no longer 'loading'), within args.timeout (default, most).
+export const LOAD_STATES = ['load', 'networkidle', 'domcontentloaded'];
 export const NETWORK_IDLE_QUIET = 500;
 export const NETWORK_IDLE_TIMEOUT = 15000;
 export const NETWORK_IDLE_TIMEOUT_MAX = 60000;
@@ -163,15 +164,84 @@ export function inventory(value) {
   }
   return value;
 }
-export const COMMANDS = ['create', 'claim', 'release', 'navigate', 'back', 'forward', 'reload', 'snapshot', 'click', 'hover', 'fill', 'type', 'press', 'select', 'scroll', 'wait', 'content', 'screenshot', 'upload', 'download', 'evaluate', 'revokeTab', 'revokeSite', 'disconnect', 'revoke', 'mode', 'reset'];
+export const COMMANDS = ['create', 'claim', 'release', 'navigate', 'back', 'forward', 'reload', 'snapshot', 'click', 'hover', 'fill', 'type', 'press', 'select', 'scroll', 'wait', 'content', 'screenshot', 'upload', 'download', 'evaluate', 'read', 'revokeTab', 'revokeSite', 'disconnect', 'revoke', 'mode', 'reset', 'selfReload'];
 // The first extension version that knows `evaluate` and `wait` with `loadState`. An older one ends the connection on a
 // command it does not know, so the server never sends it one (it answers EXTENSION_RELOAD_REQUIRED itself).
 export const LONG_OPS_SINCE = '1.4.0';
+// The first extension version that reloads itself on the owner's one click (Settings → Update now).
+export const SELF_RELOAD_SINCE = '1.5.0';
+// ── Readers (1.5.0): fixed, read-only page functions shipped in the extension ──
+// `read` runs one of READER_IDS in the agent's tab through chrome.scripting.executeScript({ func }) in the isolated
+// world: no page JavaScript, no "Allow User Scripts", no debugger. A reader is named by its id and nothing else; its
+// arguments are plain data (a CSS selector for the page readers, a scroll step for the paged extractors), never code.
+// The functions are browser-extension/readers.js and readers-generated.js (generated from the extractors the MCP
+// server sends the Playwright backend: scripts/extension/build-browser-readers.mjs). An id not on this list is
+// INVALID_MESSAGE on both sides. `snapshot` with `offset` and `wait` with loadState 'domcontentloaded' came with it.
+export const READS_SINCE = '1.5.0';
+export const READER_IDS = Object.freeze([
+  // The page itself: its text (innerText), its main content as cleaned HTML (the server turns it into Markdown), its address.
+  'page.text', 'page.html', 'page.url',
+  // Paged extractors: one read of what the page shows, and a scroll of the feed between reads.
+  'x.tweets', 'fb.posts', 'fb.groups', 'tiktok.feed', 'tiktok.search', 'tiktok.studio', 'wa.chats', 'wa.messages',
+  'ig.feed', 'ig.reels', 'ig.search', 'li.feed', 'li.notifications', 'li.search_people', 'li.jobs',
+  // One-shot readers.
+  'tiktok.profile', 'tiktok.account', 'ig.profile', 'ig.post', 'li.profile', 'li.post', 'li.messages', 'li.network', 'fb.composer_state',
+  'youtube.channel_id', 'youtube.channel_ready', 'youtube.channel_name', 'youtube.videos',
+]);
+// The readers that take a scroll step (their feed scrolls between reads); every other one only reads.
+export const PAGED_READERS = Object.freeze(['x.tweets', 'fb.posts', 'fb.groups', 'tiktok.feed', 'tiktok.search', 'tiktok.studio', 'wa.chats', 'wa.messages',
+  'ig.feed', 'ig.reels', 'ig.search', 'li.feed', 'li.notifications', 'li.search_people', 'li.jobs']);
+export const READ_STEPS = ['read', 'scroll'];
+// The most text a page reader answers with (characters): the server pages it (maxChars / offset) as it does a
+// Playwright page's.
+export const READ_TEXT_MAX = 1000000;
+// The extension version an operation needs (null: any paired one). The server answers EXTENSION_RELOAD_REQUIRED itself
+// for an older peer, which would otherwise end the connection on the command or argument it does not know.
+export function requiredVersion(op, args = {}) {
+  if (op === 'read' || op === 'wait' && args?.loadState === 'domcontentloaded' || op === 'snapshot' && args?.offset !== undefined) return READS_SINCE;
+  if (longOp(op, args)) return LONG_OPS_SINCE;
+  return null;
+}
+// ── Uploads: the type of a file, from its name ──
+// A file input and the site behind it read a File's `type` (TikTok Studio refuses a video whose type is not a video
+// one). The extension gives every file it assigns the type this fixed table names for its extension, whatever the
+// transport said; an extension the table does not know is application/octet-stream.
+export const UPLOAD_TYPES = Object.freeze({
+  mp4: 'video/mp4', m4v: 'video/x-m4v', mov: 'video/quicktime', webm: 'video/webm', mkv: 'video/x-matroska', avi: 'video/x-msvideo',
+  mpeg: 'video/mpeg', mpg: 'video/mpeg', '3gp': 'video/3gpp',
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', heic: 'image/heic',
+  heif: 'image/heif', bmp: 'image/bmp', svg: 'image/svg+xml', ico: 'image/x-icon', tif: 'image/tiff', tiff: 'image/tiff',
+  mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/opus', flac: 'audio/flac',
+  pdf: 'application/pdf', txt: 'text/plain', md: 'text/markdown', csv: 'text/csv', tsv: 'text/tab-separated-values', html: 'text/html', htm: 'text/html',
+  json: 'application/json', xml: 'application/xml', zip: 'application/zip', srt: 'application/x-subrip', vtt: 'text/vtt',
+  doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ppt: 'application/vnd.ms-powerpoint', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+});
+// The extension of a file name as Node's path.extname reads it: after the last dot of the last path segment, never a
+// leading dot ('.mp4' has none).
+export function uploadType(name) {
+  const base = String(name || '').split(/[\\/]/).pop(), dot = base.lastIndexOf('.');
+  const ext = dot > 0 ? base.slice(dot + 1).toLowerCase() : '';
+  return Object.hasOwn(UPLOAD_TYPES, ext) ? UPLOAD_TYPES[ext] : 'application/octet-stream';
+}
+// What the browser itself said when it refused an operation (a Chrome API's error message), carried inside the
+// answer's `error` text after the code's own sentence: `… The browser said: "No current window".` Never a page's
+// content: only messages of chrome.* calls are put there, on one line, cut to DETAIL_MAX characters.
+export const DETAIL_MAX = 300;
+export function cleanDetail(value) {
+  const text = String(value?.message ?? value ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/"/g, "'").trim();
+  return text.slice(0, DETAIL_MAX);
+}
+export function errorDetail(result) {
+  const match = /The browser said: "([^"]*)"\.$/.exec(typeof result?.error === 'string' ? result.error : '');
+  return match ? match[1] : '';
+}
 export const HISTORY = ['back', 'forward'];
 // The owner's control messages: revocations, the mode (full control or restricted) and `reset` (a restarted server
 // hands back every tab agents of its previous process held). They overtake queued commands on both sides, are never
 // cancelled themselves, and carry the owner's name only: nothing an agent sends can be one.
-export const CONTROL = ['revokeTab', 'revokeSite', 'disconnect', 'revoke', 'mode', 'reset'];
+export const CONTROL = ['revokeTab', 'revokeSite', 'disconnect', 'revoke', 'mode', 'reset', 'selfReload'];
 export function command(value) {
   object(value, ['type', 'id', 'op', 'tab', 'owner', 'args', 'blockedHosts', 'blockedPorts', 'selfHosts', 'deadline']);
   if (value.type !== 'command' || !COMMANDS.includes(value.op)) fail('UNSUPPORTED_IN_EXTENSION_MODE');
@@ -185,8 +255,14 @@ export function command(value) {
     if (value[key] !== undefined && (!Array.isArray(value[key]) || value[key].length > 200 || value[key].some(h => typeof h !== 'string' || h.length > 253 || !/^[a-zA-Z0-9.:%-]+$/.test(h)))) fail('INVALID_MESSAGE');
   }
   if (value.blockedPorts !== undefined && (!Array.isArray(value.blockedPorts) || value.blockedPorts.length > 32 || value.blockedPorts.some(p => !Number.isSafeInteger(p) || p < 1 || p > 65535))) fail('INVALID_MESSAGE');
+  if (value.op === 'selfReload') {
+    if (value.owner !== 'owner' || value.tab !== null) fail('NOT_OWNED');
+    object(value.args, ['allowBusy']);
+    if (typeof value.args.allowBusy !== 'boolean' || value.deadline > COMMAND_WAIT) fail('INVALID_MESSAGE');
+    return value;
+  }
   const a = value.args; object(a, ['url', 'ref', 'selector', 'nthMatch', 'value', 'text', 'key', 'direction', 'distance', 'maxChars', 'offset', 'timeout', 'state', 'files', 'site', 'fullControl', 'version',
-    'expression', 'body', 'params', 'world', 'frame', 'loadState']);
+    'expression', 'body', 'params', 'world', 'frame', 'loadState', 'reader', 'step']);
   if (value.deadline > commandWait(value.op, a)) fail('INVALID_MESSAGE');
   for (const [k, v] of Object.entries(a)) {
     if (k === 'fullControl') { if (typeof v !== 'boolean') fail('INVALID_MESSAGE'); }
@@ -195,6 +271,9 @@ export function command(value) {
     else if (k === 'frame') { if (!Number.isSafeInteger(v) || v < 0 || v > 2147483647) fail('INVALID_MESSAGE'); }
     else if (k === 'expression' || k === 'body') string(v, EVALUATE_SCRIPT_MAX);
     else if (k === 'params') string(v, EVALUATE_PARAMS_MAX);
+    // A reader is one id of a closed list, never anything that names or carries code.
+    else if (k === 'reader') { if (typeof v !== 'string' || !READER_IDS.includes(v)) fail('INVALID_MESSAGE'); }
+    else if (k === 'step') { if (!READ_STEPS.includes(v)) fail('INVALID_MESSAGE'); }
     else if (['nthMatch', 'distance', 'maxChars', 'offset', 'timeout'].includes(k)) {
       if (!Number.isSafeInteger(v) || v < 0 || v > 1000000) fail('INVALID_MESSAGE');
     } else if (k === 'files') {
@@ -230,20 +309,33 @@ export function command(value) {
       if (!Array.isArray(list)) fail('INVALID_MESSAGE');
     }
   } else if (evaluate.some(k => a[k] !== undefined)) fail('INVALID_MESSAGE');
+  // read: a reader of the agent's tab (`reader`), a page reader's scope (`selector`), a paged extractor's scroll
+  // (`step` 'scroll' with `distance` and `direction`), and nothing else.
+  if (value.op === 'read') {
+    if (value.tab === null || typeof a.reader !== 'string') fail('INVALID_MESSAGE');
+    if (Object.keys(a).some(k => !['reader', 'step', 'selector', 'distance', 'direction'].includes(k))) fail('INVALID_MESSAGE');
+    if (a.step === 'scroll' ? a.selector !== undefined || !PAGED_READERS.includes(a.reader) : a.distance !== undefined || a.direction !== undefined) fail('INVALID_MESSAGE');
+    if (a.selector !== undefined && !['page.text', 'page.html'].includes(a.reader)) fail('INVALID_MESSAGE');
+  } else if (a.reader !== undefined || a.step !== undefined) fail('INVALID_MESSAGE');
   // A load-state wait names the state and, at most, its timeout: it waits for the tab, not for an element.
   if (a.loadState !== undefined && (value.op !== 'wait' || value.tab === null || !LOAD_STATES.includes(a.loadState)
     || Object.keys(a).some(k => k !== 'loadState' && k !== 'timeout'))) fail('INVALID_MESSAGE');
   return value;
 }
 export function payload(value) {
-  if (value?.type === 'state') { object(value, ['type', 'inventory']); inventory(value.inventory); }
+  if (value?.type === 'updateStatus') {
+    object(value, ['type', 'version', 'runsActive']);
+    if (typeof value.runsActive !== 'boolean' || (value.version !== null && !/^\d{1,5}(\.\d{1,5}){0,3}$/.test(string(value.version, 23)))) fail('INVALID_MESSAGE');
+  } else if (value?.type === 'state') { object(value, ['type', 'inventory']); inventory(value.inventory); }
   else if (value?.type === 'result') {
     object(value, ['type', 'id', 'result', 'inventory']); handle(value.id); inventory(value.inventory);
     // evaluate adds `value` (the JSON text of the script's result), `truncated` with `valueLength` (the result was
     // longer than its cap: `value` is then the beginning of that JSON text, not valid JSON) and, with code PAGE_ERROR,
     // `errorMessage` and `errorStack` (what the page's script threw). A load-state wait adds `loadState`.
+    // read (1.5.0) adds `loading` (a paged extractor's feed showed a loading marker); a snapshot asked with an `offset`
+    // adds `snapshotTotal` (characters of the whole snapshot) and `snapshotNext` (the offset of what did not fit).
     object(value.result, ['ok', 'code', 'error', 'url', 'title', 'snapshotText', 'mode', 'snapshotId', 'content', 'text', 'base64', 'mimeType', 'tab', 'downloadId', 'files',
-      'value', 'truncated', 'valueLength', 'errorMessage', 'errorStack', 'loadState']);
+      'value', 'truncated', 'valueLength', 'errorMessage', 'errorStack', 'loadState', 'loading', 'snapshotTotal', 'snapshotNext']);
     if (typeof value.result.ok !== 'boolean') fail('INVALID_MESSAGE');
     for (const [k, v] of Object.entries(value.result)) {
       if (k === 'ok') continue;
@@ -258,8 +350,8 @@ export function payload(value) {
         }
         if (total > MAX_FILE) fail('INVALID_MESSAGE');
       } else if (k === 'downloadId') { if (!Number.isSafeInteger(v)) fail('INVALID_MESSAGE'); }
-      else if (k === 'valueLength') { if (!Number.isSafeInteger(v) || v < 0) fail('INVALID_MESSAGE'); }
-      else if (k === 'truncated') { if (typeof v !== 'boolean') fail('INVALID_MESSAGE'); }
+      else if (['valueLength', 'snapshotTotal', 'snapshotNext'].includes(k)) { if (!Number.isSafeInteger(v) || v < 0) fail('INVALID_MESSAGE'); }
+      else if (k === 'truncated' || k === 'loading') { if (typeof v !== 'boolean') fail('INVALID_MESSAGE'); }
       else string(v, k === 'base64' ? MAX_MESSAGE - 4096 : ['content', 'text', 'snapshotText', 'value'].includes(k) ? EVALUATE_RESULT_MAX : 8192);
     }
   } else if (value?.type === 'ping' || value?.type === 'pong' || value?.type === 'unpair') object(value, ['type']);
@@ -269,6 +361,7 @@ export function payload(value) {
   return value;
 }
 export const ERROR_TEXT = Object.freeze({
+  RELOAD_BUSY: 'Automation is active. Wait for it to finish or confirm the reload.',
   EXTENSION_NOT_CONNECTED: 'The browser extension is not connected. Open its popup and reconnect (after a SynaBun restart it reconnects by itself).',
   NOT_CONNECTED: 'The extension disconnected. Reconnect from its popup.',
   AUTH_FAILED: 'Authentication failed. Revoke pairing and pair again on both sides.',
@@ -284,7 +377,7 @@ export const ERROR_TEXT = Object.freeze({
   NO_HISTORY_ENTRY: 'There is no page to go back or forward to in this tab. Nothing was done.',
   STALE_REF: 'This element reference is stale. Take a fresh snapshot; no action was performed.',
   UNSUPPORTED_IN_EXTENSION_MODE: 'This operation is unavailable with the extension backend. See docs/browser-extension-bridge.md.',
-  ACTIVE_TAB_REQUIRED: 'Screenshots capture the visible part of the active tab only, and the tab was not (or stopped being) the active one while capturing. Retry; in restricted mode, activate the tab first.',
+  ACTIVE_TAB_REQUIRED: 'The extension captures screenshots with chrome.tabs.captureVisibleTab, which draws only the tab a window is showing (no debugger is attached, so a tab in the background cannot be drawn), and the tab was not, or stopped being, the one shown while capturing. In full control the extension brings the agent’s own tab to the front of its window for the capture: retry. In restricted mode it never does: the owner activates the tab, or switches the extension to full control. To read the page instead, use browser_snapshot or browser_content.',
   TAB_LIMIT: 'This bridge already controls 200 tabs. Close an agent tab before opening another.',
   TAB_BUSY: 'Chrome is editing tabs (for example during a drag). Retry navigation after the tab strip settles.',
   NAVIGATION_FAILED: 'Chrome refused tabs.update for this navigation. Check the browser site-access policy and destination, then retry.',
@@ -309,9 +402,14 @@ export const ERROR_TEXT = Object.freeze({
   PAGE_ERROR: 'The page’s script threw, or did not compile (evaluate takes one expression: wrap statements in a function, (() => { …; return value; })()). errorMessage and errorStack say what the page reported; the bridge itself did not fail.',
   BLANK_PAGE: 'The tab shows the blank start page, where no script can run. Navigate it to an http(s) page first.',
   FRAME_NOT_FOUND: 'The tab has no frame with this id that a script can run in (frame 0 is the top document). Nothing was run.',
-  NETWORK_IDLE_UNAVAILABLE: 'The extension cannot watch this browser’s network requests (its webRequest permission is not in effect). The owner reloads SynaBun Browser Bridge on the browser’s extensions page; until then wait for a selector or a fixed time instead.',
+  READER_FAILED: 'The extension’s reader found nothing it could read on this page (the page changed under it, or is not the page this reader is for). Nothing was changed on the page; observe the tab, then retry.',
+  INVALID_SELECTOR: 'The selector is not a valid CSS selector. Nothing was read.',
+  SCROLL_TARGET_MISSING: 'The feed this extractor scrolls is not on the page (scroll container not found). Items read so far are kept.',
+  NETWORK_IDLE_UNAVAILABLE:'The extension cannot watch this browser’s network requests (its webRequest permission is not in effect). The owner reloads SynaBun Browser Bridge on the browser’s extensions page; until then wait for a selector or a fixed time instead.',
 });
+// `error.detail`: what the browser said (cleanDetail), appended to the code's own sentence (errorDetail reads it back).
 export function safeError(error) {
   const code = Object.hasOwn(ERROR_TEXT, error?.code) ? error.code : 'OPERATION_FAILED';
-  return { ok: false, code, error: `${code}: ${ERROR_TEXT[code]}` };
+  const detail = cleanDetail(error?.detail);
+  return { ok: false, code, error: `${code}: ${ERROR_TEXT[code]}${detail ? ` The browser said: "${detail}".` : ''}` };
 }

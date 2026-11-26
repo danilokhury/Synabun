@@ -215,6 +215,16 @@ export function createClaudeBrain({ session, sink, deps = {}, persona = '', hook
     // Background agents or scheduled wakeups still running after their turn
     // ended. Not "busy" (the mailbox may deliver), but disposing would kill them.
     hasPendingWork() { return !!inner._hasPendingWork?.(); },
+    // The live background set the CLI reports (background_tasks_changed), for the panel's Background tasks view;
+    // null while no process runs (the set is per process).
+    backgroundTasks() { return inner.q && inner._bgTasks instanceof Map ? [...inner._bgTasks.values()].map(t => ({ ...t })) : null; },
+    // The owner's Stop of one of them, through the SDK's own stop (never a kill of a process by hand).
+    async stopTask(taskId) {
+      const q = inner.q;
+      if (!q || typeof q.stopTask !== 'function') return { ok: false, error: q ? 'Not supported by this Claude Code version' : 'Nothing of this conversation runs now: the task has already ended.' };
+      await q.stopTask(String(taskId));
+      return { ok: true };
+    },
     identity() {
       return {
         providerSessionId: inner.sessionId || providerSessionId, providerThreadId: null, accountId: brain.accountId || 'default',

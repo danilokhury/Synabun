@@ -69,7 +69,7 @@ import { boundsToSave, MIN_SIZE, relaunchIntent, restoreBounds, splashCloseActio
 import { pickLocale, translate } from './i18n.mjs';
 import { appMenuTemplate, MENU_IDS, trayMenuTemplate } from './menu.mjs';
 import { APP_BACKGROUND, APP_OVERLAY, appMenuPosition, overlayColors, STATUS_OVERLAY, titleBarArgument, titleBarWindowOptions, windowStateOf } from './titlebar.mjs';
-import { fetchActivity, pidAlive, runBackendHelper, stopBackend, watchBackend } from './backend.mjs';
+import { attachBackend, fetchActivity, runBackendHelper, stopBackend, watchBackend } from './backend.mjs';
 import { createFileTail, createStartLog, fileSize, helperEventLine, lastLinesOf } from './start-log.mjs';
 import { readSupervisorRecord, stoppedExplanation, supervisorGaveUp } from './server-exit-view.mjs';
 import { redactSecrets } from './log-redact.mjs';
@@ -163,6 +163,7 @@ function startApp() {
   // the environment from here, before the data folder is decided.
   if (platform === 'win32') applyLoginArguments({ argv: process.argv, env });
   const resources = resourcesDir();
+  const installDir = platform === 'win32' ? dirname(process.execPath) : dirname(resources);
   const manifest = readManifest(resources);
   const entry = entryFor(resources, manifest);
   const version = String(manifest?.version || app.getVersion());
@@ -794,10 +795,15 @@ function startApp() {
       }
       log(`backend helper: ${JSON.stringify(result)}`);
       if (result.type === 'ready') {
-        const owned = result.started === true
-          || (remembered.backend?.supervisorPid && remembered.backend.supervisorPid === result.supervisorPid && pidAlive(result.supervisorPid));
-        backend = { port: result.port, launcherPid: result.launcherPid || remembered.backend?.launcherPid || null, supervisorPid: result.supervisorPid || null, owned: !!owned, version: result.version || version };
-        writeState({ port: result.port, backend: owned ? { launcherPid: backend.launcherPid, supervisorPid: backend.supervisorPid, port: backend.port, version, startedAt: new Date().toISOString() } : null });
+        const current = {
+          port: result.port,
+          launcherPid: result.launcherPid || null,
+          supervisorPid: result.supervisorPid || null,
+          attachment: attachBackend({ port: result.port, entry, instDir: installDir, platform, log }).catch(() => ({})),
+          owned: result.started === true,
+          version: result.version || version,
+        };
+        backend = current;
         startLog.add('app', t('logOpening'));
         showStatus({ ...startingStatus(t('opening'), startedAt, 'loading'), hint: result.alternativePort ? t('otherPort', { preferred: result.preferredPort, port: result.port }) : '' });
         // The page the window showed before an update, once; '/' every other time. Navigation and renderer
@@ -834,6 +840,11 @@ function startApp() {
             });
           },
         });
+        const { bootId } = await current.attachment;
+        if (backend === current) {
+          current.owned ||= !!bootId && remembered.backend?.bootId === bootId;
+          writeState({ port: result.port, backend: current.owned ? { port: result.port, bootId, version } : null });
+        }
         return;
       }
       if (result.type === 'conflict') {
@@ -855,18 +866,23 @@ function startApp() {
   async function stopServer({ reason, always = false }) {
     watcher?.stop();
     watcher = null;
-    if (!backend) return;
-    if (!backend.owned && !always) { log(`leaving the server on port ${backend.port} running: this app did not start it`); return; }
-    log(`stopping the server on port ${backend.port} (${reason})`);
-    const { supervisorPid } = backend;
-    const since = backend.attachedAt || 0;
+    if (!backend) return { stopped: true, forced: false };
+    const current = backend;
+    const { bootId, listener } = await current.attachment;
+    if (!current.owned && !always) { log(`leaving the server on port ${current.port} running: this app did not start it`); return { stopped: true, forced: false }; }
+    log(`stopping the server on port ${current.port} (${reason})`);
+    const { supervisorPid } = current;
+    const since = current.attachedAt || 0;
     const result = await stopBackend({
-      port: backend.port, launcherPid: backend.launcherPid, supervisorPid, log,
+      port: current.port, launcherPid: current.launcherPid, supervisorPid, bootId, listener, instDir: installDir, log,
       supervisorEnded: () => supervisorGaveUp(readSupervisorRecord(join(logsDir, 'supervisor.json')), { supervisorPid, since }),
     });
     log(`server stop: ${result.stopped ? 'stopped' : 'NOT stopped'}${result.forced ? ' (forced)' : ''}`);
-    writeState({ backend: null });
-    backend = null;
+    if (backend === current) {
+      writeState({ backend: null });
+      backend = null;
+    }
+    return result;
   }
 
   // ── Updates ──
@@ -979,7 +995,10 @@ function startApp() {
         splashSay({ stage: 'stopping', version: next });
         log(`update to v${next}: stopping the server`);
         // Windows cannot replace a node.exe that runs, and an AppImage's server dies with its mount: stop it first.
-        await stopServer({ reason: `update to v${next}`, always: true });
+        const stopResult = await stopServer({ reason: `update to v${next}`, always: true });
+        if (stopResult && !stopResult.stopped) {
+          log(`update to v${next}: backend stop timed out; ${platform === 'win32' ? 'the Windows install watchdog will enforce stopping remaining install-folder processes' : 'continuing with update'}`);
+        }
         quitting = true;
         quitReady = true;
       },
@@ -1419,6 +1438,7 @@ function startApp() {
       updater?.stop();
       // A downloaded update installs on the way out (never on a restart Settings asked for: that opens this copy again).
       const installOnQuit = !relaunching && !!updater?.willInstallOnQuit();
+      await backend?.attachment;
       if (backend && (backend.owned || installOnQuit)) {
         // The window goes at once; while the server stops (and an update is put in place), the splash says so.
         const shown = !!splash?.visible || (!!mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized());

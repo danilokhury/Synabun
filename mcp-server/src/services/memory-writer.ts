@@ -8,7 +8,10 @@ import { judgeDuplicates, type JudgeContext } from './memory-judgments.js';
 import { surfaceConfig } from './typesafe-config.js';
 import type { MemoryPayload } from '../types.js';
 
-export class IdempotencyConflict extends Error {}
+/** The key is taken by a memory with other content; `existingId` is that memory. */
+export class IdempotencyConflict extends Error {
+  constructor(message: string, public readonly existingId: string) { super(message); }
+}
 
 export interface WriteMemoryOptions {
   idempotencyKey?: string;
@@ -67,7 +70,7 @@ export async function writeMemory(payload: MemoryPayload, options: WriteMemoryOp
     WHERE md.project=? AND md.category=? AND md.idempotency_key=?
   `).get(payload.project, payload.category, options.idempotencyKey) : undefined;
   const receipt = (row: Record<string, unknown>) => {
-    if (row.request_hash !== hash) throw new IdempotencyConflict('Idempotency key already belongs to different content.');
+    if (row.request_hash !== hash) throw new IdempotencyConflict('Idempotency key already belongs to different content.', String(row.id));
     return { id: String(row.id), existing: true, pending: false };
   };
   const previous = findRetry();

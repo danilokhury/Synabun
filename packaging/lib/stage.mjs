@@ -28,6 +28,7 @@ import { pathToFileURL } from 'node:url';
 import { externalToolsInLock, pruneExternalTools, stripExternalToolsFromLock } from '../../lib/external-tools.js';
 import { MCP_RUNTIME_ENTRIES, mcpDistMissing } from '../../lib/mcp-dist.js';
 import { writeBuildStamp } from '../../lib/mcp-build.js';
+import { patchNodePtyDir } from '../../neural-interface/scripts/patch-node-pty.mjs';
 import { compilePty, crossNpmEnv, fetchEmbeddingModel, linksIn, verifySelection, writeWindowsShims } from './cross.mjs';
 import { readLocks } from './preflight.mjs';
 import { hostRuntimeFor, nodeRuntimeFor, PACKAGING_ROOT } from './targets.mjs';
@@ -408,6 +409,19 @@ export async function prepareNatives(ctx) {
     // Keep what is loaded at run time; the rest names this build machine's paths.
     for (const name of list(join(ptyDir, 'build'))) if (name !== 'Release') removeTree(join(ptyDir, 'build', name));
     for (const name of list(release)) if (!/\.node$/.test(name) && name !== 'spawn-helper') removeTree(join(release, name));
+  }
+
+  // Patch node-pty's Windows ConPTY console-list helper on Windows builds only; macOS/Linux staging is unaffected.
+  if (platform === 'win32') {
+    const ptyPatch = patchNodePtyDir(ptyDir);
+    if (ptyPatch.status === 'patched' || ptyPatch.status === 'already-patched') {
+      note(`node-pty: conpty AttachConsole fallback (${ptyPatch.status})`);
+    } else {
+      throw new BuildError(`node-pty conpty_console_list_agent.js could not be patched (${ptyPatch.status})`, {
+        details: [ptyPatch.path, ...(ptyPatch.reason ? [ptyPatch.reason] : [])],
+      });
+    }
+    ctx.report.nodePtyPatched = ptyPatch.status;
   }
 
   const pruned = [...pruneForeign(ctx, neural), ...pruneForeign(ctx, join(ctx.app, 'mcp-server'))];

@@ -20,6 +20,10 @@ import { sceneAsset, SCENE_ASSET_KEYS } from '../synabun-mascot-assets.js';
 import { isRunIdle, isTerminalRunStatus, runNeedsAttention, runStatusFromState, runTone } from './asst-state.js';
 import { kindOf, parseToolName, sayCall, tFallback, verbText } from './asst-tool-kinds.js';
 import { redactSecrets, safeStepInput } from './asst-redact.js';
+import { isSteering, steerTranslator } from './asst-state.js'; // steer's boot part (asst-steer.js loads on demand)
+
+// The steer sentences through the stage's translator (`assistant.steer.*`), else STEER_COPY's own English / Portuguese.
+const steerT = (t) => steerTranslator((key, params) => t(key, '', params) || key, typeof document === 'object' ? document.documentElement?.lang : 'en');
 
 /** The scenes: one per task class SynaBun dispatches, and the generic one. */
 export const SCENES = Object.freeze(['quick', 'code', 'complex', 'review', 'research', 'browser', 'computer', 'automation', 'design', 'image_gen', 'video_gen', 'generic']);
@@ -84,6 +88,8 @@ export function stagePhase(run) {
   if (status === 'stopped') return 'stopped';
   if (isTerminalRunStatus(status)) return 'done';
   if (runNeedsAttention(run) || awaitsAnswer({ ...run, status })) return 'waiting';
+  // A turn a steer cut is not the end of the work: the stage keeps working until the steer's turn (asst-steer.js).
+  if (isSteering(run)) return 'working';
   if (isRunIdle({ ...run, status })) return 'idle';
   if (status === 'queued' || run.queued === true || run.state === 'queued') return 'queued';
   if (status === 'starting' || run.state === 'starting') return 'starting';
@@ -121,6 +127,8 @@ export function runChip(run, t = tFallback) {
     return { tone: 'action', label: t('assistant.run.awaitingRoute', 'waiting for your model choice') };
   }
   if (awaitsAnswer(run)) return { tone: 'action', label: t('assistant.run.waitingInput', 'waiting for your answer') };
+  // Steered mid-turn: until its next turn starts (asst-steer.js), never the ended turn's outcome.
+  if (isSteering(run)) return { tone: 'running', label: steerT(t)('steeringChip') };
   const tone = runTone(run);
   // A held run whose card the user answered "here": the assistant does it, this worker never started.
   if (run?.completionReason === 'route_here') return { tone, label: t('assistant.run.routedHere', 'not started: done here instead') };
@@ -365,6 +373,10 @@ export function phaseLine(phase, run, scene, t = tFallback) {
   switch (phase) {
     case 'queued': return Number(run?.position) > 0 ? t('assistant.stage.queuedAt', 'Queued · position {n}', { n: run.position }) : t('assistant.stage.queued', 'Queued');
     case 'starting': return t('assistant.stage.starting', 'Starting…');
+    case 'working': case 'idle': if (isSteering(run)) return steerT(t)('steering'); break;
+    default: break;
+  }
+  switch (phase) {
     case 'waiting':
       if (run?.state === 'awaiting_route' || run?.route?.status === 'pending' || run?.awaitingRoute) return t('assistant.stage.waitingRoute', 'Waiting for your model choice');
       if (awaitsAnswer(run)) return t('assistant.stage.waitingInput', 'Waiting for your answer');

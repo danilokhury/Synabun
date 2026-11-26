@@ -470,7 +470,8 @@ export function mergeRunDescriptor(current, next) {
     out.costUsd = Math.max(Number.isFinite(costA) ? costA : 0, Number.isFinite(costB) ? costB : 0);
   }
   if (!out.title && (a.title || b.title)) out.title = a.title || b.title;
-  return out;
+  // A run this panel steered keeps saying so until the steer's turn shows output (settleSteering, at the end of this file).
+  return settleSteering(out, next, { previous: a });
 }
 
 function stripUndefined(obj) {
@@ -1048,6 +1049,14 @@ export function compactUsageView(view) {
   };
 }
 
+/** Whether a usage view can be shown: a task with an id and an exact total, or no task and a session headline. */
+export function usagePacketValid(packet) {
+  const count = (n) => Number.isSafeInteger(n) && n >= 0;
+  // A session with no task yet (the view a socket gets when it attaches before the first prompt) has its headline only.
+  if (packet?.task == null) return count(packet?.session?.tokens?.total);
+  return !!packet.task.id && count(packet.task.tokens?.total);
+}
+
 /**
  * Apply server usage. A view computed earlier than the one shown never replaces it: the
  * session's settled tokens only grow, so fewer of them means an older view (see
@@ -1055,7 +1064,7 @@ export function compactUsageView(view) {
  */
 export function applyUsagePacket(state, packet) {
   const view = packet?.type === 'assistant:usage' ? packet : { ...packet, type: 'assistant:usage' };
-  if (view.sessionId !== state.sessionId || !view.task?.id || !Number.isSafeInteger(view.task?.tokens?.total) || view.task.tokens.total < 0) return false;
+  if (view.sessionId !== state.sessionId || !usagePacketValid(view)) return false;
   if (usagePacketIsStale(state.usageView, view)) return false;
   state.usageView = view;
   return true;
@@ -1131,4 +1140,234 @@ export function runFromPayload(payload) {
   if (payload.run?.runId) return normalizeRunDescriptor(payload.run);
   if (payload.runId) return normalizeRunDescriptor(payload);
   return null;
+}
+
+// ── Steer: what the panel draws with from the first frame ─────────────────
+// The sentences, the composer's keys, the target chip and the run's steering
+// mark (settled at every merge, mergeRunDescriptor). The steer itself (the
+// controller, its POST, the notices) is asst-steer.js, which the panel loads
+// on demand; it re-exports these names, so either module answers for them.
+// STEER_COPY holds the English and Portuguese of every sentence; the page's
+// translator (`assistant.steer.*`) wins when it has the key.
+
+export const STEER_COPY = Object.freeze({
+  en: Object.freeze({
+    steer: 'Steer',
+    steerNow: 'Steer now (Enter): stop this turn and send',
+    queue: 'Queue',
+    queueTip: 'Queue instead (Alt+Enter): send when this turn finishes',
+    notice: 'Steered: {text}',
+    noticeRun: 'Steered {run}: {text}',
+    steering: 'Steering…',
+    steeringChip: 'steering…',
+    runSteer: 'Steer this run',
+    runSteerPlaceholder: 'Tell this agent what to change…',
+    runSteerSend: 'Send steer',
+    runSteerCancel: 'Cancel',
+    useComposer: 'Write it in the composer',
+    targetChip: '→ #{n} {title}',
+    targetLabel: 'Steering run {title}',
+    targetClear: 'Send to the Assistant instead',
+    targetPlaceholder: 'Steer {title}: what should change?',
+    runEnded: 'That run already ended.',
+    sendToAssistant: 'Send it to the Assistant',
+    failed: 'Could not steer: {error}',
+    unavailable: 'Steering needs a server restart; your message was queued.',
+    emptyText: 'Type what should change first.',
+  }),
+  'pt-BR': Object.freeze({
+    steer: 'Redirecionar',
+    steerNow: 'Redirecionar agora (Enter): parar este turno e enviar',
+    queue: 'Na fila',
+    queueTip: 'Pôr na fila (Alt+Enter): enviar quando este turno terminar',
+    notice: 'Redirecionado: {text}',
+    noticeRun: '{run} redirecionado: {text}',
+    steering: 'Redirecionando…',
+    steeringChip: 'redirecionando…',
+    runSteer: 'Redirecionar esta execução',
+    runSteerPlaceholder: 'Diga a este agente o que mudar…',
+    runSteerSend: 'Enviar redirecionamento',
+    runSteerCancel: 'Cancelar',
+    useComposer: 'Escrever no campo de mensagem',
+    targetChip: '→ #{n} {title}',
+    targetLabel: 'Redirecionando a execução {title}',
+    targetClear: 'Enviar ao Assistente',
+    targetPlaceholder: 'Redirecionar {title}: o que deve mudar?',
+    runEnded: 'Essa execução já terminou.',
+    sendToAssistant: 'Enviar ao Assistente',
+    failed: 'Não foi possível redirecionar: {error}',
+    unavailable: 'Redirecionar precisa reiniciar o servidor; sua mensagem entrou na fila.',
+    emptyText: 'Escreva primeiro o que deve mudar.',
+  }),
+});
+
+const steerFill = (text, params) => String(text).replace(/\{(\w+)\}/g, (whole, k) => (params && params[k] != null ? params[k] : whole));
+
+/**
+ * A translator for the steer sentences: the page's `assistant.steer.<key>` when it has one, else STEER_COPY in
+ * `locale` (Portuguese for any pt locale), else the English.
+ */
+export function steerTranslator(pageT = null, locale = 'en') {
+  const table = /^pt/i.test(String(locale || '')) ? STEER_COPY['pt-BR'] : STEER_COPY.en;
+  return (key, params) => {
+    const full = `assistant.steer.${key}`;
+    const v = typeof pageT === 'function' ? pageT(full, params) : undefined;
+    if (typeof v === 'string' && v && v !== full) return v;
+    return steerFill(table[key] ?? STEER_COPY.en[key] ?? key, params);
+  };
+}
+
+/**
+ * What a key press in the composer means: 'steer' (Enter while the Assistant works, or while a run is targeted),
+ * 'queue' (Alt+Enter while it works), 'send' (Enter otherwise), or null (not a send key: Shift+Enter is a newline,
+ * an IME composition is still typing).
+ */
+export function composerKeyIntent(e, { running = false, targeted = false, steerable = true } = {}) {
+  if (!e || e.key !== 'Enter' || e.shiftKey || e.isComposing) return null;
+  if (targeted) return 'steer';
+  if (!running) return 'send';
+  if (e.altKey) return 'queue';
+  return steerable ? 'steer' : 'queue';
+}
+
+/**
+ * Whether a steer notice gets the transcript's break (an `.asst-divider`) in front of it: only when the steer cut the
+ * Assistant's own reply (`cut`), and that reply is what came last before the notice (status rows such as "Aborted."
+ * between them do not count). `prevKinds` are the classes of the rows above, nearest first: 'assistant', 'status',
+ * 'divider', 'user', 'route' (a usage / automation / route line), 'other'. A normal turn, a worker's steer and a notice after a break already drawn get none.
+ */
+export function steerBreakBefore({ kind = 'steer', cut = false, prevKinds = [] } = {}) {
+  if (kind !== 'steer' || !cut) return false;
+  for (const k of prevKinds) {
+    // "Interrupted." and the cut turn's usage / automation line sit between its reply and the notice.
+    if (k === 'status' || k === 'route') continue;
+    return k === 'assistant';
+  }
+  return false;
+}
+
+/** A turn (or a result, a run end) that ended because it was steered: never "Task complete", never a failure. */
+export function isSteeredEnd(value) {
+  if (!value || typeof value !== 'object') return false;
+  const reasons = [value.reason, value.turnEndReason, value.endReason, value.stopReason, value.lastTurn?.reason, value.lastResult?.reason, value.result?.reason, value.subtype];
+  return reasons.some((r) => r === 'steered');
+}
+
+/** The run is between its interrupted turn and the steer's turn: the card says "Steering…". */
+export function isSteering(run) {
+  if (!run || typeof run !== 'object') return false;
+  if (STEER_TERMINAL.has(String(run.status || '')) || STEER_TERMINAL.has(String(run.state || ''))) return false;
+  return run.steering === true;
+}
+
+const STEER_TERMINAL = new Set(['completed', 'failed', 'stopped', 'interrupted', 'cancelled', 'canceled', 'removed']);
+
+/** The transcript line where a turn was cut: "Steered: <text>" (one line, clipped). Live and on replay. */
+export function steerNoticeText(text, t = steerTranslator(), { run = '' } = {}) {
+  const flat = String(text ?? '').replace(/\s+/g, ' ').trim();
+  const clipped = flat.length > 160 ? `${flat.slice(0, 159).trimEnd()}…` : flat;
+  return run ? t('noticeRun', { run, text: clipped }) : t('notice', { text: clipped });
+}
+
+/** The line the runtime puts above a steer of the brain's own turn (lib/assistant-runtime.js STEER_BRAIN_LINE). */
+export const STEER_BRAIN_LINE = '[SynaBun Steer] The user interrupted your current turn to change it:';
+
+/** A prompt the runtime sent for a steer → the user's words (the model's line taken off), else null. */
+export function steerPromptText(text) {
+  const value = String(text ?? '');
+  if (!value.startsWith(STEER_BRAIN_LINE)) return null;
+  return value.slice(STEER_BRAIN_LINE.length).replace(/^\s*\n?/, '').trim();
+}
+
+/** The longest a run says "Steering…": whatever the panel hears or misses, the mark never stays longer. */
+export const STEER_MARK_MAX_MS = 30_000;
+
+/** The run's token count as the card shows it (usage packets first), or null. */
+export function steerTokensOf(run) {
+  const total = Number(run?.usageTokens?.total ?? run?.tokens?.total);
+  return Number.isFinite(total) && total >= 0 ? total : null;
+}
+
+/** The patch that takes a run's "Steering…" away (steeredAt null: a later merge never brings the mark back). */
+export const STEER_CLEARED = Object.freeze({ steering: false, steeredAt: null, steerTurnStarted: false });
+
+/**
+ * After a descriptor merged into a run the panel marked steering: is the steer's turn showing anything yet? Only
+ * then does the mark go, so "Steering…" is seen: the steer's turn starts well under a second after the steer.
+ * The steer's turn has STARTED on the server's `steering: false`, a turn_started, a turn start after the mark or a
+ * higher currentIteration (the mark then records `steerTurnStarted` and the tokens at that moment); once started, the
+ * mark goes when the run's tokens grow past that count (the panel's controller also takes it away at the turn's
+ * first text, call or activity: onRunOutput). It always goes when the run ends and STEER_MARK_MAX_MS after the
+ * steer. `previous` is the run before the merge: the server's own `steering: false` overwrote the mark in `merged`,
+ * and a mark the panel made (its steeredAt) is held through it. A patch that names `steeredAt` itself (STEER_CLEARED)
+ * is the panel's own word. A mark without a steeredAt (another window's, seen in a descriptor) follows the server.
+ * Returns the run to keep (the same object when nothing changes).
+ */
+export function settleSteering(merged, update = null, { previous = null, now = Date.now() } = {}) {
+  if (!merged) return merged;
+  const u = update && typeof update === 'object' ? update : {};
+  const terminal = (run) => STEER_TERMINAL.has(String(run?.status || '')) || STEER_TERMINAL.has(String(run?.state || ''));
+  let out = merged;
+  if (out.steering !== true && previous?.steering === true && previous.steeredAt && u.steeredAt === undefined && !terminal(out)) {
+    out = {
+      ...out, steering: true, steeredAt: previous.steeredAt, steerText: previous.steerText, steerIteration: previous.steerIteration,
+      steerTokens: previous.steerTokens ?? null, steerTurnStarted: previous.steerTurnStarted === true,
+    };
+  }
+  if (out.steering !== true) return out;
+  const clear = () => ({ ...out, ...STEER_CLEARED });
+  if (terminal(out)) return clear();
+  const markAt = Date.parse(out.steeredAt || '') || 0;
+  if (!markAt) return u.steering === false ? clear() : out;
+  if (now - markAt > STEER_MARK_MAX_MS) return clear();
+  const turnAt = Date.parse(u.turnStartedAt || u.lastTurnStartedAt || '') || 0;
+  const base = Number(out.steerIteration);
+  const iteration = Number(u.currentIteration);
+  const startsNow = u.steering === false || u.type === 'turn_started' || u.event === 'turn_started' || u.reason === 'turn_started'
+    || (turnAt > markAt) || (Number.isFinite(base) && Number.isFinite(iteration) && iteration > base);
+  if (out.steerTurnStarted !== true) {
+    if (!startsNow) return out;
+    // The tokens the cut turn booked so far are not the steer's turn's output: counted from here.
+    return { ...out, steerTurnStarted: true, steerTokens: steerTokensOf(out) ?? out.steerTokens ?? null };
+  }
+  const tokens = steerTokensOf(out);
+  const at = Number(out.steerTokens);
+  if (tokens !== null && Number.isFinite(at) && tokens > at) return clear();
+  return out;
+}
+
+/**
+ * Whether a worker's provider event is output of its turn (text, a call, thinking): what ends "Steering…" once the
+ * steer's turn has started. `activity` is what activityOf (asst-scenes.js) found in it, when the caller has it.
+ */
+export function isRunOutputEvent(payload, activity = null) {
+  if (activity) return true;
+  const event = payload?.event && typeof payload.event === 'object' ? payload.event : null;
+  if (!event) return false;
+  const type = String(payload.eventType || event.type || '');
+  if (event.type === 'assistant') return Array.isArray(event.message?.content) && event.message.content.length > 0; // Claude Code
+  if (event.type === 'stream_event') return /delta|content_block_start/.test(String(event.event?.type || ''));
+  if (/^item\.(started|updated|completed)$/.test(type)) return !!event.item && event.item.type !== 'user_message'; // Codex
+  if (/^message[.:]part[.:](updated|delta)$/i.test(type)) { // OpenCode
+    const part = event.part || {};
+    return /^(text|tool|reasoning)$/.test(String(part.type || '')) || /^message[.:]part[.:]delta$/i.test(type);
+  }
+  return /^(agent_message_chunk|agent_thought_chunk|tool_call|tool_call_update)$/.test(type); // Antigravity (ACP)
+}
+
+/** Whether a run card offers Steer: a run that is not over (queued and starting runs too: the server answers). */
+export function canSteerRun(run) {
+  if (!run?.runId) return false;
+  const status = String(run.status || '');
+  const state = String(run.state || '');
+  if (STEER_TERMINAL.has(status) || STEER_TERMINAL.has(state)) return false;
+  if (run.removed === true) return false;
+  return true;
+}
+
+/** The composer's target chip: "→ #2 Fix the login bug" (title clipped). */
+export function targetChipText(target, t = steerTranslator()) {
+  const title = String(target?.title || target?.runId || '').replace(/\s+/g, ' ').trim();
+  const short = title.length > 40 ? `${title.slice(0, 39).trimEnd()}…` : title;
+  return t('targetChip', { n: target?.index ?? '?', title: short }).replace(/#\?\s*/, '');
 }

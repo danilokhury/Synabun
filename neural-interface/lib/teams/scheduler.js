@@ -119,6 +119,7 @@ function dispatchDefaults(input = {}) {
   take('effort', 'effort');
   take('accountId', 'accountId', 'account_id');
   take('tools', 'tools');
+  take('usesBrowser', 'usesBrowser', 'uses_browser');
   take('maxMinutes', 'maxMinutes', 'max_minutes');
   take('budgetUsd', 'budgetUsd', 'budget_usd');
   take('permissionPolicy', 'permissionPolicy', 'permission_policy');
@@ -702,7 +703,7 @@ export function createTeamScheduler({
     mine.doneAt = iso(now());
     await emit(record, 'slice_done', { sliceId, runId: mine.runId, text: cleanup.removed ? 'Read-only worker ended; worktree removed.' : `Worktree kept: ${cleanup.kept?.path || cleanup.path} (${cleanup.kept?.reason || cleanup.code}).` });
     if (!cleanup.ok || cleanup.kept) await attention(record, { code: 'READ_ONLY_WORKTREE_KEPT', sliceId, message: `Read-only worker worktree kept at ${cleanup.kept?.path || cleanup.path}: ${cleanup.kept?.reason || cleanup.message}. Inspect it; no changes were committed or landed.`, report: cleanup });
-    else if (failed) await attention(record, { code: 'SLICE_WORKER_ENDED', sliceId, message: 'Read-only worker ended before reporting done; its clean worktree was removed.' });
+    else if (failed) await attention(record, { code: 'SLICE_WORKER_ENDED', sliceId, message: run?.completionReason === 'browser_unavailable' && run.error ? run.error : 'Read-only worker ended before reporting done; its clean worktree was removed.' });
     if (Object.values(record.slices).every(s => s.released) && record.status !== 'needs_attention') {
       record.status = 'completed';
       await emit(record, 'team_completed', { text: 'All read-only workers finished. Synthesize their results; no integration or landing is needed.' });
@@ -935,7 +936,7 @@ export function createTeamScheduler({
       if (state === 'done' && canFinish(run)) return;
       mine.phase = 'failed';
       await attention(record, { code: 'SLICE_WORKER_ENDED', sliceId,
-        message: `The worker of slice ${sliceId} ended (${run.completionReason || run.state}) before its slice was done. Its files are in its worktree. agent_team integrate gives the slice to a new worker; agent_team discard gives the team up.` });
+        message: run.completionReason === 'browser_unavailable' && run.error ? run.error : `The worker of slice ${sliceId} ended (${run.completionReason || run.state}) before its slice was done. Its files are in its worktree. agent_team integrate gives the slice to a new worker; agent_team discard gives the team up.` });
     } else if (run.outcome !== 'done') {
       mine.phase = 'blocked';
       mine.lastReport = { code: 'WORKER_BLOCKED', message: clip(run.lastResult?.summary || run.lastResult?.question || run.outcome || 'no result', 400), at: iso(now()) };

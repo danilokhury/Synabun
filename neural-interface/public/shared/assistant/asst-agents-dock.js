@@ -53,6 +53,7 @@ function esc(value) {
  * createAgentsDock(hostEl, hooks)
  * hooks: { t, sessionId, onFocus(runId), onStop(runId), onRead(runId), onEscalate(runId, target),
  *          onStopAll() (the second press of "Stop all"; stopAllConfirmMs / stopAllMinGapMs time it),
+ *          onSteer(runId, text) → truthy when sent, onSteerInComposer(runId, text), locale() (asst-steer.js),
  *          onRemove(runId), onClearFinished(runIds), onReveal(runId), onRunChange(run),
  *          open, showAll, onToggle(open), onShowAllChange(showAll),
  *          onCountChange({ total, active, attention, answer, idle, working, waiting, visible }) }
@@ -172,6 +173,9 @@ export function createAgentsDock(hostEl, hooks = {}) {
       onRead: hooks.onRead,
       onEscalate: hooks.onEscalate,
       onRemove: typeof hooks.onRemove === 'function' ? hooks.onRemove : null,
+      onSteer: hooks.onSteer,
+      onSteerInComposer: hooks.onSteerInComposer,
+      locale: hooks.locale,
     };
   }
 
