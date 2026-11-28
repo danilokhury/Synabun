@@ -2213,11 +2213,12 @@ export async function assistantClarify(body: {
   return request('POST', '/api/assistant/clarify', body as unknown as Record<string, unknown>, ASSISTANT_ROUTE_TIMEOUT);
 }
 
-export async function assistantListRuns(opts: { activeOnly?: boolean; assistantSessionId?: string; workflowId?: string } = {}): Promise<NiResponse> {
+export async function assistantListRuns(opts: { activeOnly?: boolean; assistantSessionId?: string; workflowId?: string; limit?: number } = {}): Promise<NiResponse> {
   return request('GET', `/api/assistant/runs${queryString({
     active: opts.activeOnly ? 1 : undefined,
     assistantSessionId: opts.assistantSessionId,
     workflowId: opts.workflowId,
+    limit: opts.limit,
   })}`);
 }
 

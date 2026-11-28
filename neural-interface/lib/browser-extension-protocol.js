@@ -322,6 +322,34 @@ export function command(value) {
     || Object.keys(a).some(k => k !== 'loadState' && k !== 'timeout'))) fail('INVALID_MESSAGE');
   return value;
 }
+// ── Capabilities (1.6.0): what this browser lets the extension do, as the extension saw it ──
+// `{ type: 'capabilities', capabilities: { v, userScripts: { state, execute }, browser: { brands, major, platform } } }`,
+// from the extension only, on the authenticated channel: after its first inventory of a connection and after every
+// pong. It is an observation, never an action: the extension asks the user scripts API for its registered scripts
+// (getScripts) and looks whether `execute` exists, and runs nothing in any tab to learn it. `state`: 'ready' (Allow User Scripts on, `execute` there),
+// 'disabled' (the API is missing or refuses: the switch, before Chrome 138 Developer mode, is off), 'unsupported' (on,
+// but the browser predates userScripts.execute, Chrome 135), 'error' (the check itself failed). `brands` are the
+// browser's names from navigator.userAgentData without its GREASE entries, `major` its Chromium version, `platform`
+// the operating system it names; any of them may be unknown ([] or null).
+// The server never sends this type: an extension from before 1.6.0 ends the connection on a type it does not know, so
+// a fresh observation is asked for with an ordinary ping.
+export const CAPABILITIES_SINCE = '1.6.0';
+export const CAPABILITIES_VERSION = 1;
+export const USER_SCRIPT_STATES = Object.freeze(['ready', 'disabled', 'unsupported', 'error']);
+export const BROWSER_BRANDS_MAX = 6;
+export const BROWSER_NAME = /^[A-Za-z0-9 ._()-]{1,40}$/;
+export const PLATFORM_NAME = /^[A-Za-z0-9 ._()-]{1,16}$/;
+export function capabilityReport(value) {
+  object(value, ['v', 'userScripts', 'browser']);
+  if (value.v !== CAPABILITIES_VERSION) fail('INVALID_MESSAGE');
+  object(value.userScripts, ['state', 'execute']);
+  if (!USER_SCRIPT_STATES.includes(value.userScripts.state) || typeof value.userScripts.execute !== 'boolean') fail('INVALID_MESSAGE');
+  const b = value.browser; object(b, ['brands', 'major', 'platform']);
+  if (!Array.isArray(b.brands) || b.brands.length > BROWSER_BRANDS_MAX || b.brands.some(name => typeof name !== 'string' || !BROWSER_NAME.test(name))) fail('INVALID_MESSAGE');
+  if (b.major !== null && (!Number.isSafeInteger(b.major) || b.major < 1 || b.major > 999)) fail('INVALID_MESSAGE');
+  if (b.platform !== null && (typeof b.platform !== 'string' || !PLATFORM_NAME.test(b.platform))) fail('INVALID_MESSAGE');
+  return value;
+}
 export function payload(value) {
   if (value?.type === 'updateStatus') {
     object(value, ['type', 'version', 'runsActive']);
@@ -354,7 +382,8 @@ export function payload(value) {
       else if (k === 'truncated' || k === 'loading') { if (typeof v !== 'boolean') fail('INVALID_MESSAGE'); }
       else string(v, k === 'base64' ? MAX_MESSAGE - 4096 : ['content', 'text', 'snapshotText', 'value'].includes(k) ? EVALUATE_RESULT_MAX : 8192);
     }
-  } else if (value?.type === 'ping' || value?.type === 'pong' || value?.type === 'unpair') object(value, ['type']);
+  } else if (value?.type === 'capabilities') { object(value, ['type', 'capabilities']); capabilityReport(value.capabilities); }
+  else if (value?.type === 'ping' || value?.type === 'pong' || value?.type === 'unpair') object(value, ['type']);
   // The server gave up on a command (its wait ended): the extension stops it, queued or running, and never starts it.
   else if (value?.type === 'cancel') { object(value, ['type', 'id']); handle(value.id); }
   else command(value);

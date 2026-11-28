@@ -43,6 +43,10 @@ export const AGENTS_STUDIO_VERSION = 1;
 export const AGENTS_STUDIO_CAPABILITIES = Object.freeze([
   'agents', 'drafts', 'validate', 'lint', 'reviews', 'revisions', 'diff', 'copy', 'export', 'import', 'import-claude-agent', 'resolve', 'runs', 'test-run',
   'teams', // agents-p4: GET /teams, GET /teams/:id, POST /teams/:id/land, POST /teams/:id/discard
+  'teams-cleanup', // POST /teams/:id/cleanup (the owner cleans up a landed team's worktrees and branches)
+  'teams-remove', // DELETE /teams/:id, POST /teams/clear-finished, `removable` / `removal` in the answers
+  'teams-on-target', // `alreadyOnTarget` in the answers, POST /teams/:id/cleanup-merged (a ready team merged outside land)
+  'teams-quick-discard', // `liveRuns` / `left` on the list's open rows, POST /teams/:id/discard with `remove: true`
   // agents-p6: agent-forge and native export (the routes of the agents-p6 block below)
   'guide', 'forge-catalog', 'checks', 'native-export', 'native-import',
 ]);
@@ -396,8 +400,9 @@ export function registerAgentsStudioRoutes(app, {
   }));
 
   // ── agents-p4 BEGIN: teams (lib/teams/api.js) ──────────────────────────────
-  // The list and one team for whoever reads the library; landing and discarding are the owner's, from SynaBun's own
-  // page only (the `owner` tier above: no agent header, X-SynaBun-UI, the page secret, the owner route guard).
+  // The list and one team for whoever reads the library; landing, discarding, cleaning up and removing are the
+  // owner's, from SynaBun's own page only (the `owner` tier above: no agent header, X-SynaBun-UI, the page secret,
+  // the owner route guard).
   registerTeamStudioRoutes({ route, reader, owner, json, scheduler: teams });
   // ── agents-p4 END ──────────────────────────────────────────────────────────
   // ════ agents-p6 BEGIN: agent-forge and native export (docs/agents.md → agent-forge, Native export) ════

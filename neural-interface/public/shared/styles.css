@@ -16131,11 +16131,11 @@
   form.stg-restore-dialog .tag-delete-modal-actions { margin-top: 14px; }
   /* <<< backup-encryption-ui */
   /* >>> browser-extension-card */
-  /* Settings → Browser → "Existing browser via extension" (shared/settings/settings-browser-extension.js), as approved
-     in docs/design/browser-extension ("Settings card"). The card is one row of the Browser group, never a label +
-     control grid: its parts (status, agent access, tabs, setup, files and limits, connection details, actions) stack
-     top to bottom, every row wraps, and nothing is positioned or given a height, so no paragraph can lie over another
-     at any width or in any language. Colours are the panel's --stg-* tokens; controls keep Settings' 22 px geometry. */
+  /* Settings → Browser → "My browser · use the extension" (shared/settings/settings-browser-extension.js; the design
+     handoff of 2026-11-27). The card is one row of the Browser group, never a label + control grid: its parts (the
+     product, the installed browser, the staged status with its one action, agent access, tabs, Advanced) stack top to
+     bottom, every row wraps, and nothing is positioned or given a height, so no paragraph can lie over another at any
+     width or in any language. Colours are the panel's --stg-* tokens; controls keep Settings' 22 px geometry. */
   .settings-panel .stg-field.bc-extension { display: block; min-width: 0; }
   .settings-panel #bc-update-progress { width: 100%; accent-color: var(--stg-accent-fill); }
   .settings-panel .bc-extension .bc-ext-label {
@@ -16173,15 +16173,51 @@
   }
   .settings-panel .bc-extension :is(.bc-ext-section, .bc-ext-part) > .stg-subhead { margin: 0; padding: 0; }
   .settings-panel .bc-extension :is(.bc-ext-section, .bc-ext-part) > * + * { margin-top: 8px; }
-  .settings-panel .bc-extension .bc-ext-section[data-extension-section="setup"][data-mode="connect"] > .stg-subhead { font-size: 14px; font-weight: 600; }
   .settings-panel .bc-extension .bc-ext-note[data-tone="warn"] { color: var(--stg-warn); }
-  /* agent access: the heading and its dropdown on one line when they fit, the dropdown under it otherwise */
-  .settings-panel .bc-extension .bc-ext-mode-row {
-    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; min-width: 0;
+  /* the product: the mark, its name and what it is for */
+  .settings-panel .bc-extension .bc-ext-product { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; padding-bottom: var(--stg-row-y); }
+  .settings-panel .bc-extension .bc-ext-mark {
+    display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: center; flex: 0 0 auto; width: 32px; aspect-ratio: 1;
+    border: 1px solid var(--stg-line); border-radius: 8px; background: var(--stg-group); color: var(--stg-text);
   }
-  .settings-panel .bc-extension .bc-ext-mode-row > .stg-subhead { flex: 1 1 120px; margin: 0; padding: 0; }
+  .settings-panel .bc-extension .bc-ext-mark svg { width: 18px; fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; }
+  .settings-panel .bc-extension .bc-ext-product-text { flex: 1 1 180px; min-width: 0; }
+  .settings-panel .bc-extension .bc-ext-product-text > .stg-subhead { margin: 0; padding: 0; font-size: 14px; font-weight: 600; }
+  /* a row: what it is (label and help) on the left, its control or action on the right; under it when narrow */
+  .settings-panel .bc-extension .bc-ext-row {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; min-width: 0;
+    padding: var(--stg-row-y) 0; border-top: 1px solid var(--stg-sep);
+  }
+  .settings-panel .bc-extension .bc-ext-row-text { flex: 1 1 220px; min-width: 0; }
+  .settings-panel .bc-extension .bc-ext-row-label { margin: 0; font-size: 13px; line-height: 1.4; color: var(--stg-text); overflow-wrap: anywhere; }
+  .settings-panel .bc-extension .bc-ext-row-text > .stg-help { margin-top: 2px; }
+  .settings-panel .bc-extension .bc-ext-status-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+  .settings-panel .bc-extension .bc-ext-status-line > .bc-ext-label { flex: 0 1 auto; font-weight: 500; }
+  .settings-panel .bc-extension .bc-ext-target { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+  .settings-panel .bc-extension .bc-ext-target .cc-dropdown-value { overflow-wrap: anywhere; }
+  /* a default browser that cannot run the extension: named, never changed */
+  /* (the guide's own notices, a browser that cannot run it and a folder that could not be prepared, are the same box) */
+  .settings-panel :is(.bc-extension, .bc-guide) .bc-ext-notice {
+    margin: 0 0 var(--stg-row-y); padding: 10px 12px; min-width: 0; border: 1px solid var(--stg-line); border-left: 2px solid var(--stg-warn);
+    border-radius: 8px; background: var(--stg-group);
+  }
+  .settings-panel :is(.bc-extension, .bc-guide) .bc-ext-notice-title {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; font-weight: 600; color: var(--stg-text); overflow-wrap: anywhere;
+  }
+  .settings-panel :is(.bc-extension, .bc-guide) .bc-ext-notice-title > span { min-width: 0; }
+  .settings-panel :is(.bc-extension, .bc-guide) .bc-ext-notice > * + * { margin-top: 4px; }
+  /* agent access: its label and dropdown on one line when they fit, the dropdown under it otherwise */
+  .settings-panel .bc-extension .bc-ext-mode-row { border-top: 0; padding-bottom: 0; }
   .settings-panel .bc-extension .bc-ext-mode { flex: 0 1 auto; min-width: 0; max-width: 100%; }
   .settings-panel .bc-extension .bc-ext-mode .cc-dropdown-value { overflow-wrap: anywhere; }
+  /* Advanced: manual pairing and file limits are disclosures of their own inside it */
+  .settings-panel .bc-extension .bc-ext-sub { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--stg-sep); }
+  .settings-panel .bc-extension .bc-ext-sub > summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--stg-text); list-style: none; }
+  .settings-panel .bc-extension .bc-ext-sub > summary::-webkit-details-marker { display: none; }
+  .settings-panel .bc-extension .bc-ext-sub > summary .cc-section-chevron { width: 12px; fill: none; stroke: currentColor; stroke-width: 2; transition: transform var(--duration-fast, 150ms) ease; }
+  .settings-panel .bc-extension .bc-ext-sub[open] > summary .cc-section-chevron { transform: rotate(90deg); }
+  .settings-panel .bc-extension .bc-ext-sub > .bc-ext-part { margin-top: 8px; }
+  .settings-panel .bc-extension .bc-ext-sub > summary:focus-visible { outline: 2px solid var(--stg-focus); outline-offset: 2px; }
   /* the tabs agents hold, grouped by agent */
   .settings-panel .bc-extension .bc-ext-title-row { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; min-width: 0; }
   .settings-panel .bc-extension .bc-ext-title-row > .stg-subhead { margin: 0; padding: 0; }
@@ -16236,9 +16272,9 @@
     font-family: var(--stg-mono); font-size: 18px; font-weight: 600; line-height: 1.3; letter-spacing: 0.06em;
     color: var(--stg-text); overflow-wrap: anywhere;
   }
-  /* Disconnect and Revoke pairing at the end, and their confirmation next to what asked */
-  .settings-panel .bc-extension .bc-ext-footer { margin: var(--stg-row-y) 0 0; padding: var(--stg-row-y) 0 0; border-top: 1px solid var(--stg-sep); }
-  .settings-panel .bc-extension .bc-ext-footer > .bc-ext-actions { justify-content: flex-end; }
+  /* the confirmation of Disconnect, Revoke pairing, Repair and the agent access, next to what asked */
+  .settings-panel .bc-extension .bc-ext-status:empty { display: none; }
+  .settings-panel .bc-extension #bc-extension-files-status:empty, .settings-panel .bc-extension #bc-extension-version:empty { display: none; }
   .settings-panel .bc-extension .bc-ext-confirm {
     margin: 8px 0 0; padding: 10px 12px; min-width: 0; border: 1px solid var(--stg-line); border-left: 2px solid var(--stg-warn);
     border-radius: 8px; background: var(--stg-group);
@@ -16249,10 +16285,134 @@
   .settings-panel .bc-extension .bc-ext-confirm .bc-ext-actions { justify-content: flex-end; }
   .settings-panel .bc-extension :is(.bc-ext-confirm, .bc-ext-head) .stg-subhead:focus-visible,
   .settings-panel .bc-extension .bc-ext-advanced > summary:focus-visible { outline: 2px solid var(--stg-focus); outline-offset: 2px; }
+  /* A part the wiring hides stays hidden whatever display its own rule gives it (rows here are flex). */
+  .settings-panel .bc-extension [hidden], .settings-panel .stg-pane .stg-field[hidden] { display: none; }
+  .settings-panel .bc-connection-profile > * + * { margin-top: 4px; }
+  .settings-panel .bc-connection-profile-title { margin: 0; font-weight: 600; color: var(--stg-text); }
+  @container stg (max-width: 390px) {
+    .settings-panel .bc-extension .bc-ext-row { align-items: flex-start; }
+    .settings-panel .bc-extension .bc-ext-row > :is(.bc-ext-target, .bc-ext-actions, .cc-dropdown) { flex: 1 1 100%; }
+  }
   @media (prefers-reduced-motion: reduce) {
     .settings-panel .bc-extension :is(.cli-detect-btn, .cc-section-chevron) { transition: none; }
   }
   /* <<< browser-extension-card */
+  /* >>> browser-extension-guide */
+  /* The extension's six-step setup guide, drawn in the Browser page itself (settings-browser-extension.js
+     guidePageHTML). While it is open the page shows it alone: the page title and every card step aside, and come back
+     as they were when the owner returns. One browser action per page; Back, the progress and the next action keep their
+     places. The drawings take their colours from classes here (settings-extension-diagrams.js), so they follow the
+     panel's tokens and the owner's accent. Nothing is positioned; every flex row wraps. */
+  .settings-panel .stg-page[data-bc-guide="open"] > .stg-page-head,
+  .settings-panel .stg-pane[data-bc-guide="open"] > :not(.bc-guide) { display: none; }
+  .settings-panel .bc-guide { display: flex; flex-direction: column; flex-wrap: wrap; min-width: 0; color: var(--stg-text); }
+  .settings-panel .bc-guide[hidden], .settings-panel .bc-guide [hidden] { display: none; }
+  .settings-panel .bc-guide > * { flex: 0 0 auto; min-width: 0; }
+  .settings-panel .bc-guide-head, .settings-panel .bc-guide-foot {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; min-width: 0;
+  }
+  .settings-panel .bc-guide-head { padding-bottom: 12px; margin-bottom: 20px; border-bottom: 1px solid var(--stg-line); }
+  .settings-panel .bc-guide-foot { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--stg-line); }
+  .settings-panel .bc-guide-progress { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; font-size: 12px; color: var(--stg-help); }
+  .settings-panel .bc-guide-bars { display: inline-flex; flex-wrap: wrap; gap: 3px; }
+  .settings-panel .bc-guide-bars > i { display: block; width: 12px; padding-top: 3px; border-radius: 2px; background: var(--stg-control); }
+  .settings-panel .bc-guide-bars > i[data-on="true"] { background: var(--stg-accent-fill); }
+  .settings-panel .bc-guide-crumb { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 6px; font-size: 12px; color: var(--stg-help); }
+  .settings-panel .bc-guide-title { margin: 0; font-size: 20px; line-height: 1.25; font-weight: 600; letter-spacing: -0.015em; color: var(--stg-text); overflow-wrap: anywhere; }
+  /* The title takes the focus only from the guide itself, when a page changes (tabindex="-1": never in the Tab order),
+     so a screen reader reads the new page; it is no control, and a ring around it is a stray box. */
+  .settings-panel #bc-guide-title:is(:focus, :focus-visible) { outline: none; }
+  .settings-panel .bc-guide-help { margin: 6px 0 0; max-width: 72ch; }
+  .settings-panel .bc-guide-main > :is(.bc-guide-group, .bc-guide-figure, .bc-guide-fallback, .bc-ext-notice, .bc-guide-where) { margin-top: 16px; }
+  .settings-panel .bc-guide-main > :is(.bc-guide-actions, .bc-guide-recovery, .bc-guide-waiting) { margin-top: 10px; }
+  .settings-panel .bc-guide-icon { width: 15px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .settings-panel .bc-guide .cli-detect-btn { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: 100%; }
+  .settings-panel .bc-guide .cli-detect-btn.bc-ext-primary { color: var(--stg-text); background: var(--stg-accent-fill); border-color: transparent; }
+  .settings-panel .bc-guide .cli-detect-btn.bc-ext-primary:hover:not(:disabled) { background: var(--stg-accent-fill-hover); }
+  .settings-panel .bc-guide .cli-detect-btn[data-plain="true"] { border-color: transparent; background: transparent; color: var(--stg-body); padding-inline: 3px; }
+  .settings-panel .bc-guide .cli-detect-btn[data-plain="true"]:hover:not(:disabled) { color: var(--stg-text); background: var(--stg-control); }
+  .settings-panel .bc-guide .cli-detect-btn:disabled { color: var(--stg-off); cursor: default; }
+  .settings-panel .bc-guide-group { padding: 0 var(--stg-row-x); min-width: 0; border: 1px solid var(--stg-line); border-radius: 9px; background: var(--stg-group); }
+  .settings-panel .bc-guide-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; min-width: 0; padding: var(--stg-row-y) 0; }
+  .settings-panel .bc-guide-row + .bc-guide-row { border-top: 1px solid var(--stg-sep); }
+  .settings-panel .bc-guide-row > .bc-ext-row-label { margin: 0; font-size: 13px; color: var(--stg-text); }
+  .settings-panel .bc-guide-target { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+  .settings-panel .bc-guide-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+  .settings-panel .bc-guide :is(.bc-guide-address, .bc-guide-path) { direction: ltr; unicode-bidi: isolate; user-select: all; font: 12px/1.5 var(--stg-mono); overflow-wrap: anywhere; min-width: 0; color: var(--stg-body); }
+  .settings-panel .bc-guide-address { flex: 1 1 160px; }
+  .settings-panel .bc-guide-path { display: block; margin: 10px 0; padding: 10px 12px; background: var(--stg-field-bg); border: 1px solid var(--stg-field-line); border-radius: 5px; }
+  .settings-panel .bc-guide :is(.bc-guide-address, .bc-guide-path):focus-visible { outline: 2px solid var(--stg-focus); outline-offset: 2px; }
+  .settings-panel .bc-guide-fallback { padding: 4px 12px; border-left: 2px solid var(--stg-line); }
+  .settings-panel .bc-guide-fallback > summary { width: fit-content; cursor: pointer; font-weight: 500; list-style: none; color: var(--stg-text); }
+  .settings-panel .bc-guide-fallback > summary::-webkit-details-marker { display: none; }
+  .settings-panel .bc-guide-fallback > summary::before { content: '›'; display: inline-block; margin-inline-end: 8px; transition: transform var(--duration-fast, 150ms) ease; }
+  .settings-panel .bc-guide-fallback[open] > summary::before { transform: rotate(90deg); }
+  .settings-panel .bc-guide-fallback > summary:focus-visible { outline: 2px solid var(--stg-focus); outline-offset: 2px; }
+  .settings-panel .bc-guide-fallback > p { margin: 4px 0 8px; }
+  .settings-panel .bc-guide-keys { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; color: var(--stg-help); }
+  .settings-panel .bc-guide kbd { padding: 1px 4px; border: 1px solid var(--stg-field-line); border-radius: 4px; background: var(--stg-control); font: 11px/1.4 var(--stg-mono); color: var(--stg-body); }
+  .settings-panel .bc-guide-folder { padding-block: 12px; }
+  .settings-panel .bc-guide-folder > .bc-guide-row { padding: 0; }
+  .settings-panel .bc-guide-folder-title, .settings-panel .bc-guide-verified, .settings-panel .bc-guide-waiting {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; min-width: 0;
+  }
+  .settings-panel .bc-guide-folder-title { font-weight: 600; }
+  .settings-panel .bc-guide-verified { font-size: 12px; color: var(--stg-ok); }
+  .settings-panel .bc-guide-waiting { font-size: 12px; color: var(--stg-body); }
+  .settings-panel .bc-guide-recovery { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 12px; color: var(--stg-help); }
+  .settings-panel .bc-guide-link { padding: 0 3px; border: 0; background: none; font: inherit; color: var(--stg-text); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+  .settings-panel .bc-guide-link:focus-visible { outline: 2px solid var(--stg-focus); outline-offset: 2px; border-radius: 3px; }
+  .settings-panel .bc-guide-feedback { margin: 8px 0 0; color: var(--stg-body); }
+  .settings-panel .bc-guide-feedback:empty { display: none; }
+  .settings-panel .bc-guide-checklist { list-style: none; margin: 0; }
+  .settings-panel .bc-guide-checklist > li { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 0; }
+  .settings-panel .bc-guide-checklist > li + li { border-top: 1px solid var(--stg-sep); }
+  .settings-panel .bc-guide-checklist > li > div { flex: 1 1 180px; min-width: 0; }
+  .settings-panel .bc-guide-checklist > li[data-ok="true"] > .bc-guide-icon { color: var(--stg-ok); }
+  .settings-panel .bc-guide-checklist > li[data-ok="false"] > .bc-guide-icon { color: var(--stg-help); }
+  .settings-panel .bc-guide-check-title { margin: 0; font-weight: 600; }
+  .settings-panel .bc-guide-checklist .stg-help { margin: 0; }
+  /* the close-ups: a header naming the browser and the layout, the drawing, its caption */
+  .settings-panel .bc-guide-figure { margin: 0; overflow: hidden; border: 1px solid var(--stg-line); border-radius: 8px; background: var(--stg-field-bg); }
+  .settings-panel .bc-guide-figure-head {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 6px 12px; border-bottom: 1px solid var(--stg-line);
+    background: var(--stg-group); font-size: 11.5px; color: var(--stg-body);
+  }
+  .settings-panel .bc-guide-figure-head > code { margin-inline-start: auto; font: 11px/1.4 var(--stg-mono); color: var(--stg-help); }
+  .settings-panel .bc-guide-art { display: block; width: 100%; max-width: 560px; margin: 0 auto; }
+  .settings-panel .bc-guide-art text { font-family: var(--stg-font, inherit); }
+  .settings-panel .bc-guide-art .bg-t { fill: var(--stg-text); }
+  .settings-panel .bc-guide-art .bg-muted { fill: var(--stg-help); }
+  .settings-panel .bc-guide-art .bg-strong { font-weight: 600; }
+  .settings-panel .bc-guide-art .bg-call { fill: var(--stg-focus); font-weight: 600; }
+  .settings-panel .bc-guide-art .bg-frame { fill: var(--stg-field-bg); stroke: var(--stg-line); }
+  .settings-panel .bc-guide-art .bg-surface { fill: var(--stg-group); stroke: var(--stg-line); }
+  .settings-panel .bc-guide-art .bg-panel { fill: var(--stg-control); stroke: var(--stg-field-line); }
+  .settings-panel .bc-guide-art .bg-ln { fill: none; stroke: var(--stg-line); }
+  .settings-panel .bc-guide-art .bg-lead { fill: none; stroke: var(--stg-focus); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .settings-panel .bc-guide-art .bg-ring { fill: none; stroke: var(--stg-focus); stroke-width: 2; }
+  .settings-panel .bc-guide-art .bg-halo { fill: none; stroke: var(--stg-focus); stroke-width: 7; opacity: 0.22; }
+  .settings-panel .bc-guide-art .bg-track { fill: var(--stg-accent-fill); stroke: var(--stg-line); }
+  .settings-panel .bc-guide-art .bg-on { fill: var(--stg-focus); }
+  .settings-panel .bc-guide-art .bg-knob { fill: var(--stg-text); }
+  .settings-panel .bc-guide-art .bg-knob-off { fill: var(--stg-field-bg); }
+  .settings-panel .bc-guide-art .bg-mark { fill: none; stroke: var(--stg-text); stroke-width: 3; stroke-linecap: round; }
+  .settings-panel .bc-guide-figure > figcaption { padding: 8px 12px; border-top: 1px solid var(--stg-line); font-size: 12px; line-height: 1.4; color: var(--stg-help); }
+  .settings-panel .bc-guide-where { margin-bottom: 0; }
+  @container stg (max-width: 560px) {
+    .settings-panel .bc-guide-head { margin-bottom: 14px; }
+    .settings-panel .bc-guide-main > .bc-guide-figure { margin-top: 12px; }
+  }
+  @container stg (max-width: 390px) {
+    .settings-panel .bc-guide-bars { display: none; }
+    .settings-panel .bc-guide-foot { align-items: stretch; }
+    .settings-panel .bc-guide-foot > .cli-detect-btn { flex: 1 1 100%; justify-content: center; }
+    .settings-panel .bc-guide-figure-head > code { margin-inline-start: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .settings-panel .bc-guide-fallback > summary::before { transition: none; }
+  }
+  /* <<< browser-extension-guide */
   /* >>> settings-about */
   /* Settings → About (shared/settings/settings-about-pane.js): the header (icon, name, version, the two buttons),
      the links, the facts of System and the dependency lists. Text weight and the panel's --stg-* roles; every row
@@ -21044,6 +21204,27 @@
   .ax .ax-feed-time, .ax .ax-feed-from { color: var(--t-secondary); font-size: var(--sx-meta); white-space: nowrap; }
   .ax .ax-feed-kind { font: 500 var(--sx-meta)/1.4 var(--ff-mono, 'JetBrains Mono', monospace); color: var(--t-bright); }
   .ax .ax-feed-text { flex: 1 1 260px; overflow-wrap: anywhere; }
+  /* Open and Finished: two groups of the same rows; the Finished head holds Clear finished. */
+  .ax .ax-team-groups { padding: 12px 16px 16px; max-width: 1040px; display: grid; gap: 18px; align-content: start; }
+  .ax .ax-team-group { display: grid; gap: 8px; min-width: 0; }
+  .ax .ax-team-group .ax-team-list { padding: 0; max-width: none; }
+  .ax .ax-team-group-head { display: flex; align-items: center; gap: 8px; min-height: 26px; }
+  .ax .ax-team-group-count { min-width: 20px; padding: 2px 6px; border: 1px solid var(--b-light); border-radius: 9px; background: var(--s-subtle); color: var(--t-secondary); font: 500 var(--sx-meta)/1.2 var(--ff-mono); text-align: center; }
+  .ax .ax-team-left { color: var(--sx-warn); }
+  /* A finished team: what is still on disk and in git, and the one step that fits. */
+  .ax .ax-team-disk { border-left: 2px solid var(--b-visible); }
+  .ax .ax-left-list { padding-left: 0; list-style: none; display: grid; gap: 6px; max-height: 220px; overflow: auto; }
+  .ax .ax-left-list > li { display: grid; gap: 2px; min-width: 0; }
+  .ax .ax-left-list > li + li { margin-top: 0; }
+  .ax .ax-left-path { color: var(--t-bright); overflow-wrap: anywhere; }
+  /* A card of the list: the team (the button that opens it) and, beside it, its one quick action (a button of its own). */
+  .ax .ax-team-item { display: flex; align-items: stretch; min-width: 0; border: 1px solid var(--b-light); border-radius: 8px; background: var(--s-subtle); transition: border-color 0.15s ease, background 0.15s ease; }
+  .ax .ax-team-item:hover, .ax .ax-team-item:focus-within { border-color: var(--b-hover); background: var(--s-light); }
+  .ax .ax-team-item > .ax-team-row, .ax .ax-team-item > .ax-team-row:hover { flex: 1 1 auto; min-width: 0; border: 0; background: transparent; }
+  .ax .ax-team-quick { flex: none; display: flex; align-items: center; padding: 8px 12px 8px 0; }
+  /* Already on <branch>: the side card of Worktrees and branches, its edge the tone of the status chip. */
+  .ax .ax-team-ontarget { border-left: 2px solid var(--sx-ok); }
+  .ax .ax-team-ontarget.is-blocked { border-left-color: var(--sx-warn); }
 
   /* ── Questions asked in the window ── */
   .ax .ax-dlg .ss-dlg-body { max-height: min(60vh, 520px); overflow: auto; }
@@ -21076,12 +21257,14 @@
     .ax .ax-lib .ax-col-scope { display: none; }
     .ax .ax-lib td.ax-col-state { display: block; }
     .ax .ax-create, .ax .ax-team { padding: 12px; }
+    .ax .ax-team-item { flex-direction: column; }
+    .ax .ax-team-quick { padding: 0 14px 10px; }
     .ax .ax-actions { justify-content: flex-start; }
     .ax .ax-priv-row { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   }
   @media (prefers-reduced-motion: reduce) {
     .ax .ax-spinner { animation-duration: 2.4s; }
-    .ax .ax-card, .ax .ax-start, .ax .ax-template, .ax .ax-pick, .ax .ax-team-row { transition: none; }
+    .ax .ax-card, .ax .ax-start, .ax .ax-template, .ax .ax-pick, .ax .ax-team-row, .ax .ax-team-item { transition: none; }
   }
   /* ══ end of AGENTS STUDIO ══ */
 

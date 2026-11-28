@@ -14,7 +14,13 @@
 //             attention and the Assistant is told
 //   land      the integration branch into the owner's branch: the owner's step, or the Assistant's when the tests
 //             passed, the owner's branch has not moved and no locally changed file is touched
-//   discard   stop the workers, give the work up
+//   cleanup   after a landing, the team's worktrees and branches, once every one is merged and clean (the owner's
+//             word: from Agents Studio, or the Assistant after the owner said yes in its session)
+//   discard   stop the workers, give the work up (what holds work is kept unless the owner says `force`); the
+//             owner's Discard & remove forgets the team in the same step when nothing of it is left
+//   remove    forget a closed team (its record here), only once nothing of it is left on disk or in git
+//   cleanupMerged  a ready team whose work somebody merged into its base branch outside `land`: checked again
+//             against git, its landing recorded, its worktrees, branches and record removed (the owner's)
 //
 // Agent density targets the selected worker count; fewer requires a reason. Solo starts no
 // team; workers never work in the owner's checkout or on the owner's branch; the owner's branch receives the work
@@ -30,8 +36,8 @@
 
 import { markActivity } from '../loop-stall.js';
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { AGENT_DENSITY_LABELS, DEFAULT_AGENT_DENSITY, maxWorkers, normalizeAgentDensity } from '../agents/density.js';
 import { splitTitle } from '../agents/split.js';
 import { sessionRecipient } from '../coordination/store.js';
@@ -40,8 +46,9 @@ import {
   unresolvedFollowUp,
 } from './brief.js';
 import {
-  worktreePath, branchName, integrationBranchName, isTeamSlug, normalizeRelPath, normalizeTeamPlan, pathOwner, validateTeamPlan,
+  BRANCH_PREFIX, INTEGRATION_SLICE_ID, worktreePath, branchName, integrationBranchName, isTeamSlug, normalizeRelPath, normalizeTeamPlan, pathOwner, validateTeamPlan,
 } from './schema.js';
+import { TERMINAL_TEAM_STATES } from './state.js';
 import { TEAM_TEST_TIMEOUT_MS } from './test-runner.js';
 import { testCommandOf } from './worktrees.js';
 
@@ -72,6 +79,11 @@ export const TEAM_CHANGED = 'assistant:team-changed';
 /** A team as the scheduler sees it (its own status; the journal's state is finer). */
 export const TEAM_STATUSES = Object.freeze(['running', 'needs_attention', 'ready', 'completed', 'landed', 'discarded', 'failed']);
 const OPEN_STATUSES = new Set(['running', 'needs_attention', 'ready']);
+/** A team that is over: nothing of it runs again. Only such a team can be removed. */
+export const CLOSED_TEAM_STATUSES = Object.freeze(['landed', 'completed', 'discarded', 'failed']);
+const CLOSED_STATUSES = new Set(CLOSED_TEAM_STATUSES);
+/** The durable log's kind of a removal (not a TEAM_EVENTS entry: nobody's mailbox gets it, no page reads a removed team). */
+export const TEAM_REMOVED_LOG_KIND = 'team.removed';
 
 export const TEAM_SCHEDULER_LIMITS = Object.freeze({
   /** How often a slice is sent back to its worker for one kind of trouble before the team needs attention. */
@@ -178,6 +190,9 @@ export function createTeamScheduler({
   const runIndex = new Map();     // runId → { teamId, sliceId } (every run a slice ever had)
   const chains = new Map();       // team or slice key → last scheduled operation
   const postTimes = new Map();    // runId → the times of its recent posts
+  // Teams removed while the server runs. A step that was handed a team's record before it was removed must never
+  // write that record back (save) or announce it (emit): its id is never made again (the journal keeps it).
+  const removedTeams = new Set();
   let unsubscribe = null;
   let watchdog = null;
   let watchdogPass = null;
@@ -200,6 +215,7 @@ export function createTeamScheduler({
   // ── the scheduler's own record ─────────────────────────────────────────────
   const fileOf = (teamId) => join(dir, `${teamId}.json`);
   function save(record) {
+    if (removedTeams.has(record.teamId)) return record;
     record.updatedAt = iso(now());
     records.set(record.teamId, record);
     try {
@@ -250,7 +266,9 @@ export function createTeamScheduler({
   const inTurn = (teamId, fn) => enqueue([teamId], fn);
   const inSlice = (record, sliceId, fn) => enqueue([`${record.teamId}/${sliceId}`], fn);
   const withAllSlices = (record, fn) => enqueue(Object.keys(record.slices).map(id => `${record.teamId}/${id}`), fn);
-  const teamStep = (record, fn) => inTurn(record.teamId, () => withAllSlices(record, fn));
+  const gone = (teamId) => refuse('TEAM_NOT_FOUND', `No team named "${teamId}" is known here (it was removed).`, { status: 404 });
+  // A step queued before the team was removed finds it gone and changes nothing.
+  const teamStep = (record, fn) => inTurn(record.teamId, () => withAllSlices(record, () => (removedTeams.has(record.teamId) ? gone(record.teamId) : fn())));
   /** Resolves once every team's queued steps have run (tests, shutdown). */
   async function settled() {
     while (chains.size) {
@@ -265,7 +283,7 @@ export function createTeamScheduler({
    */
   async function emit(record, name, detail = {}, { critical = false, mailbox = null, quiet = false } = {}) {
     const spec = TEAM_EVENTS[name];
-    if (!spec) return null;
+    if (!spec || removedTeams.has(record.teamId)) return null;
     record.eventSeq = (Number(record.eventSeq) || 0) + 1;
     const told = (mailbox === null ? spec.mailbox : mailbox) && !!record.sessionId && !quiet;
     const payload = {
@@ -384,6 +402,10 @@ export function createTeamScheduler({
     });
     let claims = [];
     try { claims = (await store.claimsFor({ teamId: record.teamId })).map((claim) => ({ sliceId: claim.sliceId, runId: claim.runId || null, glob: claim.glob, claimedAt: claim.claimedAt || claim.createdAt || null })); } catch { claims = []; }
+    // A closed team: what is still on disk and in git, and whether its record can go (the page's Clean up / Remove).
+    const removal = CLOSED_STATUSES.has(record.status) ? removalView(await removalOf(record, journal)) : null;
+    // A ready team whose work is on its base branch already (merged outside land): where, and whether it is clean.
+    const alreadyOnTarget = await onTargetOf(record, { full: true });
     const tests = journal?.integration?.tests || null;
     const events = (await tailOfLog(record.teamId, TEAM_EVENT_LOG_KINDS, timeline)).map(eventView);
     const messages = (await tailOfLog(record.teamId, [TEAM_MESSAGE_LOG_KIND], timeline)).map(messageView);
@@ -394,6 +416,8 @@ export function createTeamScheduler({
         baseCommit: journal?.baseCommit || plan.baseCommit || null, baseBranch: journal?.baseBranch || null,
         route: record.routeId ? { routeId: record.routeId, taskClass: record.taskClass || null } : null,
         cap: maxWorkers(record.density),
+        removal,
+        alreadyOnTarget,
       },
       plan,
       slices,
@@ -1176,18 +1200,26 @@ export function createTeamScheduler({
     });
   }
 
-  function cleanup(teamId, { sessionId = null, userConfirmed = false } = {}) {
+  /**
+   * Remove a landed team's worktrees and branches, all or nothing: confirmed, landed, every run ended (the final
+   * worker of each slice done), every branch merged into the target, every worktree clean. `by.kind` 'owner' is
+   * the owner's own page (Agents Studio, whose route only the owner reaches): its confirmation is the owner's
+   * word. Anybody else (the Assistant's agent_team) needs, besides `userConfirmed`, an owner UI turn in the team's
+   * session after the landing, so a worktree is never deleted on the model's word alone.
+   */
+  function cleanup(teamId, { sessionId = null, userConfirmed = false, by = null } = {}) {
     const record = records.get(String(teamId || ''));
     if (!record) return Promise.resolve(refuse('TEAM_NOT_FOUND', `No team named "${teamId}" is known here.`));
     return teamStep(record, async () => {
       if (sessionId && sessionId !== record.sessionId) return refuse('TEAM_FORBIDDEN', 'That team belongs to another Assistant session.');
       if (record.cleanedAt) return { ok: true, teamId: record.teamId, alreadyClean: true, removed: [] };
-      const verified = typeof lastOwnerTurnAt === 'function';
+      const owner = by?.kind === 'owner';
+      const verified = !owner && typeof lastOwnerTurnAt === 'function';
       let ownerAt = null;
       if (verified) { try { ownerAt = await lastOwnerTurnAt(record.sessionId); } catch {} }
       const timestamp = value => typeof value === 'number' ? value : Date.parse(value);
-      const confirmed = userConfirmed === true && (!verified || timestamp(ownerAt) > timestamp(record.landing?.at));
-      const checks = [{ name: 'confirmed', ok: confirmed, detail: verified ? 'Requires explicit confirmation and an owner UI turn after landing.' : 'Owner-turn timing unverified; explicit confirmation required.' },
+      const confirmed = userConfirmed === true && (owner || !verified || timestamp(ownerAt) > timestamp(record.landing?.at));
+      const checks = [{ name: 'confirmed', ok: confirmed, detail: owner ? 'Requires the owner\'s explicit confirmation from SynaBun\'s own page.' : verified ? 'Requires explicit confirmation and an owner UI turn after landing.' : 'Owner-turn timing unverified; explicit confirmation required.' },
         { name: 'landed', ok: record.status === 'landed', detail: `Team status: ${record.status}` }];
       const dispatcher = dispatcherOf();
       const finalIds = new Set();
@@ -1227,9 +1259,9 @@ export function createTeamScheduler({
       const out = await teams.remove(record.teamId, { guarded: true });
       if (!out.ok) return { ...out, checks: [...checks, ...(out.checks || [])] };
       record.cleanedAt = iso(now());
-      record.cleanup = { complete: true, removed: out.removed };
-      await emit(record, 'team_cleaned', { text: 'Confirmed cleanup removed the team worktrees and branches.' });
-      return { ok: true, teamId: record.teamId, removed: out.removed, ...(!verified ? { confirmation: 'unverified' } : {}) };
+      record.cleanup = { complete: true, removed: out.removed, by: owner ? 'owner' : 'assistant' };
+      await emit(record, 'team_cleaned', { text: owner ? 'The owner cleaned up the team\'s worktrees and branches from Agents Studio.' : 'Confirmed cleanup removed the team worktrees and branches.', by: owner ? 'owner' : 'assistant' });
+      return { ok: true, teamId: record.teamId, removed: out.removed, ...(!owner && !verified ? { confirmation: 'unverified' } : {}) };
     });
   }
 
@@ -1241,26 +1273,303 @@ export function createTeamScheduler({
     try { return (await dispatcher.killAll({ workflowId: record.workflowId, reason })).stopped || []; } catch (error) { say('teams:stop-failed', { teamId: record.teamId, error: error?.message || String(error) }); return []; }
   }
 
-  /** Give a team up: its workers are stopped, its worktrees and branches removed (what holds work is kept unless `force`). */
-  function discard(teamId, { by = { kind: 'owner' }, force = false, reason = '' } = {}) {
+  /**
+   * Give a team up: its workers are stopped, its worktrees and branches removed (what holds work is kept unless the
+   * owner says `force`). Asked again of a discarded team whose work was kept, with `force`, it deletes that work:
+   * the owner's step that lets the team be removed afterwards.
+   */
+  function discard(teamId, { by = { kind: 'owner' }, force = false, reason = '', remove: andRemove = false } = {}) {
     const record = records.get(String(teamId || ''));
     if (!record) return Promise.resolve(refuse('TEAM_NOT_FOUND', `No team named "${teamId}" is known here.`, { status: 404 }));
     return teamStep(record, async () => {
-      const journal = await journalOf(record.teamId);
-      if (journal?.state === 'merged') return refuse('ALREADY_LANDED', `Team "${teamId}" has landed: there is nothing to discard.`, { status: 409 });
-      if (record.status === 'discarded' && journal?.removed) return { ok: true, already: true, cleanup: record.cleanup };
-      const assistant = by?.kind !== 'owner';
-      const stopped = await stopRuns(record, 'team_discarded');
-      const removed = await teams.remove(record.teamId, { discard: true, force: !assistant && force === true });
-      if (!removed.ok) return removed; // the library's refusal, unchanged
-      record.status = 'discarded';
-      record.attention = null;
-      record.cleanup = { complete: removed.complete === true, kept: (removed.kept || []).map((item) => ({ sliceId: item.sliceId, path: item.path, branch: item.branch, reason: item.reason, files: (item.files || []).slice(0, 20), commits: item.commits ?? null })) };
-      await emit(record, 'discarded', {
-        text: `Discarded${reason ? `: ${clip(reason, 200)}` : ''}. ${removed.complete ? 'Worktrees and branches removed.' : `${record.cleanup.kept.length} worktree${record.cleanup.kept.length === 1 ? '' : 's'} or branch${record.cleanup.kept.length === 1 ? '' : 'es'} kept because work is in them.`}`, by: by?.kind || 'owner',
-      }, { quiet: assistant && by?.sessionId === record.sessionId });
-      return { ok: true, stopped, complete: removed.complete === true, removed: removed.removed || [], kept: record.cleanup.kept };
+      const out = await discardNow(record, { by, force, reason });
+      // Discard & remove (the owner's): the record goes too, in the same step, only once the discard left nothing on
+      // disk or in git and no worker lives (removalOf). Otherwise the team stays, discarded, and the answer says why.
+      if (!out.ok || andRemove !== true || by?.kind !== 'owner') return out;
+      if (!out.complete) return { ...out, teamRemoved: false, removal: removalView(await removalOf(record)) };
+      const check = await removalOf(record);
+      if (!check.ok) return { ...out, teamRemoved: false, removal: removalView(check) };
+      const gone = await removeNow(record, { by, check });
+      return { ...out, teamRemoved: gone.ok === true, ...(gone.ok ? {} : { removal: { removable: false, code: gone.code, message: gone.message, next: null, left: [] } }) };
     });
+  }
+
+  /** The discard itself, inside the team's step. */
+  async function discardNow(record, { by = { kind: 'owner' }, force = false, reason = '' } = {}) {
+    const teamId = record.teamId;
+    const journal = await journalOf(record.teamId);
+    if (journal?.state === 'merged') return refuse('ALREADY_LANDED', `Team "${teamId}" has landed: there is nothing to discard.`, { status: 409 });
+    if (record.status === 'discarded' && journal?.removed) return { ok: true, already: true, complete: true, removed: [], kept: [], cleanup: record.cleanup };
+    const assistant = by?.kind !== 'owner';
+    const forced = !assistant && force === true;
+    const again = record.status === 'discarded';
+    const stopped = await stopRuns(record, 'team_discarded');
+    const removed = await teams.remove(record.teamId, { discard: true, force: forced });
+    if (!removed.ok) return removed; // the library's refusal, unchanged
+    record.status = 'discarded';
+    record.attention = null;
+    record.cleanup = { complete: removed.complete === true, kept: (removed.kept || []).map((item) => ({ sliceId: item.sliceId, path: item.path, branch: item.branch, reason: item.reason, files: (item.files || []).slice(0, 20), commits: item.commits ?? null })), ...(forced ? { forced: true } : {}) };
+    const kept = record.cleanup.kept.length;
+    const outcome = removed.complete ? (again ? 'The work that was kept is deleted: worktrees and branches removed.' : 'Worktrees and branches removed.') : `${kept} worktree${kept === 1 ? '' : 's'} or branch${kept === 1 ? '' : 'es'} kept because work is in them.`;
+    await emit(record, 'discarded', {
+      text: `${again ? 'Discarded again' : 'Discarded'}${forced ? ' (force)' : ''}${reason ? `: ${clip(reason, 200)}` : ''}. ${outcome}`, by: by?.kind || 'owner',
+    }, { quiet: assistant && by?.sessionId === record.sessionId });
+    return { ok: true, stopped, complete: removed.complete === true, removed: removed.removed || [], kept: record.cleanup.kept };
+  }
+
+  // ── removing a closed team ─────────────────────────────────────────────────
+  /** The runs of a team that are still alive (working, waiting warm, queued, suspended, resuming). */
+  function liveRunsOf(record) {
+    const dispatcher = dispatcherOf();
+    if (!dispatcher || typeof dispatcher.get !== 'function') return null;
+    const ids = new Set();
+    for (const slice of Object.values(record.slices || {})) {
+      for (const id of slice.runIds || []) ids.add(id);
+      if (slice.runId) ids.add(slice.runId);
+    }
+    let listed = null;
+    try { listed = dispatcher.teamRuns?.(record.teamId, record.workflowId); } catch { listed = null; }
+    if (Array.isArray(listed)) for (const run of listed) if (run?.runId) ids.add(run.runId);
+    const live = [];
+    for (const id of ids) {
+      const run = runOf(id);
+      if (run && (run.active === true || run.state === 'running' || run.state === 'queued')) live.push(`${id}: ${run.state || 'active'}`);
+    }
+    return live;
+  }
+
+  const present = (path) => { try { lstatSync(path); return true; } catch { return false; } };
+  const isFolder = (path) => { try { return lstatSync(path).isDirectory(); } catch { return false; } };
+
+  /**
+   * What of a team is still on disk and in git, asked of git and the disk (never of what the records say): each
+   * worktree's folder, each branch under the team's prefix, anything else in the team's folder of `.worktrees/`.
+   * → { checked: true, left: [{ sliceId, path, branch, worktree, branchExists }] } or { checked: false, code, message }
+   */
+  async function leftoversOf(record, journal) {
+    const cwd = record.projectPath;
+    if (!cwd || !isFolder(cwd)) return { checked: false, code: 'PROJECT_NOT_FOUND', message: `The project folder ${cwd || '(none)'} is not there, so SynaBun cannot check that nothing of the team is left. Put the folder back (or mount its disk) and try again.` };
+    if (typeof git !== 'function') return { checked: false, code: 'GIT_UNAVAILABLE', message: 'SynaBun cannot ask git about this team here.' };
+    const prefix = `refs/heads/${BRANCH_PREFIX}/${record.teamId}/`;
+    let refs;
+    try { refs = await git(['for-each-ref', '--format=%(refname)', prefix], { cwd }); } catch { refs = null; }
+    if (!refs?.ok) return { checked: false, code: 'NOT_A_REPOSITORY', message: `${cwd} could not be read as a git repository, so SynaBun cannot check that the team's branches are gone.` };
+    const branches = new Set(String(refs.stdout || '').split('\n').map((line) => line.trim()).filter(Boolean).map((ref) => ref.slice('refs/heads/'.length)));
+    const plan = journal?.plan || record.plan || { slices: [] };
+    const pieces = [...(plan.slices || []).map((slice) => slice.id), ...(plan.readOnly ? [] : [INTEGRATION_SLICE_ID])];
+    const left = [];
+    const paths = new Set();
+    for (const sliceId of pieces) {
+      let path;
+      try { path = worktreePath(cwd, record.teamId, sliceId); } catch { continue; }
+      const branch = sliceId === INTEGRATION_SLICE_ID ? integrationBranchName(record.teamId) : branchName(record.teamId, sliceId);
+      paths.add(path);
+      const worktree = present(path);
+      const branchExists = branches.delete(branch);
+      if (worktree || branchExists) left.push({ sliceId, path, branch, worktree, branchExists });
+    }
+    // A branch under the team's prefix that is no slice of its plan is the team's too.
+    for (const branch of branches) left.push({ sliceId: null, path: null, branch, worktree: false, branchExists: true });
+    let folder = null;
+    try { folder = dirname(worktreePath(cwd, record.teamId, INTEGRATION_SLICE_ID)); } catch { folder = null; }
+    if (folder && isFolder(folder)) {
+      let names = [];
+      try { names = readdirSync(folder); } catch { names = []; }
+      for (const name of names) {
+        const path = join(folder, name);
+        if (!paths.has(path)) left.push({ sliceId: null, path, branch: null, worktree: true, branchExists: false });
+      }
+    }
+    return { checked: true, left, folder };
+  }
+
+  /**
+   * Can a team's record go? Only a closed team (landed, completed, discarded, failed) with no live run and nothing
+   * left on disk or in git: a landed team that was not cleaned up, a discarded one whose work was kept, are refused,
+   * so work is never left behind without a record that points at it.
+   */
+  async function removalOf(record, journal = undefined) {
+    const known = journal === undefined ? await journalOf(record.teamId) : journal;
+    if (!CLOSED_STATUSES.has(record.status)) return refuse('TEAM_OPEN', `Team "${record.teamId}" is ${record.status}: only a closed team (landed, completed, discarded or failed) can be removed. Land or discard it first.`, { status: 409 });
+    // The journal must be over too: the library's recovery acts on a team that is not (it could make a worktree
+    // again), and nothing would point at what it made once the record is gone. A team with no journal entry is over.
+    if (known && !TERMINAL_TEAM_STATES.includes(known.state)) return refuse('TEAM_NEEDS_RECOVERY', `Team "${record.teamId}" is recorded as ${known.state} in the journal: restart SynaBun so its recovery runs before it is removed.`, { status: 409 });
+    const live = liveRunsOf(record);
+    if (live === null) return refuse('DISPATCH_UNAVAILABLE', 'The Assistant\'s dispatcher is not running, so SynaBun cannot check that no worker of the team is still alive.', { status: 503 });
+    if (live.length) return refuse('TEAM_RUNS_ACTIVE', `A worker of team "${record.teamId}" is still alive (${live.join(', ')}): stop it before the team is removed.`, { status: 409, runs: live });
+    const disk = await leftoversOf(record, known);
+    if (!disk.checked) return refuse(disk.code, disk.message, { status: 409 });
+    if (disk.left.length) {
+      const readOnly = (known?.plan || record.plan)?.readOnly === true;
+      const next = record.status === 'landed' && !readOnly ? 'cleanup' : (record.status === 'discarded' || record.status === 'failed') && !readOnly ? 'force_discard' : 'by_hand';
+      const what = `${disk.left.length} worktree${disk.left.length === 1 ? '' : 's'} or branch${disk.left.length === 1 ? '' : 'es'} of it ${disk.left.length === 1 ? 'is' : 'are'} still there`;
+      const how = next === 'cleanup' ? 'Clean up its worktrees first (they are removed only when every branch is merged and every worktree is clean).'
+        : next === 'force_discard' ? 'They hold work that was not landed: delete the kept work first (discard with force), or land it another way.'
+          : 'Remove them by hand (git worktree remove, git branch -d) once you no longer need them.';
+      return refuse('TEAM_WORKTREES_LEFT', `Team "${record.teamId}" cannot be removed: ${what} (${disk.left.map((item) => item.path || item.branch).slice(0, 6).join(', ')}). ${how}`, { status: 409, next, left: disk.left });
+    }
+    return { ok: true, teamId: record.teamId, removable: true, left: [], folder: disk.folder };
+  }
+
+  /** A removal answer as the page reads it. */
+  const removalView = (out) => ({
+    removable: out.ok === true, code: out.ok ? null : out.code || null, message: out.ok ? null : out.message || null,
+    next: out.next || null, left: (out.left || []).map((item) => ({ sliceId: item.sliceId ?? null, path: item.path ?? null, branch: item.branch ?? null, worktree: item.worktree === true, branchExists: item.branchExists === true })),
+  });
+
+  /** Whether a team's record can be removed now, and what is left of it when not (no change is made). */
+  async function removability(teamId) {
+    const record = records.get(String(teamId || ''));
+    if (!record) return { removable: false, code: 'TEAM_NOT_FOUND', message: `No team named "${teamId}" is known here.`, next: null, left: [] };
+    return removalView(await removalOf(record));
+  }
+
+  /**
+   * Forget a closed team: its record here (`<dataDir>/teams/<teamId>.json`) and its test sandbox profile go, and it
+   * leaves the list. Nothing in git or on disk is touched (removalOf refuses while anything of it is there); the
+   * journal and the durable log keep their entries, so the team's id is never made again. The record is written
+   * nowhere after this: never through emit(), which saves the record again.
+   */
+  function remove(teamId, { by = { kind: 'owner' } } = {}) {
+    const record = records.get(String(teamId || ''));
+    if (!record) return Promise.resolve(refuse('TEAM_NOT_FOUND', `No team named "${teamId}" is known here.`, { status: 404 }));
+    return teamStep(record, async () => {
+      const check = await removalOf(record);
+      if (!check.ok) return check;
+      return removeNow(record, { by, check });
+    });
+  }
+
+  /** The removal itself, inside the team's step, once removalOf said yes (`check`). */
+  async function removeNow(record, { by = { kind: 'owner' }, check } = {}) {
+    // The team's own empty folder of .worktrees/ (nothing is in it: removalOf looked).
+    if (check?.folder) { try { rmdirSync(check.folder); } catch { /* not there */ } }
+    try { unlinkSync(fileOf(record.teamId)); } catch (error) {
+      if (error?.code !== 'ENOENT') return refuse('TEAM_REMOVE_FAILED', `The record of team "${record.teamId}" could not be deleted: ${error?.message || error}`, { status: 500 });
+    }
+    removedTeams.add(record.teamId);
+    try { unlinkSync(join(dir, 'sandbox', `${record.teamId}.sb`)); } catch { /* none was written */ }
+    records.delete(record.teamId);
+    const runIds = [];
+    for (const [runId, ref] of runIndex) if (ref.teamId === record.teamId) runIds.push(runId);
+    for (const runId of runIds) { runIndex.delete(runId); postTimes.delete(runId); }
+    try {
+      await store.append({
+        id: `team:${record.teamId}:removed`, kind: TEAM_REMOVED_LOG_KIND, priority: 'low', teamId: record.teamId, sessionId: record.sessionId || null, runId: null,
+        payload: { kind: 'team_removed', teamId: record.teamId, title: record.title || null, status: record.status, by: by?.kind || 'owner' }, to: [],
+      });
+    } catch (error) { say('teams:event-failed', { teamId: record.teamId, event: 'team_removed', error: error?.message || String(error) }); }
+    try { broadcast({ type: TEAM_CHANGED, teamId: record.teamId, event: 'removed', status: null, sliceId: null }); } catch { /* no page is listening */ }
+    say('teams:removed', { teamId: record.teamId, status: record.status, by: by?.kind || 'owner' });
+    // `closedAs`, never `status`: a route's answer takes `status` for the HTTP status (lib/teams/api.js).
+    return { ok: true, teamId: record.teamId, removed: true, closedAs: record.status };
+  }
+
+  // ── a team whose work is on its base branch already ────────────────────────
+  /**
+   * A `ready` code team whose joined work reached its base branch outside `land` (somebody merged the integration
+   * branch by hand), its worktrees and branches still there: where, and whether they could go now (`clean`: every
+   * worktree clean, every branch merged into the base branch, no worker alive). Asked of git (teams.onTarget), never
+   * of the records; null for every other team. `full`: also what keeps it from being clean.
+   */
+  async function onTargetOf(record, { full = false } = {}) {
+    if (record.status !== 'ready' || record.plan?.readOnly === true || typeof teams.onTarget !== 'function') return null;
+    let found = null;
+    try { found = await teams.onTarget(record.teamId); } catch (error) { say('teams:on-target-failed', { teamId: record.teamId, error: error?.message || String(error) }); return null; }
+    if (!found) return null;
+    const live = liveRunsOf(record);
+    const runs = live === null ? null : live.length;
+    const brief = { branch: found.branch, head: found.head, clean: found.clean === true && runs === 0 };
+    if (!full) return brief;
+    return { ...brief, targetHead: found.targetHead, live: found.live, moved: found.moved === true, runs, dirty: found.dirty || [], unmerged: found.unmerged || [], other: found.other || [] };
+  }
+
+  /**
+   * What the Agents Studio list says of a team beside its summary, asked of git, the disk and the dispatcher: a
+   * closed team's `removable`; a team that waits on the owner (needs attention, ready) its live workers (`liveRuns`),
+   * how much of it is on disk (`left`: worktrees and branches) and, ready, whether its work is on its base branch
+   * already (`alreadyOnTarget`). A running team: nothing (the page offers it nothing from the list).
+   */
+  async function overview(teamId) {
+    const record = records.get(String(teamId || ''));
+    if (!record) return null;
+    if (CLOSED_STATUSES.has(record.status)) return { removable: (await removability(record.teamId)).removable === true };
+    if (record.status !== 'needs_attention' && record.status !== 'ready') return {};
+    const live = liveRunsOf(record);
+    const disk = await leftoversOf(record, await journalOf(record.teamId));
+    return {
+      liveRuns: live === null ? null : live.length,
+      left: disk.checked ? disk.left.length : null,
+      alreadyOnTarget: await onTargetOf(record),
+    };
+  }
+
+  /**
+   * The owner's Clean up & remove of a team whose work is on its base branch already: everything is asked again of
+   * git as it runs (on the base branch, every worktree clean, every branch merged, no worker alive); refused, nothing
+   * is removed and the answer says why. Then the landing somebody else made is recorded (`landed.external`), the
+   * worktrees and branches go, and the team's record with them. Only from the owner's page (`by.kind` 'owner',
+   * `userConfirmed`).
+   */
+  function cleanupMerged(teamId, { by = null, userConfirmed = false } = {}) {
+    const record = records.get(String(teamId || ''));
+    if (!record) return Promise.resolve(refuse('TEAM_NOT_FOUND', `No team named "${teamId}" is known here.`, { status: 404 }));
+    return teamStep(record, async () => {
+      if (by?.kind !== 'owner') return refuse('TEAM_FORBIDDEN', 'Cleaning up a team that is on its base branch already is the owner\'s, from Agents Studio.', { status: 403 });
+      if (userConfirmed !== true) return refuse('CLEANUP_NOT_CONFIRMED', 'Requires the owner\'s explicit confirmation from SynaBun\'s own page.');
+      if (record.plan.readOnly) return refuse('TEAM_READ_ONLY', 'Research and review teams have no integration branch.');
+      if (record.status !== 'ready') return refuse('TEAM_NOT_READY', `Team "${record.teamId}" is ${record.status}: only a ready team whose work is on its base branch already is cleaned up this way.`);
+      const live = liveRunsOf(record);
+      if (live === null) return refuse('DISPATCH_UNAVAILABLE', 'The Assistant\'s dispatcher is not running, so SynaBun cannot check that no worker of the team is still alive.', { status: 503 });
+      if (live.length) return refuse('TEAM_RUNS_ACTIVE', `A worker of team "${record.teamId}" is still alive (${live.join(', ')}): nothing was removed.`, { runs: live });
+      let out;
+      try {
+        out = await teams.remove(record.teamId, { guarded: true, mergedOutside: true });
+      } catch (error) {
+        out = refuse('CLEANUP_INTERRUPTED', `${error?.message || String(error)}. Look at the team's worktrees before trying again.`, { status: 500 });
+      }
+      // The landing is recorded before anything is removed: whatever came of the removal, the journal may say so now.
+      const journal = await journalOf(record.teamId);
+      const landed = journal?.state === 'merged' ? (out.landed || journal.landed || null) : null;
+      if (landed) {
+        record.status = 'landed';
+        record.attention = null;
+        record.landing = { landed, at: iso(now()), by: 'owner', external: true };
+      }
+      if (!out.ok) {
+        if (landed) {
+          record.cleanup = { available: true, next: 'The team\'s work is on its base branch; its worktrees and branches are kept until a clean-up can remove them.' };
+          await emit(record, 'landed', { targetBranch: landed.targetBranch, mode: null, to: landed.to || null, text: `Found on ${landed.targetBranch} already (merged outside SynaBun); its worktrees and branches were kept: ${clip(out.message, 300)}`, by: 'owner' });
+        }
+        return out; // nothing was removed (the library's refusal, unchanged)
+      }
+      const branch = landed?.targetBranch || journal?.baseBranch || null;
+      record.cleanedAt = iso(now());
+      record.cleanup = { complete: true, removed: out.removed, by: 'owner', external: true };
+      await emit(record, 'team_cleaned', { text: `Already on ${branch}: the owner cleaned up the team's worktrees and branches from Agents Studio and removed the team.`, by: 'owner', targetBranch: branch });
+      const check = await removalOf(record, journal);
+      if (!check.ok) return { ok: true, teamId: record.teamId, branch, removed: out.removed, teamRemoved: false, removal: removalView(check) };
+      const gone = await removeNow(record, { by, check });
+      return { ok: true, teamId: record.teamId, branch, removed: out.removed, teamRemoved: gone.ok === true, ...(gone.ok ? {} : { removal: { removable: false, code: gone.code, message: gone.message, next: null, left: [] } }) };
+    });
+  }
+
+  /**
+   * Remove every closed team that can go (the page's Clear finished). A team that cannot is never dropped quietly:
+   * it is listed in `skipped` with why (`code`, `next`: cleanup, force_discard, by_hand).
+   */
+  async function clearFinished({ sessionId = null, projectPath = null, by = { kind: 'owner' } } = {}) {
+    const removed = [];
+    const skipped = [];
+    const closedTeams = [...records.values()]
+      .filter((record) => CLOSED_STATUSES.has(record.status) && (!sessionId || record.sessionId === String(sessionId)) && (!projectPath || record.projectPath === projectPath))
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    for (const record of closedTeams) {
+      const out = await remove(record.teamId, { by });
+      if (out.ok) removed.push(record.teamId);
+      else skipped.push({ teamId: record.teamId, title: record.title || record.teamId, status: record.status, code: out.code || null, message: out.message || null, next: out.next || null, left: (out.left || []).length });
+    }
+    return { ok: true, removed, skipped };
   }
 
   // ── the channel (a worker's `team` tool) ───────────────────────────────────
@@ -1489,7 +1798,14 @@ export function createTeamScheduler({
         await withAllSlices(record, async () => {
           const journal = await journalOf(record.teamId);
           if (!journal) { record.status = 'failed'; record.attention = { code: 'TEAM_RECORD_MISSING', sliceId: null, message: 'The team has no record in the journal any more.', at: iso(now()) }; save(record); return { teamId: record.teamId, status: record.status }; }
-          if (journal.state === 'merged') { record.status = 'landed'; save(record); return { teamId: record.teamId, status: record.status }; }
+          if (journal.state === 'merged') {
+            record.status = 'landed';
+            // Closed by the library's recovery with no branch or worktree of it left (merged outside land and tidied
+            // by hand): there is nothing for a confirmed cleanup to remove.
+            if (journal.removed && !record.cleanedAt) { record.cleanedAt = iso(now()); record.cleanup = { complete: true, removed: [] }; }
+            save(record);
+            return { teamId: record.teamId, status: record.status };
+          }
           if (journal.state === 'cancelled' || journal.state === 'failed') { record.status = journal.state === 'failed' ? 'failed' : 'discarded'; save(record); return { teamId: record.teamId, status: record.status }; }
           for (const slice of record.plan.slices) {
             const mine = record.slices[slice.id];
@@ -1556,6 +1872,10 @@ export function createTeamScheduler({
   return Object.freeze({
     limits,
     plan, start, status, list, get, ownedBy, assign, setTestCommand, integrate, land, cleanup, discard,
+    // a closed team's record (the owner's, from Agents Studio)
+    removability, remove, clearFinished,
+    // what the Studio's list says beside a summary; a ready team whose work is on its base branch already
+    overview, cleanupMerged,
     // the channel of a worker's `team` tool (the caller's proven run id decides the team)
     member, post, read, wait, ack, claims, request,
     recover: () => track(recover()), attach, shutdown, settled,

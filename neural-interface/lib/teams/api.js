@@ -11,8 +11,11 @@
 //   /api/assistant/team/*           a worker's `team` tool: context, post, read, wait, ack, claims, request. Only a
 //                                   run that proves its pin (its terminal token) AND works a team slice now. The
 //                                   team is the run's own, read from the scheduler: no request names one.
-//   /api/agents-studio/v1/teams*    Agents Studio (the page): the list, one team in full, and the owner's two
-//                                   decisions, land and discard.
+//   /api/agents-studio/v1/teams*    Agents Studio (the page): the list, one team in full, and the owner's
+//                                   decisions: land, discard (with `force`, also the work a discard kept; with
+//                                   `remove`, the record too once nothing is left), clean up a landed team's
+//                                   worktrees, clean up and remove a ready team whose work is on its base branch
+//                                   already (cleanup-merged), remove a closed team's record, clear finished.
 //
 // Every refusal of the library (lib/teams/README.md) and of the scheduler comes back as it is: `{ ok: false, code,
 // message, … }`, with the HTTP status that fits.
@@ -20,6 +23,7 @@
 import { AGENT_DENSITIES, AGENT_DENSITY_WORKERS } from '../agents/density.js';
 import { LANDING_MODES } from './landing.js';
 import { TEAM_MESSAGE_KINDS } from './brief.js';
+import { CLOSED_TEAM_STATUSES } from './scheduler.js';
 
 /** Codes that are about the request itself (400), about who asks (403), about something missing (404). The rest is a conflict (409). */
 const STATUS_BY_CODE = Object.freeze({
@@ -210,10 +214,37 @@ export function registerAssistantTeamRoutes(router, { scheduler, orchestrationGu
   }));
 }
 
-/** A team as the Agents Studio list shows it: exactly these fields. */
+/** `alreadyOnTarget` as a list row carries it: where the work is and whether the team could go now, or null. */
+const onTargetRow = (value) => (value && typeof value === 'object' && typeof value.branch === 'string' && value.branch
+  ? { branch: value.branch, head: typeof value.head === 'string' ? value.head : null, clean: value.clean === true }
+  : null);
+const count = (value) => (Number.isInteger(value) && value >= 0 ? value : null);
+
+/**
+ * A team as the Agents Studio list shows it: exactly these fields. `removable`: a closed team whose record can go
+ * now (nothing of it left on disk or in git, no live run); false for every other team. For a team that waits on the
+ * owner (needs attention, ready): `liveRuns` (workers still alive), `left` (its worktrees and branches on disk and in
+ * git) and `alreadyOnTarget` (a ready team whose work is on its base branch already: `{ branch, head, clean }`);
+ * null when not asked or not known.
+ */
 export const teamListRow = (team) => ({
   id: team.id, project: team.project, title: team.title, status: team.status, density: team.density, slices: team.slices, createdAt: team.createdAt,
+  removable: team.removable === true,
+  alreadyOnTarget: onTargetRow(team.alreadyOnTarget),
+  liveRuns: count(team.liveRuns),
+  left: count(team.left),
 });
+
+/** Run `fn` over `items`, at most `limit` at a time, the answers in the items' order. */
+async function eachLimited(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const lane = async () => { while (next < items.length) { const at = next++; out[at] = await fn(items[at], at); } };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, lane));
+  return out;
+}
+/** How many teams the list asks git about at once. */
+export const TEAM_LIST_CONCURRENCY = 4;
 
 /**
  * One team as Agents Studio reads it (GET /teams/:id): the plan, its slices, the claims, the integration branch and
@@ -223,7 +254,15 @@ export function teamDetail(answer) {
   const team = answer.team || {};
   return {
     ok: true,
-    team: { ...teamListRow(team), state: team.state ?? null, attention: team.attention ?? null, sessionId: team.sessionId ?? null, workflowId: team.workflowId ?? null, baseCommit: team.baseCommit ?? null, baseBranch: team.baseBranch ?? null, cap: team.cap ?? null, updatedAt: team.updatedAt ?? null },
+    team: {
+      ...teamListRow({ ...team, removable: team.removal?.removable === true }), state: team.state ?? null, attention: team.attention ?? null, sessionId: team.sessionId ?? null, workflowId: team.workflowId ?? null,
+      baseCommit: team.baseCommit ?? null, baseBranch: team.baseBranch ?? null, cap: team.cap ?? null, updatedAt: team.updatedAt ?? null,
+      // A closed team: whether its record can go, and what is still on disk or in git when it cannot (null: open).
+      removal: team.removal ?? null,
+      // A ready team whose work is on its base branch already, in full: where, whether it is clean, and what is
+      // not (uncommitted files per worktree, branches with commits the base branch lacks, other blocks).
+      alreadyOnTarget: team.alreadyOnTarget ?? null,
+    },
     plan: answer.plan,
     slices: (answer.slices || []).map((slice) => ({
       id: slice.id, title: slice.title, status: slice.status, phase: slice.phase, runId: slice.runId, run: slice.run,
@@ -274,7 +313,18 @@ export function registerTeamStudioRoutes({ route, reader, owner, json, scheduler
 
   route('get', '/teams', reader, teamReader, run(async (req, res, teams) => {
     const q = req.query || {};
-    res.json({ ok: true, teams: teams.list({ sessionId: sessionOf(req), projectPath: typeof q.project === 'string' && q.project ? q.project : null, open: q.open === '1' || q.open === 'true' }).map(teamListRow) });
+    const rows = teams.list({ sessionId: sessionOf(req), projectPath: typeof q.project === 'string' && q.project ? q.project : null, open: q.open === '1' || q.open === 'true' });
+    // A closed team, and one that waits on the owner, are asked of git and the disk, a few at a time (the page offers
+    // Remove, Clear finished and the cards' quick actions from it); a running team is not asked.
+    const out = await eachLimited(rows, TEAM_LIST_CONCURRENCY, async (row) => {
+      let facts = {};
+      try {
+        if (typeof teams.overview === 'function') facts = (await teams.overview(row.id)) || {};
+        else if (CLOSED_TEAM_STATUSES.includes(row.status) && typeof teams.removability === 'function') facts = { removable: (await teams.removability(row.id)).removable === true };
+      } catch { facts = {}; }
+      return teamListRow({ ...row, ...facts });
+    });
+    res.json({ ok: true, teams: out });
   }));
   route('get', '/teams/:id', reader, teamReader, idCheck, run(async (req, res, teams) => {
     const session = sessionOf(req);
@@ -291,6 +341,29 @@ export function registerTeamStudioRoutes({ route, reader, owner, json, scheduler
   }));
   route('post', '/teams/:id/discard', json, owner, idCheck, run(async (req, res, teams) => {
     const body = req.body || {};
-    send(res, await teams.discard(req.params.id, { by: { kind: 'owner' }, force: body.force === true, reason: typeof body.reason === 'string' ? body.reason : '' }));
+    // `remove: true` (Discard & remove): the record goes too, in the same step, once the discard left nothing.
+    send(res, await teams.discard(req.params.id, { by: { kind: 'owner' }, force: body.force === true, remove: body.remove === true, reason: typeof body.reason === 'string' ? body.reason : '' }));
+  }));
+  // A ready team whose work is on its base branch already: its worktrees, branches and record, in one step, once
+  // git says again that nothing would be lost (the owner's page, `userConfirmed: true`).
+  route('post', '/teams/:id/cleanup-merged', json, owner, idCheck, run(async (req, res, teams) => {
+    if (typeof teams.cleanupMerged !== 'function') return unavailable(res);
+    const body = req.body || {};
+    send(res, await teams.cleanupMerged(req.params.id, { by: { kind: 'owner' }, userConfirmed: body.userConfirmed === true || body.user_confirmed === true }));
+  }));
+  // The owner cleans up a landed team's worktrees and branches. The owner's page is the confirmation (with
+  // `userConfirmed: true`), so no Assistant turn is asked for; every other check of the scheduler's stays.
+  route('post', '/teams/:id/cleanup', json, owner, idCheck, run(async (req, res, teams) => {
+    const body = req.body || {};
+    send(res, await teams.cleanup(req.params.id, { by: { kind: 'owner' }, userConfirmed: body.userConfirmed === true || body.user_confirmed === true }));
+  }));
+  // Every closed team that can go; the rest are listed as skipped, with why.
+  route('post', '/teams/clear-finished', json, owner, run(async (req, res, teams) => {
+    const body = req.body || {};
+    send(res, await teams.clearFinished({ by: { kind: 'owner' }, projectPath: typeof body.project === 'string' && body.project ? body.project : null }));
+  }));
+  // A closed team's record, once nothing of it is left on disk or in git.
+  route('delete', '/teams/:id', json, owner, idCheck, run(async (req, res, teams) => {
+    send(res, await teams.remove(req.params.id, { by: { kind: 'owner' } }));
   }));
 }

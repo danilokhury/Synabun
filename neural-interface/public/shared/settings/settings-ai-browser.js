@@ -17,6 +17,24 @@ export const LOCAL_CONNECT_OPTIONS = Object.freeze(['attach', 'extension']);
 /** Deprecated in the menu. Still supported for saved configs and as the server's local default. */
 export const LOCAL_DEFAULT_MODE = 'mirror';
 
+/**
+ * The Browser tab's Connection mode menu, in reading order: my browser through the extension, the local browser, and
+ * a MoreLogin / SynaBun profile. The last one is a view only: it shows where a profile is chosen (Connected tools) and
+ * is never saved from here (browserSaveFields keeps the local mode the server holds).
+ */
+export const CONNECT_MENU_OPTIONS = Object.freeze(['extension', 'attach', 'morelogin']);
+
+/**
+ * Which parts of the Browser tab a Connection mode shows. A profile that is the AI browser wins over the form: the menu
+ * then shows the profile choice, disabled, with the banner that names it.
+ * @returns {{ mode: string, extension: boolean, local: boolean, profile: boolean, active: boolean }}
+ */
+export function connectionParts(formMode, current) {
+  const active = !!(current && typeof current === 'object' && current.moreLogin === true);
+  const mode = active ? 'morelogin' : (CONNECT_MENU_OPTIONS.includes(formMode) || formMode === LOCAL_DEFAULT_MODE ? formMode : LOCAL_DEFAULT_MODE);
+  return { mode, extension: mode === 'extension', local: mode === 'attach' || mode === LOCAL_DEFAULT_MODE, profile: mode === 'morelogin' && !active, active };
+}
+
 const idOf = (value) => (value === undefined || value === null || value === '' ? null : String(value));
 
 /**
@@ -47,14 +65,16 @@ export function localConnectModeOf(cfg) {
  * The connection fields of a Browser tab save. `formMode`: its Connection dropdown. `current`: the AI browser as the
  * server holds it now (aiBrowserOf of a fresh read; the last one known when that read failed). A MoreLogin AI browser
  * stays exactly as it is, profile included; otherwise the local mode is the form's and the remembered profile id is
- * kept (never cleared from here).
+ * kept (never cleared from here). `savedLocal`: the local mode the last read held, kept when the form only shows the
+ * profile choice (that choice is never saved from the Browser tab: a profile is turned on in Connected tools).
  * @returns {{ connectMode: string, moreloginEnvId: string|null }}
  */
-export function browserSaveFields(formMode, current) {
+export function browserSaveFields(formMode, current, savedLocal = LOCAL_DEFAULT_MODE) {
   const now = current && typeof current === 'object' ? current : {};
   const envId = idOf(now.envId);
   if (now.moreLogin === true) return { connectMode: 'morelogin', moreloginEnvId: envId };
-  return { connectMode: LOCAL_CONNECT_OPTIONS.includes(formMode) ? formMode : LOCAL_DEFAULT_MODE, moreloginEnvId: envId };
+  const kept = LOCAL_CONNECT_OPTIONS.includes(savedLocal) ? savedLocal : LOCAL_DEFAULT_MODE;
+  return { connectMode: LOCAL_CONNECT_OPTIONS.includes(formMode) ? formMode : formMode === 'morelogin' ? kept : LOCAL_DEFAULT_MODE, moreloginEnvId: envId };
 }
 
 /**

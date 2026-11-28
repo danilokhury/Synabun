@@ -1,3 +1,20 @@
+# SynaBun v.2.4.5
+
+Browser setup now walks you through connecting Chrome, Edge or Brave. Agents Studio also shows when a team's work has already reached your branch and lets you clean up from the team card.
+
+## ✨ New
+
+- **Connect your browser in six steps.** Choose your installed browser in Settings → Browser. The guide shows where to enable Developer mode, load the extension and allow user scripts. Browser Bridge 1.6.0 checks the permission in your browser so you can see exactly when setup is complete.
+- **Clean up merged teams.** When you merge a team's changes yourself, Agents Studio shows the branch that already contains them. Choose **Clean up & remove** to remove its worktrees, branches and card. If a worker is active, edits are pending or commits still need merging, Studio shows what needs attention.
+
+## 🛠 Fixed
+
+- **Finished teams stay finished.** Teams that were merged outside Studio can now be recognized after a restart. Open and finished teams appear in separate lists, and you can remove finished records once their worktrees are gone.
+- **Read long tool results.** Assistants using Claude Code or Antigravity can read the full output when their command-line tool saves a long result to a file. This helps the Assistant finish reading a memory search or worker report in the same turn.
+- **WhatsApp respects Autonomous mode.** The Assistant uses your saved model choice or picks one automatically. For ordinary text requests, it can act without an approval prompt. Pictures, forwarded or quoted messages, and audio still require approval for commands or file changes.
+
+---
+
 # SynaBun v.2.4.4
 
 You can now redirect an Assistant or worker mid-task and follow background commands as they run. This release also improves Windows updates and brings built-in page readers to the Browser Bridge.

@@ -193,6 +193,22 @@ export function createAgentsApi({ fetch: fetchFn = (...args) => globalThis.fetch
       }
     },
     landTeam: async (teamId, body = {}) => send('POST', teamUrl(teamId, '/land'), { body }),
+    /**
+     * `{ force: true }` also deletes what a discard kept (the owner's word, behind its own question). `{ remove: true }`
+     * (capability `teams-quick-discard`): the team's record goes too, in the same step, once the discard left nothing
+     * → `teamRemoved`, and `removal` (why it stays) when it does not.
+     */
     discardTeam: async (teamId, body = {}) => send('POST', teamUrl(teamId, '/discard'), { body }),
+    /**
+     * A ready team whose work is on its base branch already: its worktrees, branches and record, once the server asked
+     * git again (capability `teams-on-target`) → { teamRemoved, branch, removed }. The owner's question was answered.
+     */
+    cleanupMergedTeam: async (teamId) => send('POST', teamUrl(teamId, '/cleanup-merged'), { body: { userConfirmed: true } }),
+    /** A landed team's worktrees and branches (capability `teams-cleanup`). The owner's question was answered: `userConfirmed`. */
+    cleanupTeam: async (teamId) => send('POST', teamUrl(teamId, '/cleanup'), { body: { userConfirmed: true } }),
+    /** A closed team's record, once nothing of it is left (capability `teams-remove`). */
+    removeTeam: async (teamId) => send('DELETE', teamUrl(teamId), { body: {} }),
+    /** Every closed team that can go → { removed: [ids], skipped: [{ teamId, code, next, … }] } (capability `teams-remove`). */
+    clearFinishedTeams: async () => send('POST', `${base}/teams/clear-finished`, { body: {} }),
   };
 }

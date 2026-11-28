@@ -10,9 +10,12 @@
 //                refuse, user allow rules included; routing always asks (one
 //                route card per task is the task's approval); workers get no
 //                computer, no "user-authorized-full" and a registered cwd.
-//   autonomous — the modes as configured. On WhatsApp it stays until the owner
-//                lowers it in Settings; any other channel only until its
-//                autonomousUntil, then ask.
+//   autonomous — never asks: routing is 'never' whatever the session's or the
+//                global route mode (saved routes bind, else the brain picks;
+//                also on a turn with untrusted content, whose tools are asked
+//                at Ask), and on WhatsApp the brain runs bypassPermissions.
+//                On WhatsApp it stays until the owner lowers it in Settings;
+//                any other channel only until its autonomousUntil, then ask.
 // Ask and Autonomous hold only on a Claude brain: its in-process PreToolUse
 // hook sees every call with its arguments. A Codex or OpenCode brain runs
 // ordinary commands inside its own sandbox / permissions without asking, so a
@@ -111,13 +114,18 @@ export function brainCapsLevel(policy, { provider = null, now = Date.now() } = {
  * The approval mode and plan flag a brain may run with. read-only forces plan
  * mode (`planApproved`: the desktop approved the plan, which may then run);
  * ask forces the approval mode to 'default' (every provider asks there);
- * autonomous keeps what was configured.
+ * autonomous keeps what was configured, except on WhatsApp, where it is
+ * 'bypassPermissions' whatever the panel last used: Autonomous acts without
+ * asking, so the phone is never asked to approve a tool (the brain's remote
+ * hook still refuses what isDeniedRemoteTool lists, and computer use keeps
+ * its own rule). The plan flag is kept either way.
  */
 export function clampBrainModes(policy, modes = {}, { untrusted = false, now = Date.now(), planApproved = false } = {}) {
   const permissionMode = modes.permissionMode && modes.permissionMode !== 'plan' ? String(modes.permissionMode) : 'default';
   const planMode = modes.planMode === true || modes.permissionMode === 'plan';
   const level = effectiveLevel(policy, { untrusted, now });
-  if (!level || level === 'autonomous') return { permissionMode, planMode };
+  if (!level) return { permissionMode, planMode };
+  if (level === 'autonomous') return { permissionMode: policy.channel === 'whatsapp' ? 'bypassPermissions' : permissionMode, planMode };
   if (level === 'ask') return { permissionMode: 'default', planMode };
   return { permissionMode: 'default', planMode: planApproved ? planMode : true };
 }
@@ -181,10 +189,19 @@ export function remoteComputerDenial(reason = null) {
   return COMPUTER_OFF_TEXT[reason] || 'Computer use is not available from WhatsApp right now.';
 }
 
-/** The route mode a remote session runs: below autonomous every task is approved on its route card. */
+/**
+ * The route mode a remote session runs. Autonomous never asks where a task runs, whatever the
+ * session's or the global route mode says ('never': the saved route for the class binds, else the
+ * brain's own pick runs), so the phone is never shown a model card. A turn that carries content the
+ * owner did not write (a picture, a forwarded or quoted message) is capped at Ask for its tools,
+ * not for its route: the owner configured Autonomous. Below Autonomous every task is approved on
+ * its route card ('always-ask').
+ */
 export function clampRouteMode(policy, mode, opts = {}) {
   const level = effectiveLevel(policy, opts);
-  if (!level || level === 'autonomous') return mode;
+  if (!level) return mode;
+  if (level === 'autonomous') return 'never';
+  if (opts.untrusted === true && effectiveLevel(policy, { ...opts, untrusted: false }) === 'autonomous') return 'never';
   return 'always-ask';
 }
 

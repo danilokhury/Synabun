@@ -86,6 +86,8 @@ export function createTeams({ store, git = createGitRunner(), runTests = createT
     plan: async (teamId) => (await worktrees.get(teamId))?.plan || null,
     list: worktrees.list,
     inspect: worktrees.inspect,
+    /** A ready team whose work is on its base branch already (merged outside land): where, and whether it is clean. Read only. */
+    onTarget: worktrees.onTarget,
     startSlice,
     finishSlice: integration.finishSlice,
     finishReadOnlySlice: async (teamId, sliceId, options) => {

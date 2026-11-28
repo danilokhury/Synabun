@@ -55,8 +55,13 @@ export function storeSectionState(section) {
 /**
  * Open every closed ancestor of `el` (collapsible cards, <details>, a project's panel, a block behind its own tab),
  * then `el` itself. Nothing is remembered: the sections the user left open or closed stay as stored.
+ *
+ * First `el` announces itself with a bubbling `settings-reveal` event: a pane that shows something in place of its
+ * content (the Browser page's setup guide, settings-browser-extension.js) steps aside, synchronously, for a target
+ * outside it, so a deep link or a search result always lands on what it names.
  */
 export function revealSettingsTarget(overlay, el) {
+  try { el?.dispatchEvent?.(new CustomEvent('settings-reveal', { bubbles: true })); } catch { /* no event support: nothing steps aside */ }
   for (let node = el; node && node !== overlay; node = node.parentElement) {
     if (node.matches?.('[data-collapsible].collapsed')) node.classList.remove('collapsed');
     if (node.tagName === 'DETAILS' && !node.open) node.open = true;

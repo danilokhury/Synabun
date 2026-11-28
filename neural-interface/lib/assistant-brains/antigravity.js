@@ -18,7 +18,7 @@
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { acpErrorInfo, createAcpConnection, isAuthRequired } from '../antigravity/acp-connection.js';
-import { assertSafeAntigravityProject, antigravityHomeReadPolicy, antigravityHomeSettings, homeMcpTools, policyHookCommand, prepareAntigravityHome, toAntigravityMcpEntry, userAntigravityMcpServers, userAntigravitySettings, userGeminiDir } from '../antigravity/home.js';
+import { assertSafeAntigravityProject, antigravityHomeReadPolicy, antigravityHomeSettings, antigravitySpilledOutputRead, homeMcpTools, policyHookCommand, prepareAntigravityHome, toAntigravityMcpEntry, userAntigravityMcpServers, userAntigravitySettings, userGeminiDir } from '../antigravity/home.js';
 import { acpCall, acpReadOnlyKind, acpToolPaths, acpUiToolName } from '../antigravity/tool-call.js';
 import { splitAntigravityModel } from '../antigravity/catalog.js';
 import { acpTurnUsage } from '../antigravity/usage.js';
@@ -130,7 +130,9 @@ export function createAntigravityBrain({ session, sink, deps = {}, persona = '' 
    */
   function policyCheck(call) {
     let verdict = null;
-    try { verdict = typeof deps.policyCheck === 'function' ? deps.policyCheck(call) : null; } catch (error) { return { decision: 'deny', reason: `SynaBun could not check this call (${error?.message || error}).` }; }
+    // A read of a tool output Antigravity spilled into this brain's home: the route gate lets it through (the runtime's other checks still apply).
+    const spilledOutput = antigravitySpilledOutputRead(call, { homeDir, cwd });
+    try { verdict = typeof deps.policyCheck === 'function' ? deps.policyCheck(call, { spilledOutput }) : null; } catch (error) { return { decision: 'deny', reason: `SynaBun could not check this call (${error?.message || error}).` }; }
     if (verdict?.decision === 'deny') return verdict;
     const homeRead = antigravityHomeReadPolicy(call, { homeDir, cwd });
     if (homeRead) return homeRead;

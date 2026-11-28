@@ -30,7 +30,9 @@ export function refreshExtensionUpdate() {
   return reading;
 }
 
-export const extensionUpdateSettings = { tab: 'browser', expand: 'bcg-profiles', scrollTo: 'bc-extension-update-flow' };
+// The update flow heads the extension card, in the Browser page's first card (Browser choice). An open setup guide
+// steps aside for it (settings-browser-extension.js listens for settings-shell.js's settings-reveal).
+export const extensionUpdateSettings = { tab: 'browser', expand: 'setup-browser', scrollTo: 'bc-extension-update-flow' };
 export function openExtensionUpdate() {
   return import('./ui-settings-entry.js').then(({ openSettingsModal }) => openSettingsModal(extensionUpdateSettings));
 }

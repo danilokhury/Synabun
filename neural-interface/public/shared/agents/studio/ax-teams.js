@@ -24,6 +24,19 @@ export const SLICE_STATES = Object.freeze(['planned', 'pending', 'blocked', 'run
 const TEAM_TONES = { creating: 'idle', planned: 'idle', running: 'active', integrating: 'active', ready: 'ok', landing: 'active', merged: 'done', completed: 'done', failed: 'err', cancelled: 'off', needs_attention: 'warn', landed: 'done', discarded: 'off' };
 /** A team that reached the owner's branch, is on its way there, or was thrown away: nothing more to land or discard. */
 const SETTLED_TEAM = new Set(['merged', 'landing', 'landed', 'discarded', 'completed']);
+/**
+ * A team that is over (the scheduler's closed statuses, lib/teams/scheduler.js CLOSED_TEAM_STATUSES, and the
+ * journal's words for the same ends): the Finished list. Every other team, a state this page does not know
+ * included, is Open (never offered for removal), and the Open list is the rail's count.
+ */
+export const FINISHED_TEAM_STATUSES = Object.freeze(['landed', 'completed', 'discarded', 'failed', 'merged', 'cancelled']);
+const FINISHED_TEAM = new Set(FINISHED_TEAM_STATUSES);
+/** What the server says to do about a closed team that still has something on disk (lib/teams/scheduler.js removalOf). */
+export const REMOVAL_NEXT = Object.freeze(['cleanup', 'force_discard', 'by_hand']);
+/** Why a closed team's record cannot go yet, when it is not what is left on disk (`agentsStudio.teams.removalBlocked.*`). */
+export const REMOVAL_BLOCKED = Object.freeze(['TEAM_RUNS_ACTIVE', 'DISPATCH_UNAVAILABLE', 'PROJECT_NOT_FOUND', 'NOT_A_REPOSITORY', 'GIT_UNAVAILABLE', 'TEAM_NEEDS_RECOVERY', 'TEAM_OPEN']);
+/** Why a discard kept a worktree or a branch (lib/teams/worktrees.js `kept[].reason`; `agentsStudio.teams.keptReason.*`). */
+export const KEPT_REASONS = Object.freeze(['uncommitted_changes', 'unintegrated_commits', 'folder_is_not_a_worktree', 'worktree_not_removed', 'branch_not_removed', 'worktree_not_verified', 'worker_commits']);
 const SLICE_TONES = { planned: 'idle', pending: 'idle', blocked: 'warn', running: 'active', done: 'ok', rejected: 'err', integrating: 'active', integrated: 'done', completed: 'done', conflict: 'err', 'tests-failed': 'err', failed: 'err', cancelled: 'off' };
 
 const isObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -35,22 +48,80 @@ const stateOf = (value) => text(first(value?.status, value?.state), 40).toLowerC
 /** The tone of a team's or a slice's state: idle / active / ok / done / warn / err / off. */
 export const teamTone = (state) => TEAM_TONES[state] || 'idle';
 export const sliceTone = (state) => SLICE_TONES[state] || 'idle';
+/** Is a team over (Finished)? */
+export const isFinishedTeam = (status) => FINISHED_TEAM.has(String(status || '').toLowerCase());
+
+/** The open statuses a card offers a quick action on: a team that waits on the owner. Never a running team. */
+export const QUICK_TEAM_STATUSES = Object.freeze(['needs_attention', 'ready']);
+/** The quick actions of a card: Clean up & remove, Discard & remove, Discard. */
+export const QUICK_ACTIONS = Object.freeze(['cleanup-merged', 'discard-remove', 'discard']);
+const count = (value) => (Number.isInteger(value) && value >= 0 ? value : null);
+
+/**
+ * A ready team whose work is on its base branch already (lib/teams/scheduler.js `onTargetOf`), or null: where
+ * (`branch`), whether its worktrees and branches could go now (`clean`), and, in a team's detail, what keeps it from
+ * being clean (uncommitted files per worktree, branches with commits the base branch lacks, a live worker, other).
+ * Only for a ready team: any other status, or an answer without a branch, is null.
+ */
+export function onTargetOf(team) {
+  const o = isObject(team?.alreadyOnTarget) ? team.alreadyOnTarget : null;
+  if (!o || stateOf(team) !== 'ready' || team?.plan?.readOnly === true) return null;
+  const branch = text(o.branch, 300);
+  if (!branch) return null;
+  const list = (value) => (Array.isArray(value) ? value.filter(isObject) : []);
+  return {
+    branch,
+    head: text(o.head, 80),
+    clean: o.clean === true,
+    runs: count(o.runs),
+    dirty: list(o.dirty).map((item) => ({ sliceId: text(item.sliceId, 128) || null, path: text(item.path, 1024), files: (Array.isArray(item.files) ? item.files : []).filter((f) => typeof f === 'string').slice(0, 50) })).filter((item) => item.path).slice(0, 20),
+    unmerged: list(o.unmerged).map((item) => ({ sliceId: text(item.sliceId, 128) || null, branch: text(item.branch, 300), commits: (Array.isArray(item.commits) ? item.commits : []).filter((c) => typeof c === 'string').length })).filter((item) => item.branch).slice(0, 20),
+    other: (Array.isArray(o.other) ? o.other : []).filter((line) => typeof line === 'string' && line).map((line) => line.slice(0, 600)).slice(0, 10),
+  };
+}
 
 /** A row of the teams list. */
 export function teamRow(team) {
   const t = isObject(team) ? team : {};
   const slices = Array.isArray(t.slices) ? t.slices.length : isObject(t.slices) ? Object.keys(t.slices).length : number(first(t.slices, t.sliceCount, t.slicesCount));
   const status = stateOf(t);
+  const onTarget = onTargetOf(t);
   return {
     id: text(first(t.id, t.teamId), 128),
     title: text(first(t.title, t.plan?.title, t.name), 200),
     project: text(first(t.project, t.projectPath, t.plan?.projectPath), 1024),
-    status, tone: teamTone(status),
+    // A ready team whose work is on its base branch already says so instead of "Ready to land".
+    status, tone: onTarget ? (onTarget.clean ? 'done' : 'warn') : teamTone(status),
     density: text(first(t.density, t.plan?.density), 40),
     slices: slices ?? null,
     createdAt: text(first(t.createdAt, t.created_at), 40),
     updatedAt: text(first(t.updatedAt, t.updated_at), 40),
+    finished: isFinishedTeam(status),
+    // Only a finished team the server said can go now (nothing of it on disk or in git, no live worker).
+    removable: isFinishedTeam(status) && t.removable === true,
+    onTarget,
+    // An open team that waits on the owner: its live workers and what of it is on disk (null: not said).
+    liveRuns: count(t.liveRuns),
+    left: count(t.left),
   };
+}
+
+/**
+ * The one quick action a card of the Open list offers, or null. Never on a running team, on a team with a live
+ * worker or on one whose workers the server did not count; never without the capability its route needs.
+ *   cleanup-merged   a ready team whose work is on its base branch already, clean (`teams-on-target`)
+ *   discard-remove   needs attention or ready, nothing of it on disk or in git (`teams-quick-discard`)
+ *   discard          needs attention or ready, with worktrees or branches (`teams-quick-discard`)
+ * A ready team on its base branch that is not clean gets none: discarding it would say its landed work was given up.
+ * @param {object} row  a teamRow
+ * @param {{ has: (cap: string) => boolean }} caps
+ */
+export function quickActionOf(row, caps) {
+  const has = (cap) => typeof caps?.has === 'function' && caps.has(cap);
+  if (!row?.id || row.finished || !QUICK_TEAM_STATUSES.includes(row.status)) return null;
+  if (row.onTarget) return row.onTarget.clean && has('teams-on-target') ? 'cleanup-merged' : null;
+  if (!has('teams-quick-discard') || row.liveRuns !== 0 || row.left === null) return null;
+  return row.left === 0 ? 'discard-remove' : 'discard';
 }
 
 /** The list, newest first, a team without an id left out. */
@@ -59,10 +130,55 @@ export function teamRows(teams) {
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 }
 
-/** How many teams are under way (the rail's count). */
+/** The list in two: the teams under way (Open) and the teams that are over (Finished), each newest first. */
+export function splitTeams(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  return { open: list.filter((row) => !row.finished), finished: list.filter((row) => row.finished) };
+}
+
+/** How many teams are under way (the rail's count): the Open list. A team that waits on the owner is under way. */
 export function activeTeams(rows) {
-  // A team that waits on the owner (`needs_attention`) is still under way.
-  return (Array.isArray(rows) ? rows : []).filter((row) => ['active', 'ok', 'warn'].includes(row.tone)).length;
+  return splitTeams(rows).open.length;
+}
+
+/** The finished teams Clear finished removes (the server checks each again) and how many it leaves. */
+export function clearableTeams(rows) {
+  const { finished } = splitTeams(rows);
+  const removable = finished.filter((row) => row.removable);
+  return { removable, kept: finished.length - removable.length };
+}
+
+/** A closed team's removal view (lib/teams/scheduler.js `removalView`), or null when the answer has none. */
+export function removalOf(team) {
+  const r = isObject(team?.removal) ? team.removal : null;
+  if (!r) return null;
+  const left = (Array.isArray(r.left) ? r.left : []).filter(isObject).map((item) => ({
+    sliceId: text(item.sliceId, 128) || null,
+    path: text(item.path, 1024),
+    branch: text(item.branch, 300),
+    worktree: item.worktree === true,
+    branchExists: item.branchExists === true,
+  })).filter((item) => item.path || item.branch).slice(0, 200);
+  return {
+    removable: r.removable === true,
+    code: text(r.code, 80) || null,
+    next: REMOVAL_NEXT.includes(r.next) ? r.next : null,
+    message: text(r.message, 1200),
+    left,
+  };
+}
+
+/** What a discard kept, and why (the scheduler's `cleanup.kept`, in the landing part of the answer). */
+export function keptWork(team) {
+  const cleanup = isObject(team?.landing?.cleanup) ? team.landing.cleanup : isObject(team?.cleanup) ? team.cleanup : {};
+  return (Array.isArray(cleanup.kept) ? cleanup.kept : []).filter(isObject).map((item) => ({
+    sliceId: text(item.sliceId, 128) || null,
+    path: text(item.path, 1024),
+    branch: text(item.branch, 300),
+    reason: text(item.reason, 60),
+    files: (Array.isArray(item.files) ? item.files : []).filter((f) => typeof f === 'string').slice(0, 20),
+    commits: number(item.commits),
+  })).slice(0, 100);
 }
 
 function sliceOf(raw, plan) {
@@ -182,19 +298,35 @@ export function teamView(team) {
   const row = teamRow(team);
   const slices = sliceRows(team);
   const integration = integrationOf(team);
+  const readOnly = team?.plan?.readOnly === true;
+  // A finished team: the server's look at git and the disk (null from a server without it: nothing is offered).
+  const removal = row.finished ? removalOf(team) : null;
+  const leftWith = (next) => !!removal && !removal.removable && removal.next === next && removal.left.length > 0;
   return {
     ...row,
     slices,
-    readOnly: team?.plan?.readOnly === true,
+    readOnly,
+    removal,
+    kept: keptWork(team),
+    // Landed, its worktrees and branches still there: the owner cleans them up (merged and clean, or nothing goes).
+    canCleanup: !readOnly && (row.status === 'landed' || row.status === 'merged') && leftWith('cleanup'),
+    // Discarded (or failed) with work kept: the owner deletes it with a forced discard.
+    canForceDiscard: !readOnly && ['discarded', 'cancelled', 'failed'].includes(row.status) && leftWith('force_discard'),
+    // Nothing of it is left and no worker lives: its record can go.
+    canRemove: row.finished && removal?.removable === true,
     baseBranch: text(first(team?.baseBranch, team?.plan?.baseBranch), 300),
     baseCommit: text(first(team?.baseCommit, team?.plan?.baseCommit), 80),
     integration, landing: landingOf(team), claims: claimRows(team), feed: feedItems(team),
     // What the scheduler waits on the owner for (status `needs_attention`): its sentence, shown as text.
     attention: text(isObject(team?.attention) ? first(team.attention.message, team.attention.code) : team?.attention, 600),
-    // Landing is offered once the integration branch is ready (the server refuses anything else and says why).
-    canLand: team?.plan?.readOnly !== true && row.status === 'ready',
-    // A team that reached the owner's branch, or is on its way there, is not thrown away from here.
-    canDiscard: !!row.id && !SETTLED_TEAM.has(row.status) && team?.removed !== true,
+    // Landing is offered once the integration branch is ready (the server refuses anything else and says why), and
+    // never for a team whose work is on its base branch already: there is nothing left to land.
+    canLand: team?.plan?.readOnly !== true && row.status === 'ready' && !row.onTarget,
+    // A team that reached the owner's branch, or is on its way there, is not thrown away from here; neither is one
+    // whose work is on its base branch already (a discard would record its landed work as given up).
+    canDiscard: !!row.id && !SETTLED_TEAM.has(row.status) && team?.removed !== true && !row.onTarget,
+    // Its work is on its base branch already and nothing would be lost: Clean up & remove.
+    canCleanupMerged: !!row.onTarget && row.onTarget.clean,
     sliceCounts: slices.reduce((acc, slice) => { acc[slice.tone] = (acc[slice.tone] || 0) + 1; return acc; }, {}),
   };
 }

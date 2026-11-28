@@ -16,6 +16,9 @@
 //                 `merged`; where it was, the team is as before; anywhere else, it is reported.
 //   any other     a worktree whose folder is gone is put back from its branch (the commits are there; what was
 //                 uncommitted in the folder went with the folder); a slice whose branch is gone too is `failed`.
+//                 A team whose integration branch and worktree are both gone and none of whose slices is at work
+//                 any more is over, and nothing of it is made again: `merged` when its integration head is on its
+//                 base branch already (merged outside `land`), `failed` when it never joined anything.
 //
 // Recovery never deletes work: it removes only what a creation left half-made (no worker had started), and it moves
 // only the integration branch, back to a commit SynaBun itself recorded, when everything after that commit is a
@@ -164,10 +167,75 @@ export function createTeamRecovery({ state, git, locks, worktrees, claims, integ
     }
   }
 
+  /**
+   * A team whose integration branch and worktree are both gone, and none of whose slices is still at work, is over:
+   * what it joined is on its base branch already (merged outside `land`), or it never joined anything. Making the
+   * branch again would bring back a worktree nobody uses, at every start-up. It is closed instead: `merged` (its
+   * `landed` says so, `external: true`) or `failed`. A slice whose branch and folder are gone is `failed`, as below;
+   * nothing is removed but the team's folder when it is empty. Everything else is left to the steps below: a slice
+   * still at work or whose branch is still there, commits on the integration head its base branch does not have, a
+   * base branch that is not there.
+   * @returns {Promise<boolean>} true when the team was closed
+   */
+  async function closeIfOver(record, report) {
+    if (record.plan.readOnly || !['planned', 'running', 'ready'].includes(record.state)) return false;
+    const teamId = record.teamId;
+    const cwd = record.projectPath;
+    const there = async (sliceId) => {
+      const { path, branch } = worktrees.placeOf(record.plan, sliceId);
+      return present(path) || !!(await commitOf(git, cwd, `refs/heads/${branch}`));
+    };
+    if (await there(INTEGRATION_SLICE_ID)) return false;
+    const gone = [];
+    let left = false;
+    for (const slice of record.plan.slices) {
+      const settled = SETTLED_SLICE_STATES.includes(sliceState(record, slice.id));
+      if (!(await there(slice.id))) { if (!settled) gone.push(slice.id); continue; }
+      if (!settled) return false;
+      left = true;
+    }
+    const states = record.plan.slices.map((slice) => (gone.includes(slice.id) ? 'failed' : sliceState(record, slice.id)));
+    const head = record.integration.head;
+    let closed = null;
+    if (!states.includes('integrated') && head === record.baseCommit) closed = 'failed';
+    else if (record.baseBranch && head) {
+      const target = await commitOf(git, cwd, `refs/heads/${record.baseBranch}`);
+      if (target && (await git(['merge-base', '--is-ancestor', head, target], { cwd })).ok) closed = 'merged';
+    }
+    if (!closed) return false;
+    await git(['worktree', 'prune'], { cwd });
+    for (const sliceId of gone) {
+      await state.writeSlice(teamId, sliceId, 'failed', { reason: 'its branch and its worktree are gone', failedAt: now() });
+      report.actions.push({ action: 'slice_failed', sliceId, reason: 'missing' });
+    }
+    const removed = !left;
+    if (closed === 'merged') {
+      const tests = record.integration.tests;
+      await state.writeTeam(teamId, 'merged', {
+        landing: null, removed, recoveredAt: now(),
+        landed: {
+          targetBranch: record.baseBranch, mode: null, from: null, to: head, integrationHead: head, mergeCommit: null, checkout: null,
+          files: null, at: now(), partial: states.some((each) => !['integrated', 'cancelled'].includes(each)),
+          tested: !!tests && tests.ok === true && tests.commit === head, external: true, recovered: true,
+        },
+      });
+    } else {
+      await state.writeTeam(teamId, 'failed', {
+        error: 'Every slice ended and nothing was joined; the integration branch and its worktree were gone at the restart, so recovery closed the team instead of making an empty branch again.',
+        failedAt: now(), removed, recovered: true,
+      });
+    }
+    await claims.end(teamId);
+    try { rmdirSync(join(worktreesRoot(cwd), teamId)); } catch { /* not empty, or not there */ }
+    report.actions.push({ action: 'team_closed', state: closed, reason: closed === 'merged' ? 'merged_outside_landing' : 'nothing_integrated', targetBranch: record.baseBranch, head, removed });
+    return true;
+  }
+
   /** Worktrees whose folder is gone, slices left in the middle of a join. */
   async function recoverPieces(record, report) {
     const teamId = record.teamId;
     const cwd = record.projectPath;
+    if (await closeIfOver(record, report)) return;
     let registered = await listWorktrees(git, cwd);
     for (const sliceId of [...record.plan.slices.map((slice) => slice.id), ...(record.plan.readOnly ? [] : [INTEGRATION_SLICE_ID])]) {
       const current = sliceId === INTEGRATION_SLICE_ID ? null : sliceState(record, sliceId);

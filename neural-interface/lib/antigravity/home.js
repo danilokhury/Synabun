@@ -30,6 +30,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, st
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { ownSpilledFile } from '../assistant-spilled-output.js';
 
 /** The settings keys of the user's own Antigravity settings a SynaBun home keeps: how they sign in and which models they get. */
 export const KEPT_USER_SETTINGS = Object.freeze(['modelProvider', 'customModelsConfig', 'gcp', 'useG1Credits']);
@@ -242,19 +244,52 @@ export function assertSafeAntigravityProject(cwd) {
   }
 }
 
-/** The only automatic reads in a managed home are MCP tool schemas. Config/settings copy credentials.
- * null for a call outside the home; deny mixed reads so a safe schema cannot mask another file.
- */
-export function antigravityHomeReadPolicy(call, { homeDir, cwd } = {}) {
-  if (!homeDir || !acpReadOnlyKind(call.kind)) return null;
-  const paths = acpToolPaths(call).map((raw) => {
+// A tool output Antigravity cuts short in the model's context is written whole to
+// <App Data Dir>/brain/<conversation>/.system_generated/steps/<n>/output.txt, and the model is told to read it there
+// ("The tool's output was truncated due to being too long. You can find the full output in a file at file://…").
+// Measured on agy 1.4.12: outputs above about 10 KB (a SynaBun recall, agent_list or agent_dispatch among them).
+const SPILLED_OUTPUT_RE = /^antigravity-cli[\\/]brain[\\/][A-Za-z0-9_-]{1,128}[\\/]\.system_generated[\\/]steps[\\/]\d{1,9}[\\/]output\.txt$/;
+const SCHEMA_RE = /^antigravity-cli[\\/]mcp[\\/][^\\/]+[\\/][^\\/]+\.json$/;
+
+/** Every path a call names, absolute: `~`, `$HOME` and `file://` URLs read as the model meant them, the rest from cwd. */
+function homeCallPaths(call, cwd) {
+  return acpToolPaths(call).map((raw) => {
     const path = raw.trim();
     if (path === '~' || path.startsWith('~/')) return resolve(homedir(), path.slice(2));
     if (/^\$\{?HOME\}?(\/|$)/.test(path)) return resolve(homedir(), path.replace(/^\$\{?HOME\}?\/?/, ''));
+    if (/^file:\/\//i.test(path)) { try { return resolve(fileURLToPath(path)); } catch { /* not a local file URL: read as written */ } }
     return resolve(cwd || process.cwd(), path);
   });
+}
+
+/**
+ * Whether `path` is one of the home's own spilled tool outputs: exactly the shape above, a regular file with one name
+ * (no hard link), and no symbolic link between the home and the file (its real path is that path under the home's
+ * real path). Anything else, a missing file included, is not.
+ */
+export function isAntigravitySpilledOutput(path, homeDir) {
+  return ownSpilledFile(path, homeDir, SPILLED_OUTPUT_RE);
+}
+
+/**
+ * Whether a call only reads the home's own spilled tool outputs (every path it names is one). The route gate lets
+ * it through: the file holds the output of a tool the model already ran, and an unrouted turn runs only the
+ * always-allowed ones.
+ */
+export function antigravitySpilledOutputRead(call, { homeDir, cwd } = {}) {
+  if (!homeDir || !call || call.mcp || (call.kind !== 'read' && call.kind !== 'search')) return false;
+  const paths = homeCallPaths(call, cwd);
+  return paths.length > 0 && paths.every((path) => isAntigravitySpilledOutput(path, homeDir));
+}
+
+/** The only automatic reads in a managed home are MCP tool schemas and the tool outputs Antigravity spilled there.
+ * Config/settings copy credentials. null for a call outside the home; deny mixed reads so a safe file cannot mask another.
+ */
+export function antigravityHomeReadPolicy(call, { homeDir, cwd } = {}) {
+  if (!homeDir || !acpReadOnlyKind(call.kind)) return null;
+  const paths = homeCallPaths(call, cwd);
   const inside = (path) => { const rel = relative(resolve(homeDir), path); return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)); };
   if (!paths.some(inside)) return null;
-  if (paths.every((path) => inside(path) && /^antigravity-cli[\\/]mcp[\\/][^\\/]+[\\/][^\\/]+\.json$/.test(relative(resolve(homeDir), path)))) return { decision: 'allow' };
-  return { decision: 'deny', reason: 'SynaBun refuses reads of its Antigravity home configuration: it can contain MCP credentials and sign-in settings. Only tool schemas may be read here.' };
+  if (paths.every((path) => inside(path) && (SCHEMA_RE.test(relative(resolve(homeDir), path)) || isAntigravitySpilledOutput(path, homeDir)))) return { decision: 'allow' };
+  return { decision: 'deny', reason: 'SynaBun refuses reads of its Antigravity home configuration: it can contain MCP credentials and sign-in settings. Only tool schemas and the tool outputs Antigravity saved under brain/<conversation>/.system_generated/steps/ may be read here.' };
 }

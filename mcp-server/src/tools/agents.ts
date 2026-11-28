@@ -41,6 +41,12 @@ export const RUN_EVENT_KINDS = [
 /** One title limit for agent_route planned_split.slices and agent_team slices[].title (= TEAM_LIMITS.title in neural-interface/lib/teams/schema.js). */
 export const SLICE_TITLE_MAX = 80;
 
+/** agent_list's page: newest first, AGENT_LIST_DEFAULT runs unless the brain asks for more. */
+export const AGENT_LIST_DEFAULT = 20;
+export const AGENT_LIST_MAX = 100;
+/** How much of a run's result summary a roster row or a dispatch answer keeps (agent_read has the whole result). */
+const RUN_SUMMARY_CHARS = 400;
+
 const runIdField = (purpose: string) => z.string().min(1).max(200).describe(purpose);
 const optionalId = (purpose: string) => z.string().min(1).max(200).optional().describe(purpose);
 
@@ -111,6 +117,9 @@ export const agentListSchema = {
   ),
   assistant_session_id: optionalId('Restrict to runs dispatched by this assistant session (your ASSISTANT_SESSION_ID).'),
   workflow_id: optionalId('Restrict to one workflow (the workflow_id passed to agent_dispatch).'),
+  limit: z.number().int().min(1).max(AGENT_LIST_MAX).optional().describe(
+    `How many runs, newest first (default ${AGENT_LIST_DEFAULT}, at most ${AGENT_LIST_MAX}).`
+  ),
 };
 
 export const agentDispatchSchema = {
@@ -282,13 +291,13 @@ export const agentClarifyDescription =
   'Ask the user 1-3 targeted questions BEFORE routing a new request that is materially ambiguous: two plausible readings with different results, an unclear target (project, feature, files, audience), destructive or irreversible scope, spend, or memories that conflict with it. Not for clear requests, details a sensible default covers, anything the request, memory or the project answers, or the model (agent_route asks that). Each question gets 2-4 options (recommended first; the user can always type their own); add constraints (what the request fixes) and assumptions (what you will assume for the rest). The card waits briefly. Follow the returned status and next: answered → route, then agent_dispatch with the brief_id (SynaBun adds the user\'s original words, their answers, the constraints and assumptions to the worker\'s context); declined → proceed on your assumptions; pending → end your turn, the answers arrive as a [SynaBun Mailbox] clarify_answered event or as the user\'s next message, and dependent routes and dispatches wait until then. Returns JSON.';
 
 export const agentListDescription =
-  'List dispatched worker runs with status, state, provider/model, the agent a run runs as (agentRef, agentRevision; absent for a plain worker), title, elapsed time, work time left (workLeftMs), cost and resumes (how often a server restart cut the run off and it was resumed). Use it before dispatching more work, to recover run ids, or after a mailbox event. Filter with active_only, assistant_session_id (your own session) or workflow_id. Returns JSON.';
+  'List dispatched worker runs with status, state, provider/model, the agent a run runs as (agentRef, agentRevision; absent for a plain worker), title, elapsed time, work time left (workLeftMs), cost and resumes (how often a server restart cut the run off and it was resumed). Use it before dispatching more work, to recover run ids, or after a mailbox event. Filter with active_only, assistant_session_id (your own session) or workflow_id; limit sets how many (newest first, default 20). Each run is compact: the task, context and turn texts are counted, not repeated (agent_read and agent_status have them). Returns JSON.';
 
 export const agentDispatchDescription =
   'Dispatch a task to a worker agent (Claude Code, Codex or OpenCode). Route it first with agent_route and pass the approved route_id (the server applies that provider/model/effort); without one, the dispatch may be held until the user picks a model (awaitingRoute:true — do not dispatch it again; if the user picks "here" instead, the run never starts and a route_decided mailbox event asks you to do the task yourself). A route_id the user decided to keep here is refused (ROUTE_IS_DIRECT): do that task yourself. After agent_clarify, pass its brief_id: the worker gets the user\'s own words and answers; while its questions are open a dependent dispatch is refused (CLARIFICATION_PENDING). The run attaches as a live automation tab in the matching sidepanel without stealing focus. Write a self-contained task that ends with a ## Result block, pass the absolute cwd and your assistant_session_id. Defaults: permission_policy "auto", capability "full", 45 minutes of work time (max_minutes, at least 20), no per-run dollar ceiling (with a budget the run draws from its provider\'s share; a provider whose share is used up and cannot get more is refused with BUDGET_SHARE_EXHAUSTED: route again). Use "ask" only for sensitive scopes (Codex cannot ask: use "restricted"). uses_computer:true for desktop work (one at a time, vision model). uses_browser:true with morelogin_profile (a profile id or name) opens the worker\'s browser tab in that MoreLogin profile for this run only, next to runs in the default or other profiles (only a profile the owner allowed agents to choose; MORELOGIN_PROFILE_NOT_ALLOWED otherwise: tell the user to switch it on in Settings). An image_gen / video_gen run makes the asset with its model\'s own generation tool; SynaBun collects the files into the run\'s result (media: path + url); with no model that generates the medium an un-routed dispatch is refused (NO_CAPABLE_MODEL), and a route_id approved for other work is refused for image_gen / video_gen / design (and the other way round: ROUTE_CLASS_MISMATCH; route the task again with its own class). A design run gets SynaBun\'s design rules and the project\'s style guide, defaults to capability "workspace", uses_browser true, browser, styleguide and image groups, and 60 minutes of work time (explicit values win), runs only on a model confirmed to see (MODEL_CANNOT_SEE otherwise), and its screenshots land in the result\'s media. The class agent applies automatically; agent_ref "none" opts out. An explicit agent_ref runs the worker as one of the owner\'s approved agents (agent_catalog agents): its definition fills what you leave out and its instructions become the worker\'s role, the run carries agentRef and agentRevision, and corrections list what the definition was held to. Group fan-outs with workflow_id, chain with parent_run_id, retry safely with idempotency_key. Over-limit dispatches are queued (queued:true, position). After dispatching, block with agent_wait rather than polling. Returns JSON.';
 
 export const agentStatusDescription =
-  'Get one run\'s current descriptor: status (queued, starting, running, completed, failed, stopped, interrupted), state (the detail: also idle, awaiting_permission, and suspended / resuming while a SynaBun server restart cuts a Claude Code worker off and the next start resumes it as the same run, its Claude session and its tab; resumes counts that, at most 3; a run that could not be resumed ends interrupted, with why in notes), turnState (running, idle, awaiting_permission), provider/model/account, the agent it runs as (agentRef, agentRevision, agentPin with what its definition was held to; absent for a plain worker), elapsed time (elapsedMs, wall clock), work time used and left of max_minutes (workMs, workLeftMs), cost, the last parsed result summary and any pending permission or question requests. Cheap; use it between agent_wait calls or before agent_send / agent_stop. Returns JSON.';
+  'Get one run\'s current descriptor: status (queued, starting, running, completed, failed, stopped, interrupted), state (the detail: also idle, awaiting_permission, and suspended / resuming while a SynaBun server restart cuts a Claude Code worker off and the next start resumes it as the same run, its Claude session and its tab; resumes counts that, at most 3; a run that could not be resumed ends interrupted, with why in notes), turnState (running, idle, awaiting_permission), provider/model/account, the agent it runs as (agentRef, agentRevision, agentPin with what its definition was held to; absent for a plain worker), elapsed time (elapsedMs, wall clock), work time used and left of max_minutes (workMs, workLeftMs), cost, the last parsed result summary and any pending permission or question requests. The task, context and turn texts are counted, not repeated (agent_read has the texts). Cheap; use it between agent_wait calls or before agent_send / agent_stop. Returns JSON.';
 
 export const agentReadDescription =
   'Read a run\'s output. format "result" (default) returns the parsed ## Result contract (status, summary, changes, follow_ups, question, json, and media: the images / videos an image_gen or video_gen run generated or a design run captured, each { kind, path, url, mime, bytes } — show one with ![](url) plus its path); "tail" returns the last transcript events (also after the run ended or the server restarted); "text" the worker\'s assistant text; "files" the files it reported. Call after agent_wait reports idle or terminal; keep max_chars small. A text longer than max_chars is read in pages: the answer carries totalChars, offset and nextOffset; pass offset (0 for the start, then each nextOffset) to read the rest. Returns JSON.';
@@ -297,7 +306,7 @@ export const agentSendDescription =
   'Continue a worker\'s conversation. text sends a follow-up turn (queue:true enqueues it while the worker is still running, or while it is suspended / resuming after a server restart: it goes to the worker once resumed; queued follow-ups keep their order, survive a restart, and at most 20 wait per run). reply answers a pending permission or question request: decision allow/deny for tools, answer (with answers) for questions, note as an optional message. Obtain request ids from agent_status or agent_wait until="event". A follow-up to a run whose work time (max_minutes) is used up is refused with TIME_CAP: dispatch a new run with its result as context. steer:true with text redirects a run that is still working: its current turn is cut, its context kept, and the change follows at once (use it on the one run the user\'s change concerns, never to stop other runs). Returns JSON.';
 
 export const agentWaitDescription =
-  'Blocking barrier for orchestration. Waits up to timeout_seconds (max 120) for one run (run_id), several runs (run_ids with mode all/any) or a whole workflow to reach until="idle" (turn finished; default), "terminal" (completed, failed, stopped, interrupted) or "event" (typed events: by default a result, a question, a permission request, a failure, a stall, a stop; narrow with kinds). An "event" answer lists the events with their seq and a cursor: pass it back as after_seq to go on from there. A workflow wait follows runs added to the workflow while it waits. A run suspended or resuming after a SynaBun server restart is still working: keep waiting (a wait cut off by the restart is simply called again, with the same after_seq). Returns the run descriptors and whether the wait timed out; call again to keep waiting. Prefer this over polling agent_status. Returns JSON.';
+  'Blocking barrier for orchestration. Waits up to timeout_seconds (max 120) for one run (run_id), several runs (run_ids with mode all/any) or a whole workflow to reach until="idle" (turn finished; default), "terminal" (completed, failed, stopped, interrupted) or "event" (typed events: by default a result, a question, a permission request, a failure, a stall, a stop; narrow with kinds). An "event" answer lists the events with their seq and a cursor: pass it back as after_seq to go on from there. A workflow wait follows runs added to the workflow while it waits. A run suspended or resuming after a SynaBun server restart is still working: keep waiting (a wait cut off by the restart is simply called again, with the same after_seq). Returns compact run descriptors (task, context and turn texts counted, not repeated; questions, permission requests and events whole) and whether the wait timed out; call again to keep waiting. Prefer this over polling agent_status. Returns JSON.';
 
 export const agentStopDescription =
   'Stop work. run_id stops one run; all:true with your assistant_session_id stops every run of this assistant session, workflow_id every run of a workflow (kill-all). Use when the user cancels, a worker misbehaves, or a time/budget rail is at risk. Returns JSON.';
@@ -435,12 +444,58 @@ export function handleAgentClarify(args: AgentClarifyArgs): Promise<ToolResult> 
   })));
 }
 
+/**
+ * A run as a roster row or a dispatch answer shows it. The server's view carries the whole run: the task and context
+ * the brain wrote itself, the last text and up to 50 turns (each up to 20 KB of text, and its parsed result with the
+ * worker's whole final message as `raw`). Those are what agent_read serves; here they are counted, not repeated, so an
+ * answer stays small enough for every host (Antigravity spills an output above about 10 KB into a file).
+ */
+export function compactRunView(run: unknown, { keepResult = false }: { keepResult?: boolean } = {}): unknown {
+  if (!run || typeof run !== 'object' || Array.isArray(run)) return run;
+  const { task, context, lastText, turns, lastResult, ...rest } = run as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...rest };
+  if (typeof task === 'string') out.taskChars = task.length;
+  if (typeof context === 'string' && context) out.contextChars = context.length;
+  if (typeof lastText === 'string' && lastText) out.lastTextChars = lastText.length;
+  if (Array.isArray(turns) && typeof out.turnCount !== 'number') out.turnCount = turns.length;
+  if (keepResult && lastResult && typeof lastResult === 'object') {
+    // agent_status / agent_wait: the parsed result whole (changes, files, follow-ups, media, question), the
+    // worker's whole final message (`raw`) aside.
+    const { raw: _raw, ...result } = lastResult as Record<string, unknown>;
+    out.lastResult = result;
+  } else if (lastResult && typeof lastResult === 'object') {
+    const result = lastResult as Record<string, unknown>;
+    const summary = typeof result.summary === 'string' ? result.summary : '';
+    out.lastResult = {
+      status: result.status ?? null,
+      summary: summary.length > RUN_SUMMARY_CHARS ? `${summary.slice(0, RUN_SUMMARY_CHARS)}…` : summary,
+      ...(typeof result.question === 'string' && result.question ? { question: result.question } : {}),
+    };
+  } else if (lastResult !== undefined) out.lastResult = lastResult;
+  return out;
+}
+
+/**
+ * An answer whose runs are compacted (compactRunView): `run`, `runs`, and agent_wait's `done` / `pending`.
+ * Everything else as it came: a wait's `needsInput`, `permissions` and `events` (the questions and permission
+ * requests to answer) and a run's own `pending` requests stay whole.
+ */
+function withCompactRuns(answer: unknown, options: { keepResult?: boolean } = {}): unknown {
+  if (!answer || typeof answer !== 'object' || Array.isArray(answer)) return answer;
+  const out: Record<string, unknown> = { ...(answer as Record<string, unknown>) };
+  const compact = (run: unknown) => compactRunView(run, options);
+  for (const key of ['runs', 'done', 'pending']) if (Array.isArray(out[key])) out[key] = (out[key] as unknown[]).map(compact);
+  if (out.run && typeof out.run === 'object') out.run = compact(out.run);
+  return out;
+}
+
 export function handleAgentList(args: AgentListArgs): Promise<ToolResult> {
-  return guarded(async () => json(await ni.assistantListRuns({
+  return guarded(async () => json(withCompactRuns(await ni.assistantListRuns({
     activeOnly: args.active_only === true,
     assistantSessionId: args.assistant_session_id,
     workflowId: args.workflow_id,
-  })));
+    limit: args.limit ?? AGENT_LIST_DEFAULT,
+  }))));
 }
 
 export function handleAgentDispatch(args: AgentDispatchArgs): Promise<ToolResult> {
@@ -451,7 +506,8 @@ export function handleAgentDispatch(args: AgentDispatchArgs): Promise<ToolResult
     if (!args.provider && !args.route_id && !args.task_class && (!args.agent_ref || args.agent_ref === 'none')) return invalid('Provide provider, task_class, the route_id of an approved agent_route, or a named agent_ref.');
     const selection = resolveToolList(args.tools, { source: 'dispatch', provider: args.provider, usesBrowser: args.uses_browser, taskClass: args.task_class });
     if (!selection.ok) return { ...json(selection), isError: true };
-    return json(await ni.assistantDispatch({
+    // The answer's run is compacted (compactRunView): the brain wrote the task and context it would echo.
+    return json(withCompactRuns(await ni.assistantDispatch({
     provider: args.provider,
     task: args.task,
     cwd: args.cwd,
@@ -488,12 +544,12 @@ export function handleAgentDispatch(args: AgentDispatchArgs): Promise<ToolResult
     idempotencyKey: args.idempotency_key,
     briefId: args.brief_id,
     independent: args.independent,
-    }));
+    })));
   });
 }
 
 export function handleAgentStatus(args: AgentStatusArgs): Promise<ToolResult> {
-  return guarded(async () => json(await ni.assistantRun(args.run_id)));
+  return guarded(async () => json(withCompactRuns(await ni.assistantRun(args.run_id), { keepResult: true })));
 }
 
 export function handleAgentRead(args: AgentReadArgs): Promise<ToolResult> {
@@ -536,10 +592,10 @@ export function handleAgentWait(args: AgentWaitArgs): Promise<ToolResult> {
     const multi = runIds.length > 0 || !!args.workflow_id;
     if (!multi) {
       if (!args.run_id) return invalid('Provide run_id, run_ids or workflow_id.');
-      return json(await ni.assistantWaitRun(args.run_id, { until, timeoutMs, afterSeq: args.after_seq, kinds: args.kinds }));
+      return json(withCompactRuns(await ni.assistantWaitRun(args.run_id, { until, timeoutMs, afterSeq: args.after_seq, kinds: args.kinds }), { keepResult: true }));
     }
     if (args.run_id && !runIds.includes(args.run_id)) runIds.unshift(args.run_id);
-    return json(await ni.assistantWaitMany({
+    return json(withCompactRuns(await ni.assistantWaitMany({
       runIds: runIds.length ? runIds : undefined,
       workflowId: args.workflow_id,
       mode: args.mode || (until === 'event' ? 'any' : 'all'),
@@ -547,7 +603,7 @@ export function handleAgentWait(args: AgentWaitArgs): Promise<ToolResult> {
       timeoutMs,
       afterSeq: args.after_seq,
       kinds: args.kinds,
-    }));
+    }), { keepResult: true }));
   });
 }
 

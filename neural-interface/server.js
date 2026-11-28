@@ -37787,7 +37787,26 @@ app.post('/api/browser/extension/reload', ownerReloadHandler({ update: extension
 const sendSetup = (res, run) => Promise.resolve().then(run).then(value => res.json({ ok: true, ...value }),
   error => res.status(400).json(extensionSetupError(error) || extensionSafeError(error)));
 app.get('/api/browser/extension/setup/status', (_req, res) => sendSetup(res, () => extensionSetup.status()));
-app.post('/api/browser/extension/setup/start', (req, res) => sendSetup(res, () => extensionSetup.start({ browserId: typeof req.body?.browser === 'string' ? req.body.browser : undefined })));
+// The Settings guide's list of browsers (names and extensions addresses from the catalog, never a program or a path).
+// A look starts plutil or reg, so one is reused for 30 s; ?refresh=1 looks again.
+app.get('/api/browser/extension/setup/browsers', (req, res) => sendSetup(res, () => extensionSetup.browsers({ refresh: req.query?.refresh === '1' })));
+// `present: 'none'` (the Settings guide): the folder and the pairing session, nothing opened or shown.
+app.post('/api/browser/extension/setup/start', (req, res) => sendSetup(res, () => extensionSetup.start({ browserId: typeof req.body?.browser === 'string' ? req.body.browser : undefined, present: req.body?.present })));
+// The routes that start a browser for the guide (its extensions page, the companion page) and the capabilities check
+// are asked by SynaBun Settings only: besides the guard above, refused from an extension's own origin, from a request
+// the browser does not mark same-origin, and without the app's X-SynaBun-UI header (as reload/confirm). The body
+// names an installed browser by its id and nothing else; the program and the address come from the detected install
+// and the catalog (lib/browser-default.js extensionsPagePlan / launchPlan).
+const extensionSettingsOnly = (req, res, next) => {
+  const origin = String(req.headers.origin || ''), site = req.headers['sec-fetch-site'];
+  if (/^[a-z-]*extension:/i.test(origin) || (site !== undefined && site !== 'same-origin') || req.headers['x-synabun-ui'] !== '1') return res.status(403).json({ code: 'OWNER_ROUTE', error: 'Only the owner\'s SynaBun Settings can do this.' });
+  next();
+};
+app.post('/api/browser/extension/setup/open-extensions', extensionSettingsOnly, (req, res) => sendSetup(res, () => extensionSetup.openExtensions(req.body)));
+app.post('/api/browser/extension/setup/focus', extensionSettingsOnly, (req, res) => sendSetup(res, () => extensionSetup.focus(req.body)));
+// What the paired extension can do now (the bridge's probe, 4 s at most); `capabilities` of GET /api/browser/extension
+// is the bridge's last report (its status, spread there whole).
+app.post('/api/browser/extension/capabilities/check', extensionSettingsOnly, (req, res) => sendSetup(res, () => extensionSetup.capabilities(req.body)));
 app.post('/api/browser/extension/setup/ticket', (_req, res) => { res.setHeader('Cache-Control', 'no-store'); return sendSetup(res, () => extensionSetup.ticket()); });
 app.post('/api/browser/extension/setup/cancel', (_req, res) => sendSetup(res, () => extensionSetup.cancel()));
 app.post('/api/browser/extension/setup/reveal', (_req, res) => sendSetup(res, () => extensionSetup.reveal()));

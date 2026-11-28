@@ -129,9 +129,23 @@ export function acpWebTool(value) {
   return WEB_TOOLS.has(named) || /^browser_/.test(named) || (!named && call.kind === 'fetch');
 }
 
+/**
+ * A path as agy may write it: its transcript keeps arguments JSON-encoded ("\"/Users/…/output.txt\""), so a value
+ * that is a JSON string literal is read as the string it encodes; anything else as written.
+ */
+function unquotedPath(value) {
+  const path = String(value).trim();
+  if (path.length < 2 || path[0] !== '"' || path[path.length - 1] !== '"') return path;
+  try { const inner = JSON.parse(path); return typeof inner === 'string' ? inner.trim() : path; } catch { return path; }
+}
+
 /** Every path the call names, including nested path-like values in an MCP call's arguments. */
 export function acpToolPaths(value) {
   const call = value?.args && 'mcp' in value ? value : acpCall(value);
+  return [...new Set(rawToolPaths(call).map(unquotedPath).filter(Boolean))];
+}
+
+function rawToolPaths(call) {
   const out = [];
   for (const location of call.locations) if (typeof location?.path === 'string' && location.path) out.push(location.path);
   if (call.mcp) {

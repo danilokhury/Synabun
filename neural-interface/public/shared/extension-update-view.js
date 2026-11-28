@@ -1,5 +1,5 @@
 // Shared words and actions for Settings, the setup page, the notification and the Assistant.
-const releaseNotes = { '1.5.0': 'notes.v1_5_0' };
+const releaseNotes = { '1.5.0': 'notes.v1_5_0', '1.6.0': 'notes.v1_6_0' };
 const downloadErrors = {
   EXTENSION_DOWNLOAD_OFFLINE: 'offline', EXTENSION_DOWNLOAD_UNAVAILABLE: 'unavailable',
   EXTENSION_VERIFY_FAILED: 'unverified', EXTENSION_FOLDER_UNSAFE: 'unsafe',

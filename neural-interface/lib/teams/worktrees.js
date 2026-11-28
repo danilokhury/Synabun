@@ -549,15 +549,110 @@ export function createTeamWorktrees({ state, git, locks, setup: defaultSetup = n
   }
 
   /**
+   * The checks of a guarded removal, read only: every worktree is a linked worktree of its own on its branch, clean
+   * (nothing uncommitted, untracked files included), and every branch is merged into `target` (mergedInto), with
+   * `git branch -d`'s own criterion met for the ancestors it deletes. The same checks answer "could this go now"
+   * for a list (`onTarget`) and run again, under the repository's lock, right before anything is removed.
+   * → { items: [{ sliceId, path, branch, head, via }], checks: [{ name: 'clean'|'merged', ok, detail, sliceId, … }] }
+   */
+  async function guardedChecks(record, target) {
+    const teamId = record.teamId;
+    const checks = [];
+    const items = piecesOf(record.plan).map(sliceId => ({ sliceId, path: worktreePath(record.projectPath, teamId, sliceId), branch: sliceId === INTEGRATION_SLICE_ID ? integrationBranchName(teamId) : branchName(teamId, sliceId) }));
+    const registered = await listWorktrees(git, record.projectPath);
+    for (const item of items) {
+      let linked = false;
+      try { linked = lstatSync(join(item.path, '.git')).isFile() && !lstatSync(item.path).isSymbolicLink(); } catch {}
+      const valid = linked && await branchAt(git, item.path) === item.branch && registered.some(w => realOf(w.path) === realOf(item.path) && w.branch === item.branch && !w.locked) && registered.every(w => w.branch !== item.branch || realOf(w.path) === realOf(item.path));
+      checks.push({ name: 'clean', ok: !!valid, detail: `${item.path}: ${valid ? 'linked worktree verified' : 'not an unlocked linked worktree on its expected branch'}`, sliceId: item.sliceId, path: item.path, kind: 'worktree' });
+      if (valid) {
+        const changes = await changesOf(git, item.path);
+        checks.push({ name: 'clean', ok: changes !== null && changes.length === 0, detail: `${item.path}: ${changes === null ? 'status unavailable' : changes.map(c => c.path).join(', ') || 'clean'}`, sliceId: item.sliceId, path: item.path, kind: 'changes', files: (changes || []).map(c => c.path).slice(0, 50) });
+      }
+      // Merged: an ancestor of the target, or every commit beyond the base patch-equivalent to one in it
+      // (mergedInto). The head it checked is the one the deletion compares against.
+      const merged = await mergedInto(git, record.projectPath, item.branch, target, record.baseCommit);
+      item.head = merged.head;
+      item.via = merged.via;
+      checks.push({ name: 'merged', ok: merged.ok, detail: merged.detail, branch: item.branch, head: merged.head, via: merged.via, commits: merged.commits, sliceId: item.sliceId });
+    }
+    // branch -d checks the configured upstream, or HEAD when none exists.
+    // Verify that criterion too for the ancestors it deletes, so a different target checkout cannot cause
+    // partial removal. A patch-equivalent branch is deleted by compare-and-swap, which asks neither.
+    for (const item of items.filter((each) => each.via === 'ancestor')) {
+      const upstream = line(await git(['rev-parse', '--abbrev-ref', `${item.branch}@{upstream}`], { cwd: record.projectPath })) || 'HEAD';
+      const safe = (await git(['merge-base', '--is-ancestor', item.head, upstream], { cwd: record.projectPath })).ok;
+      checks.push({ name: 'merged', ok: safe, detail: `${item.branch}: safe branch -d against ${upstream}`, branch: item.branch, sliceId: item.sliceId });
+    }
+    return { items, checks };
+  }
+
+  /**
+   * Is everything a `ready` team joined on its base branch already: the commit SynaBun recorded as the integration
+   * head, and the integration branch as it is now (when somebody moved it)? Asked of git, never of the records.
+   * → { ok, detail, target, targetHead, head, live }
+   */
+  async function onTargetCheck(record) {
+    const cwd = record.projectPath;
+    const target = record.baseBranch;
+    const branch = integrationBranchName(record.teamId);
+    const no = (detail, extra = {}) => ({ ok: false, detail, target: target || null, ...extra });
+    if (!target) return no('The project was on no branch when the team was created, so there is no base branch to compare with.');
+    const targetHead = await commitOf(git, cwd, `refs/heads/${target}`);
+    if (!targetHead) return no(`The base branch ${target} is not there.`);
+    const head = record.integration?.head || null;
+    const live = await commitOf(git, cwd, `refs/heads/${branch}`);
+    if (!head) return no('No integration head is recorded for this team.', { targetHead });
+    if (!live) return no(`${branch} is not there.`, { targetHead, head });
+    const on = async (commit) => commit === targetHead || (await git(['merge-base', '--is-ancestor', commit, targetHead], { cwd })).ok;
+    if (!(await on(head))) return no(`${target} does not have the team's integration head ${head.slice(0, 12)}: it has not landed.`, { targetHead, head, live });
+    if (live !== head && !(await on(live))) return no(`${branch} moved to ${live.slice(0, 12)}, which ${target} does not have.`, { targetHead, head, live });
+    return { ok: true, detail: `${target} has ${branch} (${head.slice(0, 12)}).`, target, targetHead, head, live };
+  }
+
+  /**
+   * A `ready` code team whose joined work is on its base branch already (merged outside `land`, its worktrees and
+   * branches still there): where, and whether its worktrees and branches could go now with nothing lost (`clean`:
+   * every guarded check passes). Read only and without a lock: a list asks it. Null for any other team, and when git
+   * does not show the work on the base branch. Never removes anything: `remove(teamId, { guarded: true,
+   * mergedOutside: true })` asks it all again, under the lock, before it does.
+   *
+   * @returns {Promise<null | { branch: string, head: string, targetHead: string, live: string, moved: boolean,
+   *   clean: boolean, dirty: { sliceId: string, path: string, files: string[] }[],
+   *   unmerged: { sliceId: string, branch: string, commits: string[] }[], other: string[] }>}
+   */
+  async function onTarget(teamId) {
+    const record = await get(teamId);
+    if (!record || record.plan.readOnly || record.removed || record.state !== 'ready' || !isDirectory(record.projectPath)) return null;
+    const on = await onTargetCheck(record);
+    if (!on.ok) return null;
+    const { checks } = await guardedChecks(record, on.target);
+    const failed = checks.filter((check) => !check.ok);
+    // Uncommitted files git listed; commits the base branch lacks; anything else (a status git could not read, a
+    // worktree that is not where SynaBun left it, a branch that is gone) as git's own words.
+    const isDirty = (check) => check.kind === 'changes' && Array.isArray(check.files) && check.files.length > 0;
+    const isUnmerged = (check) => check.name === 'merged' && Array.isArray(check.commits) && check.commits.length > 0;
+    const dirty = failed.filter(isDirty).map((check) => ({ sliceId: check.sliceId, path: check.path, files: check.files }));
+    const unmerged = failed.filter(isUnmerged).map((check) => ({ sliceId: check.sliceId, branch: check.branch, commits: check.commits.slice(0, 20) }));
+    const other = failed.filter((check) => !isDirty(check) && !isUnmerged(check)).map((check) => check.detail).slice(0, 10);
+    return { branch: on.target, head: on.head, targetHead: on.targetHead, live: on.live, moved: on.live !== on.head, clean: failed.length === 0, dirty, unmerged, other };
+  }
+
+  /**
    * Remove a team's worktrees and branches. Only after a landing, or with `discard: true`. A worktree with
    * uncommitted changes and a branch whose commits are nowhere else are kept and reported, unless `force: true`.
+   * `guarded: true` removes all or nothing, after every check passed (guardedChecks); with `mergedOutside: true` it
+   * takes a `ready` team whose work is on its base branch already, records that landing (`landed.external`) and
+   * removes its worktrees and branches the same way.
    *
    * @returns {Promise<{ ok: true, complete: boolean, removed: object[], kept: object[] } | { ok: false, code: string }>}
    */
-  async function remove(teamId, { discard = false, force = false, guarded = false, checkOnly = false } = {}) {
+  async function remove(teamId, { discard = false, force = false, guarded = false, checkOnly = false, mergedOutside = false } = {}) {
     const record = await get(teamId);
     if (!record) return refuse('TEAM_NOT_FOUND', `No team named "${teamId}" is recorded.`);
     if (guarded && record.plan.readOnly) return refuse('TEAM_NOT_LANDED', 'Read-only teams cannot land.', { checks: [{ name: 'landed', ok: false, detail: 'Read-only team' }] });
+    if (mergedOutside && !guarded) return refuse('INVALID_OPTIONS', 'mergedOutside is a guarded removal.');
+    if (mergedOutside && (record.state !== 'ready' || record.removed)) return refuse('TEAM_NOT_READY', `Team "${teamId}" is ${record.removed ? 'removed' : record.state}: only a ready team whose work is on its base branch already is cleaned up this way.`, { state: record.state, checks: [{ name: 'on-target', ok: false, detail: `Team state: ${record.state}` }] });
     if (record.plan.readOnly) {
       const removed = [], kept = [];
       for (const slice of record.plan.slices) {
@@ -570,42 +665,40 @@ export function createTeamWorktrees({ state, git, locks, setup: defaultSetup = n
     }
     if (record.state === 'integrating' || record.state === 'landing' || record.state === 'creating') return refuse('TEAM_NEEDS_RECOVERY', `Team "${teamId}" is recorded as ${record.state}: run recover() before removing it.`, { state: record.state });
     const landed = record.state === 'merged';
-    if (!landed && !discard && !record.plan.readOnly && !checkOnly) return refuse('TEAM_NOT_LANDED', `Team "${teamId}" has not landed: its result is on ${integrationBranchName(teamId)}. Land it first, or pass discard: true to give its work up.`, { state: record.state });
+    if (!landed && !discard && !record.plan.readOnly && !checkOnly && !mergedOutside) return refuse('TEAM_NOT_LANDED', `Team "${teamId}" has not landed: its result is on ${integrationBranchName(teamId)}. Land it first, or pass discard: true to give its work up.`, { state: record.state });
     if (!isDirectory(record.projectPath)) return refuse('PROJECT_NOT_FOUND', `${record.projectPath} is not a folder.`);
 
     return locks.run(repoKey(record.projectPath), async () => {
       if (guarded) {
+        // Merged outside `land`: what the integration branch has must be on the base branch already (asked again
+        // here, under the lock), and the base branch is the target every other check measures against.
+        // The record as it is now, under the lock: what is checked and what is recorded are the same team.
+        const subject = mergedOutside ? await get(teamId) : record;
+        if (mergedOutside && (subject?.state !== 'ready' || subject.removed)) return refuse('TEAM_NOT_READY', `Team "${teamId}" is ${subject?.removed ? 'removed' : subject?.state || 'gone'} now: nothing was removed.`, { state: subject?.state || null, checks: [{ name: 'on-target', ok: false, detail: `Team state: ${subject?.state || 'gone'}` }] });
+        const target = mergedOutside ? subject.baseBranch : record.landed?.targetBranch;
         const checks = [];
-        const items = piecesOf(record.plan).map(sliceId => ({ sliceId, path: worktreePath(record.projectPath, teamId, sliceId), branch: sliceId === INTEGRATION_SLICE_ID ? integrationBranchName(teamId) : branchName(teamId, sliceId) }));
-        const registered = await listWorktrees(git, record.projectPath);
-        const target = record.landed?.targetBranch;
-        for (const item of items) {
-          let linked = false;
-          try { linked = lstatSync(join(item.path, '.git')).isFile() && !lstatSync(item.path).isSymbolicLink(); } catch {}
-          const valid = linked && await branchAt(git, item.path) === item.branch && registered.some(w => realOf(w.path) === realOf(item.path) && w.branch === item.branch && !w.locked) && registered.every(w => w.branch !== item.branch || realOf(w.path) === realOf(item.path));
-          checks.push({ name: 'clean', ok: !!valid, detail: `${item.path}: ${valid ? 'linked worktree verified' : 'not an unlocked linked worktree on its expected branch'}` });
-          if (valid) {
-            const changes = await changesOf(git, item.path);
-            checks.push({ name: 'clean', ok: changes !== null && changes.length === 0, detail: `${item.path}: ${changes === null ? 'status unavailable' : changes.map(c => c.path).join(', ') || 'clean'}` });
-          }
-          // Merged: an ancestor of the target, or every commit beyond the base patch-equivalent to one in it
-          // (mergedInto). The head it checked is the one the deletion compares against.
-          const merged = await mergedInto(git, record.projectPath, item.branch, target, record.baseCommit);
-          item.head = merged.head;
-          item.via = merged.via;
-          checks.push({ name: 'merged', ok: merged.ok, detail: merged.detail, branch: item.branch, head: merged.head, via: merged.via, commits: merged.commits });
+        if (mergedOutside) {
+          const on = await onTargetCheck(subject);
+          checks.push({ name: 'on-target', ok: on.ok, detail: on.detail });
+          if (!on.ok) return refuse('NOT_ON_TARGET', on.detail, { checks });
         }
-        // branch -d checks the configured upstream, or HEAD when none exists.
-        // Verify that criterion too for the ancestors it deletes, so a different target checkout cannot cause
-        // partial removal. A patch-equivalent branch is deleted by compare-and-swap, which asks neither.
-        for (const item of items.filter((each) => each.via === 'ancestor')) {
-          const upstream = line(await git(['rev-parse', '--abbrev-ref', `${item.branch}@{upstream}`], { cwd: record.projectPath })) || 'HEAD';
-          const safe = (await git(['merge-base', '--is-ancestor', item.head, upstream], { cwd: record.projectPath })).ok;
-          checks.push({ name: 'merged', ok: safe, detail: `${item.branch}: safe branch -d against ${upstream}` });
-        }
+        const { items, checks: guardedList } = await guardedChecks(subject, target);
+        checks.push(...guardedList);
         const failed = checks.find(c => !c.ok);
         if (failed) return refuse(failed.name === 'merged' ? 'BRANCH_NOT_MERGED' : 'WORKTREE_DIRTY', failed.detail, { checks });
         if (checkOnly) return { ok: true, checks };
+        // The team's work is on its base branch: that is a landing, made by somebody else. It is written before
+        // anything is removed, so a stop half-way leaves a team that says where its work is.
+        let landedOutside = null;
+        if (mergedOutside) {
+          const tests = subject.integration.tests;
+          const head = subject.integration.head;
+          landedOutside = {
+            targetBranch: target, mode: null, from: null, to: head, integrationHead: head, mergeCommit: null, checkout: null,
+            files: null, at: now(), partial: false, tested: !!tests && tests.ok === true && tests.commit === head, external: true,
+          };
+          await state.writeTeam(teamId, 'merged', { landing: null, landed: landedOutside });
+        }
         // All checks precede all mutations. The branches are settled first, in one atomic ref transaction: every
         // ancestor is verified at the head that was checked, and every patch-equivalent branch is deleted only if it
         // is still at that head (`git branch -d` refuses those, and `-D` is never used). Such a branch is checked
@@ -660,7 +753,7 @@ export function createTeamWorktrees({ state, git, locks, setup: defaultSetup = n
         if (!pruned.ok) throw new Error(`Cleanup prune failed: ${gitSaid(pruned)}`);
         try { rmdirSync(join(worktreesRoot(record.projectPath), teamId)); } catch (error) { if (error.code !== 'ENOENT' && error.code !== 'ENOTEMPTY') throw error; }
         await state.writeTeam(teamId, 'merged', { removed: true, removal: { at: now(), force: false, removed, kept: [] } });
-        return { ok: true, complete: true, removed, checks };
+        return { ok: true, complete: true, removed, checks, ...(landedOutside ? { landed: landedOutside } : {}) };
       }
       const registered = await listWorktrees(git, record.projectPath);
       const integration = record.plan.readOnly ? {} : await pieceInfo(record, INTEGRATION_SLICE_ID, registered);
@@ -745,7 +838,7 @@ export function createTeamWorktrees({ state, git, locks, setup: defaultSetup = n
     });
   }
 
-  return { create, get, list, inspect, startSlice, finishReadOnlySlice, remove, prune, materialize, unmake, pieceInfo, placeOf, collisions };
+  return { create, get, list, inspect, onTarget, startSlice, finishReadOnlySlice, remove, prune, materialize, unmake, pieceInfo, placeOf, collisions };
 }
 
 /** A test command as it is stored: text, a list of arguments, or null. `false` for anything else. */

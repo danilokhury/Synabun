@@ -3,7 +3,7 @@
 // #synabun-setup-ticket only while the extension's content script is on this page and the server waits for it, and is
 // taken out again as soon as the setup moves on.
 import { extensionUpdateView } from '../extension-update-view.js';
-import { makeTranslator, pageLocale, revealKey, setupView, wantsTicket } from './es-view.js';
+import { makeTranslator, pageLocale, pageTurns, revealKey, setupView, wantsTicket } from './es-view.js';
 
 const $ = id => document.getElementById(id);
 let t = key => key;
@@ -22,6 +22,17 @@ const extensionSeen = () => document.documentElement.dataset.synabunExtension ||
 const pairAnswer = () => document.documentElement.dataset.synabunPair || '';
 function clearTicket() { const node = $('synabun-setup-ticket'); delete node.dataset.token; delete node.dataset.bridgePort; }
 
+// ── One pairing page at a time ──
+// The guide's "Copy address & open <Browser>" opens this page with ?focus=1 only to bring the browser forward: the
+// owner pastes the extensions address over it. That page never asks for a token (es-view.js `focus`).
+const FOCUS_ONLY = (() => { try { return new URLSearchParams(globalThis.location?.search || '').get('focus') === '1'; } catch { return false; } })();
+// The pairing page may still be open more than once: only the newest one that sees the extension asks for tokens
+// (es-view.js pageTurns). The others wait with no token on the page, and ask afresh once their turn comes back.
+let peers = null, waitingTurn = false;
+try { if (!FOCUS_ONLY && typeof BroadcastChannel === 'function') { peers = new BroadcastChannel('synabun-extension-setup'); peers.unref?.(); } } catch { peers = null; }
+const turns = pageTurns({ id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`, born: Date.now(), channel: peers });
+globalThis.addEventListener?.('pagehide', () => turns.gone());
+
 // Text that changed only: the same words set again would be read out again by a screen reader on every poll.
 const put = (node, text) => { if (node.textContent !== text) node.textContent = text; };
 // The words that never change while the page is open.
@@ -36,11 +47,13 @@ function fixedText() {
   put($('es-trouble-title'), tx('needHelp')); put($('es-trouble-help'), tx('helpText')); put($('es-moved-help'), tx('movedText')); put($('es-policy-help'), tx('policyText'));
 }
 function render() {
-  const view = setupView(status, { extensionVersion: extensionSeen(), pairAnswer: pairAnswer() });
+  const view = setupView(status, { extensionVersion: extensionSeen(), pairAnswer: pairAnswer(), focus: FOCUS_ONLY });
   const update = extensionUpdateView(status.update, t);
   const updating = update && ['idle', 'connected'].includes(view.state);
   const main = $('es-setup');
   main.dataset.state = view.state; main.dataset.layout = view.layout; main.setAttribute('aria-busy', 'false');
+  // The Settings guide's companion: the same page, its steps left to Settings (es-view.js `companion`).
+  main.dataset.companion = String(view.companion);
   put($('es-title'), updating ? update.title : tx(view.title));
   $('es-lead').hidden = !!updating;
   put($('es-lead'), tx(view.lead, { browser: view.browser }));
@@ -93,7 +106,12 @@ async function poll() {
     // copy the browser still runs would answer the same, so this page only says to confirm in SynaBun Settings (and the
     // server ignores `seen` for it anyway).
     if (status.reloadNeeded && !status.reloadRepaired && (!status.update || status.update.reason === 'port') && extensionSeen() && extensionSeen() === status.folderVersion) status = await call('seen', {});
-    if (wantsTicket(status, { extensionVersion: extensionSeen(), pairAnswer: pairAnswer(), offeredAt, tickets })) {
+    if (extensionSeen()) turns.here();
+    const turn = !FOCUS_ONLY && turns.mine();
+    // A newer pairing page took over: this one's token comes off the page. Its turn again: a fresh token, at once.
+    if (!turn) { waitingTurn = true; clearTicket(); }
+    else if (waitingTurn) { waitingTurn = false; offeredAt = 0; }
+    if (turn && wantsTicket(status, { extensionVersion: extensionSeen(), pairAnswer: pairAnswer(), offeredAt, tickets })) {
       tickets++;
       const ticket = await call('ticket', {});
       delete document.documentElement.dataset.synabunPair;
@@ -111,7 +129,8 @@ async function act(action, target) {
     else if (action === 'copy-folder') { await navigator.clipboard.writeText(status.folder || '').then(() => { note.textContent = tx('copiedFolder'); }, () => { note.textContent = tx('copyFailed'); }); }
     else if (action === 'reveal') { const r = await call('reveal', {}); note.textContent = tx(r.ok === false ? 'revealFailed' : 'revealed'); }
     else if (action === 'open-in') { status = await call('start', { browser: target.dataset.browser }); offeredAt = 0; tickets = 0; note.textContent = tx('openedIn', { browser: status.browser?.name || '' }); }
-    else if (action === 'restart') { status = await call('start', {}); offeredAt = 0; tickets = 0; note.textContent = ''; }
+    // Beside the Settings guide this starts the guide's kind of setup again (nothing opened); otherwise the page's own.
+    else if (action === 'restart') { status = await call('start', setupView(status).restartBody); offeredAt = 0; tickets = 0; note.textContent = ''; }
   } catch (error) { note.textContent = error.message; }
   render();
 }

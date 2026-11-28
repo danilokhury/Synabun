@@ -126,6 +126,9 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
   }
   const pending = new Map();
   const sockets = new Set();
+  // The probes waiting for a fresh capabilities report (probe()): each is called with the peer whose report arrived,
+  // or with ENDED when the owner ended the connection or the pairing.
+  const observers = new Set(), ENDED = Symbol('ended');
   // One log line per command: its op, the tab's opaque handle, the outcome's code and, when the browser refused it,
   // what the browser said (`detail`, a chrome.* error message: cleanDetail; never a page's content or a credential).
   const note = (op, tab, code, detail) => {
@@ -183,6 +186,14 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
     next.sites = next.sites.filter((site, i) => !revokedSites.has(site) || (versions ? versions[i] : siteVersions.get(site) || 0) > revokedSites.get(site));
     state = next; revision++; onInventory({ ...state, fullControl: mode.fullControl });
   }
+  // What the extension saw of this browser (protocol.js capabilityReport), kept on the peer that said it with the time
+  // it arrived: a disconnect, a reload or a new pairing (no peer, or a new one) leaves nothing of it behind. Taken from
+  // the current peer only, once its first inventory made it the connection agents use.
+  function observe(from, report) {
+    if (!from || from !== peer || !from.ready || from.generation !== authentication) return;
+    from.capabilities = { ...structuredClone(report), observedAt: now() };
+    for (const waiter of [...observers]) waiter(from);
+  }
   // An owner revocation begins: cancel everything issued before it, synchronously, before the extension is told.
   function revoking() { revocations++; settle(cancelled, true); }
   // Ends the connection and every handshake still under way; nothing admitted before acts after.
@@ -190,6 +201,7 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
     enabled = false; authentication++; revocations++;
     peer = null; for (const ws of sockets) ws.close();
     settle(notConnected);
+    for (const waiter of [...observers]) waiter(ENDED);
   }
   // The owner's Disconnect: kept across a restart (the bridge stays off until Resume).
   function disconnect() { cut(); persist(); }
@@ -288,7 +300,7 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
           if (admitted !== authentication || !enabled || ws.readyState !== 1
             || (isPair ? pair !== pairWindow || pairWindow.until < now() : key !== credential || now() >= credentialUntil)) fail('AUTH_FAILED');
           const previous = peer;
-          peer = { ws, send, session, key, generation: admitted, ready: false, pushedMode: null, version: hello.version || null }; previous?.ws.close();
+          peer = { ws, send, session, key, generation: admitted, ready: false, pushedMode: null, version: hello.version || null, capabilities: null }; previous?.ws.close();
           if (previous) settle(notConnected);
           // A new pairing starts from a cleared extension: nothing of a previous process to hand back.
           // A setup's token is gone with it (single use): `pair` is cleared in this same step. A setup pairing, like a
@@ -305,6 +317,8 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
         const message = payload(await wire.decode(raw.toString())); lastSeen = Date.now();
         if (message.type === 'pong') return;
         if (message.type === 'unpair') { revoke(); return; }
+        // A report from this socket's peer only (the decoding above awaited: the peer may have changed meanwhile).
+        if (message.type === 'capabilities') { if (peer?.ws === ws) observe(peer, message.capabilities); return; }
         if (message.type !== 'state' && message.type !== 'result') fail('INVALID_MESSAGE');
         update(message.inventory, peer);
         if (message.type === 'result') {
@@ -409,7 +423,33 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
       note(op, tab || result.tab, result.code || 'OK', result.ok === false ? errorDetail(result) : ''); return result;
     } catch (error) { note(op, tab, safeError(error).code); throw error; }
   }
+  // "Check again": a fresh capabilities report. Only an ordinary ping goes out (an extension from before 1.6.0 ends the
+  // connection on any type it does not know); 1.6.0 and later answer every ping with a pong and a new report. Waits for
+  // the first report that arrives after the ping was asked for, from this peer or from one that replaced it (a reload
+  // of the extension), up to `timeoutMs`. Resolves { ok: true, capabilities, legacy }: `capabilities` the fresh report
+  // (with its `observedAt`) or null, `legacy` true when none came and the extension connected now never sent one (it
+  // predates the reports); or { ok: false, code: 'NOT_CONNECTED' }. Never throws.
+  async function probe(options = {}) {
+    try {
+      const timeoutMs = options?.timeoutMs ?? 4000;
+      const wait = Number.isFinite(timeoutMs) ? Math.max(1, Math.min(60000, Math.floor(timeoutMs))) : 4000;
+      const asked = peer;
+      if (!enabled || !asked?.ready || asked.ws.readyState !== 1) return { ok: false, code: 'NOT_CONNECTED' };
+      const fresh = await new Promise(resolve => {
+        let timer = null;
+        const done = value => { clearTimeout(timer); observers.delete(done); resolve(value); };
+        observers.add(done);
+        timer = setTimeout(() => done(null), wait); timer.unref?.();
+        void asked.send({ type: 'ping' }).catch(() => {});
+      });
+      if (fresh && fresh !== ENDED && fresh.capabilities) return { ok: true, capabilities: structuredClone(fresh.capabilities), legacy: false };
+      const current = peer;
+      if (fresh === ENDED || !enabled || !current?.ready || current.ws.readyState !== 1) return { ok: false, code: 'NOT_CONNECTED' };
+      return { ok: true, capabilities: null, legacy: !current.capabilities };
+    } catch { return { ok: false, code: 'NOT_CONNECTED' }; }
+  }
   return {
+    probe,
     request, authorize, publishUpdate,
     // Whether an agent may be shown or given this page in full control (the session listing): never a browser page
     // or SynaBun's own.
@@ -471,8 +511,15 @@ export function createExtensionBridge({ port = 3345, log = () => {}, onInventory
     records: () => ({ revokedTabs: revokedTabs.size, revokedSites: revokedSites.size, siteVersions: siteVersions.size }),
     // `paused`: the owner's Disconnect in Settings → Browser holds (kept across a restart until Reconnect / Resume);
     // the extension's own popup cannot reconnect then (AUTH_FAILED).
-    status: () => ({ connected: peer?.ws.readyState === 1 && enabled && peer.ready === true, paired: !!credential, paused: !enabled, port: server?.address()?.port || port, extensionId: EXTENSION_ID,
-      fullControl: mode.fullControl, pairedAt: credential ? pairedAt : 0, extensionVersion: peer?.ready ? peer.version : null, ...structuredClone(state) }),
+    // `capabilities`: the connected extension's last report of what this browser allows (protocol.js capabilityReport,
+    // with `observedAt`, the time it arrived), or null: none connected, or one that sent none (before 1.6.0). Refreshed
+    // with every heartbeat ping, and at once by probe().
+    status: () => {
+      const connected = peer?.ws.readyState === 1 && enabled && peer.ready === true;
+      return { connected, paired: !!credential, paused: !enabled, port: server?.address()?.port || port, extensionId: EXTENSION_ID,
+        fullControl: mode.fullControl, pairedAt: credential ? pairedAt : 0, extensionVersion: peer?.ready ? peer.version : null,
+        capabilities: connected && peer.capabilities ? structuredClone(peer.capabilities) : null, ...structuredClone(state) };
+    },
     disconnect,
     resume: () => { enabled = true; persist(); },
     revoke,

@@ -3,8 +3,8 @@
 //
 // Nothing here touches the system by itself: every read goes through the injected `run(cmd, args)` (a program and its
 // arguments, never a shell), `exists(path)` and `list(dir)`, so tests feed fixtures and never read the real registry,
-// LaunchServices database or desktop files. `launchPlan` / `revealPlan` say which program SynaBun starts, with which
-// arguments; nothing here starts it. The server runs a plan with execFile (no shell; lib/browser-extension-setup.js).
+// LaunchServices database or desktop files. `launchPlan` / `extensionsPagePlan` / `revealPlan` say which program
+// SynaBun starts, with which arguments; nothing here starts it. The server runs a plan with execFile (no shell; lib/browser-extension-setup.js).
 //
 // Supported: the Chromium browsers that load an unpacked Manifest V3 extension (Chrome, Edge, Brave, Arc, Vivaldi,
 // Opera, Chromium). Safari and Firefox are named as the default when they are, with `supported: false`, so the page can
@@ -200,6 +200,26 @@ export function launchPlan(platform, browser, url) {
   if (platform === 'darwin') return launch.bundleId ? { cmd: 'open', args: ['-b', launch.bundleId, url] } : { cmd: 'open', args: [url] };
   if (platform === 'win32') return launch.exe ? { cmd: launch.exe, args: [url] } : { cmd: 'rundll32.exe', args: ['url.dll,FileProtocolHandler', url] };
   return launch.desktopFile ? { cmd: 'gio', args: ['launch', launch.desktopFile, url] } : { cmd: 'xdg-open', args: [url] };
+}
+/** The only addresses `extensionsPagePlan` opens: a supported browser's own extensions page, exactly. */
+export const EXTENSIONS_PAGE = /^(chrome|edge|brave|arc|vivaldi|opera):\/\/extensions$/;
+/**
+ * The program and arguments that open the extensions page of an installed supported browser (`browser`: an entry of
+ * detectBrowsers' installedBrowsers, with its `launch`), for the Settings guide's "Open extensions page". The address
+ * is read again from BROWSERS by the browser's id and checked against EXTENSIONS_PAGE, so nothing a caller passes
+ * becomes the address. Unlike launchPlan there is no fallback to the system's default handler: only the browser itself
+ * knows its own scheme, so a browser without a `launch` entry gets no plan (INVALID_MESSAGE).
+ */
+export function extensionsPagePlan(platform, browser) {
+  const known = browser && typeof browser.id === 'string' && Object.hasOwn(BROWSERS, browser.id) ? BROWSERS[browser.id] : null;
+  const url = known?.supported ? known.extensionsUrl : null;
+  const refuse = () => { throw Object.assign(new Error('Only an installed browser\'s own extensions page is opened.'), { code: 'INVALID_MESSAGE' }); };
+  if (!url || !EXTENSIONS_PAGE.test(url)) refuse();
+  const launch = browser.launch || {};
+  if (platform === 'darwin') { if (typeof launch.bundleId === 'string' && launch.bundleId) return { cmd: 'open', args: ['-b', launch.bundleId, url] }; }
+  else if (platform === 'win32') { if (typeof launch.exe === 'string' && launch.exe) return { cmd: launch.exe, args: [url] }; }
+  else if (typeof launch.desktopFile === 'string' && launch.desktopFile) return { cmd: 'gio', args: ['launch', launch.desktopFile, url] };
+  return refuse();
 }
 /** The program and arguments that show `folder` in Finder, Explorer or the file manager. */
 export function revealPlan(platform, folder) {

@@ -1,4 +1,4 @@
-import { extensionSettingsHTML, wireExtensionSettings } from './settings/settings-browser-extension.js';
+import { extensionGuideHTML, extensionSettingsHTML, wireExtensionSettings } from './settings/settings-browser-extension.js';
 import { fetchToolCatalog } from './agent-runtime-options.js';
 import { reloadAfterRestore } from './server-back.js';
 import { configureToolPickerTranslation, toolPickerHTML, readToolPicker, toolWord, toolServersNote } from './tool-list-picker.js';
@@ -28,7 +28,7 @@ import { cliInstallText, setCliInstallTranslator } from './cli-install-view.js';
 import { dropdownHTML, wireDropdowns, setDropdownItems, setDropdownValue } from './cc-dropdown.js';
 import { PROXY_TYPES, isLocalProfile, proxySummary, defaultCreateWhere, isPlanLimit, formOfProfile, readLocalProfileForm, proxyOfForm, createAction, whereOptions, passwordNeededAgain } from './settings/settings-local-profiles.js';
 import { startLimitNotes, closedOutsideNotes } from './settings/settings-morelogin-cooldown.js';
-import { AI_BROWSER_EVENT, LOCAL_CONNECT_OPTIONS, LOCAL_DEFAULT_MODE, aiBrowserOf, aiBrowserOfStatus, localConnectModeOf, browserSaveFields, switchRequest, pickRequest, aiBrowserLine, profileOf, aiBrowserDetail } from './settings/settings-ai-browser.js';
+import { AI_BROWSER_EVENT, CONNECT_MENU_OPTIONS, LOCAL_CONNECT_OPTIONS, LOCAL_DEFAULT_MODE, connectionParts, aiBrowserOf, aiBrowserOfStatus, localConnectModeOf, browserSaveFields, switchRequest, pickRequest, aiBrowserLine, profileOf, aiBrowserDetail } from './settings/settings-ai-browser.js';
 import { IFACE_DEFAULTS, loadIfaceConfig, saveIfaceConfig, applyIfaceConfig, restoreInterfaceConfig, loadSkinStylesheet, removeSkinStylesheet, restoreSkin, setSkinsTabRefresher } from './iface-config.js';
 // The interface config and the skin, for the modules that import them from here.
 export { loadIfaceConfig, saveIfaceConfig, applyIfaceConfig, restoreInterfaceConfig, restoreSkin };
@@ -649,18 +649,29 @@ function buildBrowserTab(ownerAccess = null) {
 
   return `
       <div class="stg-pane" data-stg-pane="browser">
+        ${extensionGuideHTML()}
 
         ${kit.card({
           id: 'setup-browser', section: 'browser.browser_choice',
           body: `
+          ${/* Connection mode first (the design handoff of 2026-11-27): what follows depends on it. The third choice
+             only points to Connected tools; it never turns a profile on (settings-ai-browser.js connectionParts). */''}
+          ${kit.field('BRW011', `${dd('BRW011', 'bc-connectMode', 'connect', CONNECT_MENU_OPTIONS)}
+            <div class="stg-help" id="bc-connectMode-ai-note" style="display:none">${b('aiBrowser.connectionNote')}</div>`)}
           <div class="stg-field" id="bc-ai-browser-row" style="display:none">
             <div class="stg-action-row" style="align-items:center;flex-wrap:wrap;gap:8px">
               <span class="stg-inline-status" id="bc-ai-browser-text" role="status" aria-live="polite"></span>
               <button type="button" class="stg-action-btn compact" id="bc-ai-browser-open">${b('aiBrowser.open')}</button>
             </div>
           </div>
-          ${kit.field('BRW003', `<div class="bc-inline-group">${dd('BRW003', 'bc-browser', 'browser', ['auto', 'chrome', 'msedge', 'chromium', 'custom'], { attrs: 'id="bc-browser-dropdown"' })}<input type="hidden" id="bc-channel" value=""></div>`)}
-          <div class="stg-field bc-card-row" id="bcg-executable" ${kit.inv('BRW001')}>
+          <div class="stg-field bc-connection-profile" id="bc-connection-profile" hidden>
+            <p class="bc-connection-profile-title">${b('connection.profileTitle')}</p>
+            <p class="stg-help">${b('connection.profileHelp')}</p>
+            <div class="stg-action-row"><button type="button" class="stg-action-btn compact" id="bc-connection-profile-open">${b('connection.open')}</button></div>
+          </div>
+          ${extensionSettingsHTML(kit)}
+          ${kit.field('BRW003', `<div class="bc-inline-group">${dd('BRW003', 'bc-browser', 'browser', ['auto', 'chrome', 'msedge', 'chromium', 'custom'], { attrs: 'id="bc-browser-dropdown"' })}<input type="hidden" id="bc-channel" value=""></div>`, { attrs: 'id="bcg-browser-row" data-local-only="true"' })}
+          <div class="stg-field bc-card-row" id="bcg-executable" data-local-only="true" ${kit.inv('BRW001')}>
             <label for="bc-executablePath">${kit.L('BRW001')}</label>
             <div class="browser-cfg-input-row">
               ${text('bc-executablePath', { ph: b('ph.autoDetect') })}
@@ -687,9 +698,6 @@ function buildBrowserTab(ownerAccess = null) {
           id: 'bcg-profiles', section: 'browser.browser_profiles',
           body: `
           <input type="hidden" id="bc-userDataDir" value="">
-          ${kit.field('BRW011', `${dd('BRW011', 'bc-connectMode', 'connect', LOCAL_CONNECT_OPTIONS)}
-            <div class="stg-help" id="bc-connectMode-ai-note" style="display:none">${b('aiBrowser.connectionNote')}</div>`)}
-          ${extensionSettingsHTML(kit)}
           ${kit.field('BRW012', dd('BRW012', 'bc-attachSeed', 'seed', ['real', 'fresh']), { attrs: 'id="bc-attachSeed-row" style="display:none"' })}
           <div class="stg-field bc-card-row" ${kit.inv('BRW083')}>
             <label id="bc-profile-list-label">${kit.L('BRW083')}</label>
@@ -6676,13 +6684,36 @@ async function openSettingsModalNow(options = {}) {
       if (row) row.style.display = on ? '' : 'none';
       const text = overlay.querySelector('#bc-ai-browser-text');
       if (text) text.textContent = on ? kit.tx(`settings.redesign.browser.aiBrowser.${line.key}`, line.params) : '';
-      // The Connection field is the local browser's mode: not in use while a profile is the AI browser.
+      // The Connection field shows the profile, disabled, while a profile is the AI browser; the local mode the form
+      // held comes back when it is turned off (in Connected tools: never from here).
       const mode = overlay.querySelector('#bc-connectMode');
-      if (mode) mode.disabled = on;
+      if (mode) {
+        if (on && mode.value !== 'morelogin') { _localMode = mode.value || _localMode; mode.value = 'morelogin'; }
+        else if (!on && mode.value === 'morelogin' && mode.disabled) mode.value = _localMode;
+        mode.disabled = on;
+      }
       const note = overlay.querySelector('#bc-connectMode-ai-note');
       if (note) note.style.display = on ? '' : 'none';
       syncBcDropdowns();
+      refreshConnectionParts();
     }
+    // The local mode as the form last held it (a read of the config, or the owner's pick): what a save keeps while the
+    // menu only shows the profile choice.
+    let _localMode = LOCAL_DEFAULT_MODE;
+    /** Connection mode first: the extension card, the local executable rows and the profile notice follow it. */
+    function refreshConnectionParts() {
+      const input = overlay.querySelector('#bc-connectMode');
+      if (!input) return;
+      if (['attach', 'extension', LOCAL_DEFAULT_MODE].includes(input.value)) _localMode = input.value;
+      const parts = connectionParts(input.value, _aiBrowser);
+      overlay.querySelectorAll('[data-local-only="true"]').forEach(row => { row.hidden = !parts.local; });
+      const profile = overlay.querySelector('#bc-connection-profile');
+      if (profile) profile.hidden = !parts.profile;
+    }
+    overlay.querySelector('#bc-connection-profile-open')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      applySettingsOpenOptions(overlay, { tab: 'connected-tools', expand: 'stg-sec-ml-default', scrollTo: 'stg-sec-ml-default', highlight: 'stg-sec-ml-default' });
+    }, { signal: panelLife.signal });
     /** The AI browser as last heard: the MoreLogin tab's news (with the profile's name), or a read of the config. */
     function noteAiBrowser(detail) {
       if (!detail || typeof detail !== 'object') return;
@@ -6702,6 +6733,7 @@ async function openSettingsModalNow(options = {}) {
       const mode = overlay.querySelector('#bc-connectMode')?.value || 'mirror';
       const seedRow = overlay.querySelector('#bc-attachSeed-row');
       if (seedRow) seedRow.style.display = mode === 'attach' ? '' : 'none';
+      refreshConnectionParts();
       updateChromeRunningWarning();
     }
     const connectModeDd = overlay.querySelector('.bc-dropdown[data-for="bc-connectMode"]');
@@ -6994,13 +7026,16 @@ async function openSettingsModalNow(options = {}) {
     }
 
     // Collect all config from the form
-    const refreshExtensionSettings = wireExtensionSettings(overlay, { tx: kit.tx, signal: panelLife.signal });
+    // Not hydrated: the menu holds its first option ("extension") until GET /api/browser/config answers, and the card
+    // must not show, poll or restore a setup guide for an owner who uses another mode (applyBrowserConfig calls it).
+    const refreshExtensionSettings = wireExtensionSettings(overlay, { tx: kit.tx, signal: panelLife.signal, hydrated: false,
+      revealRequested: (el) => settingsRevealRequested(overlay, el) });
 
     function collectBrowserConfig() {
       const val = (id) => (overlay.querySelector(`#${id}`)?.value || '').trim();
       const num = (id, def) => { const v = parseInt(val(id), 10); return isNaN(v) ? def : v; };
       const numF = (id, def) => { const v = parseFloat(val(id)); return isNaN(v) ? def : v; };
-      const connection = browserSaveFields(val('bc-connectMode'), _aiBrowser);
+      const connection = browserSaveFields(val('bc-connectMode'), _aiBrowser, _localMode);
 
       // Permissions
       const permissions = [];
@@ -7130,6 +7165,8 @@ async function openSettingsModalNow(options = {}) {
       setVal('bc-browser', cfg.browser && cfg.browser !== 'morelogin' ? cfg.browser : 'auto');
       setVal('bc-channel', cfg.channel || '');
       setVal('bc-connectMode', localConnectModeOf(cfg));
+      _localMode = localConnectModeOf(cfg);
+      refreshConnectionParts();
       refreshExtensionSettings?.();
       setVal('bc-attachSeed', cfg.attachSeed || 'real');
       const _seedRow = overlay.querySelector('#bc-attachSeed-row');

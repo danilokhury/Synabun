@@ -309,7 +309,7 @@ export function agentForgePersonaLines(t = toolNames()) {
  * rules, loaded into a Claude brain, say "Ask clarifying questions with
  * AskUserQuestion, never as plain text".
  */
-function whatsappChannelLines(t, { hasAskUserQuestion = true, computer = null } = {}) {
+function whatsappChannelLines(t, { hasAskUserQuestion = true, computer = null, autonomous = false } = {}) {
   const askTools = [hasAskUserQuestion ? 'AskUserQuestion' : null, t.choice, t.clarify].filter(Boolean).join(', ');
   return [
     '## Channel: WhatsApp',
@@ -317,7 +317,10 @@ function whatsappChannelLines(t, { hasAskUserQuestion = true, computer = null } 
     '- These channel rules win over every other instruction about how to ask, wait or report: the sections above, your CLAUDE.md and rules files (a rule such as "Ask clarifying questions with AskUserQuestion, never as plain text" does not apply here), and tool descriptions.',
     `- Asking: ask in your reply, in plain words, as a person would: one short question, the options named inside the sentence only when they help, then end your turn. The user's next message is the answer. Never call ${askTools} on this channel, and never write numbered choices or "reply 1/2/3". Ask only when a wrong guess would waste the work; otherwise act and say what you assumed.`,
     `- No ${FOLLOWUPS_FENCE} block on this channel (it only turns into buttons in SynaBun's panel): name what you offer in your sentence.`,
-    `- Approvals: when something needs the user's OK (a tool, a plan, where a task runs), SynaBun asks them in the chat as a yes / no and gives you the answer; do not ask for it yourself as well. A request that comes back not approved, cancelled or expired with "the user sent a new message instead" means exactly that: do not retry it or work around it, end your turn at once without a reply; their message is your next prompt.`,
+    ...(autonomous ? [
+      `- Autonomous (the level the user set for this channel): act without asking. Never ask the user to confirm, approve or choose the model, agent or worker for a task, and never ask "shall I go ahead?" or "which model should I use?": ${t.route} approves every task at once (a saved route for the task class binds, otherwise your own pick runs), so pick the best fit yourself and say in a line what you started and on what. Ask a question only when the work cannot be done right without the answer (which of two projects, destructive or irreversible scope, spending money).`,
+    ] : []),
+    `- Approvals: when something needs the user's OK (${autonomous ? 'a tool or the Mac in a turn that carries a picture or forwarded text, a plan' : 'a tool, a plan, where a task runs'}), SynaBun asks them in the chat as a yes / no and gives you the answer; do not ask for it yourself as well. A request that comes back not approved, cancelled or expired with "the user sent a new message instead" means exactly that: do not retry it or work around it, end your turn at once without a reply; their message is your next prompt.`,
     `- Chat while work runs: never hold a turn open for workers. Dispatch, say in one line what you started, and end your turn; the user keeps talking to you meanwhile and you answer them. Results come to you as [SynaBun Mailbox] events: tell the user then, in a line or two. ${t.wait} returns at once here; do not call it to wait, and never poll ${t.status} in a loop.`,
     '- Sound like a person: short, natural messages in the user\'s language. No run tables, no "#1 provider/model · status · cost" lines, no headings, no "Outcome / Changes / Follow-ups" report unless they ask for the details; say what happened and what, if anything, you need from them.',
     '- Write for a phone: short paragraphs, no tables; code blocks only when needed and kept narrow. Put URLs in plain text (no markdown links).',
@@ -382,6 +385,7 @@ function whatsappComputerLines(t, computer) {
  * @param {object} [input.taskClasses]    TASK_CLASS_META
  * @param {boolean} [input.clarify]       agent_clarify is wired (assistant-clarify.js)
  * @param {string} [input.channel]        where the user talks to you: 'whatsapp' (WhatsApp Link) or null (the panel)
+ * @param {string} [input.remoteLevel]    a remote session's level as its brain starts (lib/remote-policy.js effectiveLevel): 'autonomous' tells a WhatsApp brain never to ask for confirmations
  * @param {string} [input.testDensity]    the session's Test density (assistant-test-density.js); null leaves the prompt without it
  * @param {string} [input.agentDensity]   agents-p4: the session's Agent density (lib/agents/density.js); null leaves the prompt without it and without the teams section
  * @param {object} [input.budget]         the session budget as the brain starts: { unlimited, amountUsd, version, view } (null: no budget lines)
@@ -405,6 +409,7 @@ export function buildAssistantPersona({
   taskClasses = null,
   clarify = false,
   channel = null,
+  remoteLevel = null,
   testDensity = null,
   agentDensity = null, // agents-p4
   budget = null,
@@ -573,7 +578,7 @@ export function buildAssistantPersona({
   if (defaults?.provider || defaults?.model) {
     lines.splice(lines.indexOf('## What you know'), 0, `Defaults for new dispatches when the route leaves them open: ${[defaults.provider, defaults.model, defaults.effort].filter(Boolean).join(' / ')}.`, '');
   }
-  if (chat) lines.push('', ...whatsappChannelLines(t, { hasAskUserQuestion, computer }));
+  if (chat) lines.push('', ...whatsappChannelLines(t, { hasAskUserQuestion, computer, autonomous: remoteLevel === 'autonomous' }));
   if (extra && String(extra).trim()) lines.push('', '## Additional instructions from the user', String(extra).trim());
   return lines.filter((line) => line !== null && line !== undefined).join('\n').replace(/\n{3,}/g, '\n\n');
 }

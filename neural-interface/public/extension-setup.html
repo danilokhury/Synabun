@@ -16,8 +16,12 @@
      #es-steps > li[data-step][data-done], #es-extensions-url + #es-copy-url, #es-folder + #es-copy-folder + #es-reveal,
      #es-alternatives, #es-reload, #es-restart, #es-copied, #es-progress (the bytes of the extension's download, while
      the state is "downloading"). The ticket element is the only thing the extension's content script reads; it is
-     filled only while the extension is on this page and the server waits for it. -->
-<main id="es-setup" class="es-setup" data-state="idle" data-layout="result" aria-busy="true">
+     filled only while the extension is on this page and the server waits for it.
+     Beside the Settings guide (a setup started from Settings → Browser, status `guided`) the page is its companion:
+     data-companion="true", one card with the live status and no steps, folder or other browsers; the steps are in
+     Settings, and this tab stays open only to pair the extension by itself. Opened on its own (the extension's popup,
+     an older flow) it is the four-step page as before. -->
+<main id="es-setup" class="es-setup" data-state="idle" data-layout="result" data-companion="false" aria-busy="true">
   <div class="es-top">
     <p class="es-brand"><img src="/icon-192.png" alt="" width="32" height="32"><span>SynaBun</span></p>
     <p id="es-browser" class="es-browser" hidden><span id="es-browser-label"></span> <strong id="es-browser-name"></strong></p>

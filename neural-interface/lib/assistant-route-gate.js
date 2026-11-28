@@ -171,14 +171,18 @@ export function createRouteGate({ sessionId = null, routeTool = () => 'agent_rou
   let taskKey = '';
   let unavailable = null;
   let cli = false;
+  let decided = [];
 
   /**
    * `carry` keeps the refusal count (the reactive fallback's follow-up turn still counts toward the loop guard).
    * `cli`: Claude Code started this turn by itself (a background task, agent or wakeup reported back).
+   * `decided`: the routes the user decided for a worker that this (mailbox) turn carries ([{ routeId, target }]). The
+   * turn stays unrouted (those routes open no tools here); its refusals name them instead of saying nothing was routed.
    */
-  function startTurn({ open = false, carry = false, taskId: currentTask = taskId, cli: byCli = false } = {}) {
+  function startTurn({ open = false, carry = false, taskId: currentTask = taskId, cli: byCli = false, decided: decidedRoutes = null } = {}) {
     turn += 1;
     cli = byCli === true;
+    decided = Array.isArray(decidedRoutes) ? decidedRoutes.filter((route) => route && route.routeId).slice(0, 5) : [];
     taskId = currentTask;
     taskKey = '';
     state = open ? 'open' : 'unrouted';
@@ -219,6 +223,11 @@ export function createRouteGate({ sessionId = null, routeTool = () => 'agent_rou
     const cliNote = cli ? ' This turn was started by Claude Code itself (a background task, agent or wakeup reported back): route the task it belongs to again with its task_key, then read that job\'s output and carry the task on.' : '';
     // OpenCode's Code Mode tool: a model that went looking for SynaBun's tools inside it is told where they are.
     const codeMode = name.toLowerCase() === 'execute' ? ` SynaBun's own tools, ${routeTool()} included, are separate tools in your tool list: call them directly, never through execute.` : '';
+    // A mailbox turn that carries a route the user decided for a worker: that route is the worker's, not this turn's.
+    if (decided.length) {
+      const routes = decided.map((route) => `${route.routeId} → ${targetLabel(route.target)}`).join(', ');
+      return `SynaBun route gate: ${name} was refused. The route the user decided (${routes}) is a worker's: it opens no tools in this turn. Dispatch it with agent_dispatch and its route_id if you have not yet, then end your turn with one short line; read the worker's progress with agent_status / agent_read / agent_wait. Other work in this turn needs its own route: call ${routeTool()} first${sessionId ? ` (assistant_session_id "${sessionId}")` : ''}. Memory tools, agent_* tools and asking the user work without routing.${codeMode}`;
+    }
     return `SynaBun route gate: ${name} was refused because this turn is not routed. Call ${routeTool()} first (task_class, one-line summary, confidence, 1-3 proposals${sessionId ? `, assistant_session_id "${sessionId}"` : ''}) and follow its status: approved + direct opens every tool for this turn. To resume an approved task, route again with the same task_key; a consumed continuation returns approved with continuation:false. Memory tools, agent_* tools and asking the user work without routing. For plain conversation, just answer in text.${cliNote}${codeMode}`;
   }
   /**
@@ -237,7 +246,7 @@ export function createRouteGate({ sessionId = null, routeTool = () => 'agent_rou
     if (abort) aborted = true;
     return { allow: false, state, refusals, abort, reason: refusalText(tool) };
   }
-  function snapshot() { return { state, turn, refusals, routeId, taskId, taskKey, held: heldText, aborted, unavailable, cli }; }
+  function snapshot() { return { state, turn, refusals, routeId, taskId, taskKey, held: heldText, aborted, unavailable, cli, decided: decided.map((route) => route.routeId) }; }
 
   return { startTurn, onRouteResult, onRouteError, onClarify, setUnavailable, check, snapshot, isOpen: () => !!unavailable || state === 'open' || state === 'failed' };
 }

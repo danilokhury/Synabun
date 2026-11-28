@@ -256,6 +256,10 @@ Where it applies, `report.userShouldRun` is what the user can run themselves (`g
 | `landing` | the target branch at the landing's commit: `merged`. Where it was: the team is as before. Anywhere else: reported |
 | a worktree's folder gone | put back from its branch (what was uncommitted in the folder went with the folder) |
 | a slice's branch and folder gone | the slice is `failed` |
+| the integration branch and folder gone, every slice ended or gone, the integration head on the base branch already | the team is `merged` (merged outside `land`: `landed.external: true`, `landed.recovered: true`); nothing is made again |
+| the integration branch and folder gone, every slice ended or gone, nothing joined (no slice `integrated`, the head still the base commit) | the team is `failed`; no empty integration branch is made |
+
+A team closed that way gives its claims back, and `removed: true` is written when no branch or folder of it is left; a slice branch that is still there stays, for `remove` (after the landing) or a discard. The integration branch is still made again from its recorded head when any slice is at work or its branch is still there with its folder gone, when the head has commits the base branch does not have, or when the base branch is not there to compare with. Each closing is the action `team_closed` (`state`, `reason: 'merged_outside_landing' | 'nothing_integrated'`, `targetBranch`, `head`, `removed`).
 
 It also takes the claims of every team under way again and registers every slice with the worker guard again (the guard's registry is in memory).
 
@@ -301,7 +305,7 @@ They ask git under the rules of a read and change nothing. The tool has no actio
 `createTeamScheduler({ teams, coordination, dispatcher, density, router, session, git, dataDir, broadcast, limits })` (`scheduler.js`). `docs/agents.md` → Teams says what it does for the Assistant and the workers; this is what a caller of the library needs to know about it.
 
 - **It is the only caller of the library in the server.** `server.js` shares it (`shareTeamScheduler`); the Assistant's API and the Agents Studio routes ask `sharedTeamScheduler()` when a request arrives. A test passes its own.
-- **Its own record** is one JSON file per team in `<dataDir>/teams/<teamId>.json` (the session, the route, the dispatch settings, each slice's runs and retry counts, its status). Everything about git is read from the journal through the library, never kept twice.
+- **Its own record** is one JSON file per team in `<dataDir>/teams/<teamId>.json` (the session, the route, the dispatch settings, each slice's runs and retry counts, its status). Everything about git is read from the journal through the library, never kept twice. `remove(teamId)` deletes that file (and `teams/sandbox/<teamId>.sb`) for a closed team once git and the disk show nothing of it and no worker lives; the journal entry stays (a closed team's journal state is terminal, so `recover()` skips it, and its id is never made again), and a removed record is never saved again (`docs/agents.md` → Teams, Removing a closed team).
 - **A team's steps never overlap**: every step of one team runs after the one before it (`inTurn`), and none runs before the library's `recover()` has.
 - **The run id comes first.** `dispatchSlice` makes the run id, calls `startSlice(teamId, sliceId, { runId })` (or `resolveInSlice`), and only then dispatches with that id (`dispatcher.dispatch(spec, { team, runId })`): the claims are in the run's name before the worker exists. The dispatcher takes `team` and `runId` from the scheduler alone; no request body reaches them.
 - **What it decides that the library leaves open** (the list below this section, as it was written for this phase): workers run with capability `workspace`; `STRAY_CHANGES` is answered with `allowStray: true` (the files stay out, the event names them); a conflict goes to the slice's own worker through `resolveInSlice`; `land` is never called because a team became ready; the workers are stopped before `remove`; the tests run through `test-sandbox.js`; the setup step is `cloneNodeModules()`; a team id is `<title>-<6 hex>`.
@@ -380,3 +384,20 @@ lastOwnerTurnAt: (sessionId) => _assistantRuntime?.lastOwnerTurnAt?.(sessionId) 
 With that dependency present, absent, equal or earlier timestamps refuse cleanup. Without it,
 confirmation timing is explicitly reported as unverified. Git failures during removal throw;
 external concurrent filesystem changes cannot be made transactional across Git commands.
+
+### A ready team merged outside `land`
+
+Somebody may merge a ready team's integration branch into its base branch by hand, leaving its worktrees and
+branches on disk. `onTarget(teamId)` (read only, no lock: a list asks it) answers `null` unless the journal says
+`ready` and git says the recorded integration head, and the live integration branch, are ancestors of
+`refs/heads/<baseBranch>`; then `{ branch, head, targetHead, live, moved, clean, dirty, unmerged, other }`, where
+`clean` is every guarded check above passing against the base branch (`guardedChecks`, the same code the removal
+runs), `dirty` the uncommitted files per worktree, `unmerged` the branches with commits the base branch lacks, and
+`other` git's words for anything else. Live workers are the scheduler's to count (`liveRuns`), not the library's.
+
+`remove(teamId, { guarded: true, mergedOutside: true })` reads the team again under the repository's lock, refuses
+(`TEAM_NOT_READY`, `NOT_ON_TARGET`, then the guarded codes) with nothing changed, and otherwise journals the landing
+somebody else made (`merged`, `landed.external: true`) before it removes anything, then removes exactly as a guarded
+cleanup does. The scheduler's `cleanupMerged(teamId, { by: { kind: 'owner' }, userConfirmed: true })` adds the live
+worker check, records the landing on the team, emits `team_cleaned` and removes the team's record. Nothing does this
+at start-up: recovery closes such a team only when its integration branch and worktree are already gone.

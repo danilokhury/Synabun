@@ -36,6 +36,7 @@ import { chooseUsageAccount } from './account-usage.js';
 import { defaultIsHidden, enabledStandIn, findModel, providerAllHidden, selectSheetModels } from './assistant-catalog.js';
 import { EFFORT_OFF, normalizeEffort } from './effort-levels.js';
 import { claudeRouteAvailability, createRouteGate, isReplyTool, mcpStatusRouteAvailability, ROUTE_GATE_LOOP_MESSAGE } from './assistant-route-gate.js';
+import { claudeSpilledResultRead } from './assistant-spilled-output.js';
 import { claudeReadOnlyPermission, planDenyMessage, planToolDecision, readOnlyDenyMessage, readOnlyToolDecision } from './assistant-plan-permissions.js';
 import { codexRouteGateBootstrap } from './assistant-route-gate-codex.js';
 import { proposedPlanText } from './assistant-envelope.js';
@@ -2222,6 +2223,8 @@ export function createAssistantRuntime({
       budget: budgetSetting ? { ...budgetSetting, view: money } : null,
       clarify: !!clarifier,
       channel: live.record.channel || live.record.remote?.channel || null,
+      // The configured level (a turn's untrusted cap aside): a change of Autonomous restarts the brain (needsRestart).
+      remoteLevel: (() => { const policy = remotePolicyFor(live); return policy ? effectiveLevel(policy, { now: now() }) : null; })(),
     });
   }
   /**
@@ -2548,7 +2551,7 @@ export function createAssistantRuntime({
   // `offerPlan`: a system turn that revises a plan still ends with a plan card.
   // `work`: the scheduler entry this system turn is; `request`: { id, reply } of a
   // prompt a socket sent (refuse); `turnGen`: the generation runQuery entered in.
-  async function runTurn(live, { text, images = [], cwd = null, model = null, effort = null, permissionMode = null, planMode = null, system = false, taskId = null, turnModel = null, turnEffort = null, gateOpen = false, gateCarry = false, origin = null, authority = null, untrusted = false, offerPlan = false, work = null, request = null, turnGen = live.gen, computerRoutes = null, typed = null, greetingId = null } = {}) {
+  async function runTurn(live, { text, images = [], cwd = null, model = null, effort = null, permissionMode = null, planMode = null, system = false, taskId = null, turnModel = null, turnEffort = null, gateOpen = false, gateCarry = false, gateDecided = null, origin = null, authority = null, untrusted = false, offerPlan = false, work = null, request = null, turnGen = live.gen, computerRoutes = null, typed = null, greetingId = null } = {}) {
     const prompt = String(text || '').trim();
     if (!prompt && !(Array.isArray(images) && images.length)) return refuse(live, 'EMPTY_PROMPT', 'No prompt provided', { packet: { type: 'error', message: 'No prompt provided' }, request });
     // The scheduler's turn goes once a Stop, the session closing or a newer
@@ -2840,7 +2843,7 @@ export function createAssistantRuntime({
     // Every turn starts unrouted; a continuation or a route_decided "here" turn starts open.
     // Plan mode never routes: the brain explores read-only (the plan policy) and
     // the approved plan is routed on the next turn.
-    ensureGate(live)?.startTurn({ open: gateOpen || live.record.brain?.planMode === true, carry: gateCarry, taskId });
+    ensureGate(live)?.startTurn({ open: gateOpen || live.record.brain?.planMode === true, carry: gateCarry, taskId, decided: gateDecided });
     // What this turn runs on, as the router compares a re-routed task with it (routerSession `turn`). The
     // brain process keeps it: a turn the CLI starts by itself afterwards (a task notification) runs on it too.
     const previousRun = live.turnRun;
@@ -3042,8 +3045,10 @@ export function createAssistantRuntime({
     const taskId = firstRun?.taskId || firstRun?.run?.turns?.find((turn) => turn.n === firstRun.turn)?.taskId || firstRun?.run?.taskId || live.record.taskId || null;
     // The decided "here" routes this turn carries out (one of them may hold the owner's computer approval).
     const computerRoutes = items.filter((item) => item.kind === 'route_decided' && item.route?.target?.kind === 'direct' && !(item.runIds || []).length).map((item) => String(item.route?.routeId || '')).filter(Boolean);
+    // The routes the user decided for a worker: the turn stays unrouted, and its refusals name them (assistant-route-gate.js).
+    const gateDecided = items.filter((item) => item.kind === 'route_decided' && item.route?.target?.kind === 'dispatch' && item.route?.routeId).map((item) => ({ routeId: String(item.route.routeId), target: item.route.target }));
     let result = null;
-    try { result = await runQuery(live, { text, system: true, taskId, gateOpen: decidedHere, computerRoutes }); }
+    try { result = await runQuery(live, { text, system: true, taskId, gateOpen: decidedHere, gateDecided, computerRoutes }); }
     catch (error) {
       // A start that threw is a start that failed: its events stay open and the retry rules below apply (never a spin).
       log('assistant:mailbox-error', `${live.record.id}: ${error?.message || error}`);
@@ -4298,8 +4303,10 @@ export function createAssistantRuntime({
    * the browser policy (every session, plan mode and subagents included), then the route gate. → { decision:
    * 'deny', reason } or null (no objection: the brain's approval mode decides). `call`: lib/antigravity/tool-call.js
    * acpCall. Antigravity's own bookkeeping steps (task boundaries, notes to the user) are never routed.
+   * `spilledOutput`: the brain found the call reads only tool outputs Antigravity spilled into its home
+   * (lib/antigravity/home.js antigravitySpilledOutputRead): the route gate lets it through, every other check stays.
    */
-  function antigravityGateCheck(live, call) {
+  function antigravityGateCheck(live, call, { spilledOutput = false } = {}) {
     const name = acpToolName(call);
     const input = acpPolicyInput(call);
     const planned = planGate(live, 'antigravity', name, input);
@@ -4316,6 +4323,8 @@ export function createAssistantRuntime({
     const browserDenied = browserGate(live, name, input, { host: 'antigravity' });
     if (browserDenied) return { decision: 'deny', reason: browserDenied.reason };
     if (!live.gate || call.kind === 'think') return null;
+    // The flag covers a plain read only (the brain sets it for nothing else; checked here too).
+    if (spilledOutput === true && !call.mcp && (call.kind === 'read' || call.kind === 'search')) return null;
     const decision = decide(live, name);
     return decision.allow ? null : { decision: 'deny', reason: decision.reason };
   }
@@ -4332,7 +4341,7 @@ export function createAssistantRuntime({
       policyUrl: typeof ag.policyUrl === 'function' ? ag.policyUrl() : (ag.policyUrl || null),
       connect: ag.connect || undefined,
       userGemini: ag.userGemini || undefined,
-      policyCheck: (call) => antigravityGateCheck(live, call),
+      policyCheck: (call, meta) => antigravityGateCheck(live, call, meta),
       // ACP counts tokens per session: what the session the record names had counted (a resume books only what follows).
       sessionUsageBase: saved && saved.sessionId && saved.sessionId === live.record.providerSessionId ? saved.usage || null : null,
       onAntigravitySession: (sessionId) => { if (sessionId && live.record.providerSessionId !== sessionId) { live.record.providerSessionId = sessionId; touch(live); } },
@@ -4469,6 +4478,8 @@ export function createAssistantRuntime({
       PreToolUse: [{
         hooks: [async (input) => {
           if (!live.gate || input?.agent_id) return {};
+          // A Read of a tool result Claude Code saved for this session (a long recall or agent_list): never routed.
+          if (claudeSpilledResultRead(input)) return {};
           const decision = decide(live, input?.tool_name);
           if (decision.allow) return {};
           return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: decision.reason } };
